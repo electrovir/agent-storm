@@ -1,9 +1,15 @@
 import type {SshConnection} from '../ssh/ssh-connection.js';
 
-class ConnectionManager {
+/**
+ * Manages SSH connections.
+ *
+ * @category Internal
+ */
+export class ConnectionManager {
     private connections: Map<string, SshConnection> = new Map();
     private selectedConnectionId: string | null = null;
 
+    /** Adds a connection. */
     public addConnection(connection: SshConnection): void {
         this.connections.set(connection.id, connection);
         if (!this.selectedConnectionId) {
@@ -11,6 +17,7 @@ class ConnectionManager {
         }
     }
 
+    /** Removes a connection. */
     public removeConnection(id: string): void {
         const connection = this.connections.get(id);
         if (connection) {
@@ -27,10 +34,12 @@ class ConnectionManager {
         }
     }
 
+    /** Gets a connection by ID. */
     public getConnection(id: string): SshConnection | undefined {
         return this.connections.get(id);
     }
 
+    /** Gets the currently selected connection. */
     public getSelectedConnection(): SshConnection | undefined {
         if (!this.selectedConnectionId) {
             return undefined;
@@ -38,20 +47,24 @@ class ConnectionManager {
         return this.connections.get(this.selectedConnectionId);
     }
 
+    /** Selects a connection by ID. */
     public selectConnection(id: string): void {
         if (this.connections.has(id)) {
             this.selectedConnectionId = id;
         }
     }
 
+    /** Gets all connections. */
     public getAllConnections(): SshConnection[] {
         return Array.from(this.connections.values());
     }
 
+    /** Gets the selected connection ID. */
     public getSelectedConnectionId(): string | null {
         return this.selectedConnectionId;
     }
 
+    /** Checks if a repo is in use by a connection. */
     public isRepoInUse(repoPath: string): SshConnection | undefined {
         for (const conn of this.connections.values()) {
             if (conn.repoPath === repoPath && !conn.worktreePath) {
@@ -61,6 +74,7 @@ class ConnectionManager {
         return undefined;
     }
 
+    /** Selects the next connection. */
     public selectNext(): void {
         const ids = Array.from(this.connections.keys());
         if (ids.length === 0) {
@@ -77,6 +91,7 @@ class ConnectionManager {
         }
     }
 
+    /** Selects the previous connection. */
     public selectPrevious(): void {
         const ids = Array.from(this.connections.keys());
         if (ids.length === 0) {
@@ -92,4 +107,9 @@ class ConnectionManager {
     }
 }
 
+/**
+ * Singleton connection manager instance.
+ *
+ * @category Internal
+ */
 export const connectionManager = new ConnectionManager();

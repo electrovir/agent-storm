@@ -4,6 +4,11 @@ import {openInVsCode} from '../utils/vscode-integration.js';
 
 const term = terminalKit.terminal;
 
+/**
+ * Represents the TUI state.
+ *
+ * @category Internal
+ */
 export interface TuiState {
     sidebarWidth: number;
     sidebarFocused: boolean;
@@ -22,10 +27,20 @@ let tuiState: TuiState = {
 
 let onNewConnectionCallback: (() => void) | null = null;
 
+/**
+ * Sets the callback for new connection creation.
+ *
+ * @category Internal
+ */
 export function setNewConnectionCallback(callback: () => void): void {
     onNewConnectionCallback = callback;
 }
 
+/**
+ * Initializes the TUI.
+ *
+ * @category Internal
+ */
 export function initTui(): void {
     term.clear();
     term.hideCursor();
@@ -33,6 +48,11 @@ export function initTui(): void {
     renderTui();
 }
 
+/**
+ * Renders the TUI.
+ *
+ * @category Internal
+ */
 export function renderTui(): void {
     term.clear();
     renderSidebar();
@@ -148,6 +168,11 @@ function renderStatusBar(): void {
     term.styleReset();
 }
 
+/**
+ * Handles keyboard input.
+ *
+ * @category Internal
+ */
 export function handleInput(key: string, matches: string[], data: Buffer): void {
     const connections = connectionManager.getAllConnections();
     const totalItems = connections.length + 1;
@@ -261,6 +286,11 @@ function handleMenuInput(key: string): void {
     }
 }
 
+/**
+ * Handles terminal input.
+ *
+ * @category Internal
+ */
 export function handleTerminalInput(key: string, data: Buffer): void {
     if (key === 'ESCAPE' || key === 'CTRL_B') {
         tuiState.sidebarFocused = true;
@@ -274,6 +304,11 @@ export function handleTerminalInput(key: string, data: Buffer): void {
     }
 }
 
+/**
+ * Updates a connection's output buffer.
+ *
+ * @category Internal
+ */
 export function updateConnectionOutput(connectionId: string, data: string): void {
     const connection = connectionManager.getConnection(connectionId);
     if (connection) {
@@ -287,16 +322,31 @@ export function updateConnectionOutput(connectionId: string, data: string): void
     }
 }
 
+/**
+ * Cleans up the TUI.
+ *
+ * @category Internal
+ */
 export function cleanup(): void {
     term.clear();
     term.hideCursor(false);
     term.grabInput(false);
 }
 
+/**
+ * Gets the current TUI state.
+ *
+ * @category Internal
+ */
 export function getTuiState(): TuiState {
     return tuiState;
 }
 
+/**
+ * Sets the TUI state.
+ *
+ * @category Internal
+ */
 export function setTuiState(newState: Partial<TuiState>): void {
     tuiState = {...tuiState, ...newState};
 }

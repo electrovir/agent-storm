@@ -7,6 +7,8 @@ module.exports = {
     ],
     words: [
         ...baseConfig.words,
+        'identityfile',
         'worktree',
+        'worktrees',
     ],
 };

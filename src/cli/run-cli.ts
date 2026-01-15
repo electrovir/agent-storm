@@ -1,5 +1,4 @@
-#!/usr/bin/env node
-
+import {log} from '@augment-vir/common';
 import terminalKit from 'terminal-kit';
 import {
     cleanup,
@@ -7,8 +6,8 @@ import {
     initTui,
     renderTui,
     setNewConnectionCallback,
-} from './tui/main-tui.js';
-import {createAndConnectSshSession, showNewConnectionWizard} from './tui/new-connection-wizard.js';
+} from '../tui/main-tui.js';
+import {createAndConnectSshSession, showNewConnectionWizard} from '../tui/new-connection-wizard.js';
 
 const term = terminalKit.terminal;
 
@@ -37,7 +36,12 @@ async function handleNewConnection(): Promise<void> {
     }
 }
 
-function main(): void {
+/**
+ * Runs the CLI application.
+ *
+ * @category Internal
+ */
+export function runCli(): void {
     term.on(
         'key',
         (
@@ -54,7 +58,17 @@ function main(): void {
     );
 
     setNewConnectionCallback(() => {
-        handleNewConnection().catch(console.error);
+        handleNewConnection().catch(log.error);
+    });
+
+    process.on('SIGINT', () => {
+        cleanup();
+        process.exit(0);
+    });
+
+    process.on('SIGTERM', () => {
+        cleanup();
+        process.exit(0);
     });
 
     initTui();
@@ -63,22 +77,4 @@ function main(): void {
     term.gray('  Press "n" to create a new connection or navigate with arrow keys.\n\n');
 
     renderTui();
-}
-
-process.on('SIGINT', () => {
-    cleanup();
-    process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-    cleanup();
-    process.exit(0);
-});
-
-try {
-    main();
-} catch (error: unknown) {
-    cleanup();
-    console.error('Fatal error:', error);
-    process.exit(1);
 }

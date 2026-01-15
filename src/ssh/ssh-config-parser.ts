@@ -2,6 +2,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+/**
+ * Represents an SSH host configuration.
+ *
+ * @category Internal
+ */
 export interface SshHost {
     name: string;
     hostname: string;
@@ -10,6 +15,11 @@ export interface SshHost {
     identityFile?: string;
 }
 
+/**
+ * Parses the SSH config file.
+ *
+ * @category Internal
+ */
 export function parseSshConfig(): SshHost[] {
     const configPath = path.join(os.homedir(), '.ssh', 'config');
     if (!fs.existsSync(configPath)) {
@@ -70,6 +80,11 @@ export function parseSshConfig(): SshHost[] {
     return hosts;
 }
 
+/**
+ * Gets SSH hosts that have identity files configured.
+ *
+ * @category Internal
+ */
 export function getHostsWithKeys(): SshHost[] {
     const hosts = parseSshConfig();
     return hosts.filter((host) => {

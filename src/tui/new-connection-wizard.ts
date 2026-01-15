@@ -22,6 +22,11 @@ import {updateConnectionOutput} from './main-tui.js';
 
 const term = terminalKit.terminal;
 
+/**
+ * Result from the new connection wizard.
+ *
+ * @category Internal
+ */
 export interface NewConnectionResult {
     host: SshHost;
     repoPath: string;
@@ -99,6 +104,11 @@ async function promptInput(prompt: string, defaultValue?: string): Promise<strin
     return result || defaultValue || null;
 }
 
+/**
+ * Shows the new connection wizard.
+ *
+ * @category Internal
+ */
 export async function showNewConnectionWizard(): Promise<NewConnectionResult | null> {
     // Step 1: Select host
     const hosts = getHostsWithKeys();
@@ -291,6 +301,11 @@ export async function showNewConnectionWizard(): Promise<NewConnectionResult | n
     };
 }
 
+/**
+ * Creates and connects an SSH session.
+ *
+ * @category Internal
+ */
 export async function createAndConnectSshSession(
     config: NewConnectionResult,
 ): Promise<SshConnection | null> {

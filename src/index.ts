@@ -1,3 +1,4 @@
+export * from './cli/run-cli.js';
 export * from './git/git-operations.js';
 export * from './ssh/ssh-config-parser.js';
 export * from './ssh/ssh-connection.js';

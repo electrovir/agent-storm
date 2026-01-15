@@ -1,7 +1,14 @@
 {
     "name": "agent-storm",
-    "description": "",
-    "keywords": [],
+    "version": "0.0.1",
+    "description": "A TUI for managing agents through SSH connections.",
+    "keywords": [
+        "agent",
+        "ssh",
+        "tui",
+        "terminal",
+        "ui"
+    ],
     "homepage": "https://github.com/electrovir/agent-storm",
     "bugs": {
         "url": "https://github.com/electrovir/agent-storm/issues"
@@ -21,7 +28,7 @@
     "module": "src/index.ts",
     "types": "src/index.ts",
     "bin": {
-        "agent-storm": "dist/cli.script.js"
+        "agent-storm": "dist/cli/cli.script.js"
     },
     "scripts": {
         "compile": "virmator compile",
@@ -39,7 +46,8 @@
         "test:spelling": "virmator spellcheck"
     },
     "dependencies": {
-        "@augment-vir/assert": "^31.58.0",
+        "@augment-vir/assert": "^31.57.5",
+        "@augment-vir/common": "^31.58.0",
         "ssh2": "^1.17.0",
         "terminal-kit": "^3.1.2"
     },

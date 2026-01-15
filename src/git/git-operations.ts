@@ -1,6 +1,12 @@
+import {log} from '@augment-vir/common';
 import type {Client} from 'ssh2';
 import {execCommand} from '../ssh/ssh-connection.js';
 
+/**
+ * Represents a Git repository.
+ *
+ * @category Internal
+ */
 export interface GitRepo {
     path: string;
     name: string;
@@ -8,12 +14,22 @@ export interface GitRepo {
     isBare: boolean;
 }
 
+/**
+ * Represents a Git worktree.
+ *
+ * @category Internal
+ */
 export interface Worktree {
     path: string;
     branch: string;
     isBare: boolean;
 }
 
+/**
+ * Finds Git repositories in the given base path.
+ *
+ * @category Internal
+ */
 export async function findGitRepos(
     client: Client,
     basePath: string = '~/repos',
@@ -67,11 +83,16 @@ export async function findGitRepos(
 
         return repos;
     } catch (error) {
-        console.error('Error finding repos:', error);
+        log.error('Error finding repos:', error);
         return [];
     }
 }
 
+/**
+ * Gets all worktrees for a repository.
+ *
+ * @category Internal
+ */
 export async function getWorktrees(client: Client, repoPath: string): Promise<Worktree[]> {
     try {
         const output = await execCommand(
@@ -103,11 +124,16 @@ export async function getWorktrees(client: Client, repoPath: string): Promise<Wo
         // Filter out bare worktrees
         return worktrees.filter((wt) => !wt.isBare);
     } catch (error) {
-        console.error('Error getting worktrees:', error);
+        log.error('Error getting worktrees:', error);
         return [];
     }
 }
 
+/**
+ * Gets the current branch of a repository.
+ *
+ * @category Internal
+ */
 export async function getCurrentBranch(client: Client, repoPath: string): Promise<string> {
     try {
         const output = await execCommand(
@@ -120,6 +146,11 @@ export async function getCurrentBranch(client: Client, repoPath: string): Promis
     }
 }
 
+/**
+ * Creates a new worktree for a repository.
+ *
+ * @category Internal
+ */
 export async function createWorktree(
     client: Client,
     repoPath: string,
@@ -149,6 +180,11 @@ export async function createWorktree(
     return worktreePath;
 }
 
+/**
+ * Copies git-ignored files from one worktree to another.
+ *
+ * @category Internal
+ */
 export async function copyGitIgnoredFiles(
     client: Client,
     sourceWorktree: string,
@@ -169,10 +205,15 @@ export async function copyGitIgnoredFiles(
     try {
         await execCommand(client, command);
     } catch (error) {
-        console.error('Error copying git-ignored files:', error);
+        log.error('Error copying git-ignored files:', error);
     }
 }
 
+/**
+ * Finds the nearest non-empty worktree excluding a given path.
+ *
+ * @category Internal
+ */
 export async function findNearestNonEmptyWorktree(
     client: Client,
     repoPath: string,
@@ -195,6 +236,11 @@ export async function findNearestNonEmptyWorktree(
     return null;
 }
 
+/**
+ * Checks out a branch in a repository.
+ *
+ * @category Internal
+ */
 export async function checkoutBranch(
     client: Client,
     repoPath: string,
@@ -212,6 +258,11 @@ export async function checkoutBranch(
     }
 }
 
+/**
+ * Gets all branches in a repository.
+ *
+ * @category Internal
+ */
 export async function getBranches(client: Client, repoPath: string): Promise<string[]> {
     try {
         const output = await execCommand(
