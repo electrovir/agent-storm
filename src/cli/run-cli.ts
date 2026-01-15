@@ -4,14 +4,26 @@ import {
     cleanup,
     handleInput,
     initTui,
-    renderTui,
+    setInputEnabled,
     setNewConnectionCallback,
 } from '../tui/main-tui.js';
 import {createAndConnectSshSession, showNewConnectionWizard} from '../tui/new-connection-wizard.js';
 
 const term = terminalKit.terminal;
 
+/** Waits for any key press. */
+async function waitForAnyKey(): Promise<void> {
+    term.grabInput(true);
+    return new Promise((resolve) => {
+        term.once('key', () => {
+            term.grabInput(false);
+            resolve();
+        });
+    });
+}
+
 async function handleNewConnection(): Promise<void> {
+    setInputEnabled(false);
     term.grabInput(false);
 
     try {
@@ -27,11 +39,12 @@ async function handleNewConnection(): Promise<void> {
             } catch (error: unknown) {
                 term.red(`\n  Failed to establish connection: ${String(error)}\n`);
                 term.gray('  Press any key to continue...\n');
-                await term.inputField({echo: false}).promise;
+                await waitForAnyKey();
             }
         }
     } finally {
         term.grabInput({mouse: 'button'});
+        setInputEnabled(true);
         initTui();
     }
 }
@@ -72,9 +85,4 @@ export function runCli(): void {
     });
 
     initTui();
-
-    term.bold.cyan('\n  SSH Connection Manager\n');
-    term.gray('  Press "n" to create a new connection or navigate with arrow keys.\n\n');
-
-    renderTui();
 }

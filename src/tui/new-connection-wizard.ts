@@ -22,6 +22,17 @@ import {updateConnectionOutput} from './main-tui.js';
 
 const term = terminalKit.terminal;
 
+/** Waits for any key press. */
+async function waitForAnyKey(): Promise<void> {
+    term.grabInput(true);
+    return new Promise((resolve) => {
+        term.once('key', () => {
+            term.grabInput(false);
+            resolve();
+        });
+    });
+}
+
 /**
  * Result from the new connection wizard.
  *
@@ -47,26 +58,23 @@ async function showMenu<T>(
     if (enabledItems.length === 0) {
         term.red('  No available options.\n');
         term.gray('  Press any key to go back...\n');
-        await term.inputField({echo: false}).promise;
+        await waitForAnyKey();
         return null;
     }
 
-    // Display all items, showing disabled ones differently
-    items.forEach((item, index) => {
-        if (item.disabled) {
-            term.gray(`  ${index + 1}. ${item.label} (${item.reason})\n`);
-        } else {
-            term.white(`  ${index + 1}. ${item.label}\n`);
-        }
-    });
-
-    term('\n');
+    // Show disabled items first if any exist
+    const disabledItems = items.filter((item) => item.disabled);
+    if (disabledItems.length > 0) {
+        disabledItems.forEach((item) => {
+            term.gray(`  ${item.label} (${item.reason})\n`);
+        });
+        term('\n');
+    }
 
     const response = await term.singleColumnMenu(
         enabledItems.map((item) => item.label),
         {
             cancelable: true,
-            exitOnUnexpectedKey: true,
         },
     ).promise;
 
@@ -117,7 +125,7 @@ export async function showNewConnectionWizard(): Promise<NewConnectionResult | n
         term.clear();
         term.red('\n  No SSH hosts with configured keys found in ~/.ssh/config\n');
         term.gray('  Press any key to continue...\n');
-        await term.inputField({echo: false}).promise;
+        await waitForAnyKey();
         return null;
     }
 
@@ -143,7 +151,7 @@ export async function showNewConnectionWizard(): Promise<NewConnectionResult | n
     } catch (error: unknown) {
         term.red(`\n  Failed to connect: ${String(error)}\n`);
         term.gray('  Press any key to continue...\n');
-        await term.inputField({echo: false}).promise;
+        await waitForAnyKey();
         return null;
     }
 
@@ -155,7 +163,7 @@ export async function showNewConnectionWizard(): Promise<NewConnectionResult | n
         term.red('\n  No git repositories found in ~/repos\n');
         term.gray('  Press any key to continue...\n');
         client.end();
-        await term.inputField({echo: false}).promise;
+        await waitForAnyKey();
         return null;
     }
 
@@ -247,7 +255,7 @@ export async function showNewConnectionWizard(): Promise<NewConnectionResult | n
                 term.red(`\n  Failed to create worktree: ${String(error)}\n`);
                 term.gray('  Press any key to continue...\n');
                 client.end();
-                await term.inputField({echo: false}).promise;
+                await waitForAnyKey();
                 return null;
             }
         } else {

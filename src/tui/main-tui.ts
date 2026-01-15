@@ -26,6 +26,16 @@ let tuiState: TuiState = {
 };
 
 let onNewConnectionCallback: (() => void) | null = null;
+let inputEnabled = true;
+
+/**
+ * Sets whether TUI input handling is enabled.
+ *
+ * @category Internal
+ */
+export function setInputEnabled(enabled: boolean): void {
+    inputEnabled = enabled;
+}
 
 /**
  * Sets the callback for new connection creation.
@@ -174,6 +184,10 @@ function renderStatusBar(): void {
  * @category Internal
  */
 export function handleInput(key: string, matches: string[], data: Buffer): void {
+    if (!inputEnabled) {
+        return;
+    }
+
     const connections = connectionManager.getAllConnections();
     const totalItems = connections.length + 1;
 
