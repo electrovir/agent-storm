@@ -24,6 +24,8 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/electrov
 
 This downloads the latest prebuilt binary for your platform and installs it to `/usr/local/bin` (macOS) or `~/.local/bin` (Linux). Both `agent-storm` and `ags` commands are available after install.
 
+To update: `ags --update`
+
 ### Build from source
 
 Requires [Rust](https://rustup.rs/) and [tmux](https://github.com/tmux/tmux/wiki/Installing).
@@ -39,14 +41,26 @@ ln -sf /usr/local/bin/agent-storm /usr/local/bin/ags
 ## Usage
 
 ```sh
-# Browse folders in the current directory
+# Browse repos from your config
 ags
 
-# Browse a specific directory
+# Browse a specific directory (prompts to add if new)
 ags ~/repos/my-project
+
+# Add a repo to the config and exit
+ags --add ~/repos/my-project
+
+# Browse only one path, ignore config
+ags --lone ~/repos/my-project
 
 # Use a custom AI command
 ags --ai-cmd "claude --model sonnet"
+
+# Open config in $EDITOR
+ags --config
+
+# Update to latest release
+ags --update
 ```
 
 ### Run from source (without installing)
@@ -60,15 +74,16 @@ cargo run -- ~/repos/my-project
 ### Layout
 
 ```
-| Folders       | AI              | Shell           |
-| *- fast-work  |                 |                 |
-| -- merging    |  Claude Code    |  zsh / bash     |
-|    prod       |                 |                 |
+| Repos         | AI              | Shell           |
+| my-project    |                 |                 |
+|   *- dev      |  Claude Code    |  zsh / bash     |
+|   -- feature  |                 |                 |
+| other-repo    |                 |                 |
 |                                                   |
 | ?:help  ^Q:quit                                   |
 ```
 
-The folder sidebar is a ratatui TUI. The AI and shell panes are native tmux panes with full terminal features: scrollback, text selection, native cursor, Cmd+K clear.
+The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and shell panes are native tmux panes with full terminal features: scrollback, text selection, native cursor, Cmd+K clear.
 
 ### Keybindings
 
@@ -76,44 +91,54 @@ The folder sidebar is a ratatui TUI. The AI and shell panes are native tmux pane
 
 | Key | Action |
 |-----|--------|
-| `Alt+1` / `Alt+2` / `Alt+3` | Focus folders / AI / shell pane |
+| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane |
 | `Alt+F` | Zoom (fullscreen) the current pane |
 | `Ctrl+Q` | Quit |
 
-**Folder sidebar (when sidebar is focused):**
+**Sidebar (when sidebar is focused):**
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` or arrows | Navigate folders |
-| `Enter` | Open folder sessions and focus AI pane |
-| `Tab` | Open folder sessions and stay in sidebar |
+| `j` / `k` or arrows | Navigate |
+| `Enter` | Open sessions and focus AI pane |
+| `Tab` | Open sessions and stay in sidebar |
 | `x` | Restart dead panes for selected folder |
-| `r` | Rename selected folder (uses `git worktree move` for worktrees) |
-| `w` | Add git worktree (only in worktree directories) |
-| `d` | Delete selected worktree (with confirmation) |
+| `r` | Rename selected folder |
+| `a` | Add a new repo |
+| `o` | Open config file in system file browser |
+| `w` | Add git worktree (worktree repos only) |
+| `d` | Delete worktree with confirmation (worktree repos only) |
 | `?` | Show help |
 | `Alt+S` | Open settings |
 
-**AI and shell panes** are native tmux panes. Use your terminal's normal features: scroll with mouse wheel, select text, Cmd+K to clear, etc.
+**Text selection:** Hold `Shift` while clicking and dragging to select text (bypasses tmux mouse mode). On macOS Terminal.app, use `fn` instead.
 
-### Folder status indicators
+### Sidebar structure
 
-Each folder shows two status characters before its name: `[AI][Shell]`
+The sidebar shows repos from your config file. Repos with git worktrees display as a tree:
 
-- spinner (green) — busy (produced output recently)
-- `-` (grey) — idle (alive, waiting for input)
+```
+my-project           <-- repo header (not selectable)
+  *- dev             <-- worktree (selectable)
+  -- feature-branch  <-- worktree (selectable)
+standalone-repo      <-- repo without worktrees (selectable)
+```
+
+Status indicators before each name: `[AI][Shell]`
+- spinner (green) — busy (recent output)
+- `-` (grey) — idle
 - `x` (red) — exited
 - blank — no session
 
-After the folder name:
-- `*` — has uncommitted changes
-- `+` — has unpushed commits
+After the name:
+- `*` — uncommitted changes
+- `+` — unpushed commits
 
 ### Sessions
 
-Sessions persist when you switch between folders. Select a folder you've already opened and the previous AI and shell sessions are still there (panes are parked in hidden tmux windows and restored when you switch back).
+Sessions persist when you switch between folders. Select a folder you've already opened and the previous AI and shell sessions are still there.
 
-If a pane's process exits (e.g. `/exit` in Claude), the pane stays visible with its output. Press `x` on the folder to restart dead panes.
+If a pane's process exits (e.g. `/exit` in Claude), the pane stays visible with its output. Press `x` to restart dead panes.
 
 ### Config
 
@@ -122,32 +147,36 @@ Settings are stored in `~/.config/agent-storm.toml`:
 ```toml
 ai_cmd = "claude"
 post_worktree_cmd = "npm install"
+
+[[repos]]
+path = "/Users/you/repos/my-project"
+post_worktree_cmd = "npm ci && npm run init"
+
+[[repos]]
+path = "/Users/you/repos/other-project"
 ```
 
 - `ai_cmd` — command to run in the AI pane (default: `claude`)
-- `post_worktree_cmd` — command to run in the shell after creating a new worktree (optional)
+- `post_worktree_cmd` — global default command to run after creating a worktree
+- `repos` — list of repos to browse, each with an optional per-repo `post_worktree_cmd`
 
 CLI flags (`--ai-cmd`, `--post-worktree-cmd`) override config values.
 
 ### Git worktree support
 
-Point agent-storm at the parent directory that contains your worktree folders. Each worktree should be an immediate child directory:
+Point agent-storm at the parent directory that contains your worktree folders:
 
 ```
-my-project/              <-- open agent-storm here
+my-project/              <-- this path goes in repos
   my-project.git/        <-- bare repo (auto-hidden)
   dev/                   <-- worktree
   feature-branch/        <-- worktree
 ```
 
-```sh
-ags ~/repos/my-project
-```
+When adding a repo (via `ags --add`, the `a` sidebar command, or the first-run prompt), agent-storm automatically detects if the path is inside a git worktree and adds the worktree root instead.
 
-When the directory contains git worktrees, agent-storm detects this automatically:
-
-- Bare repo directories are hidden from the folder list
-- Folders with uncommitted changes show a `*` indicator, unpushed commits show `+`
-- Press `w` to create a new worktree
-- Press `d` to delete a worktree (with confirmation)
-- The `post_worktree_cmd` runs in the shell after creation (e.g. `npm install`)
+Worktree features:
+- Bare repo directories are hidden from the sidebar
+- `w` to create a new worktree (runs `post_worktree_cmd` after creation)
+- `d` to delete a worktree (with confirmation, blocked for the last worktree)
+- `r` to rename (uses `git worktree move` for proper reference updates)

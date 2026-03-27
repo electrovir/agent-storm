@@ -18,7 +18,6 @@ pub struct TmuxController {
 
 impl TmuxController {
     pub fn new(session_name: String, ai_cmd: String) -> Self {
-        // Get our own pane ID from the environment.
         let sidebar_pane_id = std::env::var("TMUX_PANE").unwrap_or_else(|_| "%0".to_string());
         TmuxController {
             session_name,
@@ -41,27 +40,20 @@ impl TmuxController {
     pub fn setup_session(&self) {
         let s = &self.session_name;
 
-        // Disable tmux status bar.
         tmux_cmd(&["set-option", "-t", s, "-g", "status", "off"]);
-        // Enable mouse.
         tmux_cmd(&["set-option", "-t", s, "-g", "mouse", "on"]);
-        // Allow terminal titles.
         tmux_cmd(&["set-option", "-t", s, "-g", "set-titles", "on"]);
-        // Keep panes open after their process exits.
+        tmux_cmd(&["set-option", "-t", s, "-g", "set-titles-string", "#{window_name}"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "remain-on-exit", "on"]);
-        // Thick blue pane borders with active pane highlighted.
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-lines", "heavy"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-style", "fg=colour24"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-active-border-style", "fg=colour39,bold"]);
-        // Unbind prefix to avoid conflicts.
-        tmux_cmd(&["set-option", "-t", s, "-g", "prefix", "None"]);
-        tmux_cmd(&["unbind-key", "-a", "-t", s]);
 
-        // Global keybindings.
+        // Keybindings (use -n so they work without prefix from any pane).
         tmux_cmd(&[
             "bind-key", "-n", "M-1", "select-pane", "-t", &self.sidebar_pane_id,
         ]);
-        tmux_cmd(&["bind-key", "-n", "C-q", "kill-session", "-t", s]);
+        tmux_cmd(&["bind-key", "-n", "C-q", "kill-session"]);
         tmux_cmd(&["bind-key", "-n", "M-f", "resize-pane", "-Z"]);
         tmux_cmd(&[
             "bind-key", "-n", "M-k", "run-shell", "tmux clear-history",
@@ -110,6 +102,8 @@ impl TmuxController {
     }
 
     fn create_panes(&mut self, folder: &Path) -> Result<(), String> {
+        let folder = std::fs::canonicalize(folder)
+            .map_err(|e| format!("Folder does not exist: {e}"))?;
         let folder_str = folder.to_str().ok_or("Invalid folder path.")?;
 
         // Create AI pane to the right of sidebar.
@@ -336,7 +330,6 @@ impl TmuxController {
 
     /// Unzoom the sidebar pane back to normal layout.
     pub fn unzoom_sidebar(&self) {
-        // resize-pane -Z toggles zoom, so only unzoom if currently zoomed.
         let zoomed = tmux_cmd_output(&[
             "display-message", "-p", "-t", &self.sidebar_pane_id, "#{window_zoomed_flag}",
         ])
