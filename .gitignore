@@ -3,3 +3,7 @@
 .not-committed/
 *.tgz
 /Icon?
+
+# Added by cargo
+
+/target
