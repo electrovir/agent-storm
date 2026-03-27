@@ -55,6 +55,34 @@ pub fn is_worktree_root(base_dir: &Path) -> bool {
 ///
 /// `existing_worktree` is any existing worktree directory (used to find the repo).
 /// `branch_name` is used as both the new directory name and branch name.
+/// Removes a git worktree by running:
+///   git worktree remove <path> --force
+///
+/// `any_worktree` is any sibling worktree (used to find the repo).
+/// `target` is the worktree directory to remove.
+pub fn remove_worktree(any_worktree: &Path, target: &Path) -> Result<String, String> {
+    let target_str = target
+        .to_str()
+        .ok_or_else(|| "Invalid path.".to_string())?;
+
+    let output = Command::new("git")
+        .args(["worktree", "remove", target_str, "--force"])
+        .current_dir(any_worktree)
+        .output()
+        .map_err(|err| format!("Failed to run git: {err}"))?;
+
+    if output.status.success() {
+        let name = target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        Ok(format!("Worktree '{name}' removed."))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git worktree remove failed: {stderr}"))
+    }
+}
+
 pub fn add_worktree(existing_worktree: &Path, branch_name: &str) -> Result<String, String> {
     let new_path = existing_worktree
         .parent()

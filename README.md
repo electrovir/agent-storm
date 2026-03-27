@@ -1,0 +1,124 @@
+# agent-storm
+
+A terminal UI for managing multiple AI coding sessions across project folders. Three-pane layout: folder picker, AI assistant (Claude Code by default), and a shell — all in one screen.
+
+## Install
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/electrovir/agent-storm/dev/install.sh | bash
+```
+
+This downloads the latest prebuilt binary for your platform and installs it to `/usr/local/bin` (macOS) or `~/.local/bin` (Linux). Both `agent-storm` and `ags` commands are available after install.
+
+### Build from source
+
+Requires [Rust](https://rustup.rs/).
+
+```sh
+git clone https://github.com/electrovir/agent-storm.git
+cd agent-storm
+cargo build --release
+cp target/release/agent-storm /usr/local/bin/
+ln -sf /usr/local/bin/agent-storm /usr/local/bin/ags
+```
+
+## Usage
+
+```sh
+# Browse folders in the current directory
+ags
+
+# Browse a specific directory
+ags -C ~/repos/my-project
+
+# Use a custom AI command
+ags --ai-cmd "claude --model sonnet"
+
+# Start with mouse capture disabled (allows text selection)
+ags --no-mouse
+```
+
+### Run from source (without installing)
+
+```sh
+git clone https://github.com/electrovir/agent-storm.git
+cd agent-storm
+cargo run -- -C ~/repos/my-project
+```
+
+Any flags go after the `--` separator. For example:
+
+```sh
+cargo run -- -C ~/repos/my-project --ai-cmd "claude --model sonnet" --no-mouse
+```
+
+### Layout
+
+```
+| Folders       | AI              | Shell           |
+| *- fast-work  |                 |                 |
+| -- merging    |  Claude Code    |  zsh / bash     |
+|    prod       |                 |                 |
+|                                                   |
+| [Folders] Alt+1/2/3 | Alt+S: settings | Ctrl+Q    |
+```
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Alt+1` / `Alt+2` / `Alt+3` | Focus folders / AI / shell pane |
+| Click on a pane | Focus that pane (when mouse capture is on) |
+| `Ctrl+Q` | Quit |
+| `Alt+S` | Open settings |
+| `Alt+M` | Toggle mouse capture (on: click to focus, off: text selection) |
+| `Alt+F` | Toggle fullscreen for the focused AI/shell pane |
+
+**Folder pane:**
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` or arrows | Navigate folders |
+| `Enter` | Open sessions for selected folder (or switch to existing) |
+| `r` | Refresh folder list |
+| `w` | Add git worktree (only in worktree directories) |
+| `d` | Delete selected worktree (with confirmation) |
+
+### Folder status indicators
+
+Each folder shows two characters before its name indicating pane status:
+
+- spinner (green) — busy (produced output recently)
+- `-` (grey) — idle (alive, waiting for input)
+- `x` (red) — exited
+- blank — no session
+
+Format: `[AI][Shell] folder-name`, e.g. `*- merging` means AI is busy, shell is idle.
+
+### Sessions
+
+Sessions persist when you switch between folders. Select a folder you've already opened and the previous AI and shell sessions are still there.
+
+### Config
+
+Settings are stored in `~/.config/agent-storm.toml`:
+
+```toml
+ai_cmd = "claude"
+post_worktree_cmd = "npm install"
+no_mouse = false
+```
+
+- `ai_cmd` — command to run in the AI pane (default: `claude`)
+- `post_worktree_cmd` — command to run in the shell after creating a new worktree (optional)
+- `no_mouse` — start with mouse capture disabled for text selection (default: `false`)
+
+CLI flags (`--ai-cmd`, `--post-worktree-cmd`, `--no-mouse`) override config values.
+
+### Git worktree support
+
+When the current directory contains git worktrees, agent-storm detects this automatically:
+
+- Bare repo directories are hidden from the folder list
+- Press `w` to create a new worktree
+- The `post_worktree_cmd` runs in the shell after creation (e.g. `npm install`)
