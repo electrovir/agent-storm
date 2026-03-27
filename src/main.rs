@@ -25,7 +25,6 @@ struct Cli {
     post_worktree_cmd: Option<String>,
 
     /// Directory to browse. Defaults to the current working directory.
-    #[arg(long, short = 'C')]
     cwd: Option<PathBuf>,
 
     /// Internal flag: run as the sidebar inside tmux. Do not use directly.
@@ -87,16 +86,17 @@ fn launch_tmux(base_dir: PathBuf, ai_cmd: String, cli: &Cli) -> io::Result<()> {
         exe.display(),
         ai_cmd.replace('\'', "'\\''")
     );
-    if let Some(ref cwd) = cli.cwd {
-        sidebar_cmd.push_str(&format!(
-            " -C '{}'",
-            cwd.display().to_string().replace('\'', "'\\''")
-        ));
-    }
     if let Some(ref cmd) = cli.post_worktree_cmd {
         sidebar_cmd.push_str(&format!(
             " --post-worktree-cmd '{}'",
             cmd.replace('\'', "'\\''")
+        ));
+    }
+    // Positional cwd arg must come last.
+    if let Some(ref cwd) = cli.cwd {
+        sidebar_cmd.push_str(&format!(
+            " '{}'",
+            cwd.display().to_string().replace('\'', "'\\''")
         ));
     }
 
