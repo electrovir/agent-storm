@@ -3,9 +3,12 @@ use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySyste
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use vt100;
+
+/// How long to ignore output after a resize (to avoid the redraw triggering "busy").
+const RESIZE_SUPPRESS_DURATION: Duration = Duration::from_secs(2);
 
 pub struct PtyPane {
     parser: Arc<RwLock<vt100::Parser>>,
@@ -13,6 +16,7 @@ pub struct PtyPane {
     master_pty: Box<dyn MasterPty + Send>,
     exited: Arc<AtomicBool>,
     last_output: Arc<RwLock<Instant>>,
+    suppress_until: Arc<RwLock<Instant>>,
 }
 
 impl PtyPane {
@@ -38,6 +42,7 @@ impl PtyPane {
         let parser = Arc::new(RwLock::new(vt100::Parser::new(rows, cols, 1000)));
         let exited = Arc::new(AtomicBool::new(false));
         let last_output = Arc::new(RwLock::new(Instant::now()));
+        let suppress_until = Arc::new(RwLock::new(Instant::now()));
 
         // Spawn a thread to wait for the child to exit.
         let exited_clone = exited.clone();
@@ -54,6 +59,7 @@ impl PtyPane {
             .map_err(io::Error::other)?;
         let parser_clone = parser.clone();
         let last_output_clone = last_output.clone();
+        let suppress_until_clone = suppress_until.clone();
         tokio::task::spawn_blocking(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -63,7 +69,14 @@ impl PtyPane {
                         if let Ok(mut parser) = parser_clone.write() {
                             parser.process(&buf[..n]);
                         }
-                        if let Ok(mut ts) = last_output_clone.write() {
+                        // Only update last_output if not suppressed (e.g. after resize).
+                        let suppressed = suppress_until_clone
+                            .read()
+                            .map(|t| Instant::now() < *t)
+                            .unwrap_or(false);
+                        if !suppressed
+                            && let Ok(mut ts) = last_output_clone.write()
+                        {
                             *ts = Instant::now();
                         }
                     }
@@ -93,6 +106,7 @@ impl PtyPane {
             master_pty: pair.master,
             exited,
             last_output,
+            suppress_until,
         })
     }
 
@@ -105,6 +119,10 @@ impl PtyPane {
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
+        // Suppress output tracking so the redraw doesn't trigger "busy".
+        if let Ok(mut t) = self.suppress_until.write() {
+            *t = Instant::now() + RESIZE_SUPPRESS_DURATION;
+        }
         if let Ok(mut parser) = self.parser.write() {
             parser.screen_mut().set_size(rows, cols);
         }
