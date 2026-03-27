@@ -149,4 +149,12 @@ impl PtyPane {
             false
         }
     }
+
+    /// Clears the pane's scrollback buffer and screen.
+    pub fn clear(&self) {
+        if let Ok(mut parser) = self.parser.write() {
+            let (rows, cols) = parser.screen().size();
+            *parser = vt100::Parser::new(rows, cols, 1000);
+        }
+    }
 }

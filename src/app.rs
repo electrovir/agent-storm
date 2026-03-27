@@ -321,6 +321,10 @@ impl App {
                     self.needs_clear = true;
                     return;
                 }
+                KeyCode::Char('k') if alt => {
+                    self.clear_focused_pane();
+                    return;
+                }
                 _ => {}
             }
         }
@@ -346,6 +350,23 @@ impl App {
                 crossterm::event::DisableMouseCapture
             );
             self.set_status("Mouse capture OFF (text selection enabled).".to_string());
+        }
+    }
+
+    fn clear_focused_pane(&self) {
+        let session = self.active_session();
+        match self.focus {
+            Focus::ClaudePane => {
+                if let Some(s) = session {
+                    s.ai_pane.clear();
+                }
+            }
+            Focus::ShellPane => {
+                if let Some(s) = session {
+                    s.shell_pane.clear();
+                }
+            }
+            Focus::FolderList => {}
         }
     }
 
