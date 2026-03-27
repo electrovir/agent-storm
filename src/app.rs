@@ -31,6 +31,12 @@ pub enum SettingsField {
     PostWorktreeCmd,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AddRepoField {
+    Path,
+    PostWorktreeCmd,
+}
+
 /// Modal dialog state.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Modal {
@@ -44,8 +50,22 @@ pub enum Modal {
     AddWorktree {
         buffer: String,
     },
+    AddRepo {
+        path_buffer: String,
+        pwc_buffer: String,
+        active_field: AddRepoField,
+    },
     ConfirmDeleteWorktree {
         folder: PathBuf,
+    },
+    /// Prompt shown on startup when launching from a new repo path.
+    ConfirmAddNewRepo {
+        repo_path: PathBuf,
+    },
+    /// Follow-up after confirming add: ask for post-worktree command.
+    NewRepoPostWorktreeCmd {
+        repo_path: PathBuf,
+        buffer: String,
     },
 }
 
@@ -56,8 +76,8 @@ pub struct App {
     tmux: TmuxController,
     should_quit: bool,
     ai_cmd: String,
-    post_worktree_cmd: Option<String>,
-    is_worktree_root: bool,
+    config: config::Config,
+    lone: bool,
     folder_mode: FolderMode,
     status_message: Option<(String, Instant)>,
     modal: Modal,
@@ -66,24 +86,36 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(base_dir: PathBuf, ai_cmd: String, post_worktree_cmd: Option<String>) -> Self {
-        let is_worktree_root = worktree::is_worktree_root(&base_dir);
-        let session_name = tmux::session_name(&base_dir);
+    pub fn new(
+        cfg: config::Config,
+        ai_cmd: String,
+        lone: bool,
+        pending_repo: Option<PathBuf>,
+    ) -> Self {
+        let repo_paths = cfg.repo_paths();
+        let session_base = repo_paths
+            .first()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("ags"));
+        let session_name = tmux::session_name(&session_base);
         let tmux = TmuxController::new(session_name, ai_cmd.clone());
         tmux.setup_session();
 
         let (bg_sender, bg_receiver) = tokio_mpsc::unbounded_channel();
 
         App {
-            folder_list: FolderList::new(base_dir, is_worktree_root),
+            folder_list: FolderList::new(repo_paths),
             tmux,
             should_quit: false,
             ai_cmd,
-            post_worktree_cmd,
-            is_worktree_root,
+            config: cfg,
+            lone,
             folder_mode: FolderMode::Normal,
             status_message: None,
-            modal: Modal::None,
+            modal: match pending_repo {
+                Some(repo_path) => Modal::ConfirmAddNewRepo { repo_path },
+                None => Modal::None,
+            },
             bg_sender,
             bg_receiver,
         }
@@ -93,12 +125,16 @@ impl App {
         &self.folder_list
     }
 
+    pub fn is_lone(&self) -> bool {
+        self.lone
+    }
+
     pub fn tmux(&self) -> &TmuxController {
         &self.tmux
     }
 
-    pub fn is_worktree_root(&self) -> bool {
-        self.is_worktree_root
+    pub fn selected_is_worktree(&self) -> bool {
+        self.folder_list.selected_is_worktree()
     }
 
     pub fn folder_mode(&self) -> &FolderMode {
@@ -210,7 +246,7 @@ impl App {
         self.tmux.zoom_sidebar();
         self.modal = Modal::Settings {
             ai_cmd_buffer: self.ai_cmd.clone(),
-            post_worktree_cmd_buffer: self.post_worktree_cmd.clone().unwrap_or_default(),
+            post_worktree_cmd_buffer: self.config.post_worktree_cmd.clone().unwrap_or_default(),
             active_field: SettingsField::AiCmd,
         };
     }
@@ -218,7 +254,7 @@ impl App {
     fn close_modal(&mut self) {
         let was_zoomed = matches!(
             self.modal,
-            Modal::Settings { .. } | Modal::AddWorktree { .. }
+            Modal::Settings { .. } | Modal::AddWorktree { .. } | Modal::AddRepo { .. }
         );
         self.modal = Modal::None;
         if was_zoomed {
@@ -255,17 +291,14 @@ impl App {
                         self.ai_cmd = new_ai_cmd.clone();
                         self.tmux.set_ai_cmd(new_ai_cmd.clone());
                     }
-                    self.post_worktree_cmd = if new_post_worktree_cmd.is_empty() {
+                    self.config.post_worktree_cmd = if new_post_worktree_cmd.is_empty() {
                         None
                     } else {
                         Some(new_post_worktree_cmd.clone())
                     };
 
-                    let cfg = config::Config {
-                        ai_cmd: self.ai_cmd.clone(),
-                        post_worktree_cmd: self.post_worktree_cmd.clone(),
-                    };
-                    match config::save_config(&cfg) {
+                    self.config.ai_cmd = self.ai_cmd.clone();
+                    match config::save_config(&self.config) {
                         Ok(()) => {
                             self.set_status(format!(
                                 "Saved to {}",
@@ -327,8 +360,16 @@ impl App {
                             {
                                 if let Err(err) = self.tmux.activate_folder(&folder, false) {
                                     self.set_status(err);
-                                } else if let Some(cmd) = &self.post_worktree_cmd.clone() {
-                                    self.tmux.send_keys_to_shell(&folder, cmd);
+                                } else {
+                                    // Use per-repo command, falling back to global.
+                                    let repo_parent = existing.parent().map(|p| p.to_path_buf());
+                                    let cmd = repo_parent
+                                        .as_ref()
+                                        .and_then(|rp| self.config.post_worktree_cmd_for(rp))
+                                        .cloned();
+                                    if let Some(cmd) = cmd {
+                                        self.tmux.send_keys_to_shell(&folder, &cmd);
+                                    }
                                 }
                             }
                         }
@@ -345,6 +386,89 @@ impl App {
                 }
                 _ => {}
             },
+            Modal::AddRepo {
+                path_buffer,
+                pwc_buffer,
+                active_field,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.close_modal();
+                }
+                KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+                    *active_field = match active_field {
+                        AddRepoField::Path => AddRepoField::PostWorktreeCmd,
+                        AddRepoField::PostWorktreeCmd => AddRepoField::Path,
+                    };
+                }
+                KeyCode::Enter => {
+                    let path_str = path_buffer.trim().to_string();
+                    let pwc = pwc_buffer.trim().to_string();
+                    self.close_modal();
+
+                    if path_str.is_empty() {
+                        self.set_status("Cancelled (empty path).".to_string());
+                        return;
+                    }
+
+                    let expanded = if path_str.starts_with('~') {
+                        dirs::home_dir()
+                            .map(|h| h.join(path_str[1..].trim_start_matches('/')))
+                            .unwrap_or_else(|| PathBuf::from(&path_str))
+                    } else {
+                        PathBuf::from(&path_str)
+                    };
+
+                    let path = match std::fs::canonicalize(&expanded) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            self.set_status(format!("Invalid path: {err}"));
+                            return;
+                        }
+                    };
+
+                    if !path.is_dir() {
+                        self.set_status("Path is not a directory.".to_string());
+                        return;
+                    }
+
+                    let path = worktree::resolve_repo_path(&path);
+
+                    if self.config.has_repo(&path) {
+                        self.set_status("Repo already in list.".to_string());
+                        return;
+                    }
+
+                    let pwc_opt = if pwc.is_empty() { None } else { Some(pwc) };
+                    self.config.add_repo(path, pwc_opt);
+                    self.folder_list = FolderList::new(self.config.repo_paths());
+                    match config::save_config(&self.config) {
+                        Ok(()) => {
+                            self.set_status(format!(
+                                "Repo added. Saved to {}",
+                                config::config_path_display()
+                            ));
+                        }
+                        Err(err) => {
+                            self.set_status(err);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    let buf = match active_field {
+                        AddRepoField::Path => path_buffer,
+                        AddRepoField::PostWorktreeCmd => pwc_buffer,
+                    };
+                    buf.pop();
+                }
+                KeyCode::Char(c) => {
+                    let buf = match active_field {
+                        AddRepoField::Path => path_buffer,
+                        AddRepoField::PostWorktreeCmd => pwc_buffer,
+                    };
+                    buf.push(c);
+                }
+                _ => {}
+            },
             Modal::ConfirmDeleteWorktree { folder } => {
                 let folder = folder.clone();
                 match key.code {
@@ -354,6 +478,59 @@ impl App {
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                         self.modal = Modal::None;
+                    }
+                    _ => {}
+                }
+            }
+            Modal::ConfirmAddNewRepo { repo_path } => {
+                let repo_path = repo_path.clone();
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        // If repo has worktrees, ask for post-worktree command.
+                        if worktree::is_worktree_root(&repo_path) {
+                            self.modal = Modal::NewRepoPostWorktreeCmd {
+                                repo_path,
+                                buffer: String::new(),
+                            };
+                        } else {
+                            self.config.add_repo(repo_path, None);
+                            self.folder_list = FolderList::new(self.config.repo_paths());
+                            let _ = config::save_config(&self.config);
+                            self.set_status("Repo added.".to_string());
+                            self.modal = Modal::None;
+                        }
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        self.modal = Modal::None;
+                    }
+                    _ => {}
+                }
+            }
+            Modal::NewRepoPostWorktreeCmd { repo_path, buffer } => {
+                let repo_path = repo_path.clone();
+                match key.code {
+                    KeyCode::Esc => {
+                        // Skip the command, still add the repo.
+                        self.config.add_repo(repo_path, None);
+                        self.folder_list = FolderList::new(self.config.repo_paths());
+                        let _ = config::save_config(&self.config);
+                        self.set_status("Repo added.".to_string());
+                        self.modal = Modal::None;
+                    }
+                    KeyCode::Enter => {
+                        let cmd = buffer.trim().to_string();
+                        let pwc = if cmd.is_empty() { None } else { Some(cmd) };
+                        self.config.add_repo(repo_path, pwc);
+                        self.folder_list = FolderList::new(self.config.repo_paths());
+                        let _ = config::save_config(&self.config);
+                        self.set_status("Repo added.".to_string());
+                        self.modal = Modal::None;
+                    }
+                    KeyCode::Backspace => {
+                        buffer.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        buffer.push(c);
                     }
                     _ => {}
                 }
@@ -370,10 +547,11 @@ impl App {
 
         let sibling = self
             .folder_list
-            .folders()
+            .entries()
             .iter()
-            .find(|f| *f != folder)
-            .cloned();
+            .filter(|e| e.is_selectable() && e.path() != folder)
+            .map(|e| e.path().to_path_buf())
+            .next();
 
         let Some(sibling) = sibling else {
             self.set_status("No sibling worktree to run git from.".to_string());
@@ -409,10 +587,18 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.folder_list.move_down(),
             KeyCode::Enter => self.activate_selected_folder_with_focus(true),
             KeyCode::Tab => self.activate_selected_folder_with_focus(false),
-            KeyCode::Char('w') if self.is_worktree_root => {
+            KeyCode::Char('w') if self.selected_is_worktree() => {
                 self.tmux.zoom_sidebar();
                 self.modal = Modal::AddWorktree {
                     buffer: String::new(),
+                };
+            }
+            KeyCode::Char('a') if !self.lone => {
+                self.tmux.zoom_sidebar();
+                self.modal = Modal::AddRepo {
+                    path_buffer: String::new(),
+                    pwc_buffer: String::new(),
+                    active_field: AddRepoField::Path,
                 };
             }
             KeyCode::Char('r') => {
@@ -439,8 +625,20 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char('d') if self.is_worktree_root => {
-                if let Some(folder) =
+            KeyCode::Char('o') if !self.lone => {
+                let path = config::config_path_display();
+                let opener = if cfg!(target_os = "macos") {
+                    "open"
+                } else {
+                    "xdg-open"
+                };
+                let _ = std::process::Command::new(opener).arg(&path).spawn();
+                self.set_status(format!("Opened {path}"));
+            }
+            KeyCode::Char('d') if self.selected_is_worktree() => {
+                if self.folder_list.selected_sibling_count() <= 1 {
+                    self.set_status("Cannot delete the last worktree.".to_string());
+                } else if let Some(folder) =
                     self.folder_list.selected_folder().map(|p| p.to_path_buf())
                 {
                     self.modal = Modal::ConfirmDeleteWorktree { folder };

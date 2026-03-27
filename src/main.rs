@@ -10,7 +10,7 @@ use clap::Parser;
 use std::env;
 use std::io;
 use std::panic;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Parser)]
@@ -27,33 +27,284 @@ struct Cli {
     /// Directory to browse. Defaults to the current working directory.
     cwd: Option<PathBuf>,
 
+    /// Add the given path (or cwd) to the repos list in the config and exit.
+    #[arg(long)]
+    add: bool,
+
+    /// Ignore the repos config; only browse the given path (or cwd).
+    #[arg(long)]
+    lone: bool,
+
+    /// Open the config file in your terminal editor ($EDITOR) and exit.
+    #[arg(long)]
+    config: bool,
+
+    /// Update agent-storm to the latest release from GitHub and exit.
+    #[arg(long)]
+    update: bool,
+
     /// Internal flag: run as the sidebar inside tmux. Do not use directly.
     #[arg(long, hide = true)]
     internal_sidebar: bool,
+
+    /// Internal flag: lone mode passed through to sidebar.
+    #[arg(long, hide = true)]
+    internal_lone: bool,
+
+    /// Internal flag: pending repo path to prompt about.
+    #[arg(long, hide = true)]
+    internal_pending_repo: Option<PathBuf>,
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
 
-    let cfg = config::load_config();
-    let ai_cmd = cli.ai_cmd.clone().unwrap_or(cfg.ai_cmd);
-    let post_worktree_cmd = cli.post_worktree_cmd.clone().or(cfg.post_worktree_cmd);
+    let mut cfg = config::load_config();
+    let ai_cmd = cli.ai_cmd.clone().unwrap_or(cfg.ai_cmd.clone());
+    // CLI override for global post_worktree_cmd.
+    if let Some(ref pwc) = cli.post_worktree_cmd {
+        cfg.post_worktree_cmd = Some(pwc.clone());
+    }
 
     let base_dir = match &cli.cwd {
         Some(path) => std::fs::canonicalize(path)?,
         None => env::current_dir()?,
     };
 
+    // --config: open config in $EDITOR and exit.
+    if cli.config {
+        return open_config_in_editor();
+    }
+
+    // --update: download latest release and exit.
+    if cli.update {
+        return update_binary();
+    }
+
+    // --add: add repo to config and exit.
+    if cli.add {
+        return add_repo_cli(&base_dir);
+    }
+
+    // --lone: use only the given path, skip repo config entirely.
+    let lone = cli.lone || cli.internal_lone;
+
+    let mut pending_repo: Option<PathBuf> = None;
+
+    if lone {
+        let repo_path = worktree::resolve_repo_path(&base_dir);
+        cfg.repos.clear();
+        cfg.add_repo(repo_path, None);
+    } else if !cli.internal_sidebar {
+        let repo_path = worktree::resolve_repo_path(&base_dir);
+        if repo_path.is_dir() && !cfg.has_repo(&repo_path) {
+            if cfg.repos.is_empty() {
+                // First run — auto-add, but still ask for post-worktree cmd via TUI.
+                pending_repo = Some(repo_path);
+            } else {
+                // New path — ask via TUI dialog.
+                pending_repo = Some(repo_path);
+            }
+        }
+    }
+
     if cli.internal_sidebar {
-        // We're inside tmux — run the ratatui sidebar.
-        run_sidebar(base_dir, ai_cmd, post_worktree_cmd)
+        let pr = cli.internal_pending_repo.or(pending_repo);
+        run_sidebar(cfg, ai_cmd, lone, pr)
     } else {
         // Launch tmux and re-exec as sidebar inside it.
-        launch_tmux(base_dir, ai_cmd, &cli)
+        launch_tmux(base_dir, ai_cmd, &cli, pending_repo)
     }
 }
 
-fn launch_tmux(base_dir: PathBuf, ai_cmd: String, cli: &Cli) -> io::Result<()> {
+fn add_repo_cli(path: &Path) -> io::Result<()> {
+    if !path.is_dir() {
+        eprintln!("Error: {} is not a directory.", path.display());
+        std::process::exit(1);
+    }
+
+    let repo_path = worktree::resolve_repo_path(path);
+
+    let mut cfg = config::load_config();
+
+    if cfg.has_repo(&repo_path) {
+        eprintln!("{} is already in the repos list.", repo_path.display());
+        std::process::exit(0);
+    }
+
+    println!("Adding {} to repos.", repo_path.display());
+    let pwc = prompt_post_worktree_cmd(&repo_path);
+    cfg.add_repo(repo_path, pwc);
+    config::save_config(&cfg).map_err(io::Error::other)?;
+
+    println!("Saved to {}", config::config_path_display());
+    Ok(())
+}
+
+fn prompt_post_worktree_cmd(repo_path: &Path) -> Option<String> {
+    eprint!(
+        "Post-worktree command for {} (blank to skip): ",
+        repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+    );
+    let mut input = String::new();
+    let _ = std::io::stdin().read_line(&mut input);
+    let trimmed = input.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn open_config_in_editor() -> io::Result<()> {
+    let path = config::config_path_display();
+    let editor = env::var("EDITOR").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "nano".to_string()
+        } else {
+            "vi".to_string()
+        }
+    });
+    let status = Command::new(&editor).arg(&path).status()?;
+    std::process::exit(status.code().unwrap_or(0));
+}
+
+fn update_binary() -> io::Result<()> {
+    eprintln!("Updating agent-storm...");
+
+    // Detect platform.
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        (os, arch) => {
+            eprintln!("Unsupported platform: {os}/{arch}");
+            std::process::exit(1);
+        }
+    };
+
+    // Fetch latest tag.
+    let tag_output = Command::new("curl")
+        .args([
+            "--proto", "=https",
+            "--tlsv1.2",
+            "-sL",
+            "https://api.github.com/repos/electrovir/agent-storm/releases/latest",
+        ])
+        .output()?;
+
+    let tag_json = String::from_utf8_lossy(&tag_output.stdout);
+    let tag = tag_json
+        .lines()
+        .find(|l| l.contains("\"tag_name\""))
+        .and_then(|l| {
+            let after_key = &l[l.find("tag_name")? + 8..];
+            let colon_rest = &after_key[after_key.find(':')? + 1..];
+            let first_quote = &colon_rest[colon_rest.find('"')? + 1..];
+            let end = first_quote.find('"')?;
+            Some(&first_quote[..end])
+        });
+
+    let Some(tag) = tag else {
+        eprintln!("Error: could not determine latest release.");
+        std::process::exit(1);
+    };
+
+    eprintln!("Latest release: {tag}");
+
+    let url = format!(
+        "https://github.com/electrovir/agent-storm/releases/download/{tag}/agent-storm-{target}.tar.gz"
+    );
+
+    // Download to temp.
+    let tmp_dir = env::temp_dir().join("ags-update");
+    let _ = std::fs::create_dir_all(&tmp_dir);
+    let tar_path = tmp_dir.join("agent-storm.tar.gz");
+
+    let dl_status = Command::new("curl")
+        .args([
+            "--proto", "=https",
+            "--tlsv1.2",
+            "-sL",
+            &url,
+            "-o",
+        ])
+        .arg(&tar_path)
+        .status()?;
+
+    if !dl_status.success() {
+        eprintln!("Error: download failed.");
+        std::process::exit(1);
+    }
+
+    // Extract.
+    let extract_status = Command::new("tar")
+        .args(["xzf"])
+        .arg(&tar_path)
+        .arg("-C")
+        .arg(&tmp_dir)
+        .status()?;
+
+    if !extract_status.success() {
+        eprintln!("Error: extraction failed.");
+        std::process::exit(1);
+    }
+
+    let new_binary = tmp_dir.join("agent-storm");
+    if !new_binary.exists() {
+        eprintln!("Error: binary not found in archive.");
+        std::process::exit(1);
+    }
+
+    // Strip quarantine on macOS.
+    if cfg!(target_os = "macos") {
+        let _ = Command::new("xattr")
+            .args(["-d", "com.apple.quarantine"])
+            .arg(&new_binary)
+            .output();
+    }
+
+    // Find install location.
+    let install_path = env::current_exe()?;
+    let install_dir = install_path.parent().unwrap_or(Path::new("/usr/local/bin"));
+
+    // Install.
+    let dest = install_dir.join("agent-storm");
+    if install_dir
+        .metadata()
+        .map(|m| m.permissions().readonly())
+        .unwrap_or(true)
+    {
+        Command::new("sudo")
+            .args(["cp"])
+            .arg(&new_binary)
+            .arg(&dest)
+            .status()?;
+    } else {
+        std::fs::copy(&new_binary, &dest)?;
+        let ags_link = install_dir.join("ags");
+        if !ags_link.exists() {
+            let _ = std::os::unix::fs::symlink(&dest, &ags_link);
+        }
+    };
+
+    // Cleanup.
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    eprintln!("Updated to {tag}.");
+    Ok(())
+}
+
+fn launch_tmux(
+    base_dir: PathBuf,
+    ai_cmd: String,
+    cli: &Cli,
+    pending_repo: Option<PathBuf>,
+) -> io::Result<()> {
     if !tmux::is_tmux_available() {
         eprintln!("Error: tmux is required but not found. Install it with:");
         eprintln!("  macOS:  brew install tmux");
@@ -65,19 +316,10 @@ fn launch_tmux(base_dir: PathBuf, ai_cmd: String, cli: &Cli) -> io::Result<()> {
 
     let session_name = tmux::session_name(&base_dir);
 
-    // Check if session already exists — just attach.
-    let existing = Command::new("tmux")
-        .args(["has-session", "-t", &session_name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if existing {
-        let status = Command::new("tmux")
-            .args(["attach-session", "-t", &session_name])
-            .status()?;
-        std::process::exit(status.code().unwrap_or(0));
-    }
+    // Kill any stale session with the same name.
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", &session_name])
+        .output();
 
     // Build the sidebar command with forwarded args.
     let exe = env::current_exe()?;
@@ -90,6 +332,15 @@ fn launch_tmux(base_dir: PathBuf, ai_cmd: String, cli: &Cli) -> io::Result<()> {
         sidebar_cmd.push_str(&format!(
             " --post-worktree-cmd '{}'",
             cmd.replace('\'', "'\\''")
+        ));
+    }
+    if cli.lone {
+        sidebar_cmd.push_str(" --internal-lone");
+    }
+    if let Some(ref pr) = pending_repo {
+        sidebar_cmd.push_str(&format!(
+            " --internal-pending-repo '{}'",
+            pr.display().to_string().replace('\'', "'\\''")
         ));
     }
     // Positional cwd arg must come last.
@@ -121,22 +372,24 @@ fn launch_tmux(base_dir: PathBuf, ai_cmd: String, cli: &Cli) -> io::Result<()> {
 }
 
 fn run_sidebar(
-    base_dir: PathBuf,
+    cfg: config::Config,
     ai_cmd: String,
-    post_worktree_cmd: Option<String>,
+    lone: bool,
+    pending_repo: Option<PathBuf>,
 ) -> io::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let result = rt.block_on(async_sidebar(base_dir, ai_cmd, post_worktree_cmd));
+    let result = rt.block_on(async_sidebar(cfg, ai_cmd, lone, pending_repo));
     rt.shutdown_timeout(std::time::Duration::from_millis(500));
     result
 }
 
 async fn async_sidebar(
-    base_dir: PathBuf,
+    cfg: config::Config,
     ai_cmd: String,
-    post_worktree_cmd: Option<String>,
+    lone: bool,
+    pending_repo: Option<PathBuf>,
 ) -> io::Result<()> {
     // Ensure the terminal is restored on panic.
     let default_hook = panic::take_hook();
@@ -145,7 +398,7 @@ async fn async_sidebar(
         default_hook(info);
     }));
 
-    let mut app = App::new(base_dir, ai_cmd, post_worktree_cmd);
+    let mut app = App::new(cfg, ai_cmd, lone, pending_repo);
 
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal).await;

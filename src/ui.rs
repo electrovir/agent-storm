@@ -1,9 +1,9 @@
-use crate::app::{App, FolderMode, Modal, SettingsField};
+use crate::app::{AddRepoField, App, FolderMode, Modal, SettingsField};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+    Block, BorderType, Borders, Clear, Paragraph, Wrap,
 };
 use ratatui::Frame;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,59 +54,48 @@ pub fn render(frame: &mut Frame, app: &App) {
         Modal::AddWorktree { buffer } => {
             render_add_worktree_modal(frame, buffer);
         }
+        Modal::AddRepo {
+            path_buffer,
+            pwc_buffer,
+            active_field,
+        } => {
+            render_add_repo_modal(frame, path_buffer, pwc_buffer, *active_field);
+        }
         Modal::ConfirmDeleteWorktree { folder } => {
             render_confirm_delete_modal(frame, folder);
         }
+        Modal::ConfirmAddNewRepo { repo_path } => {
+            render_confirm_add_repo_modal(frame, repo_path);
+        }
+        Modal::NewRepoPostWorktreeCmd { buffer, .. } => {
+            render_new_repo_pwc_modal(frame, buffer);
+        }
         Modal::Help => {
-            render_help_modal(frame, app.is_worktree_root());
+            render_help_modal(frame, app.selected_is_worktree(), app.is_lone());
         }
         Modal::None => {}
     }
 }
 
 /// Returns styled spans showing per-pane status for a folder.
-fn pane_status_indicators<'a>(app: &App, folder: &std::path::Path) -> Vec<Span<'a>> {
-    let Some(session) = app.tmux().session_for(folder) else {
-        return vec![Span::raw("   ")];
-    };
-
-    let tmux = app.tmux();
-
-    fn char_and_color(
-        tmux: &crate::tmux::TmuxController,
-        pane_id: &str,
-        threshold_secs: u64,
-    ) -> (char, Color) {
-        if !tmux.is_pane_alive(pane_id) {
-            ('x', Color::Red)
-        } else if tmux.is_pane_busy(pane_id, threshold_secs) {
-            (spinner_char(), Color::Green)
-        } else {
-            ('-', Color::DarkGray)
-        }
+fn pane_char_color(
+    tmux: &crate::tmux::TmuxController,
+    pane_id: &str,
+    threshold_secs: u64,
+) -> (char, Color) {
+    if !tmux.is_pane_alive(pane_id) {
+        ('x', Color::Red)
+    } else if tmux.is_pane_busy(pane_id, threshold_secs) {
+        (spinner_char(), Color::Green)
+    } else {
+        ('-', Color::DarkGray)
     }
-
-    let (ai_ch, ai_color) = char_and_color(tmux, &session.ai_pane_id, AI_BUSY_THRESHOLD_SECS);
-    let (sh_ch, sh_color) =
-        char_and_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS);
-
-    vec![
-        Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)),
-        Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)),
-        Span::raw(" "),
-    ]
 }
 
 fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let focused = app.tmux().is_sidebar_focused();
+    use crate::pane::folder_list::{GitStatus, SidebarEntry};
 
-    let mut title_parts = vec![Span::raw(" Folders ")];
-    if app.is_worktree_root() {
-        title_parts.push(Span::styled(
-            "[w]orktree ",
-            Style::default().fg(Color::Yellow),
-        ));
-    }
+    let focused = app.tmux().is_sidebar_focused();
 
     let border_color = if focused {
         FOCUS_COLOR
@@ -120,78 +109,83 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     };
 
     let block = Block::default()
-        .title(Line::from(title_parts))
+        .title(Line::from(" Repos "))
         .borders(Borders::ALL)
         .border_type(border_type)
         .border_style(Style::default().fg(border_color));
 
-    let selected_index = app.folder_list().selected_index();
-    let active_folder = app.active_folder();
-    let active_index = app
-        .folder_list()
-        .folders()
-        .iter()
-        .position(|f| Some(f) == active_folder);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let items: Vec<ListItem> = app
+    let selected_entry_idx = app.folder_list().selected_entry_index();
+    let active_folder = app.active_folder();
+    let active_entry_idx = app
         .folder_list()
-        .folders()
+        .entries()
+        .iter()
+        .position(|e| e.is_selectable() && Some(e.path()) == active_folder.map(|p| p.as_path()));
+
+    let lines: Vec<Line> = app
+        .folder_list()
+        .entries()
         .iter()
         .enumerate()
-        .map(|(idx, path)| {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?");
-            let mut spans = pane_status_indicators(app, path);
-            spans.push(Span::raw(name));
-            match app.folder_list().git_status(path) {
-                crate::pane::folder_list::GitStatus::Dirty => {
-                    spans.push(Span::raw("*"));
+        .map(|(idx, entry)| {
+            match entry {
+                SidebarEntry::RepoHeader { name, .. } => {
+                    Line::from(Span::styled(
+                        name.clone(),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                 }
-                crate::pane::folder_list::GitStatus::Unpushed => {
-                    spans.push(Span::raw("+"));
+                SidebarEntry::Item { path, name, indented, .. } => {
+                    let indent = if *indented { "  " } else { "" };
+                    let mut spans: Vec<Span> = Vec::new();
+                    spans.push(Span::raw(indent.to_string()));
+
+                    // Pane status indicators.
+                    if let Some(session) = app.tmux().session_for(path) {
+                        let tmux = app.tmux();
+                        let (ai_ch, ai_color) = pane_char_color(tmux, &session.ai_pane_id, AI_BUSY_THRESHOLD_SECS);
+                        let (sh_ch, sh_color) = pane_char_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS);
+                        spans.push(Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)));
+                        spans.push(Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)));
+                        spans.push(Span::raw(" "));
+                    } else {
+                        spans.push(Span::raw("   "));
+                    }
+
+                    spans.push(Span::raw(name.clone()));
+
+                    match app.folder_list().git_status(path) {
+                        GitStatus::Dirty => spans.push(Span::raw("*")),
+                        GitStatus::Unpushed => spans.push(Span::raw("+")),
+                        GitStatus::Clean => {}
+                    }
+
+                    let is_selected = selected_entry_idx == Some(idx);
+                    let is_active = active_entry_idx == Some(idx);
+
+                    let style = if focused && is_selected {
+                        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    } else if is_active {
+                        Style::new()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::new()
+                    };
+
+                    Line::from(spans).style(style)
                 }
-                crate::pane::folder_list::GitStatus::Clean => {}
             }
-
-            let is_active = active_index == Some(idx);
-            // If this is the active folder but NOT the highlighted one,
-            // show it with a grey inversed style.
-            if focused && is_active && idx != selected_index {
-                return ListItem::new(Line::from(spans)).style(
-                    Style::new()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::REVERSED),
-                );
-            }
-
-            ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let highlight_style = if focused {
-        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-    } else {
-        Style::new()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::REVERSED)
-    };
-
-    // When unfocused, show the active folder instead of the navigation cursor.
-    let shown_selection = if focused {
-        Some(selected_index)
-    } else {
-        active_index
-    };
-
-    let mut state = ListState::default().with_selected(shown_selection);
-
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(highlight_style);
-
-    frame.render_stateful_widget(list, area, &mut state);
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -353,19 +347,27 @@ fn render_confirm_delete_modal(frame: &mut Frame, folder: &std::path::Path) {
     frame.render_widget(content, inner);
 }
 
-fn render_help_modal(frame: &mut Frame, is_worktree: bool) {
+fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
     let mut lines = vec![
         help_line("Enter", "Open + focus AI"),
         help_line("Tab", "Open + stay"),
         help_line("j/k", "Navigate"),
         help_line("r", "Rename"),
         help_line("x", "Restart dead panes"),
+    ];
+
+    if !is_lone {
+        lines.push(help_line("a", "Add repo"));
+        lines.push(help_line("o", "Open config"));
+    }
+
+    lines.extend([
         help_line("^Q", "Quit"),
         help_line("M-S", "Settings"),
         Line::raw(""),
         help_line("M-1/2/3", "Focus pane"),
         help_line("M-F", "Zoom pane"),
-    ];
+    ]);
 
     if is_worktree {
         lines.push(Line::raw(""));
@@ -446,6 +448,173 @@ fn render_add_worktree_modal(frame: &mut Frame, buffer: &str) {
             Span::raw(" create  "),
             Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
             Span::raw(" cancel"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
+}
+
+fn render_add_repo_modal(
+    frame: &mut Frame,
+    path_buffer: &str,
+    pwc_buffer: &str,
+    active_field: AddRepoField,
+) {
+    let area = frame.area().centered(
+        Constraint::Length(56.min(frame.area().width.saturating_sub(4))),
+        Constraint::Length(9),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Add Repo ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(FOCUS_COLOR));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let active_style = Style::default()
+        .fg(FOCUS_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(Color::DarkGray);
+
+    let path_cursor = if active_field == AddRepoField::Path {
+        "_"
+    } else {
+        ""
+    };
+    let pwc_cursor = if active_field == AddRepoField::PostWorktreeCmd {
+        "_"
+    } else {
+        ""
+    };
+
+    let field_style = |field: AddRepoField| -> Style {
+        if active_field == field {
+            active_style
+        } else {
+            inactive_style
+        }
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Path:               ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{path_buffer}{path_cursor}"),
+                field_style(AddRepoField::Path),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Post-worktree cmd:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{pwc_buffer}{pwc_cursor}"),
+                field_style(AddRepoField::PostWorktreeCmd),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Tab", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" switch  "),
+            Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" add  "),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" cancel"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
+}
+
+fn render_confirm_add_repo_modal(frame: &mut Frame, repo_path: &std::path::Path) {
+    let name = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+
+    let area = frame.area().centered(
+        Constraint::Length(40.min(frame.area().width.saturating_sub(2))),
+        Constraint::Length(6),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" New Repo ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(FOCUS_COLOR));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::raw("Add "),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(FOCUS_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("y", Style::default().fg(FOCUS_COLOR)),
+            Span::raw("/"),
+            Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" yes  "),
+            Span::styled("n", Style::default().fg(FOCUS_COLOR)),
+            Span::raw("/"),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" no"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
+}
+
+fn render_new_repo_pwc_modal(frame: &mut Frame, buffer: &str) {
+    let area = frame.area().centered(
+        Constraint::Length(46.min(frame.area().width.saturating_sub(2))),
+        Constraint::Length(7),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" New Worktree Command ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(FOCUS_COLOR));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(Span::styled(
+            "Run after creating a worktree:",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            format!("{buffer}_"),
+            Style::default()
+                .fg(FOCUS_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" save  "),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" skip"),
         ]),
     ];
 

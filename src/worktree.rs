@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Checks if a directory appears to be a parent folder of git worktrees.
@@ -155,4 +155,34 @@ pub fn add_worktree(existing_worktree: &Path, branch_name: &str) -> Result<Strin
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git worktree add failed: {stderr}"))
     }
+}
+
+/// Given a path, find the best directory to add to repos:
+/// 1. Find the git repo root.
+/// 2. If the repo root is a worktree, use the worktree's parent folder.
+/// 3. If it's a normal repo, use the repo root.
+/// 4. If no git repo is found, use the path as-is.
+pub fn resolve_repo_path(path: &Path) -> PathBuf {
+    let git_root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()));
+
+    let Some(root) = git_root else {
+        return path.to_path_buf();
+    };
+
+    // If the repo root is a worktree (.git is a file), use its parent.
+    let dot_git = root.join(".git");
+    if dot_git.is_file()
+        && let Some(parent) = root.parent()
+    {
+        return parent.to_path_buf();
+    }
+
+    root
 }

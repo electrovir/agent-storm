@@ -5,6 +5,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::worktree;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GitStatus {
     Clean,
@@ -12,36 +14,109 @@ pub enum GitStatus {
     Unpushed,
 }
 
-pub struct FolderList {
-    base_dir: PathBuf,
-    folders: Vec<PathBuf>,
-    selected_index: usize,
-    hide_bare_repos: bool,
-    git_status: HashMap<PathBuf, GitStatus>,
-    last_dirty_check: std::time::Instant,
-    dirty_check_in_flight: Arc<AtomicBool>,
+/// A single line in the sidebar display.
+#[derive(Clone)]
+pub enum SidebarEntry {
+    /// A repo header (shown when the repo has worktrees). Not selectable.
+    RepoHeader {
+        path: PathBuf,
+        name: String,
+    },
+    /// A selectable item (worktree under a repo, or a standalone repo).
+    Item {
+        path: PathBuf,
+        name: String,
+        indented: bool,
+        is_worktree_child: bool,
+    },
 }
 
-impl FolderList {
-    pub fn new(base_dir: PathBuf, hide_bare_repos: bool) -> Self {
-        let folders = read_subdirs(&base_dir, hide_bare_repos);
-        FolderList {
-            base_dir,
-            folders,
-            selected_index: 0,
-            hide_bare_repos,
-            git_status: HashMap::new(),
-            last_dirty_check: std::time::Instant::now(),
-            dirty_check_in_flight: Arc::new(AtomicBool::new(false)),
+impl SidebarEntry {
+    pub fn path(&self) -> &Path {
+        match self {
+            SidebarEntry::RepoHeader { path, .. } => path,
+            SidebarEntry::Item { path, .. } => path,
         }
     }
 
-    pub fn folders(&self) -> &[PathBuf] {
-        &self.folders
+    pub fn is_selectable(&self) -> bool {
+        matches!(self, SidebarEntry::Item { .. })
+    }
+}
+
+pub struct FolderList {
+    entries: Vec<SidebarEntry>,
+    /// Indices into `entries` of selectable items only.
+    selectable_indices: Vec<usize>,
+    selected: usize,
+    git_status: HashMap<PathBuf, GitStatus>,
+    last_dirty_check: std::time::Instant,
+    dirty_check_in_flight: Arc<AtomicBool>,
+    repos: Vec<PathBuf>,
+}
+
+impl FolderList {
+    pub fn new(repos: Vec<PathBuf>) -> Self {
+        let (entries, selectable_indices) = build_entries(&repos);
+        FolderList {
+            entries,
+            selectable_indices,
+            selected: 0,
+            git_status: HashMap::new(),
+            last_dirty_check: std::time::Instant::now(),
+            dirty_check_in_flight: Arc::new(AtomicBool::new(false)),
+            repos,
+        }
     }
 
-    pub fn selected_index(&self) -> usize {
-        self.selected_index
+    pub fn entries(&self) -> &[SidebarEntry] {
+        &self.entries
+    }
+
+    /// Returns the entry index in `entries()` for the currently selected item.
+    pub fn selected_entry_index(&self) -> Option<usize> {
+        self.selectable_indices.get(self.selected).copied()
+    }
+
+    /// Returns the currently selected folder path.
+    pub fn selected_folder(&self) -> Option<&Path> {
+        self.selected_entry_index()
+            .and_then(|i| self.entries.get(i))
+            .map(|e| e.path())
+    }
+
+    /// Returns whether the selected item is a worktree child (for worktree-specific operations).
+    pub fn selected_is_worktree(&self) -> bool {
+        self.selected_entry_index()
+            .and_then(|i| self.entries.get(i))
+            .map(|e| matches!(e, SidebarEntry::Item { is_worktree_child: true, .. }))
+            .unwrap_or(false)
+    }
+
+    /// Count how many selectable worktree siblings exist for the selected item's parent repo.
+    pub fn selected_sibling_count(&self) -> usize {
+        let Some(sel_idx) = self.selected_entry_index() else {
+            return 0;
+        };
+        // Walk backwards to find the parent repo header.
+        let mut parent_idx = sel_idx;
+        while parent_idx > 0 {
+            parent_idx -= 1;
+            if matches!(self.entries[parent_idx], SidebarEntry::RepoHeader { .. }) {
+                break;
+            }
+        }
+        // Count all selectable items after the header until the next header or end.
+        let mut count = 0;
+        for entry in &self.entries[parent_idx + 1..] {
+            if matches!(entry, SidebarEntry::RepoHeader { .. }) {
+                break;
+            }
+            if entry.is_selectable() {
+                count += 1;
+            }
+        }
+        count
     }
 
     pub fn git_status(&self, folder: &Path) -> GitStatus {
@@ -51,14 +126,11 @@ impl FolderList {
             .unwrap_or(GitStatus::Clean)
     }
 
-    /// Applies git status results from a background task.
     pub fn apply_git_status(&mut self, status: HashMap<PathBuf, GitStatus>) {
         self.git_status = status;
         self.dirty_check_in_flight.store(false, Ordering::SeqCst);
     }
 
-    /// Spawns a background dirty check if enough time has passed and one isn't already running.
-    /// Returns the folders to check, or None if no check is needed.
     pub fn maybe_start_dirty_check(&mut self) -> Option<(Vec<PathBuf>, Arc<AtomicBool>)> {
         if self.last_dirty_check.elapsed() < std::time::Duration::from_secs(2) {
             return None;
@@ -68,41 +140,102 @@ impl FolderList {
         }
         self.last_dirty_check = std::time::Instant::now();
         self.dirty_check_in_flight.store(true, Ordering::SeqCst);
-        Some((self.folders.clone(), self.dirty_check_in_flight.clone()))
-    }
-
-    pub fn selected_folder(&self) -> Option<&Path> {
-        self.folders.get(self.selected_index).map(|p| p.as_path())
+        let folders: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .filter(|e| e.is_selectable())
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        Some((folders, self.dirty_check_in_flight.clone()))
     }
 
     pub fn move_up(&mut self) {
-        if !self.folders.is_empty() {
-            if self.selected_index == 0 {
-                self.selected_index = self.folders.len() - 1;
+        if !self.selectable_indices.is_empty() {
+            if self.selected == 0 {
+                self.selected = self.selectable_indices.len() - 1;
             } else {
-                self.selected_index -= 1;
+                self.selected -= 1;
             }
         }
     }
 
     pub fn move_down(&mut self) {
-        if !self.folders.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.folders.len();
+        if !self.selectable_indices.is_empty() {
+            self.selected = (self.selected + 1) % self.selectable_indices.len();
         }
     }
 
     pub fn refresh(&mut self) {
         let previously_selected = self.selected_folder().map(|p| p.to_path_buf());
-        self.folders = read_subdirs(&self.base_dir, self.hide_bare_repos);
+        let (entries, selectable_indices) = build_entries(&self.repos);
+        self.entries = entries;
+        self.selectable_indices = selectable_indices;
 
         if let Some(prev) = previously_selected
-            && let Some(idx) = self.folders.iter().position(|f| *f == prev)
+            && let Some(idx) = self
+                .selectable_indices
+                .iter()
+                .position(|&i| self.entries[i].path() == prev)
         {
-            self.selected_index = idx;
+            self.selected = idx;
             return;
         }
-        self.selected_index = self.selected_index.min(self.folders.len().saturating_sub(1));
+        self.selected = self
+            .selected
+            .min(self.selectable_indices.len().saturating_sub(1));
     }
+
+}
+
+fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
+    let mut entries = Vec::new();
+    let mut selectable = Vec::new();
+
+    for repo_path in repos {
+        let repo_name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+
+        let is_wt_root = worktree::is_worktree_root(repo_path);
+
+        if is_wt_root {
+            // Repo with worktrees: show header + indented worktrees.
+            entries.push(SidebarEntry::RepoHeader {
+                path: repo_path.clone(),
+                name: repo_name,
+            });
+
+            let mut worktrees = read_subdirs(repo_path, true);
+            worktrees.sort();
+            for wt in worktrees {
+                let wt_name = wt
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_string();
+                selectable.push(entries.len());
+                entries.push(SidebarEntry::Item {
+                    path: wt,
+                    name: wt_name,
+                    indented: true,
+                    is_worktree_child: true,
+                });
+            }
+        } else {
+            // Standalone repo: selectable directly.
+            selectable.push(entries.len());
+            entries.push(SidebarEntry::Item {
+                path: repo_path.clone(),
+                name: repo_name,
+                indented: false,
+                is_worktree_child: false,
+            });
+        }
+    }
+
+    (entries, selectable)
 }
 
 fn read_subdirs(base: &Path, hide_bare_repos: bool) -> Vec<PathBuf> {
@@ -132,14 +265,11 @@ fn read_subdirs(base: &Path, hide_bare_repos: bool) -> Vec<PathBuf> {
     dirs
 }
 
-/// A bare git repo has HEAD, refs/, and objects/ directly inside it
-/// (no .git subdirectory).
 fn is_bare_git_repo(path: &Path) -> bool {
     path.join("HEAD").is_file() && path.join("refs").is_dir() && path.join("objects").is_dir()
 }
 
 fn get_git_status(path: &Path) -> GitStatus {
-    // Check for uncommitted changes first.
     let dirty = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
@@ -151,7 +281,6 @@ fn get_git_status(path: &Path) -> GitStatus {
         return GitStatus::Dirty;
     }
 
-    // Check for unpushed commits (local ahead of remote).
     let unpushed = Command::new("git")
         .args(["log", "--oneline", "@{upstream}..HEAD"])
         .current_dir(path)
