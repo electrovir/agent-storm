@@ -24,9 +24,9 @@ struct Cli {
     #[arg(long)]
     post_worktree_cmd: Option<String>,
 
-    /// Disable mouse capture on startup (allows text selection, no click-to-focus).
+    /// Enable mouse capture on startup (click to focus panes, disables text selection).
     #[arg(long)]
-    no_mouse: bool,
+    mouse: bool,
 
     /// Directory to browse. Defaults to the current working directory.
     #[arg(long, short = 'C')]
@@ -51,7 +51,7 @@ async fn async_main() -> io::Result<()> {
     // CLI flags override config file values.
     let ai_cmd = cli.ai_cmd.unwrap_or(cfg.ai_cmd);
     let post_worktree_cmd = cli.post_worktree_cmd.or(cfg.post_worktree_cmd);
-    let no_mouse = cli.no_mouse || cfg.no_mouse;
+    let mouse = cli.mouse || cfg.mouse;
 
     // Ensure the terminal is restored on panic.
     let default_hook = panic::take_hook();
@@ -65,9 +65,15 @@ async fn async_main() -> io::Result<()> {
         None => env::current_dir()?,
     };
 
-    // Set terminal window + tab title to "ags : <basename>".
-    // OSC 1 sets the icon/tab name, OSC 2 sets the window title.
-    // Sending an empty OSC 7 clears the CWD prefix macOS Terminal prepends.
+    let mut app = App::new(base_dir.clone(), ai_cmd, post_worktree_cmd, mouse);
+
+    if mouse {
+        crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+    }
+    let mut terminal = ratatui::init();
+
+    // Set terminal window + tab title after ratatui::init() so OSC sequences
+    // don't leak into the primary screen buffer and create scrollback.
     let dir_name = base_dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -77,13 +83,6 @@ async fn async_main() -> io::Result<()> {
         io::stdout(),
         "\x1b]1;{title}\x07\x1b]2;{title}\x07\x1b]7;\x07"
     )?;
-
-    let mut app = App::new(base_dir, ai_cmd, post_worktree_cmd, !no_mouse);
-
-    if !no_mouse {
-        crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
-    }
-    let mut terminal = ratatui::init();
     let result = app.run(&mut terminal).await;
     ratatui::restore();
     crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;

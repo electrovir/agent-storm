@@ -99,14 +99,14 @@ pub fn render(frame: &mut Frame, app: &App) -> ColumnRects {
         Modal::Settings {
             ai_cmd_buffer,
             post_worktree_cmd_buffer,
-            no_mouse,
+            mouse,
             active_field,
         } => {
             render_settings_modal(
                 frame,
                 ai_cmd_buffer,
                 post_worktree_cmd_buffer,
-                *no_mouse,
+                *mouse,
                 *active_field,
             );
         }
@@ -387,7 +387,7 @@ fn render_settings_modal(
     frame: &mut Frame,
     ai_cmd_buffer: &str,
     post_worktree_cmd_buffer: &str,
-    no_mouse: bool,
+    mouse: bool,
     active_field: SettingsField,
 ) {
     let area = frame.area().centered(
@@ -430,8 +430,8 @@ fn render_settings_modal(
         }
     };
 
-    let checkbox = if no_mouse { "[x]" } else { "[ ]" };
-    let mouse_hint = if active_field == SettingsField::NoMouse {
+    let checkbox = if mouse { "[x]" } else { "[ ]" };
+    let mouse_hint = if active_field == SettingsField::Mouse {
         " (Space to toggle)"
     } else {
         ""
@@ -450,9 +450,9 @@ fn render_settings_modal(
             ),
         ]),
         Line::from(vec![
-            Span::styled("Start without mouse:", Style::default().fg(Color::DarkGray)),
+            Span::styled("Mouse capture:      ", Style::default().fg(Color::DarkGray)),
             Span::raw(" "),
-            Span::styled(format!("{checkbox}{mouse_hint}"), field_style(SettingsField::NoMouse)),
+            Span::styled(format!("{checkbox}{mouse_hint}"), field_style(SettingsField::Mouse)),
         ]),
         Line::raw(""),
         Line::from(vec![
