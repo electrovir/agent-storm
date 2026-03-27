@@ -5,12 +5,19 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GitStatus {
+    Clean,
+    Dirty,
+    Unpushed,
+}
+
 pub struct FolderList {
     base_dir: PathBuf,
     folders: Vec<PathBuf>,
     selected_index: usize,
     hide_bare_repos: bool,
-    dirty: HashMap<PathBuf, bool>,
+    git_status: HashMap<PathBuf, GitStatus>,
     last_dirty_check: std::time::Instant,
     dirty_check_in_flight: Arc<AtomicBool>,
 }
@@ -23,7 +30,7 @@ impl FolderList {
             folders,
             selected_index: 0,
             hide_bare_repos,
-            dirty: HashMap::new(),
+            git_status: HashMap::new(),
             last_dirty_check: std::time::Instant::now(),
             dirty_check_in_flight: Arc::new(AtomicBool::new(false)),
         }
@@ -37,13 +44,16 @@ impl FolderList {
         self.selected_index
     }
 
-    pub fn is_dirty(&self, folder: &Path) -> bool {
-        self.dirty.get(folder).copied().unwrap_or(false)
+    pub fn git_status(&self, folder: &Path) -> GitStatus {
+        self.git_status
+            .get(folder)
+            .copied()
+            .unwrap_or(GitStatus::Clean)
     }
 
-    /// Applies dirty check results from a background task.
-    pub fn apply_dirty(&mut self, dirty: HashMap<PathBuf, bool>) {
-        self.dirty = dirty;
+    /// Applies git status results from a background task.
+    pub fn apply_git_status(&mut self, status: HashMap<PathBuf, GitStatus>) {
+        self.git_status = status;
         self.dirty_check_in_flight.store(false, Ordering::SeqCst);
     }
 
@@ -128,19 +138,37 @@ fn is_bare_git_repo(path: &Path) -> bool {
     path.join("HEAD").is_file() && path.join("refs").is_dir() && path.join("objects").is_dir()
 }
 
-/// Checks if a folder has uncommitted git changes (unstaged, staged, or untracked).
-fn has_git_changes(path: &Path) -> bool {
-    Command::new("git")
+fn get_git_status(path: &Path) -> GitStatus {
+    // Check for uncommitted changes first.
+    let dirty = Command::new("git")
         .args(["status", "--porcelain"])
         .current_dir(path)
         .output()
         .map(|output| output.status.success() && !output.stdout.is_empty())
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    if dirty {
+        return GitStatus::Dirty;
+    }
+
+    // Check for unpushed commits (local ahead of remote).
+    let unpushed = Command::new("git")
+        .args(["log", "--oneline", "@{upstream}..HEAD"])
+        .current_dir(path)
+        .output()
+        .map(|output| output.status.success() && !output.stdout.is_empty())
+        .unwrap_or(false);
+
+    if unpushed {
+        return GitStatus::Unpushed;
+    }
+
+    GitStatus::Clean
 }
 
-pub fn check_dirty_all(folders: &[PathBuf]) -> HashMap<PathBuf, bool> {
+pub fn check_git_status_all(folders: &[PathBuf]) -> HashMap<PathBuf, GitStatus> {
     folders
         .iter()
-        .map(|f| (f.clone(), has_git_changes(f)))
+        .map(|f| (f.clone(), get_git_status(f)))
         .collect()
 }
