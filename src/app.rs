@@ -19,6 +19,7 @@ use crate::worktree;
 enum BgMessage {
     StatusMessage(String),
     RefreshFolders,
+    DirtyResults(std::collections::HashMap<PathBuf, bool>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,8 @@ pub enum FolderMode {
     Normal,
     /// Typing a branch name for `git worktree add`.
     WorktreeInput { buffer: String },
+    /// Typing a new name for renaming the selected folder.
+    RenameInput { folder: PathBuf, buffer: String },
 }
 
 /// Which settings field is currently being edited.
@@ -187,6 +190,15 @@ impl App {
         loop {
             // Compute PTY sizes from the current layout.
             self.update_pty_sizes(terminal.size()?.into());
+            // Spawn background dirty check if needed.
+            if let Some((folders, in_flight)) = self.folder_list.maybe_start_dirty_check() {
+                let sender = self.bg_sender.clone();
+                tokio::task::spawn_blocking(move || {
+                    let results = crate::pane::folder_list::check_dirty_all(&folders);
+                    in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = sender.send(BgMessage::DirtyResults(results));
+                });
+            }
 
             let mut rects = None;
             terminal.draw(|frame| {
@@ -199,6 +211,7 @@ impl App {
                 match msg {
                     BgMessage::StatusMessage(text) => self.set_status(text),
                     BgMessage::RefreshFolders => self.folder_list.refresh(),
+                    BgMessage::DirtyResults(results) => self.folder_list.apply_dirty(results),
                 }
             }
 
@@ -491,6 +504,7 @@ impl App {
         match &self.folder_mode {
             FolderMode::Normal => self.handle_folder_normal_key(key),
             FolderMode::WorktreeInput { .. } => self.handle_worktree_input_key(key),
+            FolderMode::RenameInput { .. } => self.handle_rename_input_key(key),
         }
     }
 
@@ -499,12 +513,25 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.folder_list.move_up(),
             KeyCode::Down | KeyCode::Char('j') => self.folder_list.move_down(),
             KeyCode::Enter => self.activate_selected_folder(),
-            KeyCode::Char('r') => self.folder_list.refresh(),
             KeyCode::Char('w') if self.is_worktree_root => {
                 self.folder_mode = FolderMode::WorktreeInput {
                     buffer: String::new(),
                 };
                 self.set_status("New worktree branch name: ".to_string());
+            }
+            KeyCode::Char('r') => {
+                if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
+                    let current_name = folder
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    self.folder_mode = FolderMode::RenameInput {
+                        folder,
+                        buffer: current_name.clone(),
+                    };
+                    self.set_status(format!("Rename to: {current_name}"));
+                }
             }
             KeyCode::Char('d') if self.is_worktree_root => {
                 if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
@@ -577,6 +604,67 @@ impl App {
             KeyCode::Char(c) => {
                 buffer.push(c);
                 let msg = format!("New worktree branch name: {buffer}");
+                self.status_message = Some((msg, Instant::now()));
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_rename_input_key(&mut self, key: event::KeyEvent) {
+        let FolderMode::RenameInput { folder, buffer } = &mut self.folder_mode else {
+            return;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.folder_mode = FolderMode::Normal;
+                self.status_message = None;
+            }
+            KeyCode::Enter => {
+                let new_name = buffer.trim().to_string();
+                let folder = folder.clone();
+                self.folder_mode = FolderMode::Normal;
+
+                if new_name.is_empty() {
+                    self.set_status("Cancelled (empty name).".to_string());
+                    return;
+                }
+
+                // Check if the name actually changed.
+                let old_name = folder
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if new_name == old_name {
+                    self.set_status("Name unchanged.".to_string());
+                    return;
+                }
+
+                match worktree::rename_folder(&folder, &new_name) {
+                    Ok((msg, new_path)) => {
+                        // Update session key if this folder had a session.
+                        if let Some(session) = self.sessions.remove(&folder) {
+                            self.sessions.insert(new_path.clone(), session);
+                        }
+                        if self.active_folder.as_ref() == Some(&folder) {
+                            self.active_folder = Some(new_path);
+                        }
+                        self.set_status(msg);
+                        self.folder_list.refresh();
+                    }
+                    Err(msg) => {
+                        self.set_status(msg);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                buffer.pop();
+                let msg = format!("Rename to: {buffer}");
+                self.status_message = Some((msg, Instant::now()));
+            }
+            KeyCode::Char(c) => {
+                buffer.push(c);
+                let msg = format!("Rename to: {buffer}");
                 self.status_message = Some((msg, Instant::now()));
             }
             _ => {}

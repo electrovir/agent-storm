@@ -1,11 +1,18 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub struct FolderList {
     base_dir: PathBuf,
     folders: Vec<PathBuf>,
     selected_index: usize,
     hide_bare_repos: bool,
+    dirty: HashMap<PathBuf, bool>,
+    last_dirty_check: std::time::Instant,
+    dirty_check_in_flight: Arc<AtomicBool>,
 }
 
 impl FolderList {
@@ -16,6 +23,9 @@ impl FolderList {
             folders,
             selected_index: 0,
             hide_bare_repos,
+            dirty: HashMap::new(),
+            last_dirty_check: std::time::Instant::now(),
+            dirty_check_in_flight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -25,6 +35,30 @@ impl FolderList {
 
     pub fn selected_index(&self) -> usize {
         self.selected_index
+    }
+
+    pub fn is_dirty(&self, folder: &Path) -> bool {
+        self.dirty.get(folder).copied().unwrap_or(false)
+    }
+
+    /// Applies dirty check results from a background task.
+    pub fn apply_dirty(&mut self, dirty: HashMap<PathBuf, bool>) {
+        self.dirty = dirty;
+        self.dirty_check_in_flight.store(false, Ordering::SeqCst);
+    }
+
+    /// Spawns a background dirty check if enough time has passed and one isn't already running.
+    /// Returns the folders to check, or None if no check is needed.
+    pub fn maybe_start_dirty_check(&mut self) -> Option<(Vec<PathBuf>, Arc<AtomicBool>)> {
+        if self.last_dirty_check.elapsed() < std::time::Duration::from_secs(2) {
+            return None;
+        }
+        if self.dirty_check_in_flight.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.last_dirty_check = std::time::Instant::now();
+        self.dirty_check_in_flight.store(true, Ordering::SeqCst);
+        Some((self.folders.clone(), self.dirty_check_in_flight.clone()))
     }
 
     pub fn selected_folder(&self) -> Option<&Path> {
@@ -92,4 +126,21 @@ fn read_subdirs(base: &Path, hide_bare_repos: bool) -> Vec<PathBuf> {
 /// (no .git subdirectory).
 fn is_bare_git_repo(path: &Path) -> bool {
     path.join("HEAD").is_file() && path.join("refs").is_dir() && path.join("objects").is_dir()
+}
+
+/// Checks if a folder has uncommitted git changes (unstaged, staged, or untracked).
+fn has_git_changes(path: &Path) -> bool {
+    Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()
+        .map(|output| output.status.success() && !output.stdout.is_empty())
+        .unwrap_or(false)
+}
+
+pub fn check_dirty_all(folders: &[PathBuf]) -> HashMap<PathBuf, bool> {
+    folders
+        .iter()
+        .map(|f| (f.clone(), has_git_changes(f)))
+        .collect()
 }
