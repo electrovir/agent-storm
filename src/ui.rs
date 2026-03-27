@@ -9,7 +9,6 @@ use ratatui::Frame;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const FOCUS_COLOR: Color = Color::LightCyan;
-const BRIGHT_WHITE: Color = Color::Rgb(255, 255, 255);
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const AI_BUSY_THRESHOLD_SECS: u64 = 2;
@@ -43,14 +42,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         Modal::Settings {
             ai_cmd_buffer,
             post_worktree_cmd_buffer,
-            mouse,
             active_field,
         } => {
             render_settings_modal(
                 frame,
                 ai_cmd_buffer,
                 post_worktree_cmd_buffer,
-                *mouse,
                 *active_field,
             );
         }
@@ -231,12 +228,11 @@ fn render_settings_modal(
     frame: &mut Frame,
     ai_cmd_buffer: &str,
     post_worktree_cmd_buffer: &str,
-    mouse: bool,
     active_field: SettingsField,
 ) {
     let area = frame.area().centered(
         Constraint::Length(56.min(frame.area().width.saturating_sub(4))),
-        Constraint::Length(11),
+        Constraint::Length(9),
     );
 
     frame.render_widget(Clear, area);
@@ -251,7 +247,7 @@ fn render_settings_modal(
     frame.render_widget(block, area);
 
     let active_style = Style::default()
-        .fg(BRIGHT_WHITE)
+        .fg(FOCUS_COLOR)
         .add_modifier(Modifier::BOLD);
     let inactive_style = Style::default().fg(Color::DarkGray);
 
@@ -274,13 +270,6 @@ fn render_settings_modal(
         }
     };
 
-    let checkbox = if mouse { "[x]" } else { "[ ]" };
-    let mouse_hint = if active_field == SettingsField::Mouse {
-        " (Space to toggle)"
-    } else {
-        ""
-    };
-
     let lines = vec![
         Line::from(vec![
             Span::styled("AI command:         ", Style::default().fg(Color::DarkGray)),
@@ -294,14 +283,6 @@ fn render_settings_modal(
             Span::styled(
                 format!("{post_worktree_cmd_buffer}{pwc_cursor}"),
                 field_style(SettingsField::PostWorktreeCmd),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Mouse capture:      ", Style::default().fg(Color::DarkGray)),
-            Span::raw(" "),
-            Span::styled(
-                format!("{checkbox}{mouse_hint}"),
-                field_style(SettingsField::Mouse),
             ),
         ]),
         Line::raw(""),

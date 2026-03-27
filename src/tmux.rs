@@ -328,6 +328,24 @@ impl TmuxController {
     pub fn set_ai_cmd(&mut self, cmd: String) {
         self.ai_cmd = cmd;
     }
+
+    /// Zoom the sidebar pane to fullscreen.
+    pub fn zoom_sidebar(&self) {
+        tmux_cmd(&["resize-pane", "-Z", "-t", &self.sidebar_pane_id]);
+    }
+
+    /// Unzoom the sidebar pane back to normal layout.
+    pub fn unzoom_sidebar(&self) {
+        // resize-pane -Z toggles zoom, so only unzoom if currently zoomed.
+        let zoomed = tmux_cmd_output(&[
+            "display-message", "-p", "-t", &self.sidebar_pane_id, "#{window_zoomed_flag}",
+        ])
+        .map(|s| s == "1")
+        .unwrap_or(false);
+        if zoomed {
+            tmux_cmd(&["resize-pane", "-Z", "-t", &self.sidebar_pane_id]);
+        }
+    }
 }
 
 fn tmux_cmd(args: &[&str]) {
