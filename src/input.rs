@@ -3,7 +3,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Translates a crossterm KeyEvent into the raw bytes a terminal would send.
 /// Handles modifier combinations (Shift, Alt, Ctrl) for arrow keys and other
 /// special keys using standard xterm-style CSI sequences.
-pub fn key_event_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
+///
+/// `application_cursor` should be true when the child process has enabled
+/// application cursor key mode (e.g. `less`, `vim`). In this mode, arrow keys
+/// are sent as SS3 sequences (`ESC O A`) instead of CSI (`ESC [ A`).
+pub fn key_event_to_bytes(key: &KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -40,11 +44,11 @@ pub fn key_event_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Esc => Some(vec![0x1b]),
         KeyCode::Null => Some(vec![0x00]),
 
-        // Arrow keys with modifier support.
-        KeyCode::Up => Some(csi_with_modifier(b'A', modifier_bits)),
-        KeyCode::Down => Some(csi_with_modifier(b'B', modifier_bits)),
-        KeyCode::Right => Some(csi_with_modifier(b'C', modifier_bits)),
-        KeyCode::Left => Some(csi_with_modifier(b'D', modifier_bits)),
+        // Arrow keys — use SS3 in application cursor mode, CSI otherwise.
+        KeyCode::Up => Some(arrow_key(b'A', modifier_bits, application_cursor)),
+        KeyCode::Down => Some(arrow_key(b'B', modifier_bits, application_cursor)),
+        KeyCode::Right => Some(arrow_key(b'C', modifier_bits, application_cursor)),
+        KeyCode::Left => Some(arrow_key(b'D', modifier_bits, application_cursor)),
         KeyCode::Home => Some(csi_with_modifier(b'H', modifier_bits)),
         KeyCode::End => Some(csi_with_modifier(b'F', modifier_bits)),
 
@@ -58,6 +62,16 @@ pub fn key_event_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
 
         // Pass through anything else we don't recognize.
         _ => None,
+    }
+}
+
+/// Arrow keys: SS3 form (`ESC O x`) in application cursor mode without modifiers,
+/// CSI form (`ESC [ x` or `ESC [ 1;mod x`) otherwise.
+fn arrow_key(final_byte: u8, modifier_bits: u8, application_cursor: bool) -> Vec<u8> {
+    if application_cursor && modifier_bits == 0 {
+        vec![0x1b, b'O', final_byte]
+    } else {
+        csi_with_modifier(final_byte, modifier_bits)
     }
 }
 

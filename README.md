@@ -2,6 +2,8 @@
 
 A terminal UI for managing multiple AI coding sessions across project folders. Three-pane layout: folder picker, AI assistant (Claude Code by default), and a shell — all in one screen.
 
+<img src="example.png" alt="agent-storm example" width="100%">
+
 ### Git worktree support
 
 Point agent-storm at the parent directory that contains your worktree folders. Each worktree should be an immediate child directory:
@@ -57,8 +59,8 @@ ags -C ~/repos/my-project
 # Use a custom AI command
 ags --ai-cmd "claude --model sonnet"
 
-# Start with mouse capture disabled (allows text selection)
-ags --no-mouse
+# Start with mouse capture enabled (click to focus panes)
+ags --mouse
 ```
 
 ### Run from source (without installing)
@@ -72,7 +74,7 @@ cargo run -- -C ~/repos/my-project
 Any flags go after the `--` separator. For example:
 
 ```sh
-cargo run -- -C ~/repos/my-project --ai-cmd "claude --model sonnet" --no-mouse
+cargo run -- -C ~/repos/my-project --ai-cmd "claude --model sonnet" --mouse
 ```
 
 ### Layout
@@ -96,6 +98,7 @@ cargo run -- -C ~/repos/my-project --ai-cmd "claude --model sonnet" --no-mouse
 | `Alt+S` | Open settings |
 | `Alt+M` | Toggle mouse capture (on: click to focus, off: text selection) |
 | `Alt+F` | Toggle fullscreen for the focused AI/shell pane |
+| `Alt+R` | Force full screen redraw |
 
 **Folder pane:**
 
@@ -129,11 +132,11 @@ Settings are stored in `~/.config/agent-storm.toml`:
 ```toml
 ai_cmd = "claude"
 post_worktree_cmd = "npm install"
-no_mouse = false
+mouse = false
 ```
 
 - `ai_cmd` — command to run in the AI pane (default: `claude`)
 - `post_worktree_cmd` — command to run in the shell after creating a new worktree (optional)
-- `no_mouse` — start with mouse capture disabled for text selection (default: `false`)
+- `mouse` — enable mouse capture on startup for click-to-focus (default: `false`)
 
-CLI flags (`--ai-cmd`, `--post-worktree-cmd`, `--no-mouse`) override config values.
+CLI flags (`--ai-cmd`, `--post-worktree-cmd`, `--mouse`) override config values.

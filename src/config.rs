@@ -12,9 +12,9 @@ pub struct Config {
     #[serde(default)]
     pub post_worktree_cmd: Option<String>,
 
-    /// Whether to disable mouse capture on startup.
+    /// Whether to enable mouse capture on startup.
     #[serde(default)]
-    pub no_mouse: bool,
+    pub mouse: bool,
 }
 
 impl Default for Config {
@@ -22,7 +22,7 @@ impl Default for Config {
         Config {
             ai_cmd: default_ai_cmd(),
             post_worktree_cmd: None,
-            no_mouse: false,
+            mouse: false,
         }
     }
 }
