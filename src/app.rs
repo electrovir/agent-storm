@@ -30,7 +30,6 @@ pub enum FolderMode {
 pub enum SettingsField {
     AiCmd,
     PostWorktreeCmd,
-    Mouse,
 }
 
 /// Modal dialog state.
@@ -41,7 +40,6 @@ pub enum Modal {
     Settings {
         ai_cmd_buffer: String,
         post_worktree_cmd_buffer: String,
-        mouse: bool,
         active_field: SettingsField,
     },
     ConfirmDeleteWorktree {
@@ -207,12 +205,20 @@ impl App {
     }
 
     fn open_settings(&mut self) {
+        self.tmux.zoom_sidebar();
         self.modal = Modal::Settings {
             ai_cmd_buffer: self.ai_cmd.clone(),
             post_worktree_cmd_buffer: self.post_worktree_cmd.clone().unwrap_or_default(),
-            mouse: false,
             active_field: SettingsField::AiCmd,
         };
+    }
+
+    fn close_modal(&mut self) {
+        let was_settings = matches!(self.modal, Modal::Settings { .. });
+        self.modal = Modal::None;
+        if was_settings {
+            self.tmux.unzoom_sidebar();
+        }
     }
 
     fn handle_modal_key(&mut self, key: event::KeyEvent) {
@@ -225,26 +231,20 @@ impl App {
             Modal::Settings {
                 ai_cmd_buffer,
                 post_worktree_cmd_buffer,
-                mouse,
                 active_field,
             } => match key.code {
                 KeyCode::Esc => {
-                    self.modal = Modal::None;
+                    self.close_modal();
                 }
                 KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
                     *active_field = match active_field {
                         SettingsField::AiCmd => SettingsField::PostWorktreeCmd,
-                        SettingsField::PostWorktreeCmd => SettingsField::Mouse,
-                        SettingsField::Mouse => SettingsField::AiCmd,
+                        SettingsField::PostWorktreeCmd => SettingsField::AiCmd,
                     };
-                }
-                KeyCode::Char(' ') if *active_field == SettingsField::Mouse => {
-                    *mouse = !*mouse;
                 }
                 KeyCode::Enter => {
                     let new_ai_cmd = ai_cmd_buffer.trim().to_string();
                     let new_post_worktree_cmd = post_worktree_cmd_buffer.trim().to_string();
-                    let save_mouse = *mouse;
 
                     if !new_ai_cmd.is_empty() {
                         self.ai_cmd = new_ai_cmd.clone();
@@ -259,7 +259,6 @@ impl App {
                     let cfg = config::Config {
                         ai_cmd: self.ai_cmd.clone(),
                         post_worktree_cmd: self.post_worktree_cmd.clone(),
-                        mouse: save_mouse,
                     };
                     match config::save_config(&cfg) {
                         Ok(()) => {
@@ -272,7 +271,7 @@ impl App {
                             self.set_status(err);
                         }
                     }
-                    self.modal = Modal::None;
+                    self.close_modal();
                 }
                 KeyCode::Backspace => match active_field {
                     SettingsField::AiCmd => {
@@ -281,7 +280,6 @@ impl App {
                     SettingsField::PostWorktreeCmd => {
                         post_worktree_cmd_buffer.pop();
                     }
-                    SettingsField::Mouse => {}
                 },
                 KeyCode::Char(c) => match active_field {
                     SettingsField::AiCmd => {
@@ -290,7 +288,6 @@ impl App {
                     SettingsField::PostWorktreeCmd => {
                         post_worktree_cmd_buffer.push(c);
                     }
-                    SettingsField::Mouse => {}
                 },
                 _ => {}
             },
