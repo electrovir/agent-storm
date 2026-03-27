@@ -93,6 +93,32 @@ impl FolderList {
             .unwrap_or(false)
     }
 
+    /// Returns the parent repo path for the currently selected item.
+    /// For worktree children, this is the repo header's path.
+    /// For standalone repos, this is the item's own path.
+    pub fn selected_repo_path(&self) -> Option<PathBuf> {
+        let sel_idx = self.selected_entry_index()?;
+        let entry = self.entries.get(sel_idx)?;
+
+        match entry {
+            SidebarEntry::Item { is_worktree_child: false, path, .. } => {
+                Some(path.clone())
+            }
+            SidebarEntry::Item { is_worktree_child: true, .. } => {
+                // Walk backwards to find the parent repo header.
+                let mut idx = sel_idx;
+                while idx > 0 {
+                    idx -= 1;
+                    if let SidebarEntry::RepoHeader { path, .. } = &self.entries[idx] {
+                        return Some(path.clone());
+                    }
+                }
+                None
+            }
+            SidebarEntry::RepoHeader { path, .. } => Some(path.clone()),
+        }
+    }
+
     /// Count how many selectable worktree siblings exist for the selected item's parent repo.
     pub fn selected_sibling_count(&self) -> usize {
         let Some(sel_idx) = self.selected_entry_index() else {
@@ -210,6 +236,8 @@ fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
             let mut worktrees = read_subdirs(repo_path, true);
             worktrees.sort();
             for wt in worktrees {
+                // Canonicalize to match tmux session keys.
+                let wt = std::fs::canonicalize(&wt).unwrap_or(wt);
                 let wt_name = wt
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -225,9 +253,11 @@ fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
             }
         } else {
             // Standalone repo: selectable directly.
+            let canonical = std::fs::canonicalize(repo_path)
+                .unwrap_or_else(|_| repo_path.clone());
             selectable.push(entries.len());
             entries.push(SidebarEntry::Item {
-                path: repo_path.clone(),
+                path: canonical,
                 name: repo_name,
                 indented: false,
                 is_worktree_child: false,

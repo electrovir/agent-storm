@@ -64,11 +64,19 @@ pub fn render(frame: &mut Frame, app: &App) {
         Modal::ConfirmDeleteWorktree { folder } => {
             render_confirm_delete_modal(frame, folder);
         }
+        Modal::ConfirmRemoveRepo { repo_path } => {
+            render_confirm_remove_repo_modal(frame, repo_path);
+        }
         Modal::ConfirmAddNewRepo { repo_path } => {
             render_confirm_add_repo_modal(frame, repo_path);
         }
-        Modal::NewRepoPostWorktreeCmd { buffer, .. } => {
-            render_new_repo_pwc_modal(frame, buffer);
+        Modal::NewRepoPostWorktreeCmd { repo_path, buffer } => {
+            let global_pwc = app.config().post_worktree_cmd.as_deref().unwrap_or("(none)");
+            let repo_name = repo_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            render_new_repo_pwc_modal(frame, buffer, repo_name, global_pwc);
         }
         Modal::Help => {
             render_help_modal(frame, app.selected_is_worktree(), app.is_lone());
@@ -96,26 +104,7 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
     use crate::pane::folder_list::{GitStatus, SidebarEntry};
 
     let focused = app.tmux().is_sidebar_focused();
-
-    let border_color = if focused {
-        FOCUS_COLOR
-    } else {
-        Color::DarkGray
-    };
-    let border_type = if focused {
-        BorderType::Thick
-    } else {
-        BorderType::Plain
-    };
-
-    let block = Block::default()
-        .title(Line::from(" Repos "))
-        .borders(Borders::ALL)
-        .border_type(border_type)
-        .border_style(Style::default().fg(border_color));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = area;
 
     let selected_entry_idx = app.folder_list().selected_entry_index();
     let active_folder = app.active_folder();
@@ -133,15 +122,18 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         .map(|(idx, entry)| {
             match entry {
                 SidebarEntry::RepoHeader { name, .. } => {
-                    Line::from(Span::styled(
-                        name.clone(),
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::BOLD),
-                    ))
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            name.clone(),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ])
                 }
                 SidebarEntry::Item { path, name, indented, .. } => {
-                    let indent = if *indented { "  " } else { "" };
+                    let indent = if *indented { "    " } else { "  " };
                     let mut spans: Vec<Span> = Vec::new();
                     spans.push(Span::raw(indent.to_string()));
 
@@ -157,13 +149,13 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                         spans.push(Span::raw("   "));
                     }
 
-                    spans.push(Span::raw(name.clone()));
-
                     match app.folder_list().git_status(path) {
                         GitStatus::Dirty => spans.push(Span::raw("*")),
                         GitStatus::Unpushed => spans.push(Span::raw("+")),
-                        GitStatus::Clean => {}
+                        GitStatus::Clean => spans.push(Span::raw(" ")),
                     }
+
+                    spans.push(Span::raw(name.clone()));
 
                     let is_selected = selected_entry_idx == Some(idx);
                     let is_active = active_entry_idx == Some(idx);
@@ -184,7 +176,7 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 
@@ -358,15 +350,16 @@ fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
 
     if !is_lone {
         lines.push(help_line("a", "Add repo"));
+        lines.push(help_line("Bksp", "Remove repo"));
         lines.push(help_line("o", "Open config"));
     }
 
     lines.extend([
         help_line("^Q", "Quit"),
-        help_line("M-S", "Settings"),
+        help_line("Alt+S", "Settings"),
         Line::raw(""),
-        help_line("M-1/2/3", "Focus pane"),
-        help_line("M-F", "Zoom pane"),
+        help_line("Alt+1/2/3", "Focus pane"),
+        help_line("Alt+F", "Zoom pane"),
     ]);
 
     if is_worktree {
@@ -581,16 +574,21 @@ fn render_confirm_add_repo_modal(frame: &mut Frame, repo_path: &std::path::Path)
     frame.render_widget(content, inner);
 }
 
-fn render_new_repo_pwc_modal(frame: &mut Frame, buffer: &str) {
+fn render_new_repo_pwc_modal(
+    frame: &mut Frame,
+    buffer: &str,
+    repo_name: &str,
+    global_pwc: &str,
+) {
     let area = frame.area().centered(
-        Constraint::Length(46.min(frame.area().width.saturating_sub(2))),
-        Constraint::Length(7),
+        Constraint::Length(56.min(frame.area().width.saturating_sub(2))),
+        Constraint::Length(10),
     );
 
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" New Worktree Command ")
+        .title(format!(" Worktree Cmd: {repo_name} "))
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
         .border_style(Style::default().fg(FOCUS_COLOR));
@@ -599,22 +597,78 @@ fn render_new_repo_pwc_modal(frame: &mut Frame, buffer: &str) {
     frame.render_widget(block, area);
 
     let lines = vec![
+        Line::from(vec![
+            Span::styled("Global default: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(global_pwc, Style::default().fg(Color::DarkGray)),
+        ]),
         Line::from(Span::styled(
-            "Run after creating a worktree:",
+            "Leave blank to use global default.",
             Style::default().fg(Color::DarkGray),
         )),
-        Line::from(Span::styled(
-            format!("{buffer}_"),
-            Style::default()
-                .fg(FOCUS_COLOR)
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Command: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{buffer}_"),
+                Style::default()
+                    .fg(FOCUS_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
         Line::raw(""),
         Line::from(vec![
             Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
             Span::raw(" save  "),
             Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
             Span::raw(" skip"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
+}
+
+fn render_confirm_remove_repo_modal(frame: &mut Frame, repo_path: &std::path::Path) {
+    let name = repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+
+    let area = frame.area().centered(
+        Constraint::Length(40.min(frame.area().width.saturating_sub(2))),
+        Constraint::Length(6),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Remove Repo ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(Color::Red));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::raw("Remove "),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" from repos?"),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw(" confirm  "),
+            Span::styled("n", Style::default().fg(FOCUS_COLOR)),
+            Span::raw("/"),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" cancel"),
         ]),
     ];
 
