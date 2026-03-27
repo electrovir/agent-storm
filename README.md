@@ -98,6 +98,7 @@ cargo run -- -C ~/repos/my-project --ai-cmd "claude --model sonnet" --mouse
 | `Alt+S` | Open settings |
 | `Alt+M` | Toggle mouse capture (on: click to focus, off: text selection) |
 | `Alt+F` | Toggle fullscreen for the focused AI/shell pane |
+| `Alt+K` | Clear the focused pane's screen and scrollback |
 | `Alt+R` | Force full screen redraw |
 
 **Folder pane:**
