@@ -5,15 +5,11 @@ use std::process::Command;
 /// This is true if many/all of its subdirectories are git worktrees pointing
 /// to the same bare repo or common `.git` directory.
 pub fn is_worktree_root(base_dir: &Path) -> bool {
-    // A common pattern: the base_dir itself is a bare repo, or it contains
-    // subdirectories that are git worktrees. We detect by checking if any
-    // subdirectory has a `.git` file (not directory) pointing to a worktree path.
     let Ok(entries) = std::fs::read_dir(base_dir) else {
         return false;
     };
 
     let mut worktree_count = 0u32;
-    let mut dir_count = 0u32;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -27,7 +23,6 @@ pub fn is_worktree_root(base_dir: &Path) -> bool {
         if name.starts_with('.') {
             continue;
         }
-        dir_count += 1;
 
         let dot_git = path.join(".git");
         // A worktree has a `.git` _file_ (not directory) containing "gitdir: ..."
@@ -37,7 +32,6 @@ pub fn is_worktree_root(base_dir: &Path) -> bool {
         // A regular clone has a `.git` directory — also count it if it's part
         // of a worktree setup (the main worktree).
         else if dot_git.is_dir() {
-            // Check if this repo has worktrees configured.
             let worktrees_dir = dot_git.join("worktrees");
             if worktrees_dir.is_dir() {
                 worktree_count += 1;
@@ -45,9 +39,7 @@ pub fn is_worktree_root(base_dir: &Path) -> bool {
         }
     }
 
-    // Consider it a worktree root if at least 2 subdirectories are worktrees,
-    // or if there's only 1 directory and it is a worktree.
-    dir_count > 0 && worktree_count > 0 && (worktree_count >= 2 || dir_count == 1)
+    worktree_count > 0
 }
 
 /// Adds a new git worktree by running:
@@ -80,6 +72,65 @@ pub fn remove_worktree(any_worktree: &Path, target: &Path) -> Result<String, Str
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("git worktree remove failed: {stderr}"))
+    }
+}
+
+/// Checks if a specific directory is a git worktree (has a `.git` file, not directory).
+pub fn is_worktree(path: &Path) -> bool {
+    let dot_git = path.join(".git");
+    dot_git.is_file()
+}
+
+/// Renames a folder. If it's a git worktree, uses `git worktree move`.
+/// Otherwise, uses a plain filesystem rename.
+pub fn rename_folder(folder: &Path, new_name: &str) -> Result<(String, std::path::PathBuf), String> {
+    let parent = folder
+        .parent()
+        .ok_or_else(|| "Cannot determine parent directory.".to_string())?;
+    let new_path = parent.join(new_name);
+
+    if new_path.exists() {
+        return Err(format!("'{new_name}' already exists."));
+    }
+
+    if is_worktree(folder) {
+        // Use git worktree move for proper reference updates.
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "move",
+                folder.to_str().ok_or("Invalid path.")?,
+                new_path.to_str().ok_or("Invalid path.")?,
+            ])
+            .current_dir(folder)
+            .output()
+            .map_err(|err| format!("Failed to run git: {err}"))?;
+
+        if output.status.success() {
+            let old_name = folder
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            Ok((
+                format!("Worktree renamed: {old_name} -> {new_name}"),
+                new_path,
+            ))
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("git worktree move failed: {stderr}"))
+        }
+    } else {
+        // Plain filesystem rename.
+        std::fs::rename(folder, &new_path)
+            .map_err(|err| format!("Rename failed: {err}"))?;
+        let old_name = folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        Ok((
+            format!("Renamed: {old_name} -> {new_name}"),
+            new_path,
+        ))
     }
 }
 

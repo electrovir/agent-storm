@@ -223,6 +223,9 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
             let is_active = active_index == Some(idx);
             if focused && is_active && idx != selected_index {
                 spans.push(Span::raw(name));
+                if app.folder_list().is_dirty(path) {
+                    spans.push(Span::raw("*"));
+                }
                 return ListItem::new(Line::from(spans)).style(
                     Style::new()
                         .fg(Color::DarkGray)
@@ -231,6 +234,9 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
             }
 
             spans.push(Span::raw(name));
+            if app.folder_list().is_dirty(path) {
+                spans.push(Span::raw("*"));
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -320,6 +326,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         FolderMode::WorktreeInput { buffer } => {
             format!("New worktree branch: {buffer}_")
         }
+        FolderMode::RenameInput { buffer, .. } => {
+            format!("Rename to: {buffer}_")
+        }
         FolderMode::Normal => {
             if let Some(msg) = app.status_message() {
                 msg.to_string()
@@ -329,12 +338,16 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
                     Focus::ClaudePane => "AI",
                     Focus::ShellPane => "Shell",
                 };
-                let worktree_hint =
-                    if app.is_worktree_root() && app.focus() == Focus::FolderList {
-                        " | w: add | d: delete worktree"
+                let folder_hint = if app.focus() == Focus::FolderList {
+                    let rename = " | r: rename";
+                    if app.is_worktree_root() {
+                        format!("{rename} | w: add | d: delete worktree")
                     } else {
-                        ""
-                    };
+                        rename.to_string()
+                    }
+                } else {
+                    String::new()
+                };
                 let mouse_hint = if app.mouse_capture() {
                     "Alt+M: mouse off"
                 } else {
@@ -348,7 +361,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
                     ""
                 };
                 format!(
-                    " [{focus_hint}] Alt+1/2/3: switch | Alt+S: settings | {mouse_hint}{fullscreen_hint} | Ctrl+Q: quit{worktree_hint}"
+                    " [{focus_hint}] Alt+1/2/3: switch | Alt+S: settings | {mouse_hint}{fullscreen_hint} | Ctrl+Q: quit{folder_hint}"
                 )
             }
         }

@@ -2,6 +2,29 @@
 
 A terminal UI for managing multiple AI coding sessions across project folders. Three-pane layout: folder picker, AI assistant (Claude Code by default), and a shell — all in one screen.
 
+### Git worktree support
+
+Point agent-storm at the parent directory that contains your worktree folders. Each worktree should be an immediate child directory:
+
+```
+my-project/              <-- open agent-storm here
+  my-project.git/        <-- bare repo (auto-hidden)
+  dev/                   <-- worktree
+  feature-branch/        <-- worktree
+```
+
+```sh
+ags -C ~/repos/my-project
+```
+
+When the directory contains git worktrees, agent-storm detects this automatically:
+
+- Bare repo directories are hidden from the folder list
+- Folders with uncommitted changes show a `*` indicator
+- Press `w` to create a new worktree
+- Press `d` to delete a worktree (with confirmation)
+- The `post_worktree_cmd` runs in the shell after creation (e.g. `npm install`)
+
 ## Install
 
 ```sh
@@ -80,7 +103,7 @@ cargo run -- -C ~/repos/my-project --ai-cmd "claude --model sonnet" --no-mouse
 |-----|--------|
 | `j` / `k` or arrows | Navigate folders |
 | `Enter` | Open sessions for selected folder (or switch to existing) |
-| `r` | Refresh folder list |
+| `r` | Rename selected folder (uses `git worktree move` for worktrees) |
 | `w` | Add git worktree (only in worktree directories) |
 | `d` | Delete selected worktree (with confirmation) |
 
@@ -114,11 +137,3 @@ no_mouse = false
 - `no_mouse` — start with mouse capture disabled for text selection (default: `false`)
 
 CLI flags (`--ai-cmd`, `--post-worktree-cmd`, `--no-mouse`) override config values.
-
-### Git worktree support
-
-When the current directory contains git worktrees, agent-storm detects this automatically:
-
-- Bare repo directories are hidden from the folder list
-- Press `w` to create a new worktree
-- The `post_worktree_cmd` runs in the shell after creation (e.g. `npm install`)
