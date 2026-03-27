@@ -1,0 +1,114 @@
+use bytes::Bytes;
+use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
+use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+use tokio::sync::mpsc;
+use vt100;
+
+pub struct PtyPane {
+    parser: Arc<RwLock<vt100::Parser>>,
+    input_sender: mpsc::Sender<Bytes>,
+    master_pty: Box<dyn MasterPty + Send>,
+    exited: Arc<AtomicBool>,
+}
+
+impl PtyPane {
+    pub fn spawn(cmd: CommandBuilder, rows: u16, cols: u16) -> io::Result<Self> {
+        let pty_system = NativePtySystem::default();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        // Drop the slave side — the child process owns it now.
+        drop(pair.slave);
+
+        let parser = Arc::new(RwLock::new(vt100::Parser::new(rows, cols, 1000)));
+        let exited = Arc::new(AtomicBool::new(false));
+
+        // Spawn a thread to wait for the child to exit.
+        let exited_clone = exited.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut child = child;
+            let _ = child.wait();
+            exited_clone.store(true, Ordering::SeqCst);
+        });
+
+        // Reader task: reads PTY output into the vt100 parser.
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let parser_clone = parser.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut parser) = parser_clone.write() {
+                            parser.process(&buf[..n]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // Writer task: forwards input bytes to the PTY.
+        let mut writer = pair
+            .master
+            .take_writer()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        let (input_sender, mut input_receiver) = mpsc::channel::<Bytes>(256);
+        tokio::spawn(async move {
+            while let Some(data) = input_receiver.recv().await {
+                if writer.write_all(&data).is_err() {
+                    break;
+                }
+                let _ = writer.flush();
+            }
+        });
+
+        Ok(PtyPane {
+            parser,
+            input_sender,
+            master_pty: pair.master,
+            exited,
+        })
+    }
+
+    pub fn send_input(&self, data: Bytes) {
+        let _ = self.input_sender.try_send(data);
+    }
+
+    pub fn screen(&self) -> vt100::Screen {
+        self.parser.read().unwrap().screen().clone()
+    }
+
+    pub fn resize(&self, rows: u16, cols: u16) {
+        if let Ok(mut parser) = self.parser.write() {
+            parser.screen_mut().set_size(rows, cols);
+        }
+        let _ = self.master_pty.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
+
+    pub fn is_alive(&self) -> bool {
+        !self.exited.load(Ordering::SeqCst)
+    }
+}
