@@ -43,7 +43,7 @@ impl TmuxController {
         tmux_cmd(&["set-option", "-t", s, "-g", "status", "off"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "mouse", "on"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "set-titles", "on"]);
-        tmux_cmd(&["set-option", "-t", s, "-g", "set-titles-string", "#{window_name}"]);
+        tmux_cmd(&["set-option", "-t", s, "-g", "set-titles-string", "agent-storm"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "remain-on-exit", "on"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-lines", "heavy"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-style", "fg=colour24"]);
@@ -89,6 +89,12 @@ impl TmuxController {
         self.active_folder = Some(folder.clone());
         self.update_keybindings();
         self.fix_layout();
+
+        let folder_name = folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        self.set_title(folder_name);
 
         if !keep_sidebar_focus
             && let Some(session) = self.sessions.get(folder)
@@ -317,6 +323,11 @@ impl TmuxController {
     /// Kill the entire tmux session.
     pub fn kill_session(&self) {
         tmux_cmd(&["kill-session", "-t", &self.session_name]);
+    }
+
+    pub fn set_title(&self, folder_name: &str) {
+        let title = format!("agent-storm : {folder_name}");
+        tmux_cmd(&["set-option", "-g", "set-titles-string", &title]);
     }
 
     pub fn set_ai_cmd(&mut self, cmd: String) {

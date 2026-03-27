@@ -4,6 +4,28 @@ A terminal UI for managing multiple AI coding sessions across project folders. T
 
 <img src="example.png" alt="agent-storm example" width="100%">
 
+## Getting started
+
+1. Install agent-storm and [tmux](https://github.com/tmux/tmux/wiki/Installing):
+
+   ```sh
+   brew install tmux  # or: sudo apt install tmux
+   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/electrovir/agent-storm/dev/install.sh | bash
+   ```
+
+2. Run `ags` from any directory you want to work in:
+
+   ```sh
+   cd ~/repos/my-project
+   ags
+   ```
+
+3. Press `a` in the sidebar to add more repos. agent-storm automatically detects worktree roots.
+
+4. For repos using git worktrees, press `w` to create a new worktree. agent-storm will run your configured post-worktree command (e.g. `npm install`) automatically.
+
+Press `?` in the sidebar for a full list of keybindings.
+
 ## Install
 
 Requires [tmux](https://github.com/tmux/tmux/wiki/Installing):
@@ -89,27 +111,28 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 
 **Global (work from any pane — handled by tmux):**
 
-| Key | Action |
-|-----|--------|
+| Key                          | Action                          |
+|------------------------------|---------------------------------|
 | `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane |
-| `Alt+F` | Zoom (fullscreen) the current pane |
-| `Ctrl+Q` | Quit |
+| `Alt+F`                      | Zoom (fullscreen) current pane  |
+| `Ctrl+Q`                     | Quit                            |
 
 **Sidebar (when sidebar is focused):**
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` or arrows | Navigate |
-| `Enter` | Open sessions and focus AI pane |
-| `Tab` | Open sessions and stay in sidebar |
-| `x` | Restart dead panes for selected folder |
-| `r` | Rename selected folder |
-| `a` | Add a new repo |
-| `o` | Open config file in system file browser |
-| `w` | Add git worktree (worktree repos only) |
-| `d` | Delete worktree with confirmation (worktree repos only) |
-| `?` | Show help |
-| `Alt+S` | Open settings |
+| Key                  | Action                                   |
+|----------------------|------------------------------------------|
+| `j` / `k` or arrows | Navigate                                 |
+| `Enter`              | Open sessions and focus AI pane           |
+| `Tab`                | Open sessions and stay in sidebar        |
+| `x`                  | Restart dead panes for selected folder   |
+| `r`                  | Rename selected folder                   |
+| `a`                  | Add a new repo                           |
+| `Backspace`          | Remove repo from config (with confirm)   |
+| `o`                  | Open config file in system file browser  |
+| `w`                  | Add git worktree (worktree repos only)   |
+| `d`                  | Delete worktree (worktree repos only)    |
+| `?`                  | Show help                                |
+| `Alt+S`              | Open settings                            |
 
 **Text selection:** Hold `Shift` while clicking and dragging to select text (bypasses tmux mouse mode). On macOS Terminal.app, use `fn` instead.
 

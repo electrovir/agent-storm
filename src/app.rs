@@ -67,6 +67,9 @@ pub enum Modal {
         repo_path: PathBuf,
         buffer: String,
     },
+    ConfirmRemoveRepo {
+        repo_path: PathBuf,
+    },
 }
 
 const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
@@ -123,6 +126,10 @@ impl App {
 
     pub fn folder_list(&self) -> &FolderList {
         &self.folder_list
+    }
+
+    pub fn config(&self) -> &config::Config {
+        &self.config
     }
 
     pub fn is_lone(&self) -> bool {
@@ -535,6 +542,36 @@ impl App {
                     _ => {}
                 }
             }
+            Modal::ConfirmRemoveRepo { repo_path } => {
+                let repo_path = repo_path.clone();
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                        // Remove all sessions for worktrees under this repo.
+                        let paths_to_remove: Vec<PathBuf> = self
+                            .folder_list
+                            .entries()
+                            .iter()
+                            .filter(|e| e.is_selectable())
+                            .filter(|e| e.path().starts_with(&repo_path))
+                            .map(|e| e.path().to_path_buf())
+                            .collect();
+                        for path in &paths_to_remove {
+                            self.tmux.remove_session(&path.to_path_buf());
+                        }
+
+                        // Remove from config.
+                        self.config.repos.retain(|r| r.path != repo_path);
+                        let _ = config::save_config(&self.config);
+                        self.folder_list = FolderList::new(self.config.repo_paths());
+                        self.set_status("Repo removed.".to_string());
+                        self.modal = Modal::None;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        self.modal = Modal::None;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -642,6 +679,11 @@ impl App {
                     self.folder_list.selected_folder().map(|p| p.to_path_buf())
                 {
                     self.modal = Modal::ConfirmDeleteWorktree { folder };
+                }
+            }
+            KeyCode::Backspace | KeyCode::Delete if !self.lone => {
+                if let Some(repo_path) = self.folder_list.selected_repo_path() {
+                    self.modal = Modal::ConfirmRemoveRepo { repo_path };
                 }
             }
             _ => {}
