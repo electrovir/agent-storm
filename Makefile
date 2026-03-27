@@ -1,4 +1,4 @@
-.PHONY: check test lint all
+.PHONY: check test lint all publish
 
 all: check test lint
 
@@ -10,3 +10,6 @@ test:
 
 lint:
 	cargo clippy -- -D warnings
+
+publish:
+	./scripts/publish.sh
