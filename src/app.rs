@@ -21,7 +21,6 @@ enum BgMessage {
 #[derive(Clone, PartialEq, Eq)]
 pub enum FolderMode {
     Normal,
-    WorktreeInput { buffer: String },
     RenameInput { folder: PathBuf, buffer: String },
 }
 
@@ -41,6 +40,9 @@ pub enum Modal {
         ai_cmd_buffer: String,
         post_worktree_cmd_buffer: String,
         active_field: SettingsField,
+    },
+    AddWorktree {
+        buffer: String,
     },
     ConfirmDeleteWorktree {
         folder: PathBuf,
@@ -214,9 +216,12 @@ impl App {
     }
 
     fn close_modal(&mut self) {
-        let was_settings = matches!(self.modal, Modal::Settings { .. });
+        let was_zoomed = matches!(
+            self.modal,
+            Modal::Settings { .. } | Modal::AddWorktree { .. }
+        );
         self.modal = Modal::None;
-        if was_settings {
+        if was_zoomed {
             self.tmux.unzoom_sidebar();
         }
     }
@@ -291,6 +296,55 @@ impl App {
                 },
                 _ => {}
             },
+            Modal::AddWorktree { buffer } => match key.code {
+                KeyCode::Esc => {
+                    self.close_modal();
+                }
+                KeyCode::Enter => {
+                    let branch_name = buffer.trim().to_string();
+                    self.close_modal();
+
+                    if branch_name.is_empty() {
+                        self.set_status("Cancelled (empty name).".to_string());
+                        return;
+                    }
+
+                    let Some(existing) =
+                        self.folder_list.selected_folder().map(|p| p.to_path_buf())
+                    else {
+                        self.set_status("No folder selected.".to_string());
+                        return;
+                    };
+
+                    match worktree::add_worktree(&existing, &branch_name) {
+                        Ok(msg) => {
+                            self.set_status(msg);
+                            self.folder_list.refresh();
+
+                            let new_folder = existing.parent().map(|p| p.join(&branch_name));
+                            if let Some(folder) = new_folder
+                                && folder.is_dir()
+                            {
+                                if let Err(err) = self.tmux.activate_folder(&folder, false) {
+                                    self.set_status(err);
+                                } else if let Some(cmd) = &self.post_worktree_cmd.clone() {
+                                    self.tmux.send_keys_to_shell(&folder, cmd);
+                                }
+                            }
+                        }
+                        Err(msg) => {
+                            self.set_status(msg);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    buffer.push(c);
+                }
+                _ => {}
+            },
             Modal::ConfirmDeleteWorktree { folder } => {
                 let folder = folder.clone();
                 match key.code {
@@ -345,7 +399,6 @@ impl App {
     fn handle_folder_key(&mut self, key: event::KeyEvent) {
         match &self.folder_mode {
             FolderMode::Normal => self.handle_folder_normal_key(key),
-            FolderMode::WorktreeInput { .. } => self.handle_worktree_input_key(key),
             FolderMode::RenameInput { .. } => self.handle_rename_input_key(key),
         }
     }
@@ -357,10 +410,10 @@ impl App {
             KeyCode::Enter => self.activate_selected_folder_with_focus(true),
             KeyCode::Tab => self.activate_selected_folder_with_focus(false),
             KeyCode::Char('w') if self.is_worktree_root => {
-                self.folder_mode = FolderMode::WorktreeInput {
+                self.tmux.zoom_sidebar();
+                self.modal = Modal::AddWorktree {
                     buffer: String::new(),
                 };
-                self.set_status("New worktree branch name: ".to_string());
             }
             KeyCode::Char('r') => {
                 if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
@@ -397,65 +450,6 @@ impl App {
         }
     }
 
-    fn handle_worktree_input_key(&mut self, key: event::KeyEvent) {
-        let FolderMode::WorktreeInput { buffer } = &mut self.folder_mode else {
-            return;
-        };
-
-        match key.code {
-            KeyCode::Esc => {
-                self.folder_mode = FolderMode::Normal;
-                self.status_message = None;
-            }
-            KeyCode::Enter => {
-                let branch_name = buffer.clone();
-                self.folder_mode = FolderMode::Normal;
-
-                if branch_name.is_empty() {
-                    self.set_status("Cancelled (empty name).".to_string());
-                    return;
-                }
-
-                let Some(existing) = self.folder_list.selected_folder().map(|p| p.to_path_buf())
-                else {
-                    self.set_status("No folder selected.".to_string());
-                    return;
-                };
-
-                match worktree::add_worktree(&existing, &branch_name) {
-                    Ok(msg) => {
-                        self.set_status(msg);
-                        self.folder_list.refresh();
-
-                        let new_folder = existing.parent().map(|p| p.join(&branch_name));
-                        if let Some(folder) = new_folder
-                            && folder.is_dir()
-                        {
-                            if let Err(err) = self.tmux.activate_folder(&folder, false) {
-                                self.set_status(err);
-                            } else if let Some(cmd) = &self.post_worktree_cmd.clone() {
-                                self.tmux.send_keys_to_shell(&folder, cmd);
-                            }
-                        }
-                    }
-                    Err(msg) => {
-                        self.set_status(msg);
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                buffer.pop();
-                let msg = format!("New worktree branch name: {buffer}");
-                self.status_message = Some((msg, Instant::now()));
-            }
-            KeyCode::Char(c) => {
-                buffer.push(c);
-                let msg = format!("New worktree branch name: {buffer}");
-                self.status_message = Some((msg, Instant::now()));
-            }
-            _ => {}
-        }
-    }
 
     fn handle_rename_input_key(&mut self, key: event::KeyEvent) {
         let FolderMode::RenameInput { folder, buffer } = &mut self.folder_mode else {

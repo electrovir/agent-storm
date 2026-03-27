@@ -51,6 +51,9 @@ pub fn render(frame: &mut Frame, app: &App) {
                 *active_field,
             );
         }
+        Modal::AddWorktree { buffer } => {
+            render_add_worktree_modal(frame, buffer);
+        }
         Modal::ConfirmDeleteWorktree { folder } => {
             render_confirm_delete_modal(frame, folder);
         }
@@ -203,9 +206,6 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     }
 
     let status_text = match app.folder_mode() {
-        FolderMode::WorktreeInput { buffer } => {
-            format!("New worktree branch: {buffer}_")
-        }
         FolderMode::RenameInput { buffer, .. } => {
             format!("Rename to: {buffer}_")
         }
@@ -411,4 +411,44 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
         ),
         Span::raw(format!(" {desc}")),
     ])
+}
+
+fn render_add_worktree_modal(frame: &mut Frame, buffer: &str) {
+    let area = frame.area().centered(
+        Constraint::Length(40.min(frame.area().width.saturating_sub(4))),
+        Constraint::Length(7),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Add Worktree ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(FOCUS_COLOR));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Branch: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{buffer}_"),
+                Style::default()
+                    .fg(FOCUS_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" create  "),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" cancel"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
 }
