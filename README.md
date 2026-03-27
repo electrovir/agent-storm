@@ -43,7 +43,7 @@ ln -sf /usr/local/bin/agent-storm /usr/local/bin/ags
 ags
 
 # Browse a specific directory
-ags -C ~/repos/my-project
+ags ~/repos/my-project
 
 # Use a custom AI command
 ags --ai-cmd "claude --model sonnet"
@@ -54,7 +54,7 @@ ags --ai-cmd "claude --model sonnet"
 ```sh
 git clone https://github.com/electrovir/agent-storm.git
 cd agent-storm
-cargo run -- -C ~/repos/my-project
+cargo run -- ~/repos/my-project
 ```
 
 ### Layout
@@ -141,7 +141,7 @@ my-project/              <-- open agent-storm here
 ```
 
 ```sh
-ags -C ~/repos/my-project
+ags ~/repos/my-project
 ```
 
 When the directory contains git worktrees, agent-storm detects this automatically:
