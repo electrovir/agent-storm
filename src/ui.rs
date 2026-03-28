@@ -232,6 +232,11 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                             SHELL_BUSY_THRESHOLD_SECS,
                             true,
                         );
+                        let (ai_color, sh_color) = if focused {
+                            (ai_color, sh_color)
+                        } else {
+                            (Color::DarkGray, Color::DarkGray)
+                        };
                         if highlighted {
                             prefix_spans.push(Span::raw(format!("{ai_ch}{sh_ch}")));
                         } else if ai_color == sh_color {
@@ -266,6 +271,8 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                         Style::new()
                             .fg(Color::DarkGray)
                             .add_modifier(Modifier::REVERSED)
+                    } else if !focused {
+                        Style::new().fg(Color::DarkGray)
                     } else {
                         Style::new()
                     };
