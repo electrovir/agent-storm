@@ -216,6 +216,8 @@ impl App {
                 });
             }
 
+            self.tmux.refresh_pane_info();
+
             terminal.draw(|frame| {
                 ui::render(frame, self);
             })?;
