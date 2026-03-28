@@ -31,6 +31,7 @@ pub enum FolderMode {
 pub enum SettingsField {
     AiCmd,
     PostWorktreeCmd,
+    AutoUpdate,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub enum Modal {
     Settings {
         ai_cmd_buffer: String,
         post_worktree_cmd_buffer: String,
+        auto_update: bool,
         active_field: SettingsField,
     },
     AddWorktree {
@@ -132,7 +134,9 @@ impl App {
             bg_sender,
             bg_receiver,
             update_pending: false,
-            last_update_check: Instant::now(),
+            last_update_check: Instant::now()
+                .checked_sub(UPDATE_CHECK_INTERVAL)
+                .unwrap_or_else(Instant::now),
             update_check_in_flight: false,
         }
     }
@@ -210,8 +214,13 @@ impl App {
                 self.last_update_check = Instant::now();
                 let sender = self.bg_sender.clone();
                 tokio::task::spawn_blocking(move || {
-                    if updater::check_and_apply_update(false).is_ok() {
-                        let _ = sender.send(BgMessage::UpdateDownloaded);
+                    match updater::check_and_apply_update(false) {
+                        Ok(_) => {
+                            let _ = sender.send(BgMessage::UpdateDownloaded);
+                        }
+                        Err(err) => {
+                            updater::log(&format!("Auto-update failed: {err}"));
+                        }
                     }
                 });
             }
@@ -278,6 +287,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('?') => {
+                    self.tmux.zoom_sidebar();
                     self.modal = Modal::Help;
                     return;
                 }
@@ -293,22 +303,14 @@ impl App {
         self.modal = Modal::Settings {
             ai_cmd_buffer: self.ai_cmd.clone(),
             post_worktree_cmd_buffer: self.config.post_worktree_cmd.clone().unwrap_or_default(),
+            auto_update: self.config.auto_update,
             active_field: SettingsField::AiCmd,
         };
     }
 
     fn close_modal(&mut self) {
-        let was_zoomed = matches!(
-            self.modal,
-            Modal::Settings { .. }
-                | Modal::AddWorktree { .. }
-                | Modal::AddRepo { .. }
-                | Modal::ConfirmDeleteWorktree { .. }
-        );
         self.modal = Modal::None;
-        if was_zoomed {
-            self.tmux.unzoom_sidebar();
-        }
+        self.tmux.unzoom_sidebar();
     }
 
     fn handle_modal_key(&mut self, key: event::KeyEvent) {
@@ -316,21 +318,33 @@ impl App {
             Modal::None => {}
             Modal::Help => {
                 // Any key dismisses the help modal.
-                self.modal = Modal::None;
+                self.close_modal();
             }
             Modal::Settings {
                 ai_cmd_buffer,
                 post_worktree_cmd_buffer,
+                auto_update,
                 active_field,
             } => match key.code {
                 KeyCode::Esc => {
                     self.close_modal();
                 }
-                KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+                KeyCode::Tab | KeyCode::Down => {
                     *active_field = match active_field {
                         SettingsField::AiCmd => SettingsField::PostWorktreeCmd,
-                        SettingsField::PostWorktreeCmd => SettingsField::AiCmd,
+                        SettingsField::PostWorktreeCmd => SettingsField::AutoUpdate,
+                        SettingsField::AutoUpdate => SettingsField::AiCmd,
                     };
+                }
+                KeyCode::Up => {
+                    *active_field = match active_field {
+                        SettingsField::AiCmd => SettingsField::AutoUpdate,
+                        SettingsField::PostWorktreeCmd => SettingsField::AiCmd,
+                        SettingsField::AutoUpdate => SettingsField::PostWorktreeCmd,
+                    };
+                }
+                KeyCode::Char(' ') if *active_field == SettingsField::AutoUpdate => {
+                    *auto_update = !*auto_update;
                 }
                 KeyCode::Enter => {
                     let new_ai_cmd = ai_cmd_buffer.trim().to_string();
@@ -345,6 +359,7 @@ impl App {
                     } else {
                         Some(new_post_worktree_cmd.clone())
                     };
+                    self.config.auto_update = *auto_update;
 
                     self.config.ai_cmd = self.ai_cmd.clone();
                     match config::save_config(&self.config) {
@@ -367,6 +382,7 @@ impl App {
                     SettingsField::PostWorktreeCmd => {
                         post_worktree_cmd_buffer.pop();
                     }
+                    SettingsField::AutoUpdate => {}
                 },
                 KeyCode::Char(c) => match active_field {
                     SettingsField::AiCmd => {
@@ -375,6 +391,7 @@ impl App {
                     SettingsField::PostWorktreeCmd => {
                         post_worktree_cmd_buffer.push(c);
                     }
+                    SettingsField::AutoUpdate => {}
                 },
                 _ => {}
             },
@@ -547,11 +564,11 @@ impl App {
                             self.folder_list = FolderList::new(self.config.repo_paths());
                             let _ = config::save_config(&self.config);
                             self.set_status("Repo added.".to_string());
-                            self.modal = Modal::None;
+                            self.close_modal();
                         }
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     _ => {}
                 }
@@ -565,7 +582,7 @@ impl App {
                         self.folder_list = FolderList::new(self.config.repo_paths());
                         let _ = config::save_config(&self.config);
                         self.set_status("Repo added.".to_string());
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     KeyCode::Enter => {
                         let cmd = buffer.trim().to_string();
@@ -574,7 +591,7 @@ impl App {
                         self.folder_list = FolderList::new(self.config.repo_paths());
                         let _ = config::save_config(&self.config);
                         self.set_status("Repo added.".to_string());
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     KeyCode::Backspace => {
                         buffer.pop();
@@ -607,10 +624,10 @@ impl App {
                         let _ = config::save_config(&self.config);
                         self.folder_list = FolderList::new(self.config.repo_paths());
                         self.set_status("Repo removed.".to_string());
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     _ => {}
                 }
@@ -623,10 +640,10 @@ impl App {
                         self.tmux.set_title("agent-storm");
                         self.tmux.focus_sidebar();
                         self.set_status("Panes closed.".to_string());
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     _ => {}
                 }
@@ -749,6 +766,7 @@ impl App {
             KeyCode::Char('c') => {
                 if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
                     if self.tmux.session_for(&folder).is_some() {
+                        self.tmux.zoom_sidebar();
                         self.modal = Modal::ConfirmClosePanes { folder };
                     } else {
                         self.set_status("No panes open for this folder.".to_string());
@@ -771,6 +789,7 @@ impl App {
             }
             KeyCode::Backspace | KeyCode::Delete if !self.lone => {
                 if let Some(repo_path) = self.folder_list.selected_repo_path() {
+                    self.tmux.zoom_sidebar();
                     self.modal = Modal::ConfirmRemoveRepo { repo_path };
                 }
             }

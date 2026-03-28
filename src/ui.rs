@@ -52,12 +52,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         Modal::Settings {
             ai_cmd_buffer,
             post_worktree_cmd_buffer,
+            auto_update,
             active_field,
         } => {
             render_settings_modal(
                 frame,
                 ai_cmd_buffer,
                 post_worktree_cmd_buffer,
+                *auto_update,
                 *active_field,
             );
         }
@@ -337,11 +339,12 @@ fn render_settings_modal(
     frame: &mut Frame,
     ai_cmd_buffer: &str,
     post_worktree_cmd_buffer: &str,
+    auto_update: bool,
     active_field: SettingsField,
 ) {
     let area = frame.area().centered(
         Constraint::Length(56.min(frame.area().width.saturating_sub(4))),
-        Constraint::Length(9),
+        Constraint::Length(11),
     );
 
     frame.render_widget(Clear, area);
@@ -360,15 +363,8 @@ fn render_settings_modal(
         .add_modifier(Modifier::BOLD);
     let inactive_style = Style::default().fg(Color::DarkGray);
 
-    let ai_cursor = if active_field == SettingsField::AiCmd {
-        "_"
-    } else {
-        ""
-    };
-    let pwc_cursor = if active_field == SettingsField::PostWorktreeCmd {
-        "_"
-    } else {
-        ""
+    let cursor = |field: SettingsField| -> &str {
+        if active_field == field { "_" } else { "" }
     };
 
     let field_style = |field: SettingsField| -> Style {
@@ -379,19 +375,36 @@ fn render_settings_modal(
         }
     };
 
+    let auto_update_label = if auto_update { "on" } else { "off" };
+
     let lines = vec![
         Line::from(vec![
             Span::styled("AI command:         ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{ai_cmd_buffer}{ai_cursor}"),
+                format!("{ai_cmd_buffer}{}", cursor(SettingsField::AiCmd)),
                 field_style(SettingsField::AiCmd),
             ),
         ]),
         Line::from(vec![
             Span::styled("Post-worktree cmd:  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{post_worktree_cmd_buffer}{pwc_cursor}"),
+                format!(
+                    "{post_worktree_cmd_buffer}{}",
+                    cursor(SettingsField::PostWorktreeCmd)
+                ),
                 field_style(SettingsField::PostWorktreeCmd),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Auto-update:        ", Style::default().fg(Color::DarkGray)),
+            Span::styled(auto_update_label, field_style(SettingsField::AutoUpdate)),
+            Span::styled(
+                if active_field == SettingsField::AutoUpdate {
+                    "  (Space to toggle)"
+                } else {
+                    ""
+                },
+                Style::default().fg(Color::DarkGray),
             ),
         ]),
         Line::raw(""),

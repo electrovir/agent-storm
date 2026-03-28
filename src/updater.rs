@@ -1,9 +1,31 @@
 use std::env;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn log_path() -> PathBuf {
+    env::temp_dir().join("agent-storm.log")
+}
+
+/// Append a timestamped line to the log file.
+pub fn log(message: &str) {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    else {
+        return;
+    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let _ = writeln!(file, "[{timestamp}] {message}");
+}
+
 
 /// Fetch the latest release tag from GitHub.
 pub fn fetch_latest_tag() -> Result<String, String> {
@@ -93,79 +115,32 @@ pub fn download_and_install(tag: &str, allow_sudo: bool) -> Result<(), String> {
     // rename() on the same filesystem is atomic: it swaps the directory entry instantly.
     // The old inode stays alive for any running processes. New invocations get the new binary.
     // This avoids corrupting/killing a running instance (which fs::copy would do).
-    let install_path = env::current_exe().map_err(|err| format!("Cannot find current exe: {err}"))?;
-    let install_dir = install_path.parent().unwrap_or(Path::new("/usr/local/bin"));
+    let install_path =
+        env::current_exe().map_err(|err| format!("Cannot find current exe: {err}"))?;
+    let install_dir = install_path
+        .parent()
+        .unwrap_or(Path::new("/usr/local/bin"));
     let dest = install_dir.join("agent-storm");
     let staging = install_dir.join(".agent-storm.next");
 
-    let is_readonly = install_dir
-        .metadata()
-        .map(|m| m.permissions().readonly())
-        .unwrap_or(true);
+    // Try direct copy first.
+    let direct_err = match install_direct(&new_binary, &staging, &dest, install_dir) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Ok(());
+        }
+        Err(err) => err,
+    };
 
-    if is_readonly && allow_sudo {
-        // sudo cp to staging, sudo chmod, sudo mv to final.
-        let ok = Command::new("sudo")
-            .args(["cp"])
-            .arg(&new_binary)
-            .arg(&staging)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err("sudo cp failed.".to_string());
-        }
-        let _ = Command::new("sudo")
-            .args(["chmod", "+x"])
-            .arg(&staging)
-            .status();
-        if cfg!(target_os = "macos") {
-            let _ = Command::new("sudo")
-                .args(["xattr", "-d", "com.apple.quarantine"])
-                .arg(&staging)
-                .output();
-        }
-        let ok = Command::new("sudo")
-            .args(["mv"])
-            .arg(&staging)
-            .arg(&dest)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !ok {
-            let _ = Command::new("sudo").args(["rm", "-f"]).arg(&staging).status();
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err("sudo mv failed.".to_string());
-        }
-    } else if is_readonly {
+    // Fall back to sudo if allowed (interactive `--update` mode).
+    if allow_sudo {
+        install_with_sudo(&new_binary, &staging, &dest, &tmp_dir)?;
         let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err("Install directory is read-only (sudo required).".to_string());
-    } else {
-        // Copy to staging file in the same directory.
-        std::fs::copy(&new_binary, &staging)
-            .map_err(|err| format!("Failed to copy binary: {err}"))?;
-        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755))
-            .map_err(|err| format!("Failed to set permissions: {err}"))?;
-        if cfg!(target_os = "macos") {
-            let _ = Command::new("xattr")
-                .args(["-d", "com.apple.quarantine"])
-                .arg(&staging)
-                .output();
-        }
-        // Atomic rename.
-        std::fs::rename(&staging, &dest).map_err(|err| {
-            let _ = std::fs::remove_file(&staging);
-            format!("Failed to rename binary: {err}")
-        })?;
-        let ags_link = install_dir.join("ags");
-        if !ags_link.exists() {
-            let _ = std::os::unix::fs::symlink(&dest, &ags_link);
-        }
+        return Ok(());
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    Ok(())
+    Err(direct_err)
 }
 
 /// Check for an update and install it if available. Returns the new tag on success.
@@ -176,6 +151,78 @@ pub fn check_and_apply_update(allow_sudo: bool) -> Result<String, String> {
     }
     download_and_install(&tag, allow_sudo)?;
     Ok(tag)
+}
+
+fn install_direct(
+    new_binary: &Path,
+    staging: &Path,
+    dest: &Path,
+    install_dir: &Path,
+) -> Result<(), String> {
+    std::fs::copy(new_binary, staging)
+        .map_err(|err| format!("Failed to copy binary: {err}"))?;
+    std::fs::set_permissions(staging, std::fs::Permissions::from_mode(0o755))
+        .map_err(|err| format!("Failed to set permissions: {err}"))?;
+    if cfg!(target_os = "macos") {
+        let _ = Command::new("xattr")
+            .args(["-d", "com.apple.quarantine"])
+            .arg(staging)
+            .output();
+    }
+    std::fs::rename(staging, dest).map_err(|err| {
+        let _ = std::fs::remove_file(staging);
+        format!("Failed to rename binary: {err}")
+    })?;
+    let ags_link = install_dir.join("ags");
+    if !ags_link.exists() {
+        let _ = std::os::unix::fs::symlink(dest, &ags_link);
+    }
+    Ok(())
+}
+
+fn install_with_sudo(
+    new_binary: &Path,
+    staging: &Path,
+    dest: &Path,
+    tmp_dir: &Path,
+) -> Result<(), String> {
+    let ok = Command::new("sudo")
+        .args(["cp"])
+        .arg(new_binary)
+        .arg(staging)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        let _ = std::fs::remove_dir_all(tmp_dir);
+        return Err("sudo cp failed.".to_string());
+    }
+    let _ = Command::new("sudo")
+        .args(["chmod", "+x"])
+        .arg(staging)
+        .status();
+    if cfg!(target_os = "macos") {
+        let _ = Command::new("sudo")
+            .args(["xattr", "-d", "com.apple.quarantine"])
+            .arg(staging)
+            .output();
+    }
+    let ok = Command::new("sudo")
+        .args(["mv"])
+        .arg(staging)
+        .arg(dest)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        let _ = Command::new("sudo")
+            .args(["rm", "-f"])
+            .arg(staging)
+            .status();
+        let _ = std::fs::remove_dir_all(tmp_dir);
+        return Err("sudo mv failed.".to_string());
+    }
+    Ok(())
 }
 
 fn detect_platform() -> Result<&'static str, String> {
