@@ -67,6 +67,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         Modal::ConfirmRemoveRepo { repo_path } => {
             render_confirm_remove_repo_modal(frame, repo_path);
         }
+        Modal::ConfirmClosePanes { folder } => {
+            render_confirm_close_panes_modal(frame, folder);
+        }
         Modal::ConfirmAddNewRepo { repo_path } => {
             render_confirm_add_repo_modal(frame, repo_path);
         }
@@ -144,18 +147,17 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                         let (sh_ch, sh_color) = pane_char_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS);
                         spans.push(Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)));
                         spans.push(Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)));
-                        spans.push(Span::raw(" "));
                     } else {
-                        spans.push(Span::raw("   "));
-                    }
-
-                    match app.folder_list().git_status(path) {
-                        GitStatus::Dirty => spans.push(Span::raw("*")),
-                        GitStatus::Unpushed => spans.push(Span::raw("+")),
-                        GitStatus::Clean => spans.push(Span::raw(" ")),
+                        spans.push(Span::raw("  "));
                     }
 
                     spans.push(Span::raw(name.clone()));
+
+                    match app.folder_list().git_status(path) {
+                        GitStatus::Dirty => spans.push(Span::raw(" *")),
+                        GitStatus::Unpushed => spans.push(Span::raw(" +")),
+                        GitStatus::Clean => {}
+                    }
 
                     let is_selected = selected_entry_idx == Some(idx);
                     let is_active = active_entry_idx == Some(idx);
@@ -346,6 +348,7 @@ fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
         help_line("j/k", "Navigate"),
         help_line("r", "Rename"),
         help_line("x", "Restart dead panes"),
+        help_line("c", "Close panes"),
     ];
 
     if !is_lone {
@@ -621,6 +624,59 @@ fn render_new_repo_pwc_modal(
             Span::raw(" save  "),
             Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
             Span::raw(" skip"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
+}
+
+fn render_confirm_close_panes_modal(frame: &mut Frame, folder: &std::path::Path) {
+    let name = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+
+    let area = frame.area().centered(
+        Constraint::Length(50.min(frame.area().width.saturating_sub(4))),
+        Constraint::Length(6),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Close Panes ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::raw("Close panes for "),
+            Span::styled(
+                name,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(
+                "y",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled("n", Style::default().fg(FOCUS_COLOR)),
+            Span::raw("/"),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" cancel"),
         ]),
     ];
 

@@ -70,6 +70,9 @@ pub enum Modal {
     ConfirmRemoveRepo {
         repo_path: PathBuf,
     },
+    ConfirmClosePanes {
+        folder: PathBuf,
+    },
 }
 
 const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
@@ -572,6 +575,22 @@ impl App {
                     _ => {}
                 }
             }
+            Modal::ConfirmClosePanes { folder } => {
+                let folder = folder.clone();
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        self.tmux.remove_session(&folder);
+                        self.tmux.set_title("agent-storm");
+                        self.tmux.focus_sidebar();
+                        self.set_status("Panes closed.".to_string());
+                        self.modal = Modal::None;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        self.modal = Modal::None;
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -679,6 +698,15 @@ impl App {
                     self.folder_list.selected_folder().map(|p| p.to_path_buf())
                 {
                     self.modal = Modal::ConfirmDeleteWorktree { folder };
+                }
+            }
+            KeyCode::Char('c') => {
+                if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
+                    if self.tmux.session_for(&folder).is_some() {
+                        self.modal = Modal::ConfirmClosePanes { folder };
+                    } else {
+                        self.set_status("No panes open for this folder.".to_string());
+                    }
                 }
             }
             KeyCode::Backspace | KeyCode::Delete if !self.lone => {

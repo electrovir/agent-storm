@@ -32,6 +32,10 @@ impl TmuxController {
         self.active_folder.as_ref()
     }
 
+    pub fn focus_sidebar(&self) {
+        focus_pane(&self.sidebar_pane_id);
+    }
+
     pub fn session_for(&self, folder: &Path) -> Option<&TmuxSession> {
         self.sessions.get(folder)
     }
