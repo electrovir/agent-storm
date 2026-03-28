@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
@@ -29,6 +29,10 @@ pub struct Config {
     /// List of repos to browse.
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
+
+    /// Folder paths where the AI pane is hidden (shell-only mode).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_ai_pane: Vec<PathBuf>,
 }
 
 impl Default for Config {
@@ -38,6 +42,7 @@ impl Default for Config {
             post_worktree_cmd: None,
             auto_update: false,
             repos: Vec::new(),
+            hidden_ai_pane: Vec::new(),
         }
     }
 }
@@ -71,6 +76,22 @@ impl Config {
     /// Get all repo paths.
     pub fn repo_paths(&self) -> Vec<PathBuf> {
         self.repos.iter().map(|r| r.path.clone()).collect()
+    }
+
+    /// Check if the AI pane is hidden for a folder.
+    pub fn is_ai_hidden(&self, folder: &Path) -> bool {
+        self.hidden_ai_pane.iter().any(|p| p == folder)
+    }
+
+    /// Toggle the AI pane hidden state for a folder. Returns the new state.
+    pub fn toggle_ai_hidden(&mut self, folder: &Path) -> bool {
+        if self.is_ai_hidden(folder) {
+            self.hidden_ai_pane.retain(|p| p != folder);
+            false
+        } else {
+            self.hidden_ai_pane.push(folder.to_path_buf());
+            true
+        }
     }
 }
 

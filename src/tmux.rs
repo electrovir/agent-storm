@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct TmuxSession {
-    pub ai_pane_id: String,
+    pub ai_pane_id: Option<String>,
     pub shell_pane_id: String,
 }
 
@@ -78,10 +78,12 @@ impl TmuxController {
 
     /// Activate a folder: create or restore its AI and shell panes.
     /// If `keep_sidebar_focus` is true, focus stays on the sidebar.
+    /// If `hide_ai` is true, only the shell pane is created/shown.
     pub fn activate_folder(
         &mut self,
         folder: &PathBuf,
         keep_sidebar_focus: bool,
+        hide_ai: bool,
     ) -> Result<(), String> {
         // Park current panes if switching folders.
         if let Some(current) = &self.active_folder.clone() {
@@ -89,7 +91,11 @@ impl TmuxController {
                 if !keep_sidebar_focus
                     && let Some(session) = self.sessions.get(folder)
                 {
-                    focus_pane(&session.ai_pane_id);
+                    let focus_id = session
+                        .ai_pane_id
+                        .as_deref()
+                        .unwrap_or(&session.shell_pane_id);
+                    focus_pane(focus_id);
                 }
                 return Ok(());
             }
@@ -99,8 +105,11 @@ impl TmuxController {
         if self.sessions.contains_key(folder) {
             self.restore_panes(folder)?;
         } else {
-            self.create_panes(folder)?;
+            self.create_panes(folder, hide_ai)?;
         }
+
+        // Reconcile AI pane state with hide_ai preference.
+        self.reconcile_ai_pane(folder, hide_ai);
 
         self.active_folder = Some(folder.clone());
         self.update_keybindings();
@@ -115,7 +124,11 @@ impl TmuxController {
         if !keep_sidebar_focus
             && let Some(session) = self.sessions.get(folder)
         {
-            focus_pane(&session.ai_pane_id);
+            let focus_id = session
+                .ai_pane_id
+                .as_deref()
+                .unwrap_or(&session.shell_pane_id);
+            focus_pane(focus_id);
         } else if keep_sidebar_focus {
             focus_pane(&self.sidebar_pane_id);
         }
@@ -123,32 +136,41 @@ impl TmuxController {
         Ok(())
     }
 
-    fn create_panes(&mut self, folder: &Path) -> Result<(), String> {
+    fn create_panes(&mut self, folder: &Path, hide_ai: bool) -> Result<(), String> {
         let folder = std::fs::canonicalize(folder)
             .map_err(|e| format!("Folder does not exist: {e}"))?;
         let folder_str = folder.to_str().ok_or("Invalid folder path.")?;
 
-        // Create AI pane to the right of sidebar.
-        let ai_pane_id = tmux_cmd_output(&[
-            "split-window",
-            "-h",
-            "-t",
-            &self.sidebar_pane_id,
-            "-c",
-            folder_str,
-            "-P",
-            "-F",
-            "#{pane_id}",
-            &self.ai_cmd,
-        ])
-        .map_err(|e| format!("Failed to create AI pane: {e}"))?;
+        let ai_pane_id = if hide_ai {
+            None
+        } else {
+            // Create AI pane to the right of sidebar.
+            Some(
+                tmux_cmd_output(&[
+                    "split-window",
+                    "-h",
+                    "-t",
+                    &self.sidebar_pane_id,
+                    "-c",
+                    folder_str,
+                    "-P",
+                    "-F",
+                    "#{pane_id}",
+                    &self.ai_cmd,
+                ])
+                .map_err(|e| format!("Failed to create AI pane: {e}"))?,
+            )
+        };
 
-        // Create shell pane to the right of AI.
+        // Create shell pane to the right of AI (or sidebar if AI is hidden).
+        let split_target = ai_pane_id
+            .as_deref()
+            .unwrap_or(&self.sidebar_pane_id);
         let shell_pane_id = tmux_cmd_output(&[
             "split-window",
             "-h",
             "-t",
-            &ai_pane_id,
+            split_target,
             "-c",
             folder_str,
             "-P",
@@ -178,7 +200,9 @@ impl TmuxController {
 
         // Move panes to background windows. Park shell first (rightmost).
         tmux_cmd(&["break-pane", "-d", "-s", &session.shell_pane_id]);
-        tmux_cmd(&["break-pane", "-d", "-s", &session.ai_pane_id]);
+        if let Some(ai_id) = &session.ai_pane_id {
+            tmux_cmd(&["break-pane", "-d", "-s", ai_id]);
+        }
     }
 
     fn restore_panes(&self, folder: &PathBuf) -> Result<(), String> {
@@ -187,25 +211,37 @@ impl TmuxController {
             .get(folder)
             .ok_or("No session for folder.")?;
 
-        // Join AI pane to the right of sidebar.
-        tmux_cmd(&[
-            "join-pane",
-            "-h",
-            "-s",
-            &session.ai_pane_id,
-            "-t",
-            &self.sidebar_pane_id,
-        ]);
+        if let Some(ai_id) = &session.ai_pane_id {
+            // Join AI pane to the right of sidebar.
+            tmux_cmd(&[
+                "join-pane",
+                "-h",
+                "-s",
+                ai_id,
+                "-t",
+                &self.sidebar_pane_id,
+            ]);
 
-        // Join shell pane to the right of AI.
-        tmux_cmd(&[
-            "join-pane",
-            "-h",
-            "-s",
-            &session.shell_pane_id,
-            "-t",
-            &session.ai_pane_id,
-        ]);
+            // Join shell pane to the right of AI.
+            tmux_cmd(&[
+                "join-pane",
+                "-h",
+                "-s",
+                &session.shell_pane_id,
+                "-t",
+                ai_id,
+            ]);
+        } else {
+            // No AI pane — join shell directly to the right of sidebar.
+            tmux_cmd(&[
+                "join-pane",
+                "-h",
+                "-s",
+                &session.shell_pane_id,
+                "-t",
+                &self.sidebar_pane_id,
+            ]);
+        }
 
         Ok(())
     }
@@ -222,11 +258,12 @@ impl TmuxController {
         // Give the AI pane 40% of the remaining space (shell gets 60%).
         if let Some(folder) = &self.active_folder
             && let Some(session) = self.sessions.get(folder)
+            && let Some(ai_id) = &session.ai_pane_id
         {
             tmux_cmd(&[
                 "resize-pane",
                 "-t",
-                &session.ai_pane_id,
+                ai_id,
                 "-x",
                 "40%",
             ]);
@@ -237,13 +274,17 @@ impl TmuxController {
         if let Some(folder) = &self.active_folder
             && let Some(session) = self.sessions.get(folder)
         {
+            let alt2_target = session
+                .ai_pane_id
+                .as_deref()
+                .unwrap_or(&session.shell_pane_id);
             tmux_cmd(&[
                 "bind-key",
                 "-n",
                 "M-2",
                 "select-pane",
                 "-t",
-                &session.ai_pane_id,
+                alt2_target,
             ]);
             tmux_cmd(&[
                 "bind-key",
@@ -259,7 +300,9 @@ impl TmuxController {
     /// Remove a folder's session and kill its panes.
     pub fn remove_session(&mut self, folder: &PathBuf) {
         if let Some(session) = self.sessions.remove(folder) {
-            tmux_cmd(&["kill-pane", "-t", &session.ai_pane_id]);
+            if let Some(ai_id) = &session.ai_pane_id {
+                tmux_cmd(&["kill-pane", "-t", ai_id]);
+            }
             tmux_cmd(&["kill-pane", "-t", &session.shell_pane_id]);
         }
         if self.active_folder.as_ref() == Some(folder) {
@@ -354,15 +397,105 @@ impl TmuxController {
             return 0;
         };
         let mut count = 0;
-        if !self.is_pane_alive(&session.ai_pane_id) {
-            tmux_cmd(&["respawn-pane", "-t", &session.ai_pane_id]);
-            count += 1;
+        if let Some(ai_id) = &session.ai_pane_id {
+            if !self.is_pane_alive(ai_id) {
+                tmux_cmd(&["respawn-pane", "-t", ai_id]);
+                count += 1;
+            }
         }
         if !self.is_pane_alive(&session.shell_pane_id) {
             tmux_cmd(&["respawn-pane", "-t", &session.shell_pane_id]);
             count += 1;
         }
         count
+    }
+
+    /// Ensure the AI pane state matches the `hide_ai` preference.
+    fn reconcile_ai_pane(&mut self, folder: &Path, hide_ai: bool) {
+        let Some(session) = self.sessions.get(folder) else {
+            return;
+        };
+        if hide_ai && session.ai_pane_id.is_some() {
+            let ai_id = self
+                .sessions
+                .get_mut(folder)
+                .and_then(|s| s.ai_pane_id.take());
+            if let Some(ai_id) = ai_id {
+                tmux_cmd(&["kill-pane", "-t", &ai_id]);
+            }
+        } else if !hide_ai && session.ai_pane_id.is_none() {
+            let folder_str = folder.to_str().unwrap_or(".").to_string();
+            let shell_id = session.shell_pane_id.clone();
+            if let Ok(ai_id) = tmux_cmd_output(&[
+                "split-window",
+                "-h",
+                "-b",
+                "-t",
+                &shell_id,
+                "-c",
+                &folder_str,
+                "-P",
+                "-F",
+                "#{pane_id}",
+                &self.ai_cmd,
+            ]) {
+                if let Some(session) = self.sessions.get_mut(folder) {
+                    session.ai_pane_id = Some(ai_id);
+                }
+            }
+        }
+    }
+
+    /// Hide the AI pane for a folder. Kills the AI pane if it exists.
+    pub fn hide_ai_pane(&mut self, folder: &Path) {
+        let ai_id = self
+            .sessions
+            .get_mut(folder)
+            .and_then(|s| s.ai_pane_id.take());
+        if let Some(ai_id) = ai_id {
+            tmux_cmd(&["kill-pane", "-t", &ai_id]);
+        }
+        if self.active_folder.as_deref() == Some(folder) {
+            self.update_keybindings();
+            self.fix_layout();
+        }
+    }
+
+    /// Show the AI pane for a folder. Creates the pane if the folder is active.
+    pub fn show_ai_pane(&mut self, folder: &Path) {
+        let is_active = self.active_folder.as_deref() == Some(folder);
+        if !is_active {
+            return;
+        }
+
+        let folder_str = folder.to_str().unwrap_or(".").to_string();
+        let shell_id = match self.sessions.get(folder) {
+            Some(session) => session.shell_pane_id.clone(),
+            None => return,
+        };
+
+        // Create AI pane before (to the left of) the shell pane.
+        let Ok(ai_id) = tmux_cmd_output(&[
+            "split-window",
+            "-h",
+            "-b",
+            "-t",
+            &shell_id,
+            "-c",
+            &folder_str,
+            "-P",
+            "-F",
+            "#{pane_id}",
+            &self.ai_cmd,
+        ]) else {
+            return;
+        };
+
+        if let Some(session) = self.sessions.get_mut(folder) {
+            session.ai_pane_id = Some(ai_id);
+        }
+        self.update_keybindings();
+        self.fix_layout();
     }
 
     /// Kill the entire tmux session.

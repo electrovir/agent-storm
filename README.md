@@ -130,6 +130,7 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 | `c`                  | Close panes for selected folder (confirm)  |
 | `x`                  | Restart dead panes for selected folder     |
 | `r`                  | Rename selected folder                     |
+| `i`                  | Toggle AI pane (shell-only mode)           |
 | `a`                  | Add a new repo                             |
 | `Backspace`          | Remove repo from config (with confirm)     |
 | `o`                  | Open config file in system file browser    |
@@ -188,6 +189,7 @@ path = "/Users/you/repos/other-project"
 - `post_worktree_cmd` — global default command to run after creating a worktree
 - `auto_update` — automatically check for and install updates in the background (default: `false`). When enabled, agent-storm checks GitHub for new releases once per hour and installs them silently. An orange "restart to update" banner appears in the sidebar when an update has been downloaded.
 - `repos` — list of repos to browse, each with an optional per-repo `post_worktree_cmd`
+- `hidden_ai_pane` — list of folder paths where the AI pane is hidden (toggled with `i` in the sidebar)
 
 CLI flags (`--ai-cmd`, `--post-worktree-cmd`) override config values.
 

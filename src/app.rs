@@ -407,7 +407,8 @@ impl App {
                             if let Some(folder) = new_folder
                                 && folder.is_dir()
                             {
-                                if let Err(err) = self.tmux.activate_folder(&folder, false) {
+                                let hide_ai = self.config.is_ai_hidden(&folder);
+                                if let Err(err) = self.tmux.activate_folder(&folder, false, hide_ai) {
                                     self.set_status(err);
                                 } else {
                                     // Use per-repo command, falling back to global.
@@ -754,6 +755,20 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('i') => {
+                if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
+                    let now_hidden = self.config.toggle_ai_hidden(&folder);
+                    if let Err(err) = config::save_config(&self.config) {
+                        self.set_status(err);
+                    } else if now_hidden {
+                        self.tmux.hide_ai_pane(&folder);
+                        self.set_status("AI pane hidden.".to_string());
+                    } else {
+                        self.tmux.show_ai_pane(&folder);
+                        self.set_status("AI pane restored.".to_string());
+                    }
+                }
+            }
             KeyCode::Backspace | KeyCode::Delete if !self.lone => {
                 if let Some(repo_path) = self.folder_list.selected_repo_path() {
                     self.modal = Modal::ConfirmRemoveRepo { repo_path };
@@ -821,7 +836,8 @@ impl App {
         let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) else {
             return;
         };
-        match self.tmux.activate_folder(&folder, !focus_ai) {
+        let hide_ai = self.config.is_ai_hidden(&folder);
+        match self.tmux.activate_folder(&folder, !focus_ai, hide_ai) {
             Ok(()) => {}
             Err(err) => {
                 self.set_status(err);
