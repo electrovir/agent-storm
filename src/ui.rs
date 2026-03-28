@@ -217,12 +217,15 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                     // Pane status indicators (2 display columns).
                     if let Some(session) = app.tmux().session_for(path) {
                         let tmux = app.tmux();
-                        let (ai_ch, ai_color) = pane_char_color(
-                            tmux,
-                            &session.ai_pane_id,
-                            AI_BUSY_THRESHOLD_SECS,
-                            false,
-                        );
+                        let (ai_ch, ai_color) = match &session.ai_pane_id {
+                            Some(ai_id) => pane_char_color(
+                                tmux,
+                                ai_id,
+                                AI_BUSY_THRESHOLD_SECS,
+                                false,
+                            ),
+                            None => (' ', Color::DarkGray),
+                        };
                         let (sh_ch, sh_color) = pane_char_color(
                             tmux,
                             &session.shell_pane_id,
@@ -458,6 +461,7 @@ fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
         help_line("Tab", "Open + stay"),
         help_line("j/k", "Navigate"),
         help_line("r", "Rename"),
+        help_line("i", "Toggle AI pane"),
         help_line("x", "Restart dead panes"),
         help_line("c", "Close panes"),
     ];
