@@ -217,50 +217,70 @@ fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
     let mut entries = Vec::new();
     let mut selectable = Vec::new();
 
+    // Partition repos into plain (no worktrees) and worktree roots, sorted alphabetically.
+    let mut plain_repos: Vec<&PathBuf> = Vec::new();
+    let mut wt_repos: Vec<&PathBuf> = Vec::new();
     for repo_path in repos {
-        let repo_name = repo_path
+        if worktree::is_worktree_root(repo_path) {
+            wt_repos.push(repo_path);
+        } else {
+            plain_repos.push(repo_path);
+        }
+    }
+    let repo_name = |p: &&PathBuf| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_lowercase()
+    };
+    plain_repos.sort_by_key(|a| repo_name(a));
+    wt_repos.sort_by_key(|a| repo_name(a));
+
+    // Plain repos first.
+    for repo_path in &plain_repos {
+        let name = repo_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
+        let canonical = std::fs::canonicalize(repo_path)
+            .unwrap_or_else(|_| (*repo_path).clone());
+        selectable.push(entries.len());
+        entries.push(SidebarEntry::Item {
+            path: canonical,
+            name,
+            indented: false,
+            is_worktree_child: false,
+        });
+    }
 
-        let is_wt_root = worktree::is_worktree_root(repo_path);
+    // Worktree repos after.
+    for repo_path in &wt_repos {
+        let name = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?")
+            .to_string();
+        entries.push(SidebarEntry::RepoHeader {
+            path: (*repo_path).clone(),
+            name,
+        });
 
-        if is_wt_root {
-            // Repo with worktrees: show header + indented worktrees.
-            entries.push(SidebarEntry::RepoHeader {
-                path: repo_path.clone(),
-                name: repo_name,
-            });
-
-            let mut worktrees = read_subdirs(repo_path, true);
-            worktrees.sort();
-            for wt in worktrees {
-                // Canonicalize to match tmux session keys.
-                let wt = std::fs::canonicalize(&wt).unwrap_or(wt);
-                let wt_name = wt
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?")
-                    .to_string();
-                selectable.push(entries.len());
-                entries.push(SidebarEntry::Item {
-                    path: wt,
-                    name: wt_name,
-                    indented: true,
-                    is_worktree_child: true,
-                });
-            }
-        } else {
-            // Standalone repo: selectable directly.
-            let canonical = std::fs::canonicalize(repo_path)
-                .unwrap_or_else(|_| repo_path.clone());
+        let mut worktrees = read_subdirs(repo_path, true);
+        worktrees.sort();
+        for wt in worktrees {
+            let wt = std::fs::canonicalize(&wt).unwrap_or(wt);
+            let wt_name = wt
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
             selectable.push(entries.len());
             entries.push(SidebarEntry::Item {
-                path: canonical,
-                name: repo_name,
-                indented: false,
-                is_worktree_child: false,
+                path: wt,
+                name: wt_name,
+                indented: true,
+                is_worktree_child: true,
             });
         }
     }
