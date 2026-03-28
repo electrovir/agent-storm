@@ -3,6 +3,7 @@ mod config;
 mod pane;
 mod tmux;
 mod ui;
+mod updater;
 mod worktree;
 
 use app::App;
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Parser)]
-#[command(name = "agent-storm", about = "Multi-pane AI coding assistant launcher")]
+#[command(name = "agent-storm", version, about = "Multi-pane AI coding assistant launcher")]
 struct Cli {
     /// Command to run in the AI pane (middle column). Overrides config file.
     #[arg(long)]
@@ -175,128 +176,16 @@ fn open_config_in_editor() -> io::Result<()> {
 fn update_binary() -> io::Result<()> {
     eprintln!("Updating agent-storm...");
 
-    // Detect platform.
-    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        (os, arch) => {
-            eprintln!("Unsupported platform: {os}/{arch}");
+    match updater::check_and_apply_update(true) {
+        Ok(tag) => {
+            eprintln!("Updated to {tag}.");
+            Ok(())
+        }
+        Err(msg) => {
+            eprintln!("Error: {msg}");
             std::process::exit(1);
         }
-    };
-
-    // Fetch latest tag.
-    let tag_output = Command::new("curl")
-        .args([
-            "--proto", "=https",
-            "--tlsv1.2",
-            "-sL",
-            "https://api.github.com/repos/electrovir/agent-storm/releases/latest",
-        ])
-        .output()?;
-
-    let tag_json = String::from_utf8_lossy(&tag_output.stdout);
-    let tag = tag_json
-        .lines()
-        .find(|l| l.contains("\"tag_name\""))
-        .and_then(|l| {
-            let after_key = &l[l.find("tag_name")? + 8..];
-            let colon_rest = &after_key[after_key.find(':')? + 1..];
-            let first_quote = &colon_rest[colon_rest.find('"')? + 1..];
-            let end = first_quote.find('"')?;
-            Some(&first_quote[..end])
-        });
-
-    let Some(tag) = tag else {
-        eprintln!("Error: could not determine latest release.");
-        std::process::exit(1);
-    };
-
-    eprintln!("Latest release: {tag}");
-
-    let url = format!(
-        "https://github.com/electrovir/agent-storm/releases/download/{tag}/agent-storm-{target}.tar.gz"
-    );
-
-    // Download to temp.
-    let tmp_dir = env::temp_dir().join("ags-update");
-    let _ = std::fs::create_dir_all(&tmp_dir);
-    let tar_path = tmp_dir.join("agent-storm.tar.gz");
-
-    let dl_status = Command::new("curl")
-        .args([
-            "--proto", "=https",
-            "--tlsv1.2",
-            "-sL",
-            &url,
-            "-o",
-        ])
-        .arg(&tar_path)
-        .status()?;
-
-    if !dl_status.success() {
-        eprintln!("Error: download failed.");
-        std::process::exit(1);
     }
-
-    // Extract.
-    let extract_status = Command::new("tar")
-        .args(["xzf"])
-        .arg(&tar_path)
-        .arg("-C")
-        .arg(&tmp_dir)
-        .status()?;
-
-    if !extract_status.success() {
-        eprintln!("Error: extraction failed.");
-        std::process::exit(1);
-    }
-
-    let new_binary = tmp_dir.join("agent-storm");
-    if !new_binary.exists() {
-        eprintln!("Error: binary not found in archive.");
-        std::process::exit(1);
-    }
-
-    // Strip quarantine on macOS.
-    if cfg!(target_os = "macos") {
-        let _ = Command::new("xattr")
-            .args(["-d", "com.apple.quarantine"])
-            .arg(&new_binary)
-            .output();
-    }
-
-    // Find install location.
-    let install_path = env::current_exe()?;
-    let install_dir = install_path.parent().unwrap_or(Path::new("/usr/local/bin"));
-
-    // Install.
-    let dest = install_dir.join("agent-storm");
-    if install_dir
-        .metadata()
-        .map(|m| m.permissions().readonly())
-        .unwrap_or(true)
-    {
-        Command::new("sudo")
-            .args(["cp"])
-            .arg(&new_binary)
-            .arg(&dest)
-            .status()?;
-    } else {
-        std::fs::copy(&new_binary, &dest)?;
-        let ags_link = install_dir.join("ags");
-        if !ags_link.exists() {
-            let _ = std::os::unix::fs::symlink(&dest, &ags_link);
-        }
-    };
-
-    // Cleanup.
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-
-    eprintln!("Updated to {tag}.");
-    Ok(())
 }
 
 fn launch_tmux(

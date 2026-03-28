@@ -26,15 +26,25 @@ fn spinner_char() -> char {
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
+    let update_row = if app.update_pending() { 1 } else { 0 };
+
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(update_row),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     let main_area = vertical[0];
-    let status_area = vertical[1];
+    let update_area = vertical[1];
+    let status_area = vertical[2];
 
     render_folder_list(frame, app, main_area);
+    if app.update_pending() {
+        render_update_banner(frame, update_area);
+    }
     render_status_bar(frame, app, status_area);
 
     // Render modal on top of everything.
@@ -209,6 +219,14 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     };
 
     let bar = Paragraph::new(Span::styled(status_text, style));
+    frame.render_widget(bar, area);
+}
+
+fn render_update_banner(frame: &mut Frame, area: ratatui::layout::Rect) {
+    let style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Rgb(255, 165, 0));
+    let bar = Paragraph::new(Span::styled(" restart to update", style));
     frame.render_widget(bar, area);
 }
 
