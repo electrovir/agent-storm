@@ -548,8 +548,11 @@ impl App {
                 let folder = folder.clone();
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        self.close_modal();
+                        // Kill panes and start deletion before unzoom to avoid
+                        // tmux layout thrash (unzoom would briefly restore panes).
+                        self.modal = Modal::None;
                         self.delete_worktree(&folder);
+                        self.tmux.unzoom_sidebar();
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                         self.close_modal();
@@ -693,6 +696,7 @@ impl App {
                     let _ = sender.send(BgMessage::StatusMessage(msg));
                 }
                 Err(msg) => {
+                    updater::log(&format!("Worktree delete failed: {msg}"));
                     let _ = sender.send(BgMessage::StatusMessage(msg));
                 }
             }
