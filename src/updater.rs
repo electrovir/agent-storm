@@ -1,4 +1,5 @@
 use std::env;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -83,18 +84,19 @@ pub fn download_and_install(tag: &str, allow_sudo: bool) -> Result<(), String> {
         return Err("Binary not found in archive.".to_string());
     }
 
-    // Strip quarantine on macOS.
-    if cfg!(target_os = "macos") {
-        let _ = Command::new("xattr")
-            .args(["-d", "com.apple.quarantine"])
-            .arg(&new_binary)
-            .output();
-    }
-
-    // Install.
+    // Install via atomic rename.
+    //
+    // 1. Copy the new binary to a temp file in the install directory (same filesystem).
+    // 2. Set execute permissions and strip macOS quarantine on the temp file.
+    // 3. Atomically rename the temp file to the final path.
+    //
+    // rename() on the same filesystem is atomic: it swaps the directory entry instantly.
+    // The old inode stays alive for any running processes. New invocations get the new binary.
+    // This avoids corrupting/killing a running instance (which fs::copy would do).
     let install_path = env::current_exe().map_err(|err| format!("Cannot find current exe: {err}"))?;
     let install_dir = install_path.parent().unwrap_or(Path::new("/usr/local/bin"));
     let dest = install_dir.join("agent-storm");
+    let staging = install_dir.join(".agent-storm.next");
 
     let is_readonly = install_dir
         .metadata()
@@ -102,22 +104,60 @@ pub fn download_and_install(tag: &str, allow_sudo: bool) -> Result<(), String> {
         .unwrap_or(true);
 
     if is_readonly && allow_sudo {
-        let status = Command::new("sudo")
+        // sudo cp to staging, sudo chmod, sudo mv to final.
+        let ok = Command::new("sudo")
             .args(["cp"])
             .arg(&new_binary)
-            .arg(&dest)
+            .arg(&staging)
             .status()
-            .map_err(|err| format!("sudo cp failed: {err}"))?;
-        if !status.success() {
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
             let _ = std::fs::remove_dir_all(&tmp_dir);
             return Err("sudo cp failed.".to_string());
+        }
+        let _ = Command::new("sudo")
+            .args(["chmod", "+x"])
+            .arg(&staging)
+            .status();
+        if cfg!(target_os = "macos") {
+            let _ = Command::new("sudo")
+                .args(["xattr", "-d", "com.apple.quarantine"])
+                .arg(&staging)
+                .output();
+        }
+        let ok = Command::new("sudo")
+            .args(["mv"])
+            .arg(&staging)
+            .arg(&dest)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ok {
+            let _ = Command::new("sudo").args(["rm", "-f"]).arg(&staging).status();
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err("sudo mv failed.".to_string());
         }
     } else if is_readonly {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err("Install directory is read-only (sudo required).".to_string());
     } else {
-        std::fs::copy(&new_binary, &dest)
+        // Copy to staging file in the same directory.
+        std::fs::copy(&new_binary, &staging)
             .map_err(|err| format!("Failed to copy binary: {err}"))?;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755))
+            .map_err(|err| format!("Failed to set permissions: {err}"))?;
+        if cfg!(target_os = "macos") {
+            let _ = Command::new("xattr")
+                .args(["-d", "com.apple.quarantine"])
+                .arg(&staging)
+                .output();
+        }
+        // Atomic rename.
+        std::fs::rename(&staging, &dest).map_err(|err| {
+            let _ = std::fs::remove_file(&staging);
+            format!("Failed to rename binary: {err}")
+        })?;
         let ags_link = install_dir.join("ags");
         if !ags_link.exists() {
             let _ = std::os::unix::fs::symlink(&dest, &ags_link);
