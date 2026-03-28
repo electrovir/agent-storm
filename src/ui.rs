@@ -153,23 +153,24 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
 
                     let mut spans: Vec<Span> = Vec::new();
 
-                    // Pane status indicators.
+                    if *indented {
+                        spans.push(Span::raw("  "));
+                    }
+
+                    // Pane status indicators (immediately before name, no space).
                     if let Some(session) = app.tmux().session_for(path) {
                         let tmux = app.tmux();
                         let (ai_ch, ai_color) = pane_char_color(tmux, &session.ai_pane_id, AI_BUSY_THRESHOLD_SECS, false);
                         let (sh_ch, sh_color) = pane_char_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS, true);
                         if highlighted {
-                            spans.push(Span::raw(format!("{ai_ch}")));
-                            spans.push(Span::raw(format!("{sh_ch}")));
+                            spans.push(Span::raw(format!("{ai_ch}{sh_ch}")));
+                        } else if ai_color == sh_color {
+                            spans.push(Span::styled(format!("{ai_ch}{sh_ch}"), Style::default().fg(ai_color)));
                         } else {
                             spans.push(Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)));
                             spans.push(Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)));
                         }
                     } else {
-                        spans.push(Span::raw("  "));
-                    }
-
-                    if *indented {
                         spans.push(Span::raw("  "));
                     }
 

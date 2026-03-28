@@ -320,8 +320,8 @@ fn get_git_status(path: &Path) -> GitStatus {
         .unwrap_or(false);
 
     if !has_upstream {
-        // Branch has never been pushed.
-        return GitStatus::Unpushed;
+        // Branch has never been pushed — no remote to be ahead of.
+        return GitStatus::Clean;
     }
 
     let unpushed = Command::new("git")
