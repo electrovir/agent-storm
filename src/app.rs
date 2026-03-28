@@ -9,12 +9,14 @@ use crate::config;
 use crate::pane::folder_list::FolderList;
 use crate::tmux::{self, TmuxController};
 use crate::ui;
+use crate::updater;
 use crate::worktree;
 
 enum BgMessage {
     StatusMessage(String),
     RefreshFolders,
     GitStatusResults(HashMap<PathBuf, crate::pane::folder_list::GitStatus>),
+    UpdateDownloaded,
 }
 
 /// What the folder list input mode is doing.
@@ -77,6 +79,8 @@ pub enum Modal {
 
 const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
 
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
+
 pub struct App {
     folder_list: FolderList,
     tmux: TmuxController,
@@ -89,6 +93,9 @@ pub struct App {
     modal: Modal,
     bg_sender: tokio_mpsc::UnboundedSender<BgMessage>,
     bg_receiver: tokio_mpsc::UnboundedReceiver<BgMessage>,
+    update_pending: bool,
+    last_update_check: Instant,
+    update_check_in_flight: bool,
 }
 
 impl App {
@@ -124,6 +131,9 @@ impl App {
             },
             bg_sender,
             bg_receiver,
+            update_pending: false,
+            last_update_check: Instant::now(),
+            update_check_in_flight: false,
         }
     }
 
@@ -170,6 +180,10 @@ impl App {
         &self.modal
     }
 
+    pub fn update_pending(&self) -> bool {
+        self.update_pending
+    }
+
     pub fn active_folder(&self) -> Option<&PathBuf> {
         self.tmux.active_folder()
     }
@@ -186,6 +200,22 @@ impl App {
                 });
             }
 
+            // Spawn background update check if auto_update is enabled.
+            if self.config.auto_update
+                && !self.update_pending
+                && !self.update_check_in_flight
+                && self.last_update_check.elapsed() >= UPDATE_CHECK_INTERVAL
+            {
+                self.update_check_in_flight = true;
+                self.last_update_check = Instant::now();
+                let sender = self.bg_sender.clone();
+                tokio::task::spawn_blocking(move || {
+                    if updater::check_and_apply_update(false).is_ok() {
+                        let _ = sender.send(BgMessage::UpdateDownloaded);
+                    }
+                });
+            }
+
             terminal.draw(|frame| {
                 ui::render(frame, self);
             })?;
@@ -196,6 +226,10 @@ impl App {
                     BgMessage::StatusMessage(text) => self.set_status(text),
                     BgMessage::RefreshFolders => self.folder_list.refresh(),
                     BgMessage::GitStatusResults(results) => self.folder_list.apply_git_status(results),
+                    BgMessage::UpdateDownloaded => {
+                        self.update_pending = true;
+                        self.update_check_in_flight = false;
+                    }
                 }
             }
 
