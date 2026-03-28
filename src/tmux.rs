@@ -1,12 +1,20 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct TmuxSession {
     pub ai_pane_id: String,
     pub shell_pane_id: String,
 }
+
+struct CachedPaneInfo {
+    dead: bool,
+    activity: u64,
+    current_command: String,
+}
+
+const SHELL_COMMANDS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "tcsh", "csh", "ksh"];
 
 pub struct TmuxController {
     session_name: String,
@@ -14,6 +22,8 @@ pub struct TmuxController {
     sessions: HashMap<PathBuf, TmuxSession>,
     active_folder: Option<PathBuf>,
     ai_cmd: String,
+    pane_info: HashMap<String, CachedPaneInfo>,
+    last_pane_refresh: Instant,
 }
 
 impl TmuxController {
@@ -25,6 +35,8 @@ impl TmuxController {
             sessions: HashMap::new(),
             active_folder: None,
             ai_cmd,
+            pane_info: HashMap::new(),
+            last_pane_refresh: Instant::now(),
         }
     }
 
@@ -275,35 +287,63 @@ impl TmuxController {
         .unwrap_or(true)
     }
 
-    /// Get pane activity timestamp (Unix seconds) for busy detection.
-    pub fn pane_activity(&self, pane_id: &str) -> Option<u64> {
-        let output = tmux_cmd_output(&[
-            "display-message",
-            "-p",
-            "-t",
-            pane_id,
-            "#{pane_activity}",
-        ])
-        .ok()?;
-        output.parse().ok()
+    /// Refresh cached pane info from tmux. Throttled to avoid excess subprocess calls.
+    pub fn refresh_pane_info(&mut self) {
+        if self.last_pane_refresh.elapsed() < Duration::from_millis(200) {
+            return;
+        }
+        self.last_pane_refresh = Instant::now();
+
+        let Ok(output) = tmux_cmd_output(&[
+            "list-panes",
+            "-s",
+            "-F",
+            "#{pane_id}\t#{pane_dead}\t#{pane_activity}\t#{pane_current_command}",
+        ]) else {
+            return;
+        };
+
+        self.pane_info.clear();
+        for line in output.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 4 {
+                self.pane_info.insert(
+                    parts[0].to_string(),
+                    CachedPaneInfo {
+                        dead: parts[1] != "0",
+                        activity: parts[2].parse().unwrap_or(0),
+                        current_command: parts[3].to_string(),
+                    },
+                );
+            }
+        }
     }
 
-    /// Check if a pane is "busy" (had activity within threshold).
-    pub fn is_pane_busy(&self, pane_id: &str, threshold_secs: u64) -> bool {
-        let Some(activity) = self.pane_activity(pane_id) else {
+    /// Check if a pane is "busy".
+    /// For shell panes (`is_shell_pane = true`): busy when the foreground process is not a shell.
+    /// For AI panes: busy when the pane had recent output (within threshold).
+    pub fn is_pane_busy(&self, pane_id: &str, threshold_secs: u64, is_shell_pane: bool) -> bool {
+        let Some(info) = self.pane_info.get(pane_id) else {
             return false;
         };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        now.saturating_sub(activity) < threshold_secs
+
+        if is_shell_pane {
+            let cmd = info.current_command.as_str();
+            !SHELL_COMMANDS.contains(&cmd)
+        } else {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            now.saturating_sub(info.activity) < threshold_secs
+        }
     }
 
     /// Check if a pane's process is still running (not exited).
     pub fn is_pane_alive(&self, pane_id: &str) -> bool {
-        tmux_cmd_output(&["display-message", "-p", "-t", pane_id, "#{pane_dead}"])
-            .map(|s| s == "0")
+        self.pane_info
+            .get(pane_id)
+            .map(|info| !info.dead)
             .unwrap_or(false)
     }
 

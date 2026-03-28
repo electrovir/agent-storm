@@ -103,10 +103,11 @@ fn pane_char_color(
     tmux: &crate::tmux::TmuxController,
     pane_id: &str,
     threshold_secs: u64,
+    is_shell_pane: bool,
 ) -> (char, Color) {
     if !tmux.is_pane_alive(pane_id) {
         ('x', Color::Red)
-    } else if tmux.is_pane_busy(pane_id, threshold_secs) {
+    } else if tmux.is_pane_busy(pane_id, threshold_secs, is_shell_pane) {
         (spinner_char(), Color::Green)
     } else {
         ('-', Color::DarkGray)
@@ -146,31 +147,39 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                     ])
                 }
                 SidebarEntry::Item { path, name, indented, .. } => {
-                    let indent = if *indented { "    " } else { "  " };
+                    let is_selected = selected_entry_idx == Some(idx);
+                    let is_active = active_entry_idx == Some(idx);
+                    let highlighted = (focused && is_selected) || is_active;
+
                     let mut spans: Vec<Span> = Vec::new();
-                    spans.push(Span::raw(indent.to_string()));
 
                     // Pane status indicators.
                     if let Some(session) = app.tmux().session_for(path) {
                         let tmux = app.tmux();
-                        let (ai_ch, ai_color) = pane_char_color(tmux, &session.ai_pane_id, AI_BUSY_THRESHOLD_SECS);
-                        let (sh_ch, sh_color) = pane_char_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS);
-                        spans.push(Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)));
-                        spans.push(Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)));
+                        let (ai_ch, ai_color) = pane_char_color(tmux, &session.ai_pane_id, AI_BUSY_THRESHOLD_SECS, false);
+                        let (sh_ch, sh_color) = pane_char_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS, true);
+                        if highlighted {
+                            spans.push(Span::raw(format!("{ai_ch}")));
+                            spans.push(Span::raw(format!("{sh_ch}")));
+                        } else {
+                            spans.push(Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)));
+                            spans.push(Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)));
+                        }
                     } else {
+                        spans.push(Span::raw("  "));
+                    }
+
+                    if *indented {
                         spans.push(Span::raw("  "));
                     }
 
                     spans.push(Span::raw(name.clone()));
 
                     match app.folder_list().git_status(path) {
-                        GitStatus::Dirty => spans.push(Span::raw(" *")),
-                        GitStatus::Unpushed => spans.push(Span::raw(" +")),
+                        GitStatus::Dirty => spans.push(Span::raw("*")),
+                        GitStatus::Unpushed => spans.push(Span::raw("+")),
                         GitStatus::Clean => {}
                     }
-
-                    let is_selected = selected_entry_idx == Some(idx);
-                    let is_active = active_entry_idx == Some(idx);
 
                     let style = if focused && is_selected {
                         Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
