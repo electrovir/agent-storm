@@ -114,6 +114,55 @@ fn pane_char_color(
     }
 }
 
+/// Wraps sidebar entry text with hanging indent. Continuation lines are
+/// indented 2 spaces past where the name starts on the first line.
+fn wrap_sidebar_entry<'a>(
+    prefix_spans: Vec<Span<'a>>,
+    name: &str,
+    name_style: Style,
+    suffix: &str,
+    line_style: Style,
+    prefix_width: usize,
+    area_width: usize,
+) -> Vec<Line<'a>> {
+    let full_text = format!("{name}{suffix}");
+    let first_avail = area_width.saturating_sub(prefix_width);
+
+    if full_text.len() <= first_avail {
+        let mut spans = prefix_spans;
+        spans.push(Span::styled(full_text, name_style));
+        return vec![Line::from(spans).style(line_style)];
+    }
+
+    let cont_indent = prefix_width + 2;
+    let cont_avail = area_width.saturating_sub(cont_indent).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    let mut chars = full_text.chars();
+
+    // First line.
+    let first_chunk: String = chars.by_ref().take(first_avail).collect();
+    let mut spans = prefix_spans;
+    spans.push(Span::styled(first_chunk, name_style));
+    lines.push(Line::from(spans).style(line_style));
+
+    // Continuation lines.
+    loop {
+        let chunk: String = chars.by_ref().take(cont_avail).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        lines.push(
+            Line::from(vec![
+                Span::raw(" ".repeat(cont_indent)),
+                Span::styled(chunk, name_style),
+            ])
+            .style(line_style),
+        );
+    }
+
+    lines
+}
+
 fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     use crate::pane::folder_list::{GitStatus, SidebarEntry};
 
@@ -128,59 +177,85 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         .iter()
         .position(|e| e.is_selectable() && Some(e.path()) == active_folder.map(|p| p.as_path()));
 
+    let width = inner.width as usize;
     let lines: Vec<Line> = app
         .folder_list()
         .entries()
         .iter()
         .enumerate()
-        .map(|(idx, entry)| {
+        .flat_map(|(idx, entry)| {
             match entry {
-                SidebarEntry::RepoHeader { name, .. } => {
-                    Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            name.clone(),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ])
-                }
-                SidebarEntry::Item { path, name, indented, .. } => {
+                SidebarEntry::RepoHeader { name, .. } => wrap_sidebar_entry(
+                    vec![Span::raw("  ")],
+                    name,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                    "",
+                    Style::default(),
+                    2,
+                    width,
+                ),
+                SidebarEntry::Item {
+                    path,
+                    name,
+                    indented,
+                    ..
+                } => {
                     let is_selected = selected_entry_idx == Some(idx);
                     let is_active = active_entry_idx == Some(idx);
                     let highlighted = (focused && is_selected) || is_active;
 
-                    let mut spans: Vec<Span> = Vec::new();
+                    let mut prefix_spans: Vec<Span> = Vec::new();
+                    let mut prefix_width: usize = 0;
 
                     if *indented {
-                        spans.push(Span::raw("  "));
+                        prefix_spans.push(Span::raw("  "));
+                        prefix_width += 2;
                     }
 
-                    // Pane status indicators (immediately before name, no space).
+                    // Pane status indicators (2 display columns).
                     if let Some(session) = app.tmux().session_for(path) {
                         let tmux = app.tmux();
-                        let (ai_ch, ai_color) = pane_char_color(tmux, &session.ai_pane_id, AI_BUSY_THRESHOLD_SECS, false);
-                        let (sh_ch, sh_color) = pane_char_color(tmux, &session.shell_pane_id, SHELL_BUSY_THRESHOLD_SECS, true);
+                        let (ai_ch, ai_color) = pane_char_color(
+                            tmux,
+                            &session.ai_pane_id,
+                            AI_BUSY_THRESHOLD_SECS,
+                            false,
+                        );
+                        let (sh_ch, sh_color) = pane_char_color(
+                            tmux,
+                            &session.shell_pane_id,
+                            SHELL_BUSY_THRESHOLD_SECS,
+                            true,
+                        );
                         if highlighted {
-                            spans.push(Span::raw(format!("{ai_ch}{sh_ch}")));
+                            prefix_spans.push(Span::raw(format!("{ai_ch}{sh_ch}")));
                         } else if ai_color == sh_color {
-                            spans.push(Span::styled(format!("{ai_ch}{sh_ch}"), Style::default().fg(ai_color)));
+                            prefix_spans.push(Span::styled(
+                                format!("{ai_ch}{sh_ch}"),
+                                Style::default().fg(ai_color),
+                            ));
                         } else {
-                            spans.push(Span::styled(format!("{ai_ch}"), Style::default().fg(ai_color)));
-                            spans.push(Span::styled(format!("{sh_ch}"), Style::default().fg(sh_color)));
+                            prefix_spans.push(Span::styled(
+                                format!("{ai_ch}"),
+                                Style::default().fg(ai_color),
+                            ));
+                            prefix_spans.push(Span::styled(
+                                format!("{sh_ch}"),
+                                Style::default().fg(sh_color),
+                            ));
                         }
                     } else {
-                        spans.push(Span::raw("  "));
+                        prefix_spans.push(Span::raw("  "));
                     }
+                    prefix_width += 2;
 
-                    spans.push(Span::raw(name.clone()));
-
-                    match app.folder_list().git_status(path) {
-                        GitStatus::Dirty => spans.push(Span::raw("*")),
-                        GitStatus::Unpushed => spans.push(Span::raw("+")),
-                        GitStatus::Clean => {}
-                    }
+                    let suffix = match app.folder_list().git_status(path) {
+                        GitStatus::Dirty => "*",
+                        GitStatus::Unpushed => "+",
+                        GitStatus::Clean => "",
+                    };
 
                     let style = if focused && is_selected {
                         Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
@@ -192,13 +267,21 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                         Style::new()
                     };
 
-                    Line::from(spans).style(style)
+                    wrap_sidebar_entry(
+                        prefix_spans,
+                        name,
+                        Style::default(),
+                        suffix,
+                        style,
+                        prefix_width,
+                        width,
+                    )
                 }
             }
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 }
 

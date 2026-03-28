@@ -300,7 +300,10 @@ impl App {
     fn close_modal(&mut self) {
         let was_zoomed = matches!(
             self.modal,
-            Modal::Settings { .. } | Modal::AddWorktree { .. } | Modal::AddRepo { .. }
+            Modal::Settings { .. }
+                | Modal::AddWorktree { .. }
+                | Modal::AddRepo { .. }
+                | Modal::ConfirmDeleteWorktree { .. }
         );
         self.modal = Modal::None;
         if was_zoomed {
@@ -519,11 +522,11 @@ impl App {
                 let folder = folder.clone();
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        self.modal = Modal::None;
+                        self.close_modal();
                         self.delete_worktree(&folder);
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        self.modal = Modal::None;
+                        self.close_modal();
                     }
                     _ => {}
                 }
@@ -637,11 +640,16 @@ impl App {
         self.folder_list.refresh();
         self.set_status("Deleting worktree...".to_string());
 
+        let target_parent = folder.parent();
         let sibling = self
             .folder_list
             .entries()
             .iter()
-            .filter(|e| e.is_selectable() && e.path() != folder)
+            .filter(|e| {
+                e.is_selectable()
+                    && e.path() != folder
+                    && e.path().parent() == target_parent
+            })
             .map(|e| e.path().to_path_buf())
             .next();
 
@@ -733,6 +741,7 @@ impl App {
                 } else if let Some(folder) =
                     self.folder_list.selected_folder().map(|p| p.to_path_buf())
                 {
+                    self.tmux.zoom_sidebar();
                     self.modal = Modal::ConfirmDeleteWorktree { folder };
                 }
             }
