@@ -7,11 +7,14 @@ A terminal UI for managing multiple AI coding sessions across project folders. T
 ## Getting started
 
 1. Install agent-storm and [tmux](https://github.com/tmux/tmux/wiki/Installing):
-
-   ```sh
-   brew install tmux  # or: sudo apt install tmux
-   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/electrovir/agent-storm/dev/install.sh | bash
-   ```
+    1. Tmux:
+       ```
+       brew install tmux # or: sudo apt install tmux
+       ```
+    2. agent-storm:
+        ```sh
+        curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/electrovir/agent-storm/dev/install.sh | bash
+        ```
 
 2. Run `ags` from any directory you want to work in:
 
