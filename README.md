@@ -111,28 +111,29 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 
 **Global (work from any pane — handled by tmux):**
 
-| Key                          | Action                          |
-|------------------------------|---------------------------------|
-| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane |
-| `Alt+F`                      | Zoom (fullscreen) current pane  |
-| `Ctrl+Q`                     | Quit                            |
+| Key                          | Action                           |
+|------------------------------|----------------------------------|
+| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane   |
+| `Alt+F`                      | Zoom (fullscreen) current pane   |
+| `Ctrl+Q`                     | Quit                             |
 
 **Sidebar (when sidebar is focused):**
 
-| Key                  | Action                                   |
-|----------------------|------------------------------------------|
-| `j` / `k` or arrows | Navigate                                 |
-| `Enter`              | Open sessions and focus AI pane           |
-| `Tab`                | Open sessions and stay in sidebar        |
-| `x`                  | Restart dead panes for selected folder   |
-| `r`                  | Rename selected folder                   |
-| `a`                  | Add a new repo                           |
-| `Backspace`          | Remove repo from config (with confirm)   |
-| `o`                  | Open config file in system file browser  |
-| `w`                  | Add git worktree (worktree repos only)   |
-| `d`                  | Delete worktree (worktree repos only)    |
-| `?`                  | Show help                                |
-| `Alt+S`              | Open settings                            |
+| Key                  | Action                                     |
+|----------------------|--------------------------------------------|
+| `j` / `k` or arrows | Navigate                                    |
+| `Enter`              | Open sessions and focus AI pane            |
+| `Tab`                | Open sessions and stay in sidebar          |
+| `c`                  | Close panes for selected folder (confirm)  |
+| `x`                  | Restart dead panes for selected folder     |
+| `r`                  | Rename selected folder                     |
+| `a`                  | Add a new repo                             |
+| `Backspace`          | Remove repo from config (with confirm)     |
+| `o`                  | Open config file in system file browser    |
+| `w`                  | Add git worktree (worktree repos only)     |
+| `d`                  | Delete worktree (worktree repos only)      |
+| `?`                  | Show help                                  |
+| `Alt+S`              | Open settings                              |
 
 **Text selection:** Hold `Shift` while clicking and dragging to select text (bypasses tmux mouse mode). On macOS Terminal.app, use `fn` instead.
 

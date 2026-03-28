@@ -311,6 +311,19 @@ fn get_git_status(path: &Path) -> GitStatus {
         return GitStatus::Dirty;
     }
 
+    // Check if the branch has an upstream at all.
+    let has_upstream = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+        .current_dir(path)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if !has_upstream {
+        // Branch has never been pushed.
+        return GitStatus::Unpushed;
+    }
+
     let unpushed = Command::new("git")
         .args(["log", "--oneline", "@{upstream}..HEAD"])
         .current_dir(path)
