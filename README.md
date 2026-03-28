@@ -146,11 +146,13 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 The sidebar shows repos from your config file. Repos with git worktrees display as a tree:
 
 ```
+standalone-repo      <-- repo without worktrees (selectable)
 my-project           <-- repo header (not selectable)
   *- dev             <-- worktree (selectable)
   -- feature-branch  <-- worktree (selectable)
-standalone-repo      <-- repo without worktrees (selectable)
 ```
+
+Plain repos are sorted alphabetically at the top, followed by worktree repos sorted alphabetically.
 
 Status indicators before each name: `[AI][Shell]`
 - spinner (green) — busy (recent output)
@@ -211,3 +213,9 @@ Worktree features:
 - `w` to create a new worktree (runs `post_worktree_cmd` after creation)
 - `d` to delete a worktree (with confirmation, blocked for the last worktree)
 - `r` to rename (uses `git worktree move` for proper reference updates)
+
+### Logs
+
+Background update errors are logged to the system temp directory:
+
+- macOS/Linux: `/tmp/agent-storm.log`
