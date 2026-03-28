@@ -14,6 +14,12 @@ pub enum GitStatus {
     Unpushed,
 }
 
+/// PR info for a folder's current branch.
+#[derive(Clone, Debug)]
+pub struct PrInfo {
+    pub url: String,
+}
+
 /// A single line in the sidebar display.
 #[derive(Clone)]
 pub enum SidebarEntry {
@@ -44,6 +50,8 @@ impl SidebarEntry {
     }
 }
 
+const PR_CHECK_INTERVAL_SECS: u64 = 60;
+
 pub struct FolderList {
     entries: Vec<SidebarEntry>,
     /// Indices into `entries` of selectable items only.
@@ -52,6 +60,10 @@ pub struct FolderList {
     git_status: HashMap<PathBuf, GitStatus>,
     last_dirty_check: std::time::Instant,
     dirty_check_in_flight: Arc<AtomicBool>,
+    pr_info: HashMap<PathBuf, PrInfo>,
+    last_pr_check: std::time::Instant,
+    pr_check_in_flight: Arc<AtomicBool>,
+    pr_consecutive_failures: u32,
     repos: Vec<PathBuf>,
 }
 
@@ -65,6 +77,12 @@ impl FolderList {
             git_status: HashMap::new(),
             last_dirty_check: std::time::Instant::now(),
             dirty_check_in_flight: Arc::new(AtomicBool::new(false)),
+            pr_info: HashMap::new(),
+            last_pr_check: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(PR_CHECK_INTERVAL_SECS))
+                .unwrap_or_else(std::time::Instant::now),
+            pr_check_in_flight: Arc::new(AtomicBool::new(false)),
+            pr_consecutive_failures: 0,
             repos,
         }
     }
@@ -173,6 +191,41 @@ impl FolderList {
             .map(|e| e.path().to_path_buf())
             .collect();
         Some((folders, self.dirty_check_in_flight.clone()))
+    }
+
+    pub fn pr_info(&self, folder: &Path) -> Option<&PrInfo> {
+        self.pr_info.get(folder)
+    }
+
+    pub fn apply_pr_status(&mut self, info: HashMap<PathBuf, PrInfo>, had_errors: bool) {
+        self.pr_info = info;
+        self.pr_check_in_flight.store(false, Ordering::SeqCst);
+        if had_errors {
+            self.pr_consecutive_failures = self.pr_consecutive_failures.saturating_add(1);
+        } else {
+            self.pr_consecutive_failures = 0;
+        }
+    }
+
+    pub fn maybe_start_pr_check(&mut self) -> Option<(Vec<PathBuf>, Arc<AtomicBool>)> {
+        // Back off exponentially on consecutive failures: 60s, 120s, 240s, ... up to ~16min.
+        let backoff_multiplier = 1u64 << self.pr_consecutive_failures.min(4);
+        let interval = std::time::Duration::from_secs(PR_CHECK_INTERVAL_SECS * backoff_multiplier);
+        if self.last_pr_check.elapsed() < interval {
+            return None;
+        }
+        if self.pr_check_in_flight.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.last_pr_check = std::time::Instant::now();
+        self.pr_check_in_flight.store(true, Ordering::SeqCst);
+        let folders: Vec<PathBuf> = self
+            .entries
+            .iter()
+            .filter(|e| e.is_selectable())
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        Some((folders, self.pr_check_in_flight.clone()))
     }
 
     pub fn move_up(&mut self) {
@@ -415,4 +468,82 @@ pub fn check_git_status_all(folders: &[PathBuf]) -> HashMap<PathBuf, GitStatus> 
         .iter()
         .map(|f| (f.clone(), get_git_status(f)))
         .collect()
+}
+
+/// Check if `gh` CLI is available and authenticated.
+fn is_gh_available() -> bool {
+    Command::new("gh")
+        .args(["auth", "status"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn get_branch_name(path: &Path) -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "HEAD")
+}
+
+fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
+    let Some(branch) = get_branch_name(path) else {
+        return Ok(None);
+    };
+    let output = Command::new("gh")
+        .args([
+            "pr", "list", "--head", &branch, "--json", "url", "--limit", "1",
+        ])
+        .current_dir(path)
+        .output()
+        .map_err(|err| format!("gh pr list failed for {}: {err}", path.display()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "gh pr list failed for {}: {stderr}",
+            path.display()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Parse minimal JSON: [{"url":"https://..."}] or []
+    let url = stdout.find("\"url\"").and_then(|i| {
+        let rest = &stdout[i + 5..];
+        let colon_rest = &rest[rest.find(':')? + 1..];
+        let first_quote = &colon_rest[colon_rest.find('"')? + 1..];
+        let end = first_quote.find('"')?;
+        Some(first_quote[..end].to_string())
+    });
+
+    Ok(url.map(|url| PrInfo { url }))
+}
+
+/// Check all folders for open PRs. Returns results and whether any errors occurred.
+pub fn check_pr_status_all(folders: &[PathBuf]) -> (HashMap<PathBuf, PrInfo>, bool) {
+    if !is_gh_available() {
+        return (HashMap::new(), false);
+    }
+    let mut results = HashMap::new();
+    let mut had_errors = false;
+    for folder in folders {
+        match get_pr_info(folder) {
+            Ok(Some(info)) => {
+                results.insert(folder.clone(), info);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                crate::updater::log(&err);
+                had_errors = true;
+            }
+        }
+    }
+    (results, had_errors)
 }

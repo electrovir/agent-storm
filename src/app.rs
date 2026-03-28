@@ -16,6 +16,10 @@ enum BgMessage {
     StatusMessage(String),
     RefreshFolders,
     GitStatusResults(HashMap<PathBuf, crate::pane::folder_list::GitStatus>),
+    PrStatusResults {
+        info: HashMap<PathBuf, crate::pane::folder_list::PrInfo>,
+        had_errors: bool,
+    },
     UpdateDownloaded,
 }
 
@@ -204,6 +208,20 @@ impl App {
                 });
             }
 
+            // Spawn background PR check if needed.
+            if let Some((folders, in_flight)) = self.folder_list.maybe_start_pr_check() {
+                let sender = self.bg_sender.clone();
+                tokio::task::spawn_blocking(move || {
+                    let (results, had_errors) =
+                        crate::pane::folder_list::check_pr_status_all(&folders);
+                    in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let _ = sender.send(BgMessage::PrStatusResults {
+                        info: results,
+                        had_errors,
+                    });
+                });
+            }
+
             // Spawn background update check if auto_update is enabled.
             if self.config.auto_update
                 && !self.update_pending
@@ -237,6 +255,9 @@ impl App {
                     BgMessage::StatusMessage(text) => self.set_status(text),
                     BgMessage::RefreshFolders => self.folder_list.refresh(),
                     BgMessage::GitStatusResults(results) => self.folder_list.apply_git_status(results),
+                    BgMessage::PrStatusResults { info, had_errors } => {
+                        self.folder_list.apply_pr_status(info, had_errors);
+                    }
                     BgMessage::UpdateDownloaded => {
                         self.update_pending = true;
                         self.update_check_in_flight = false;
@@ -764,6 +785,21 @@ impl App {
                 };
                 let _ = std::process::Command::new(opener).arg(&path).spawn();
                 self.set_status(format!("Opened {path}"));
+            }
+            KeyCode::Char('g') => {
+                if let Some(folder) = self.folder_list.selected_folder() {
+                    if let Some(pr) = self.folder_list.pr_info(folder) {
+                        let opener = if cfg!(target_os = "macos") {
+                            "open"
+                        } else {
+                            "xdg-open"
+                        };
+                        let _ = std::process::Command::new(opener).arg(&pr.url).spawn();
+                        self.set_status(format!("Opened {}", pr.url));
+                    } else {
+                        self.set_status("No open PR for this branch.".to_string());
+                    }
+                }
             }
             KeyCode::Char('d') if self.selected_is_worktree() => {
                 if self.folder_list.selected_sibling_count() <= 1 {
