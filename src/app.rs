@@ -1,4 +1,4 @@
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
@@ -247,6 +247,14 @@ impl App {
             if event::poll(Duration::from_millis(1))? {
                 match event::read()? {
                     Event::Key(key) => self.handle_key_event(key),
+                    Event::Mouse(mouse) => {
+                        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                            && self.modal == Modal::None
+                        {
+                            let area = terminal.get_frame().area();
+                            self.handle_click(mouse.row, area.width, area.height);
+                        }
+                    }
                     Event::Resize(_, _) => {
                         terminal.clear()?;
                     }
@@ -849,6 +857,15 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_click(&mut self, row: u16, area_width: u16, area_height: u16) {
+        let update_row: u16 = if self.update_pending { 1 } else { 0 };
+        let main_height = area_height.saturating_sub(1 + update_row);
+        if row >= main_height {
+            return;
+        }
+        self.folder_list.select_at_row(row, area_width);
     }
 
     fn activate_selected_folder_with_focus(&mut self, focus_ai: bool) {

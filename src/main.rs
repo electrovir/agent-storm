@@ -290,7 +290,9 @@ async fn async_sidebar(
     let mut app = App::new(cfg, ai_cmd, lone, pending_repo);
 
     let mut terminal = ratatui::init();
+    crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
     let result = app.run(&mut terminal).await;
+    crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
     ratatui::restore();
 
     // Kill the tmux session on exit.
