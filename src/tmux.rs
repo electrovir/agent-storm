@@ -397,11 +397,11 @@ impl TmuxController {
             return 0;
         };
         let mut count = 0;
-        if let Some(ai_id) = &session.ai_pane_id {
-            if !self.is_pane_alive(ai_id) {
-                tmux_cmd(&["respawn-pane", "-t", ai_id]);
-                count += 1;
-            }
+        if let Some(ai_id) = &session.ai_pane_id
+            && !self.is_pane_alive(ai_id)
+        {
+            tmux_cmd(&["respawn-pane", "-t", ai_id]);
+            count += 1;
         }
         if !self.is_pane_alive(&session.shell_pane_id) {
             tmux_cmd(&["respawn-pane", "-t", &session.shell_pane_id]);
@@ -438,10 +438,10 @@ impl TmuxController {
                 "-F",
                 "#{pane_id}",
                 &self.ai_cmd,
-            ]) {
-                if let Some(session) = self.sessions.get_mut(folder) {
-                    session.ai_pane_id = Some(ai_id);
-                }
+            ])
+                && let Some(session) = self.sessions.get_mut(folder)
+            {
+                session.ai_pane_id = Some(ai_id);
             }
         }
     }
