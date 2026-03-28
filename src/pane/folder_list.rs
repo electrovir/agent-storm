@@ -211,6 +211,58 @@ impl FolderList {
             .min(self.selectable_indices.len().saturating_sub(1));
     }
 
+    /// Select the entry at a given display row, accounting for line wrapping.
+    pub fn select_at_row(&mut self, row: u16, width: u16) {
+        let width = width as usize;
+        let mut current_row: usize = 0;
+
+        for (idx, entry) in self.entries.iter().enumerate() {
+            let (prefix_width, name_len) = match entry {
+                SidebarEntry::RepoHeader { name, .. } => (2, name.len()),
+                SidebarEntry::Item {
+                    name,
+                    indented,
+                    path,
+                    ..
+                } => {
+                    let pw = if *indented { 4 } else { 2 };
+                    let suffix_len = match self.git_status(path) {
+                        GitStatus::Dirty | GitStatus::Unpushed => 1,
+                        GitStatus::Clean => 0,
+                    };
+                    (pw, name.len() + suffix_len)
+                }
+            };
+
+            let line_count = entry_line_count(prefix_width, name_len, width);
+            let entry_end = current_row + line_count;
+
+            if (row as usize) < entry_end {
+                // Click is within this entry.
+                if entry.is_selectable()
+                    && let Some(sel_idx) = self
+                        .selectable_indices
+                        .iter()
+                        .position(|&i| i == idx)
+                {
+                    self.selected = sel_idx;
+                }
+                return;
+            }
+            current_row = entry_end;
+        }
+    }
+}
+
+fn entry_line_count(prefix_width: usize, name_len: usize, area_width: usize) -> usize {
+    let first_avail = area_width.saturating_sub(prefix_width);
+    if name_len <= first_avail {
+        return 1;
+    }
+    let cont_indent = prefix_width + 2;
+    let cont_avail = area_width.saturating_sub(cont_indent).max(1);
+    let remaining = name_len - first_avail;
+    1 + remaining.div_ceil(cont_avail)
 }
 
 fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
