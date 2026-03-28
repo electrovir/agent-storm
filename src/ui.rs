@@ -279,10 +279,17 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                         Style::new()
                     };
 
+                    let has_pr = app.folder_list().pr_info(path).is_some();
+                    let name_style = if has_pr {
+                        Style::default().add_modifier(Modifier::UNDERLINED)
+                    } else {
+                        Style::default()
+                    };
+
                     wrap_sidebar_entry(
                         prefix_spans,
                         name,
-                        Style::default(),
+                        name_style,
                         suffix,
                         style,
                         prefix_width,
@@ -484,6 +491,7 @@ fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
         help_line("i", "Toggle AI pane"),
         help_line("x", "Restart dead panes"),
         help_line("c", "Close panes"),
+        help_line("g", "Open PR"),
     ];
 
     if !is_lone {

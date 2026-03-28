@@ -131,6 +131,7 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 | `x`                  | Restart dead panes for selected folder     |
 | `r`                  | Rename selected folder                     |
 | `i`                  | Toggle AI pane (shell-only mode)           |
+| `g`                  | Open GitHub PR in browser                  |
 | `a`                  | Add a new repo                             |
 | `Backspace`          | Remove repo from config (with confirm)     |
 | `o`                  | Open config file in system file browser    |
@@ -163,6 +164,13 @@ Status indicators before each name: `[AI][Shell]`
 After the name:
 - `*` — uncommitted changes
 - `+` — unpushed commits
+- underlined — has an open GitHub PR (press `g` to open)
+
+### GitHub PR integration
+
+If [`gh`](https://cli.github.com/) (GitHub CLI) is installed and authenticated, agent-storm checks every 60 seconds whether each branch has an open pull request. Branches with PRs are underlined in the sidebar. Press `g` to open the PR in your browser.
+
+This feature is optional: if `gh` is not installed or not authenticated, PR checks are silently skipped. If `gh` is available but errors occur, the check interval backs off exponentially (up to ~16 minutes) and errors are logged to the [log file](#logs).
 
 ### Sessions
 
