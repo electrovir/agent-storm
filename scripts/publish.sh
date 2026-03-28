@@ -13,7 +13,7 @@ set -euo pipefail
 #   [minor] — new features (1.2.3 -> 1.3.0)
 #   [patch] — bug fixes (1.2.3 -> 1.2.4)
 #
-# If no prefix is found in any commit since the last tag, defaults to patch.
+# If no prefix is found in any commit since the last tag, the script aborts.
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
@@ -52,15 +52,23 @@ if $TAG_EXISTS_ON_REMOTE; then
     fi
 
     # Highest bump wins: major > minor > patch.
-    BUMP_TYPE="patch"
+    BUMP_TYPE=""
 
     while IFS= read -r msg; do
         prefix=$(echo "$msg" | grep -oE '^\[[a-zA-Z]+\]' | tr -d '[]' | tr '[:upper:]' '[:lower:]' || true)
         case "$prefix" in
             major) BUMP_TYPE="major" ;;
             minor) [ "$BUMP_TYPE" != "major" ] && BUMP_TYPE="minor" ;;
+            patch) [ -z "$BUMP_TYPE" ] && BUMP_TYPE="patch" ;;
         esac
     done <<< "$COMMITS"
+
+    if [ -z "$BUMP_TYPE" ]; then
+        echo "Error: no semver prefix ([major], [minor], or [patch]) found in commits since $TAG."
+        echo "Commits since $TAG:"
+        echo "$COMMITS"
+        exit 1
+    fi
 
     IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
 
