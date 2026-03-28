@@ -298,7 +298,7 @@ impl TmuxController {
             "list-panes",
             "-s",
             "-F",
-            "#{pane_id}\t#{pane_dead}\t#{pane_activity}\t#{pane_current_command}",
+            "#{pane_id}\t#{pane_dead}\t#{pane_current_command}\t#{pane_tty}",
         ]) else {
             return;
         };
@@ -307,12 +307,13 @@ impl TmuxController {
         for line in output.lines() {
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 4 {
+                let activity = tty_mtime_secs(parts[3]);
                 self.pane_info.insert(
                     parts[0].to_string(),
                     CachedPaneInfo {
                         dead: parts[1] != "0",
-                        activity: parts[2].parse().unwrap_or(0),
-                        current_command: parts[3].to_string(),
+                        activity,
+                        current_command: parts[2].to_string(),
                     },
                 );
             }
@@ -425,6 +426,17 @@ pub fn is_tmux_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+/// Read the modification time of a TTY device as seconds since UNIX epoch.
+/// Falls back to 0 on any error.
+fn tty_mtime_secs(tty: &str) -> u64 {
+    std::fs::metadata(tty)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Compute a session name from the base directory.
