@@ -208,10 +208,24 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                     let is_active = active_entry_idx == Some(idx);
                     let highlighted = (focused && is_selected) || is_active;
 
+                    let pr = app.folder_list().pr_info(path);
+                    let has_pr = pr.is_some();
+                    let pr_merged = pr.map(|p| p.merged).unwrap_or(false);
+
                     let mut prefix_spans: Vec<Span> = Vec::new();
                     let mut prefix_width: usize = 0;
 
-                    if *indented {
+                    if pr_merged {
+                        prefix_spans.push(Span::styled(
+                            "✓",
+                            Style::default().fg(Color::Green),
+                        ));
+                        prefix_width += 1;
+                        if *indented {
+                            prefix_spans.push(Span::raw(" "));
+                            prefix_width += 1;
+                        }
+                    } else if *indented {
                         prefix_spans.push(Span::raw("  "));
                         prefix_width += 2;
                     }
@@ -279,7 +293,6 @@ fn render_folder_list(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
                         Style::new()
                     };
 
-                    let has_pr = app.folder_list().pr_info(path).is_some();
                     let name_style = if has_pr {
                         Style::default().add_modifier(Modifier::UNDERLINED)
                     } else {

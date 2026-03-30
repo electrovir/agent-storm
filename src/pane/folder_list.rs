@@ -18,6 +18,7 @@ pub enum GitStatus {
 #[derive(Clone, Debug)]
 pub struct PrInfo {
     pub url: String,
+    pub merged: bool,
 }
 
 /// A single line in the sidebar display.
@@ -518,23 +519,18 @@ fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
         return Ok(None);
     };
     let output = Command::new("gh")
-        .args([
-            "pr", "list", "--head", &branch, "--json", "url", "--limit", "1",
-        ])
+        .args(["pr", "view", &branch, "--json", "url,state"])
         .current_dir(path)
         .output()
-        .map_err(|err| format!("gh pr list failed for {}: {err}", path.display()))?;
+        .map_err(|err| format!("gh pr view failed for {}: {err}", path.display()))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "gh pr list failed for {}: {stderr}",
-            path.display()
-        ));
+        // gh pr view exits non-zero when there is no PR for the branch.
+        return Ok(None);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Parse minimal JSON: [{"url":"https://..."}] or []
+    // Parse minimal JSON: {"url":"https://...","state":"OPEN|MERGED|CLOSED"}
     let url = stdout.find("\"url\"").and_then(|i| {
         let rest = &stdout[i + 5..];
         let colon_rest = &rest[rest.find(':')? + 1..];
@@ -542,8 +538,15 @@ fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
         let end = first_quote.find('"')?;
         Some(first_quote[..end].to_string())
     });
+    let merged = stdout
+        .find("\"state\"")
+        .map(|i| {
+            let rest = &stdout[i..];
+            rest.contains("MERGED")
+        })
+        .unwrap_or(false);
 
-    Ok(url.map(|url| PrInfo { url }))
+    Ok(url.map(|url| PrInfo { url, merged }))
 }
 
 /// Check all folders for open PRs. Returns results and whether any errors occurred.
