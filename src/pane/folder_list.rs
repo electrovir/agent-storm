@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -65,11 +65,14 @@ pub struct FolderList {
     pr_check_in_flight: Arc<AtomicBool>,
     pr_consecutive_failures: u32,
     repos: Vec<PathBuf>,
+    /// Paths to hide from the sidebar (e.g. worktrees being deleted in the background).
+    hidden_paths: HashSet<PathBuf>,
 }
 
 impl FolderList {
     pub fn new(repos: Vec<PathBuf>) -> Self {
-        let (entries, selectable_indices) = build_entries(&repos);
+        let hidden_paths = HashSet::new();
+        let (entries, selectable_indices) = build_entries(&repos, &hidden_paths);
         FolderList {
             entries,
             selectable_indices,
@@ -84,6 +87,7 @@ impl FolderList {
             pr_check_in_flight: Arc::new(AtomicBool::new(false)),
             pr_consecutive_failures: 0,
             repos,
+            hidden_paths,
         }
     }
 
@@ -244,9 +248,19 @@ impl FolderList {
         }
     }
 
+    /// Hide a path from the sidebar until `clear_hidden` is called.
+    pub fn hide_path(&mut self, path: PathBuf) {
+        self.hidden_paths.insert(path);
+    }
+
+    /// Clear all hidden paths (call after background deletion completes).
+    pub fn clear_hidden(&mut self) {
+        self.hidden_paths.clear();
+    }
+
     pub fn refresh(&mut self) {
         let previously_selected = self.selected_folder().map(|p| p.to_path_buf());
-        let (entries, selectable_indices) = build_entries(&self.repos);
+        let (entries, selectable_indices) = build_entries(&self.repos, &self.hidden_paths);
         self.entries = entries;
         self.selectable_indices = selectable_indices;
 
@@ -318,7 +332,7 @@ fn entry_line_count(prefix_width: usize, name_len: usize, area_width: usize) -> 
     1 + remaining.div_ceil(cont_avail)
 }
 
-fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
+fn build_entries(repos: &[PathBuf], hidden: &HashSet<PathBuf>) -> (Vec<SidebarEntry>, Vec<usize>) {
     let mut entries = Vec::new();
     let mut selectable = Vec::new();
 
@@ -343,13 +357,16 @@ fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
 
     // Plain repos first.
     for repo_path in &plain_repos {
+        let canonical = std::fs::canonicalize(repo_path)
+            .unwrap_or_else(|_| (*repo_path).clone());
+        if hidden.contains(&canonical) {
+            continue;
+        }
         let name = repo_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
-        let canonical = std::fs::canonicalize(repo_path)
-            .unwrap_or_else(|_| (*repo_path).clone());
         selectable.push(entries.len());
         entries.push(SidebarEntry::Item {
             path: canonical,
@@ -375,6 +392,9 @@ fn build_entries(repos: &[PathBuf]) -> (Vec<SidebarEntry>, Vec<usize>) {
         worktrees.sort();
         for wt in worktrees {
             let wt = std::fs::canonicalize(&wt).unwrap_or(wt);
+            if hidden.contains(&wt) {
+                continue;
+            }
             let wt_name = wt
                 .file_name()
                 .and_then(|n| n.to_str())
