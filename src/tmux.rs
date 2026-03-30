@@ -64,6 +64,13 @@ impl TmuxController {
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-lines", "heavy"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-style", "fg=colour24"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-active-border-style", "fg=colour39,bold"]);
+        // Dim inactive panes so the focused pane stands out.  The dimmed color
+        // is detected from the real terminal before tmux launches and passed via
+        // env var; skip if detection failed.
+        if let Ok(dim_bg) = std::env::var("_AGENT_STORM_DIM_BG") {
+            tmux_cmd(&["set-option", "-t", s, "-g", "window-style", &format!("bg={dim_bg}")]);
+            tmux_cmd(&["set-option", "-t", s, "-g", "window-active-style", "bg=terminal"]);
+        }
 
         // Keybindings (use -n so they work without prefix from any pane).
         tmux_cmd(&[
