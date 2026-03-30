@@ -254,8 +254,11 @@ impl App {
                 match msg {
                     BgMessage::StatusMessage(text) => self.set_status(text),
                     BgMessage::RefreshFolders => {
-                        self.folder_list.clear_hidden();
+                        // Refresh first (while hidden paths still filter), then clear.
+                        // This prevents a brief flicker if the directory hasn't fully
+                        // disappeared from disk yet when the refresh reads the filesystem.
                         self.folder_list.refresh();
+                        self.folder_list.clear_hidden();
                     }
                     BgMessage::GitStatusResults(results) => self.folder_list.apply_git_status(results),
                     BgMessage::PrStatusResults { info, had_errors } => {
