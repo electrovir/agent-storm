@@ -53,6 +53,18 @@ pub fn is_worktree_root(base_dir: &Path) -> bool {
 /// `any_worktree` is any sibling worktree (used to find the repo).
 /// `target` is the worktree directory to remove.
 pub fn remove_worktree(any_worktree: &Path, target: &Path) -> Result<String, String> {
+    let repo_root = any_worktree
+        .parent()
+        .ok_or_else(|| "Cannot determine repo root.".to_string())?;
+
+    // Safety: only allow deleting paths that are direct children of the repo root.
+    if target.parent() != Some(repo_root) {
+        return Err(format!(
+            "Refusing to delete: target is not inside repo root '{}'.",
+            repo_root.display()
+        ));
+    }
+
     let target_str = target
         .to_str()
         .ok_or_else(|| "Invalid path.".to_string())?;
@@ -63,16 +75,22 @@ pub fn remove_worktree(any_worktree: &Path, target: &Path) -> Result<String, Str
         .output()
         .map_err(|err| format!("Failed to run git: {err}"))?;
 
-    if output.status.success() {
-        let name = target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        Ok(format!("Worktree '{name}' removed."))
-    } else {
+    if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("git worktree remove failed: {stderr}"))
+        return Err(format!("git worktree remove failed: {stderr}"));
     }
+
+    // git worktree remove doesn't always clean up the directory on disk.
+    if target.exists() {
+        std::fs::remove_dir_all(target)
+            .map_err(|err| format!("Worktree removed from git but failed to delete folder: {err}"))?;
+    }
+
+    let name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+    Ok(format!("Worktree '{name}' removed."))
 }
 
 /// Checks if a specific directory is a git worktree (has a `.git` file, not directory).
