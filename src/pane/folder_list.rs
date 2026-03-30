@@ -249,14 +249,14 @@ impl FolderList {
         }
     }
 
-    /// Hide a path from the sidebar until `clear_hidden` is called.
+    /// Hide a path from the sidebar until `unhide_path` is called.
     pub fn hide_path(&mut self, path: PathBuf) {
         self.hidden_paths.insert(path);
     }
 
-    /// Clear all hidden paths (call after background deletion completes).
-    pub fn clear_hidden(&mut self) {
-        self.hidden_paths.clear();
+    /// Unhide a single path (call after its background deletion completes).
+    pub fn unhide_path(&mut self, path: &PathBuf) {
+        self.hidden_paths.remove(path);
     }
 
     pub fn refresh(&mut self) {
