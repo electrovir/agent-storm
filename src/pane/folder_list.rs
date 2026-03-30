@@ -538,14 +538,23 @@ fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
         let end = first_quote.find('"')?;
         Some(first_quote[..end].to_string())
     });
-    let merged = stdout
-        .find("\"state\"")
-        .map(|i| {
-            let rest = &stdout[i..];
-            rest.contains("MERGED")
-        })
-        .unwrap_or(false);
+    let state = stdout.find("\"state\"").and_then(|i| {
+        let rest = &stdout[i..];
+        if rest.contains("MERGED") {
+            Some("MERGED")
+        } else if rest.contains("CLOSED") {
+            Some("CLOSED")
+        } else {
+            Some("OPEN")
+        }
+    });
 
+    // Closed (not merged) PRs are effectively gone — don't show them.
+    if state == Some("CLOSED") {
+        return Ok(None);
+    }
+
+    let merged = state == Some("MERGED");
     Ok(url.map(|url| PrInfo { url, merged }))
 }
 
