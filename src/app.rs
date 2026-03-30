@@ -253,7 +253,10 @@ impl App {
             while let Ok(msg) = self.bg_receiver.try_recv() {
                 match msg {
                     BgMessage::StatusMessage(text) => self.set_status(text),
-                    BgMessage::RefreshFolders => self.folder_list.refresh(),
+                    BgMessage::RefreshFolders => {
+                        self.folder_list.clear_hidden();
+                        self.folder_list.refresh();
+                    }
                     BgMessage::GitStatusResults(results) => self.folder_list.apply_git_status(results),
                     BgMessage::PrStatusResults { info, had_errors } => {
                         self.folder_list.apply_pr_status(info, had_errors);
@@ -687,6 +690,9 @@ impl App {
         // Kill the tmux session for this folder.
         self.tmux.remove_session(folder);
 
+        // Hide the folder immediately so it disappears from the sidebar
+        // before the background deletion completes.
+        self.folder_list.hide_path(folder.clone());
         self.folder_list.refresh();
         self.set_status("Deleting worktree...".to_string());
 
