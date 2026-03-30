@@ -687,6 +687,8 @@ impl App {
     }
 
     fn delete_worktree(&mut self, folder: &PathBuf) {
+        updater::log(&format!("delete_worktree called for: {}", folder.display()));
+
         // Kill the tmux session for this folder.
         self.tmux.remove_session(folder);
 
@@ -710,9 +712,27 @@ impl App {
             .next();
 
         let Some(sibling) = sibling else {
+            let msg = format!(
+                "No sibling worktree to run git from. target_parent={}, entries={}",
+                target_parent.map(|p| p.display().to_string()).unwrap_or_default(),
+                self.folder_list
+                    .entries()
+                    .iter()
+                    .filter(|e| e.is_selectable())
+                    .map(|e| format!("{} (parent={})", e.path().display(), e.path().parent().map(|p| p.display().to_string()).unwrap_or_default()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            updater::log(&msg);
             self.set_status("No sibling worktree to run git from.".to_string());
             return;
         };
+
+        updater::log(&format!(
+            "Deleting worktree: target={}, sibling={}",
+            folder.display(),
+            sibling.display(),
+        ));
 
         let folder = folder.clone();
         let sender = self.bg_sender.clone();
