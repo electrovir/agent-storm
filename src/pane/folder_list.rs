@@ -538,14 +538,14 @@ fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
         let end = first_quote.find('"')?;
         Some(first_quote[..end].to_string())
     });
-    let state = stdout.find("\"state\"").and_then(|i| {
+    let state = stdout.find("\"state\"").map(|i| {
         let rest = &stdout[i..];
         if rest.contains("MERGED") {
-            Some("MERGED")
+            "MERGED"
         } else if rest.contains("CLOSED") {
-            Some("CLOSED")
+            "CLOSED"
         } else {
-            Some("OPEN")
+            "OPEN"
         }
     });
 
