@@ -7,7 +7,7 @@ use std::process::Command;
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn log_path() -> PathBuf {
-    env::temp_dir().join("agent-storm.log")
+    PathBuf::from("/tmp/agent-storm.log")
 }
 
 /// Append a timestamped line to the log file.
