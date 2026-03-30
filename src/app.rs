@@ -14,7 +14,7 @@ use crate::worktree;
 
 enum BgMessage {
     StatusMessage(String),
-    RefreshFolders,
+    RefreshFolders { deleted: PathBuf },
     GitStatusResults(HashMap<PathBuf, crate::pane::folder_list::GitStatus>),
     PrStatusResults {
         info: HashMap<PathBuf, crate::pane::folder_list::PrInfo>,
@@ -253,12 +253,9 @@ impl App {
             while let Ok(msg) = self.bg_receiver.try_recv() {
                 match msg {
                     BgMessage::StatusMessage(text) => self.set_status(text),
-                    BgMessage::RefreshFolders => {
-                        // Refresh first (while hidden paths still filter), then clear.
-                        // This prevents a brief flicker if the directory hasn't fully
-                        // disappeared from disk yet when the refresh reads the filesystem.
+                    BgMessage::RefreshFolders { deleted } => {
+                        self.folder_list.unhide_path(&deleted);
                         self.folder_list.refresh();
-                        self.folder_list.clear_hidden();
                     }
                     BgMessage::GitStatusResults(results) => self.folder_list.apply_git_status(results),
                     BgMessage::PrStatusResults { info, had_errors } => {
@@ -750,7 +747,7 @@ impl App {
                     let _ = sender.send(BgMessage::StatusMessage(msg));
                 }
             }
-            let _ = sender.send(BgMessage::RefreshFolders);
+            let _ = sender.send(BgMessage::RefreshFolders { deleted: folder });
         });
     }
 
