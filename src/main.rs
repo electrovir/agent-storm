@@ -10,6 +10,7 @@ use app::App;
 use clap::Parser;
 use std::env;
 use std::io;
+use std::os::unix::io::AsRawFd;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -246,16 +247,23 @@ fn launch_tmux(
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    let status = Command::new("tmux")
-        .args([
-            "new-session",
-            "-s",
-            &session_name,
-            "-n",
-            &format!("ags : {dir_name}"),
-            &sidebar_cmd,
-        ])
-        .status()?;
+    let mut cmd = Command::new("tmux");
+    cmd.args([
+        "new-session",
+        "-s",
+        &session_name,
+        "-n",
+        &format!("ags : {dir_name}"),
+        &sidebar_cmd,
+    ]);
+
+    // Detect the terminal's background color and pass a dimmed variant into
+    // the tmux session so inactive panes can be visually distinguished.
+    if let Some(dim_bg) = detect_dim_bg() {
+        cmd.env("_AGENT_STORM_DIM_BG", dim_bg);
+    }
+
+    let status = cmd.status()?;
 
     std::process::exit(status.code().unwrap_or(0));
 }
@@ -299,4 +307,133 @@ async fn async_sidebar(
     app.kill_tmux_session();
 
     result
+}
+
+/// Query the terminal for its background color via OSC 11 and return a
+/// slightly dimmed variant as a `#RRGGBB` hex string suitable for tmux.
+/// Returns `None` when the terminal does not respond (e.g. inside a pipe).
+fn detect_dim_bg() -> Option<String> {
+    use std::io::{Read, Write};
+
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .ok()?;
+    let fd = tty.as_raw_fd();
+
+    // Save terminal state.
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut saved) } != 0 {
+        return None;
+    }
+
+    // Switch to raw mode so we can read the response bytes directly.
+    let mut raw = saved;
+    unsafe { libc::cfmakeraw(&mut raw) };
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+        return None;
+    }
+
+    // Send OSC 11 query ("what is the background color?").
+    let ok = tty
+        .write_all(b"\x1b]11;?\x07")
+        .and_then(|_| tty.flush())
+        .is_ok();
+    if !ok {
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+        return None;
+    }
+
+    // Read response with a timeout.
+    let mut buf = [0u8; 64];
+    let mut total = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+
+    while total < buf.len() {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout_ms = remaining.as_millis().min(500) as i32;
+        if unsafe { libc::poll(&mut pfd, 1, timeout_ms) } <= 0 {
+            break;
+        }
+        match tty.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                // Complete once we see BEL or ST terminator.
+                if buf[..total].contains(&0x07)
+                    || buf[..total].windows(2).any(|w| w == b"\x1b\\")
+                {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Always restore the terminal.
+    unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+
+    let response = String::from_utf8_lossy(&buf[..total]);
+    let (r, g, b) = parse_osc_rgb(&response)?;
+
+    // Perceived luminance (Rec. 709).
+    let lum = 0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64;
+    let blend = 0.08;
+
+    let (dr, dg, db) = if lum < 128.0 {
+        // Dark background: lighten slightly.
+        (
+            (r as f64 + (255.0 - r as f64) * blend).round() as u8,
+            (g as f64 + (255.0 - g as f64) * blend).round() as u8,
+            (b as f64 + (255.0 - b as f64) * blend).round() as u8,
+        )
+    } else {
+        // Light background: darken slightly.
+        (
+            (r as f64 * (1.0 - blend)).round() as u8,
+            (g as f64 * (1.0 - blend)).round() as u8,
+            (b as f64 * (1.0 - blend)).round() as u8,
+        )
+    };
+
+    Some(format!("#{dr:02x}{dg:02x}{db:02x}"))
+}
+
+/// Parse an OSC 11 response like `\x1b]11;rgb:RRRR/GGGG/BBBB\x07` into 8-bit
+/// RGB values. Handles 1-4 hex digits per channel.
+fn parse_osc_rgb(response: &str) -> Option<(u8, u8, u8)> {
+    let rgb_part = &response[response.find("rgb:")? + 4..];
+    let mut parts = rgb_part.splitn(3, '/');
+
+    let r_hex = parts.next()?;
+    let g_hex = parts.next()?;
+    let b_raw = parts.next()?;
+    let b_hex: String = b_raw.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+
+    Some((
+        scale_hex_to_u8(r_hex)?,
+        scale_hex_to_u8(g_hex)?,
+        scale_hex_to_u8(&b_hex)?,
+    ))
+}
+
+/// Convert a variable-length hex channel value to an 8-bit value.
+fn scale_hex_to_u8(hex: &str) -> Option<u8> {
+    let val = u16::from_str_radix(hex.trim(), 16).ok()?;
+    match hex.trim().len() {
+        1 => Some((val * 17) as u8),
+        2 => Some(val as u8),
+        3 => Some((val >> 4) as u8),
+        4 => Some((val >> 8) as u8),
+        _ => None,
+    }
 }
