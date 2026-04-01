@@ -304,13 +304,13 @@ impl TmuxController {
         }
     }
 
-    /// Remove a folder's session and kill its panes.
+    /// Remove a folder's session and kill its panes (and their process trees).
     pub fn remove_session(&mut self, folder: &PathBuf) {
         if let Some(session) = self.sessions.remove(folder) {
             if let Some(ai_id) = &session.ai_pane_id {
-                tmux_cmd(&["kill-pane", "-t", ai_id]);
+                kill_pane(ai_id);
             }
-            tmux_cmd(&["kill-pane", "-t", &session.shell_pane_id]);
+            kill_pane(&session.shell_pane_id);
         }
         if self.active_folder.as_ref() == Some(folder) {
             self.active_folder = None;
@@ -428,7 +428,7 @@ impl TmuxController {
                 .get_mut(folder)
                 .and_then(|s| s.ai_pane_id.take());
             if let Some(ai_id) = ai_id {
-                tmux_cmd(&["kill-pane", "-t", &ai_id]);
+                kill_pane(&ai_id);
             }
         } else if !hide_ai && session.ai_pane_id.is_none() {
             let folder_str = folder.to_str().unwrap_or(".").to_string();
@@ -453,14 +453,14 @@ impl TmuxController {
         }
     }
 
-    /// Hide the AI pane for a folder. Kills the AI pane if it exists.
+    /// Hide the AI pane for a folder. Kills the AI pane and its processes.
     pub fn hide_ai_pane(&mut self, folder: &Path) {
         let ai_id = self
             .sessions
             .get_mut(folder)
             .and_then(|s| s.ai_pane_id.take());
         if let Some(ai_id) = ai_id {
-            tmux_cmd(&["kill-pane", "-t", &ai_id]);
+            kill_pane(&ai_id);
         }
         if self.active_folder.as_deref() == Some(folder) {
             self.update_keybindings();
@@ -533,6 +533,56 @@ impl TmuxController {
         .unwrap_or(false);
         if zoomed {
             tmux_cmd(&["resize-pane", "-Z", "-t", &self.sidebar_pane_id]);
+        }
+    }
+}
+
+/// Kill a tmux pane and all processes running inside it.
+///
+/// Plain `kill-pane` only sends SIGHUP to the direct child, which may leave
+/// grandchild processes (e.g. `claude` sub-processes) running as orphans.
+/// This helper first discovers the pane's root PID, walks the full descendant
+/// tree, and sends SIGTERM to every process before destroying the pane.
+fn kill_pane(pane_id: &str) {
+    // 1. Grab the root PID that tmux launched in this pane.
+    if let Ok(pid_str) = tmux_cmd_output(&[
+        "display-message", "-p", "-t", pane_id, "#{pane_pid}",
+    ]) {
+        if let Ok(root_pid) = pid_str.parse::<u32>() {
+            // Collect every descendant PID (children, grandchildren, …).
+            let mut pids = Vec::new();
+            collect_descendant_pids(root_pid, &mut pids);
+            // Include the root process itself.
+            pids.push(root_pid);
+
+            // Send SIGTERM to each process (leaf-first so parents don't
+            // respawn children before we get to them).
+            for &pid in pids.iter().rev() {
+                let _ = Command::new("kill")
+                    .args(["-s", "TERM", &pid.to_string()])
+                    .output();
+            }
+        }
+    }
+
+    // 2. Destroy the tmux pane itself.
+    tmux_cmd(&["kill-pane", "-t", pane_id]);
+}
+
+/// Recursively collect all descendant PIDs of `parent`.
+fn collect_descendant_pids(parent: u32, out: &mut Vec<u32>) {
+    // `pgrep -P <pid>` lists direct children.
+    let Ok(output) = Command::new("pgrep")
+        .args(["-P", &parent.to_string()])
+        .output()
+    else {
+        return;
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Ok(child_pid) = line.trim().parse::<u32>() {
+            collect_descendant_pids(child_pid, out);
+            out.push(child_pid);
         }
     }
 }
