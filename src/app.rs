@@ -14,7 +14,11 @@ use crate::worktree;
 
 enum BgMessage {
     StatusMessage(String),
-    RefreshFolders { deleted: PathBuf },
+    RefreshFolders {
+        deleted: PathBuf,
+        /// Whether the deletion completed successfully.
+        success: bool,
+    },
     GitStatusResults(HashMap<PathBuf, crate::pane::folder_list::GitStatus>),
     PrStatusResults {
         info: HashMap<PathBuf, crate::pane::folder_list::PrInfo>,
@@ -253,8 +257,15 @@ impl App {
             while let Ok(msg) = self.bg_receiver.try_recv() {
                 match msg {
                     BgMessage::StatusMessage(text) => self.set_status(text),
-                    BgMessage::RefreshFolders { deleted } => {
-                        self.folder_list.unhide_path(&deleted);
+                    BgMessage::RefreshFolders { deleted, success } => {
+                        // Only unhide if the deletion failed (so the entry
+                        // reappears in the sidebar).  On success, keep the
+                        // path hidden until we can confirm the directory is
+                        // truly gone — avoids a brief flash if the filesystem
+                        // hasn't fully caught up yet.
+                        if !success || !deleted.is_dir() {
+                            self.folder_list.unhide_path(&deleted);
+                        }
                         self.folder_list.refresh();
                     }
                     BgMessage::GitStatusResults(results) => self.folder_list.apply_git_status(results),
@@ -738,16 +749,21 @@ impl App {
         let sender = self.bg_sender.clone();
 
         tokio::task::spawn_blocking(move || {
-            match worktree::remove_worktree(&sibling, &folder) {
+            let success = match worktree::remove_worktree(&sibling, &folder) {
                 Ok(msg) => {
                     let _ = sender.send(BgMessage::StatusMessage(msg));
+                    true
                 }
                 Err(msg) => {
                     updater::log(&format!("Worktree delete failed: {msg}"));
                     let _ = sender.send(BgMessage::StatusMessage(msg));
+                    false
                 }
-            }
-            let _ = sender.send(BgMessage::RefreshFolders { deleted: folder });
+            };
+            let _ = sender.send(BgMessage::RefreshFolders {
+                deleted: folder,
+                success,
+            });
         });
     }
 
