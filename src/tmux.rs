@@ -547,21 +547,21 @@ fn kill_pane(pane_id: &str) {
     // 1. Grab the root PID that tmux launched in this pane.
     if let Ok(pid_str) = tmux_cmd_output(&[
         "display-message", "-p", "-t", pane_id, "#{pane_pid}",
-    ]) {
-        if let Ok(root_pid) = pid_str.parse::<u32>() {
-            // Collect every descendant PID (children, grandchildren, …).
-            let mut pids = Vec::new();
-            collect_descendant_pids(root_pid, &mut pids);
-            // Include the root process itself.
-            pids.push(root_pid);
+    ])
+        && let Ok(root_pid) = pid_str.parse::<u32>()
+    {
+        // Collect every descendant PID (children, grandchildren, …).
+        let mut pids = Vec::new();
+        collect_descendant_pids(root_pid, &mut pids);
+        // Include the root process itself.
+        pids.push(root_pid);
 
-            // Send SIGTERM to each process (leaf-first so parents don't
-            // respawn children before we get to them).
-            for &pid in pids.iter().rev() {
-                let _ = Command::new("kill")
-                    .args(["-s", "TERM", &pid.to_string()])
-                    .output();
-            }
+        // Send SIGTERM to each process (leaf-first so parents don't
+        // respawn children before we get to them).
+        for &pid in pids.iter().rev() {
+            let _ = Command::new("kill")
+                .args(["-s", "TERM", &pid.to_string()])
+                .output();
         }
     }
 
