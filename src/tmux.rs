@@ -56,6 +56,7 @@ impl TmuxController {
     pub fn setup_session(&self) {
         let s = &self.session_name;
 
+        tmux_cmd(&["set-option", "-t", s, "-g", "history-limit", "5000"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "status", "off"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "mouse", "on"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "set-titles", "on"]);
