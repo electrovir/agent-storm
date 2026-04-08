@@ -27,13 +27,6 @@ enum BgMessage {
     UpdateDownloaded,
 }
 
-/// What the folder list input mode is doing.
-#[derive(Clone, PartialEq, Eq)]
-pub enum FolderMode {
-    Normal,
-    RenameInput { folder: PathBuf, buffer: String },
-}
-
 /// Which settings field is currently being edited.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SettingsField {
@@ -85,6 +78,10 @@ pub enum Modal {
     ConfirmClosePanes {
         folder: PathBuf,
     },
+    Rename {
+        folder: PathBuf,
+        buffer: String,
+    },
 }
 
 const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
@@ -98,7 +95,6 @@ pub struct App {
     ai_cmd: String,
     config: config::Config,
     lone: bool,
-    folder_mode: FolderMode,
     status_message: Option<(String, Instant)>,
     modal: Modal,
     bg_sender: tokio_mpsc::UnboundedSender<BgMessage>,
@@ -133,7 +129,6 @@ impl App {
             ai_cmd,
             config: cfg,
             lone,
-            folder_mode: FolderMode::Normal,
             status_message: None,
             modal: match pending_repo {
                 Some(repo_path) => Modal::ConfirmAddNewRepo { repo_path },
@@ -167,10 +162,6 @@ impl App {
 
     pub fn selected_is_worktree(&self) -> bool {
         self.folder_list.selected_is_worktree()
-    }
-
-    pub fn folder_mode(&self) -> &FolderMode {
-        &self.folder_mode
     }
 
     pub fn status_message(&self) -> Option<&str> {
@@ -319,26 +310,24 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         // Global bindings.
-        if self.folder_mode == FolderMode::Normal {
-            match key.code {
-                KeyCode::Char('q') if ctrl => {
-                    self.should_quit = true;
-                    return;
-                }
-                KeyCode::Char('s') if alt => {
-                    self.open_settings();
-                    return;
-                }
-                KeyCode::Char('?') => {
-                    self.tmux.zoom_sidebar();
-                    self.modal = Modal::Help;
-                    return;
-                }
-                _ => {}
+        match key.code {
+            KeyCode::Char('q') if ctrl => {
+                self.should_quit = true;
+                return;
             }
+            KeyCode::Char('s') if alt => {
+                self.open_settings();
+                return;
+            }
+            KeyCode::Char('?') => {
+                self.tmux.zoom_sidebar();
+                self.modal = Modal::Help;
+                return;
+            }
+            _ => {}
         }
 
-        self.handle_folder_key(key);
+        self.handle_folder_normal_key(key);
     }
 
     fn open_settings(&mut self) {
@@ -694,6 +683,49 @@ impl App {
                     _ => {}
                 }
             }
+            Modal::Rename { folder, buffer } => {
+                let folder = folder.clone();
+                match key.code {
+                    KeyCode::Esc => {
+                        self.close_modal();
+                    }
+                    KeyCode::Enter => {
+                        let new_name = buffer.trim().to_string();
+                        self.close_modal();
+
+                        if new_name.is_empty() {
+                            self.set_status("Cancelled (empty name).".to_string());
+                            return;
+                        }
+
+                        let old_name = folder
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("");
+                        if new_name == old_name {
+                            self.set_status("Name unchanged.".to_string());
+                            return;
+                        }
+
+                        match worktree::rename_folder(&folder, &new_name) {
+                            Ok((msg, _new_path)) => {
+                                self.set_status(msg);
+                                self.folder_list.refresh();
+                            }
+                            Err(msg) => {
+                                self.set_status(msg);
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        buffer.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        buffer.push(c);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -767,13 +799,6 @@ impl App {
         });
     }
 
-    fn handle_folder_key(&mut self, key: event::KeyEvent) {
-        match &self.folder_mode {
-            FolderMode::Normal => self.handle_folder_normal_key(key),
-            FolderMode::RenameInput { .. } => self.handle_rename_input_key(key),
-        }
-    }
-
     fn handle_folder_normal_key(&mut self, key: event::KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.folder_list.move_up(),
@@ -801,11 +826,11 @@ impl App {
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
-                    self.folder_mode = FolderMode::RenameInput {
+                    self.tmux.zoom_sidebar();
+                    self.modal = Modal::Rename {
                         folder,
-                        buffer: current_name.clone(),
+                        buffer: current_name,
                     };
-                    self.set_status(format!("Rename to: {current_name}"));
                 }
             }
             KeyCode::Char('x') => {
@@ -887,59 +912,6 @@ impl App {
         }
     }
 
-
-    fn handle_rename_input_key(&mut self, key: event::KeyEvent) {
-        let FolderMode::RenameInput { folder, buffer } = &mut self.folder_mode else {
-            return;
-        };
-
-        match key.code {
-            KeyCode::Esc => {
-                self.folder_mode = FolderMode::Normal;
-                self.status_message = None;
-            }
-            KeyCode::Enter => {
-                let new_name = buffer.trim().to_string();
-                let folder = folder.clone();
-                self.folder_mode = FolderMode::Normal;
-
-                if new_name.is_empty() {
-                    self.set_status("Cancelled (empty name).".to_string());
-                    return;
-                }
-
-                let old_name = folder
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                if new_name == old_name {
-                    self.set_status("Name unchanged.".to_string());
-                    return;
-                }
-
-                match worktree::rename_folder(&folder, &new_name) {
-                    Ok((msg, _new_path)) => {
-                        self.set_status(msg);
-                        self.folder_list.refresh();
-                    }
-                    Err(msg) => {
-                        self.set_status(msg);
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                buffer.pop();
-                let msg = format!("Rename to: {buffer}");
-                self.status_message = Some((msg, Instant::now()));
-            }
-            KeyCode::Char(c) => {
-                buffer.push(c);
-                let msg = format!("Rename to: {buffer}");
-                self.status_message = Some((msg, Instant::now()));
-            }
-            _ => {}
-        }
-    }
 
     fn handle_click(&mut self, row: u16, area_width: u16, area_height: u16) {
         let update_row: u16 = if self.update_pending { 1 } else { 0 };

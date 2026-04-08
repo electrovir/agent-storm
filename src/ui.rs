@@ -1,4 +1,4 @@
-use crate::app::{AddRepoField, App, FolderMode, Modal, SettingsField};
+use crate::app::{AddRepoField, App, Modal, SettingsField};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -92,6 +92,9 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .and_then(|n| n.to_str())
                 .unwrap_or("?");
             render_new_repo_pwc_modal(frame, buffer, repo_name, global_pwc);
+        }
+        Modal::Rename { folder, buffer } => {
+            render_rename_modal(frame, folder, buffer);
         }
         Modal::Help => {
             render_help_modal(frame, app.selected_is_worktree(), app.is_lone());
@@ -328,19 +331,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         }
     }
 
-    let status_text = match app.folder_mode() {
-        FolderMode::RenameInput { buffer, .. } => {
-            format!("Rename to: {buffer}_")
-        }
-        FolderMode::Normal => {
-            if let Some(msg) = app.status_message() {
-                msg.to_string()
-            } else if app.tmux().is_sidebar_focused() {
-                " ?:help  ^Q:quit".to_string()
-            } else {
-                " ^Q:quit".to_string()
-            }
-        }
+    let status_text = if let Some(msg) = app.status_message() {
+        msg.to_string()
+    } else if app.tmux().is_sidebar_focused() {
+        " ?:help  ^Q:quit".to_string()
+    } else {
+        " ^Q:quit".to_string()
     };
 
     let bar = Paragraph::new(Span::styled(status_text, style));
@@ -565,6 +561,55 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
         ),
         Span::raw(format!(" {desc}")),
     ])
+}
+
+fn render_rename_modal(frame: &mut Frame, folder: &std::path::Path, buffer: &str) {
+    let current_name = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("?");
+
+    let area = frame.area().centered(
+        Constraint::Length(40.min(frame.area().width.saturating_sub(4))),
+        Constraint::Length(8),
+    );
+
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Rename ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(FOCUS_COLOR));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Current: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(current_name, Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("New:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{buffer}_"),
+                Style::default()
+                    .fg(FOCUS_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" rename  "),
+            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
+            Span::raw(" cancel"),
+        ]),
+    ];
+
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(content, inner);
 }
 
 fn render_add_worktree_modal(frame: &mut Frame, buffer: &str) {
