@@ -25,6 +25,7 @@ enum BgMessage {
         had_errors: bool,
     },
     UpdateDownloaded,
+    UpdateCheckDone,
 }
 
 /// Which settings field is currently being edited.
@@ -233,6 +234,7 @@ impl App {
                         }
                         Err(err) => {
                             updater::log(&format!("Auto-update failed: {err}"));
+                            let _ = sender.send(BgMessage::UpdateCheckDone);
                         }
                     }
                 });
@@ -265,6 +267,9 @@ impl App {
                     }
                     BgMessage::UpdateDownloaded => {
                         self.update_pending = true;
+                        self.update_check_in_flight = false;
+                    }
+                    BgMessage::UpdateCheckDone => {
                         self.update_check_in_flight = false;
                     }
                 }
