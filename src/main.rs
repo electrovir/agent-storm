@@ -115,7 +115,7 @@ fn main() -> io::Result<()> {
         run_sidebar(cfg, ai_cmd, lone, pr)
     } else {
         // Launch tmux and re-exec as sidebar inside it.
-        launch_tmux(base_dir, ai_cmd, &cli, pending_repo)
+        launch_tmux(base_dir, ai_cmd, &cli, pending_repo, cfg.border_style.as_deref())
     }
 }
 
@@ -194,6 +194,7 @@ fn launch_tmux(
     ai_cmd: String,
     cli: &Cli,
     pending_repo: Option<PathBuf>,
+    border_style: Option<&str>,
 ) -> io::Result<()> {
     if !tmux::is_tmux_available() {
         eprintln!("Error: tmux is required but not found. Install it with:");
@@ -263,6 +264,12 @@ fn launch_tmux(
         cmd.env("_AGENT_STORM_DIM_BG", dim_bg);
     }
 
+    // Determine pane border style. VTE-based terminals (gnome-terminal, tilix,
+    // etc.) often render heavy box-drawing characters as double-width, which
+    // breaks the tmux layout. Auto-detect and fall back to "single".
+    let border_style = resolve_border_style(border_style);
+    cmd.env("_AGENT_STORM_BORDER_LINES", border_style);
+
     let status = cmd.status()?;
 
     std::process::exit(status.code().unwrap_or(0));
@@ -307,6 +314,26 @@ async fn async_sidebar(
     app.kill_tmux_session();
 
     result
+}
+
+/// Resolve the tmux pane border line style. When the user has not set an
+/// explicit style (or set "auto"), detect VTE-based terminals and fall back
+/// to "single" borders to avoid double-width rendering of heavy characters.
+fn resolve_border_style(configured: Option<&str>) -> &'static str {
+    match configured {
+        Some("auto") | None => {
+            if env::var_os("VTE_VERSION").is_some() {
+                "single"
+            } else {
+                "heavy"
+            }
+        }
+        Some("heavy") => "heavy",
+        Some("single") => "single",
+        Some("double") => "double",
+        Some("simple") => "simple",
+        Some(_) => "heavy",
+    }
 }
 
 /// Query the terminal for its background color via OSC 11 and return a

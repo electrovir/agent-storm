@@ -33,6 +33,12 @@ pub struct Config {
     /// Folder paths where the AI pane is hidden (shell-only mode).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_ai_pane: Vec<PathBuf>,
+
+    /// Tmux pane border line style: "heavy", "single", "double", "simple",
+    /// or "auto" (default). "auto" uses "heavy" except on VTE-based terminals
+    /// (e.g. gnome-terminal) where heavy borders render as double-width.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub border_style: Option<String>,
 }
 
 impl Default for Config {
@@ -43,6 +49,7 @@ impl Default for Config {
             auto_update: false,
             repos: Vec::new(),
             hidden_ai_pane: Vec::new(),
+            border_style: None,
         }
     }
 }
