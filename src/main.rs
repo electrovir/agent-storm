@@ -207,9 +207,6 @@ fn launch_tmux(
 
     let session_name = tmux::session_name(&base_dir);
 
-    // If a session with this name is already running, attach to it instead of
-    // killing it. This allows opening `ags` in a second terminal tab without
-    // destroying the first instance.
     let has_session = Command::new("tmux")
         .args(["has-session", "-t", &session_name])
         .output()
@@ -217,10 +214,8 @@ fn launch_tmux(
         .unwrap_or(false);
 
     if has_session {
-        let status = Command::new("tmux")
-            .args(["attach-session", "-t", &session_name])
-            .status()?;
-        std::process::exit(status.code().unwrap_or(0));
+        eprintln!("ags already running");
+        std::process::exit(1);
     }
 
     // Build the sidebar command with forwarded args.
