@@ -62,7 +62,9 @@ impl TmuxController {
         tmux_cmd(&["set-option", "-t", s, "-g", "set-titles", "on"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "set-titles-string", "agent-storm"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "remain-on-exit", "on"]);
-        tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-lines", "heavy"]);
+        let border_lines = std::env::var("_AGENT_STORM_BORDER_LINES")
+            .unwrap_or_else(|_| "heavy".to_string());
+        tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-lines", &border_lines]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-border-style", "fg=colour24"]);
         tmux_cmd(&["set-option", "-t", s, "-g", "pane-active-border-style", "fg=colour39,bold"]);
         // Dim inactive panes so the focused pane stands out.  The dimmed color
