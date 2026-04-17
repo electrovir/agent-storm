@@ -1,6 +1,6 @@
 [package]
 name = "agent-storm"
-version = "1.9.4"
+version = "1.9.5"
 edition = "2024"
 description = "Multi-pane AI coding assistant launcher"
 license = "MIT"
