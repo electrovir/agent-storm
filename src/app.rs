@@ -278,13 +278,12 @@ impl App {
             if event::poll(Duration::from_millis(1))? {
                 match event::read()? {
                     Event::Key(key) => self.handle_key_event(key),
-                    Event::Mouse(mouse) => {
+                    Event::Mouse(mouse)
                         if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                            && self.modal == Modal::None
-                        {
-                            let area = terminal.get_frame().area();
-                            self.handle_click(mouse.row, area.width, area.height);
-                        }
+                            && self.modal == Modal::None =>
+                    {
+                        let area = terminal.get_frame().area();
+                        self.handle_click(mouse.row, area.width, area.height);
                     }
                     Event::Resize(_, _) => {
                         terminal.clear()?;
