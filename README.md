@@ -86,7 +86,14 @@ ags --config
 
 # Update to latest release
 ags --update
+
+# Wipe the existing ags tmux session for this directory before launching
+ags --reset
 ```
+
+### Session persistence
+
+`Ctrl+Q` detaches instead of killing — the tmux session stays alive in the background with every claude process still running. The next `ags` invocation in the same directory reattaches and picks up where you left off, which is how you apply an `ags --update` without losing state. Use `Ctrl+K` (or `ags --reset` from outside) when you actually want to wipe everything.
 
 ### Run from source (without installing)
 
@@ -114,11 +121,11 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 
 **Global (work from any pane — handled by tmux):**
 
-| Key                          | Action                           |
-|------------------------------|----------------------------------|
-| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane   |
-| `Alt+F`                      | Zoom (fullscreen) current pane   |
-| `Ctrl+Q`                     | Quit                             |
+| Key                          | Action                                       |
+|------------------------------|----------------------------------------------|
+| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane               |
+| `Alt+F`                      | Zoom (fullscreen) current pane               |
+| `Ctrl+Q`                     | Detach (session + claude processes survive)  |
 
 **Sidebar (when sidebar is focused):**
 
@@ -139,6 +146,7 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 | `d`                  | Delete worktree (worktree repos only)      |
 | `?`                  | Show help                                  |
 | `Alt+S`              | Open settings                              |
+| `Ctrl+K`             | Quit and kill the session (wipes claude state) |
 
 **Text selection:** Hold `Shift` while clicking and dragging to select text (bypasses tmux mouse mode). On macOS Terminal.app, use `fn` instead.
 
