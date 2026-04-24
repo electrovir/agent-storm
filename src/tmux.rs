@@ -6,6 +6,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub struct TmuxSession {
     pub ai_pane_id: Option<String>,
     pub shell_pane_id: String,
+    /// True while `ai_pane_id` runs the silent placeholder command. Tracked
+    /// so `activate_folder` knows to `respawn-pane` with the real ai_cmd
+    /// after `fix_layout` — this keeps claude's first render at the final
+    /// pane size instead of a mid-split size that produces jumbled text.
+    ai_placeholder: bool,
 }
 
 struct CachedPaneInfo {
@@ -15,6 +20,20 @@ struct CachedPaneInfo {
 }
 
 const SHELL_COMMANDS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "tcsh", "csh", "ksh"];
+
+/// Silent placeholder run in a newly split AI pane. `cat` blocks on stdin
+/// with no output; it gets SIGKILL'd by `respawn-pane -k` once the pane has
+/// been sized correctly, and the real ai_cmd starts in its place.
+const AI_PLACEHOLDER_CMD: &str = "cat";
+
+// Tmux user-option keys used to tag panes so a fresh ags process can adopt
+// an existing session after the previous ags exited (detach for persistence,
+// or after an `ags --update` cycle).
+const AGS_FOLDER_KEY: &str = "@ags-folder";
+const AGS_KIND_KEY: &str = "@ags-kind";
+const AGS_KIND_SIDEBAR: &str = "sidebar";
+const AGS_KIND_AI: &str = "ai";
+const AGS_KIND_SHELL: &str = "shell";
 
 pub struct TmuxController {
     session_name: String,
@@ -79,11 +98,20 @@ impl TmuxController {
         tmux_cmd(&[
             "bind-key", "-n", "M-1", "select-pane", "-t", &self.sidebar_pane_id,
         ]);
-        tmux_cmd(&["bind-key", "-n", "C-q", "kill-session"]);
+        // Ctrl+Q detaches the client; the tmux session (with all its panes
+        // and the claude processes inside them) survives so the next `ags`
+        // invocation can adopt and resume them. Ctrl+K is handled in the
+        // sidebar ratatui code and calls `kill_session` to wipe everything.
+        tmux_cmd(&["bind-key", "-n", "C-q", "detach-client"]);
         tmux_cmd(&["bind-key", "-n", "M-f", "resize-pane", "-Z"]);
         tmux_cmd(&[
             "bind-key", "-n", "M-k", "run-shell", "tmux clear-history",
         ]);
+
+        // Tag the sidebar pane so future ags launches can find it via
+        // `list-panes` and respawn it in place rather than creating a new
+        // session.
+        tag_pane_kind(&self.sidebar_pane_id, AGS_KIND_SIDEBAR);
     }
 
     /// Activate a folder: create or restore its AI and shell panes.
@@ -125,6 +153,11 @@ impl TmuxController {
         self.update_keybindings();
         self.fix_layout();
 
+        // With the layout final, either start the real ai_cmd in a pane that
+        // was just split with a placeholder (new / newly-unhidden AI pane),
+        // or resume the suspended claude that was SIGSTOP'd during park.
+        self.launch_or_resume_ai_pane(folder);
+
         let folder_name = folder
             .file_name()
             .and_then(|n| n.to_str())
@@ -151,10 +184,13 @@ impl TmuxController {
             .map_err(|e| format!("Folder does not exist: {e}"))?;
         let folder_str = folder.to_str().ok_or("Invalid folder path.")?;
 
+        // Launch the AI pane with a silent placeholder; `activate_folder`
+        // respawns it with the real ai_cmd after `fix_layout`, so claude's
+        // first render happens at the final pane size instead of the wide
+        // mid-split size that produces jumbled output.
         let ai_pane_id = if hide_ai {
             None
         } else {
-            // Create AI pane to the right of sidebar.
             Some(
                 tmux_cmd_output(&[
                     "split-window",
@@ -166,7 +202,7 @@ impl TmuxController {
                     "-P",
                     "-F",
                     "#{pane_id}",
-                    &self.ai_cmd,
+                    AI_PLACEHOLDER_CMD,
                 ])
                 .map_err(|e| format!("Failed to create AI pane: {e}"))?,
             )
@@ -189,11 +225,19 @@ impl TmuxController {
         ])
         .map_err(|e| format!("Failed to create shell pane: {e}"))?;
 
+        // Tag panes so a later ags process can adopt this session.
+        if let Some(ai_id) = &ai_pane_id {
+            tag_pane_folder(ai_id, folder_str, AGS_KIND_AI);
+        }
+        tag_pane_folder(&shell_pane_id, folder_str, AGS_KIND_SHELL);
+
+        let ai_placeholder = ai_pane_id.is_some();
         self.sessions.insert(
             folder.to_path_buf(),
             TmuxSession {
                 ai_pane_id,
                 shell_pane_id,
+                ai_placeholder,
             },
         );
 
@@ -207,6 +251,20 @@ impl TmuxController {
         let Some(session) = self.sessions.get(folder) else {
             return;
         };
+
+        // SIGSTOP the AI process tree BEFORE break-pane. Otherwise claude
+        // receives a SIGWINCH when the pane moves to a background window
+        // (different width), more on each join-pane when it's later
+        // restored, and another on fix_layout — and reflows its entire
+        // conversation on each. Keeping the process stopped across the
+        // whole park/restore cycle coalesces these into a single resize
+        // event back to the same pre-park dimensions, which is a no-op for
+        // claude's redraw logic.
+        if let Some(ai_id) = &session.ai_pane_id
+            && let Some(pid) = get_pane_pid(ai_id)
+        {
+            suspend_process_tree(pid);
+        }
 
         // Move panes to background windows. Park shell first (rightmost).
         tmux_cmd(&["break-pane", "-d", "-s", &session.shell_pane_id]);
@@ -436,6 +494,8 @@ impl TmuxController {
         } else if !hide_ai && session.ai_pane_id.is_none() {
             let folder_str = folder.to_str().unwrap_or(".").to_string();
             let shell_id = session.shell_pane_id.clone();
+            // Placeholder — `activate_folder` will respawn with the real
+            // ai_cmd after `fix_layout` runs.
             if let Ok(ai_id) = tmux_cmd_output(&[
                 "split-window",
                 "-h",
@@ -447,12 +507,36 @@ impl TmuxController {
                 "-P",
                 "-F",
                 "#{pane_id}",
-                &self.ai_cmd,
-            ])
-                && let Some(session) = self.sessions.get_mut(folder)
-            {
-                session.ai_pane_id = Some(ai_id);
+                AI_PLACEHOLDER_CMD,
+            ]) {
+                tag_pane_folder(&ai_id, &folder_str, AGS_KIND_AI);
+                if let Some(session) = self.sessions.get_mut(folder) {
+                    session.ai_pane_id = Some(ai_id);
+                    session.ai_placeholder = true;
+                }
             }
+        }
+    }
+
+    /// After `fix_layout` has set final pane dimensions: respawn a
+    /// placeholder AI pane with the real ai_cmd, or resume a claude that
+    /// was SIGSTOP'd in `park_current_panes`.
+    fn launch_or_resume_ai_pane(&mut self, folder: &Path) {
+        let Some(session) = self.sessions.get(folder) else {
+            return;
+        };
+        let Some(ai_id) = session.ai_pane_id.clone() else {
+            return;
+        };
+        let is_placeholder = session.ai_placeholder;
+
+        if is_placeholder {
+            tmux_cmd(&["respawn-pane", "-k", "-t", &ai_id, &self.ai_cmd]);
+            if let Some(s) = self.sessions.get_mut(folder) {
+                s.ai_placeholder = false;
+            }
+        } else if let Some(pid) = get_pane_pid(&ai_id) {
+            resume_process_tree(pid);
         }
     }
 
@@ -484,7 +568,9 @@ impl TmuxController {
             None => return,
         };
 
-        // Create AI pane before (to the left of) the shell pane.
+        // Create with placeholder before (to the left of) the shell pane,
+        // size the layout, then respawn with the real ai_cmd so claude's
+        // first render is at the final pane size (no jumbled text).
         let Ok(ai_id) = tmux_cmd_output(&[
             "split-window",
             "-h",
@@ -496,20 +582,130 @@ impl TmuxController {
             "-P",
             "-F",
             "#{pane_id}",
-            &self.ai_cmd,
+            AI_PLACEHOLDER_CMD,
         ]) else {
             return;
         };
 
+        tag_pane_folder(&ai_id, &folder_str, AGS_KIND_AI);
         if let Some(session) = self.sessions.get_mut(folder) {
-            session.ai_pane_id = Some(ai_id);
+            session.ai_pane_id = Some(ai_id.clone());
+            session.ai_placeholder = true;
         }
         self.update_keybindings();
         self.fix_layout();
+
+        tmux_cmd(&["respawn-pane", "-k", "-t", &ai_id, &self.ai_cmd]);
+        if let Some(session) = self.sessions.get_mut(folder) {
+            session.ai_placeholder = false;
+        }
+    }
+
+    /// Detach the client from the session without killing it. Panes and
+    /// their claude processes live on so the next ags launch can adopt
+    /// them. Invoked from the sidebar's Ctrl+Q handler.
+    pub fn detach_client(&self) {
+        tmux_cmd(&["detach-client", "-s", &self.session_name]);
+    }
+
+    /// Walk every pane in the session looking for `@ags-folder` / `@ags-kind`
+    /// tags, rebuild `self.sessions`, and — if one folder's panes are sitting
+    /// in the sidebar's window — adopt it as the active folder. Returns the
+    /// folder that was adopted as active (if any) so callers can re-apply
+    /// per-folder UI state.
+    pub fn adopt_existing_session(&mut self) -> Option<PathBuf> {
+        // The main window is whichever window the sidebar lives in.
+        let main_window = tmux_cmd_output(&[
+            "display-message",
+            "-p",
+            "-t",
+            &self.sidebar_pane_id,
+            "#{window_id}",
+        ])
+        .ok()?;
+
+        let output = tmux_cmd_output(&[
+            "list-panes",
+            "-s",
+            "-t",
+            &self.session_name,
+            "-F",
+            "#{pane_id}\t#{window_id}\t#{@ags-folder}\t#{@ags-kind}",
+        ])
+        .ok()?;
+
+        let mut active_folder: Option<PathBuf> = None;
+
+        for line in output.lines() {
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let pane_id = parts[0];
+            let window_id = parts[1];
+            let folder = parts[2];
+            let kind = parts[3];
+
+            if folder.is_empty() {
+                continue;
+            }
+            let folder_path = PathBuf::from(folder);
+            let entry =
+                self.sessions
+                    .entry(folder_path.clone())
+                    .or_insert_with(|| TmuxSession {
+                        ai_pane_id: None,
+                        shell_pane_id: String::new(),
+                        // Any adopted AI pane has already been respawned
+                        // with the real ai_cmd by the previous run; we
+                        // rebuild with the placeholder flag cleared.
+                        ai_placeholder: false,
+                    });
+
+            match kind {
+                AGS_KIND_AI => entry.ai_pane_id = Some(pane_id.to_string()),
+                AGS_KIND_SHELL => entry.shell_pane_id = pane_id.to_string(),
+                _ => {}
+            }
+
+            // A folder's panes living in the sidebar's window means that
+            // folder was the active one at detach time.
+            if window_id == main_window {
+                active_folder = Some(folder_path);
+            }
+        }
+
+        // Drop incomplete entries (a missing shell pane means tmux lost the
+        // pane, e.g. it was kill-pane'd externally).
+        self.sessions.retain(|_, s| !s.shell_pane_id.is_empty());
+
+        if let Some(folder) = &active_folder {
+            // Adopt the active folder without going through park/restore
+            // (its panes are already positioned correctly). Just sync the
+            // in-memory state, refresh the Alt+2/3 keybindings, and reapply
+            // the layout in case the terminal is a different size than the
+            // previous session used.
+            self.active_folder = Some(folder.clone());
+            self.update_keybindings();
+            self.fix_layout();
+        }
+
+        active_folder
     }
 
     /// Kill the entire tmux session.
     pub fn kill_session(&self) {
+        // Resume any suspended AI processes first; tmux's kill-session sends
+        // SIGHUP to each pane's direct child, which a SIGSTOP'd process can't
+        // act on until SIGCONT'd. Skipping this would leave stopped claudes
+        // as orphans after quit.
+        for session in self.sessions.values() {
+            if let Some(ai_id) = &session.ai_pane_id
+                && let Some(pid) = get_pane_pid(ai_id)
+            {
+                resume_process_tree(pid);
+            }
+        }
         tmux_cmd(&["kill-session", "-t", &self.session_name]);
     }
 
@@ -559,6 +755,14 @@ fn kill_pane(pane_id: &str) {
         // Include the root process itself.
         pids.push(root_pid);
 
+        // SIGCONT first so stopped processes (the park logic SIGSTOPs the
+        // AI process tree) can actually act on SIGTERM. A stopped process
+        // queues signals but doesn't deliver them until resumed.
+        for &pid in pids.iter().rev() {
+            let _ = Command::new("kill")
+                .args(["-s", "CONT", &pid.to_string()])
+                .output();
+        }
         // Send SIGTERM to each process (leaf-first so parents don't
         // respawn children before we get to them).
         for &pid in pids.iter().rev() {
@@ -570,6 +774,51 @@ fn kill_pane(pane_id: &str) {
 
     // 2. Destroy the tmux pane itself.
     tmux_cmd(&["kill-pane", "-t", pane_id]);
+}
+
+/// SIGSTOP every process in the tree rooted at `root_pid`.
+fn suspend_process_tree(root_pid: u32) {
+    let mut pids = Vec::new();
+    collect_descendant_pids(root_pid, &mut pids);
+    pids.push(root_pid);
+    for &pid in &pids {
+        let _ = Command::new("kill")
+            .args(["-s", "STOP", &pid.to_string()])
+            .output();
+    }
+}
+
+/// SIGCONT every process in the tree rooted at `root_pid`. Safe no-op when
+/// processes are not currently stopped.
+fn resume_process_tree(root_pid: u32) {
+    let mut pids = Vec::new();
+    collect_descendant_pids(root_pid, &mut pids);
+    pids.push(root_pid);
+    for &pid in &pids {
+        let _ = Command::new("kill")
+            .args(["-s", "CONT", &pid.to_string()])
+            .output();
+    }
+}
+
+/// Tag a pane with its owning folder path and kind so that a later ags
+/// process can adopt it via `adopt_existing_session`.
+fn tag_pane_folder(pane_id: &str, folder: &str, kind: &str) {
+    tmux_cmd(&["set-option", "-p", "-t", pane_id, AGS_FOLDER_KEY, folder]);
+    tmux_cmd(&["set-option", "-p", "-t", pane_id, AGS_KIND_KEY, kind]);
+}
+
+/// Tag a pane with just its kind (used for the sidebar, which has no folder).
+fn tag_pane_kind(pane_id: &str, kind: &str) {
+    tmux_cmd(&["set-option", "-p", "-t", pane_id, AGS_KIND_KEY, kind]);
+}
+
+/// Read the root PID tmux launched in a pane. `None` when the pane is dead
+/// or the query fails.
+fn get_pane_pid(pane_id: &str) -> Option<u32> {
+    tmux_cmd_output(&["display-message", "-p", "-t", pane_id, "#{pane_pid}"])
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
 }
 
 /// Recursively collect all descendant PIDs of `parent`.

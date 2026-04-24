@@ -45,6 +45,11 @@ struct Cli {
     #[arg(long)]
     update: bool,
 
+    /// Kill any existing ags tmux session for this directory before
+    /// launching (wipes all claude sessions instead of reconnecting).
+    #[arg(long)]
+    reset: bool,
+
     /// Internal flag: run as the sidebar inside tmux. Do not use directly.
     #[arg(long, hide = true)]
     internal_sidebar: bool,
@@ -207,16 +212,19 @@ fn launch_tmux(
 
     let session_name = tmux::session_name(&base_dir);
 
+    // `--reset` wipes the existing session so the normal new-session path
+    // runs below.
+    if cli.reset {
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
     let has_session = Command::new("tmux")
         .args(["has-session", "-t", &session_name])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
-
-    if has_session {
-        eprintln!("ags already running");
-        std::process::exit(1);
-    }
 
     // Build the sidebar command with forwarded args.
     let exe = env::current_exe()?;
@@ -248,6 +256,18 @@ fn launch_tmux(
         ));
     }
 
+    let dim_bg = detect_dim_bg();
+    let border_style = resolve_border_style(border_style);
+
+    if has_session {
+        return reconnect_to_session(
+            &session_name,
+            &sidebar_cmd,
+            border_style,
+            dim_bg.as_deref(),
+        );
+    }
+
     // Create tmux session running the sidebar.
     let dir_name = base_dir
         .file_name()
@@ -264,20 +284,80 @@ fn launch_tmux(
         &sidebar_cmd,
     ]);
 
-    // Detect the terminal's background color and pass a dimmed variant into
-    // the tmux session so inactive panes can be visually distinguished.
-    if let Some(dim_bg) = detect_dim_bg() {
+    if let Some(ref dim_bg) = dim_bg {
         cmd.env("_AGENT_STORM_DIM_BG", dim_bg);
     }
-
-    // Determine pane border style. VTE-based terminals (gnome-terminal, tilix,
-    // etc.) often render heavy box-drawing characters as double-width, which
-    // breaks the tmux layout. Auto-detect and fall back to "single".
-    let border_style = resolve_border_style(border_style);
     cmd.env("_AGENT_STORM_BORDER_LINES", border_style);
 
     let status = cmd.status()?;
 
+    std::process::exit(status.code().unwrap_or(0));
+}
+
+/// Adopt a surviving tmux session: find the tagged sidebar pane, respawn it
+/// with the current ags binary (so the session picks up any update), then
+/// reattach the client. The claude processes in the AI panes keep running
+/// across the respawn.
+fn reconnect_to_session(
+    session_name: &str,
+    sidebar_cmd: &str,
+    border_style: &str,
+    dim_bg: Option<&str>,
+) -> io::Result<()> {
+    // Locate the pane tagged as the sidebar.
+    let list = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-s",
+            "-t",
+            session_name,
+            "-F",
+            "#{pane_id}\t#{@ags-kind}",
+        ])
+        .output()?;
+    let listing = String::from_utf8_lossy(&list.stdout);
+    let sidebar_pane = listing.lines().find_map(|line| {
+        let mut parts = line.split('\t');
+        let pane_id = parts.next()?;
+        let kind = parts.next()?;
+        if kind == "sidebar" {
+            Some(pane_id.to_string())
+        } else {
+            None
+        }
+    });
+
+    let Some(pane_id) = sidebar_pane else {
+        eprintln!(
+            "Session '{session_name}' exists but has no ags sidebar pane. \
+             Run `ags --reset` to wipe it and start fresh."
+        );
+        std::process::exit(1);
+    };
+
+    // Respawn the sidebar with the new binary. `-k` kills the stale sidebar
+    // process left over from the previous ags exit (or whatever is running
+    // there). The `-e` flags refresh the detected terminal env; other panes
+    // keep the environment they were created with.
+    let mut respawn = Command::new("tmux");
+    respawn.args(["respawn-pane", "-k"]);
+    if let Some(dim_bg) = dim_bg {
+        respawn.args(["-e", &format!("_AGENT_STORM_DIM_BG={dim_bg}")]);
+    }
+    respawn.args([
+        "-e",
+        &format!("_AGENT_STORM_BORDER_LINES={border_style}"),
+        "-t",
+        &pane_id,
+        sidebar_cmd,
+    ]);
+    respawn.status()?;
+
+    // Attach the client. `-d` kicks any lingering client attached from a
+    // previous ags invocation that didn't detach cleanly.
+    let status = Command::new("tmux")
+        .args(["attach-session", "-d", "-t", session_name])
+        .status()?;
     std::process::exit(status.code().unwrap_or(0));
 }
 
@@ -316,8 +396,13 @@ async fn async_sidebar(
     crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
     ratatui::restore();
 
-    // Kill the tmux session on exit.
-    app.kill_tmux_session();
+    // Dispatch based on how the user asked to exit. An unexpected return
+    // (`None`) is treated as Detach so a transient panic doesn't wipe
+    // running claude sessions.
+    match app.shutdown_action() {
+        Some(app::ShutdownAction::Kill) => app.kill_tmux_session(),
+        _ => app.detach(),
+    }
 
     result
 }

@@ -334,7 +334,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
     let status_text = if let Some(msg) = app.status_message() {
         msg.to_string()
     } else if app.tmux().is_sidebar_focused() {
-        " ?:help  ^Q:quit".to_string()
+        " ?:help  ^Q:quit  ^K:kill".to_string()
     } else {
         " ^Q:quit".to_string()
     };
@@ -510,7 +510,8 @@ fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
     }
 
     lines.extend([
-        help_line("^Q", "Quit"),
+        help_line("^Q", "Quit (keep session)"),
+        help_line("^K", "Quit + kill session"),
         help_line("Alt+S", "Settings"),
         Line::raw(""),
         help_line("Alt+1/2/3", "Focus pane"),

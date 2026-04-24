@@ -89,10 +89,20 @@ const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 
+/// How the user asked the sidebar to exit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownAction {
+    /// Ctrl+Q: detach the tmux client so the session (and its claude
+    /// processes) survive and can be adopted by the next ags launch.
+    Detach,
+    /// Ctrl+K: wipe the tmux session entirely.
+    Kill,
+}
+
 pub struct App {
     folder_list: FolderList,
     tmux: TmuxController,
-    should_quit: bool,
+    shutdown_action: Option<ShutdownAction>,
     ai_cmd: String,
     config: config::Config,
     lone: bool,
@@ -118,15 +128,19 @@ impl App {
             .cloned()
             .unwrap_or_else(|| PathBuf::from("ags"));
         let session_name = tmux::session_name(&session_base);
-        let tmux = TmuxController::new(session_name, ai_cmd.clone());
+        let mut tmux = TmuxController::new(session_name, ai_cmd.clone());
         tmux.setup_session();
+        // Adopt any panes left behind by a previous ags run (reconnect path).
+        // This populates the per-folder session map and re-activates the
+        // folder whose panes are in the sidebar's window, if any.
+        tmux.adopt_existing_session();
 
         let (bg_sender, bg_receiver) = tokio_mpsc::unbounded_channel();
 
         App {
             folder_list: FolderList::new(repo_paths),
             tmux,
-            should_quit: false,
+            shutdown_action: None,
             ai_cmd,
             config: cfg,
             lone,
@@ -293,10 +307,21 @@ impl App {
             }
             tokio::task::yield_now().await;
 
-            if self.should_quit {
+            if self.shutdown_action.is_some() {
                 return Ok(());
             }
         }
+    }
+
+    /// Which exit path the user chose. `None` if ratatui returned for some
+    /// other reason (panic, I/O error) — `async_sidebar` treats that as
+    /// Detach to avoid wiping state on transient failures.
+    pub fn shutdown_action(&self) -> Option<ShutdownAction> {
+        self.shutdown_action
+    }
+
+    pub fn detach(&self) {
+        self.tmux.detach_client();
     }
 
     pub fn kill_tmux_session(&self) {
@@ -316,7 +341,11 @@ impl App {
         // Global bindings.
         match key.code {
             KeyCode::Char('q') if ctrl => {
-                self.should_quit = true;
+                self.shutdown_action = Some(ShutdownAction::Detach);
+                return;
+            }
+            KeyCode::Char('k') if ctrl => {
+                self.shutdown_action = Some(ShutdownAction::Kill);
                 return;
             }
             KeyCode::Char('s') if alt => {
