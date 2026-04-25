@@ -23,7 +23,7 @@ pub struct Config {
     pub post_worktree_cmd: Option<String>,
 
     /// Automatically check for and install updates in the background.
-    #[serde(default)]
+    #[serde(default = "default_auto_update")]
     pub auto_update: bool,
 
     /// List of repos to browse.
@@ -46,7 +46,7 @@ impl Default for Config {
         Config {
             ai_cmd: default_ai_cmd(),
             post_worktree_cmd: None,
-            auto_update: false,
+            auto_update: default_auto_update(),
             repos: Vec::new(),
             hidden_ai_pane: Vec::new(),
             border_style: None,
@@ -104,6 +104,10 @@ impl Config {
 
 fn default_ai_cmd() -> String {
     "claude".to_string()
+}
+
+fn default_auto_update() -> bool {
+    true
 }
 
 fn config_path() -> Option<PathBuf> {

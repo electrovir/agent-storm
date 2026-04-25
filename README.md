@@ -205,7 +205,7 @@ path = "/Users/you/repos/other-project"
 
 - `ai_cmd` — command to run in the AI pane (default: `claude`)
 - `post_worktree_cmd` — global default command to run after creating a worktree
-- `auto_update` — automatically check for and install updates in the background (default: `false`). When enabled, agent-storm checks GitHub for new releases once per hour and installs them silently. An orange "restart to update" banner appears in the sidebar when an update has been downloaded.
+- `auto_update` — automatically check for and install updates in the background (default: `true`). When enabled, agent-storm checks GitHub for new releases once per hour and installs them silently. An orange "restart to update" banner appears in the sidebar when an update has been downloaded.
 - `repos` — list of repos to browse, each with an optional per-repo `post_worktree_cmd`
 - `hidden_ai_pane` — list of folder paths where the AI pane is hidden (toggled with `i` in the sidebar)
 

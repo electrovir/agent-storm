@@ -741,9 +741,14 @@ impl App {
                         }
 
                         match worktree::rename_folder(&folder, &new_name) {
-                            Ok((msg, _new_path)) => {
+                            Ok((msg, new_path)) => {
                                 self.set_status(msg);
+                                // Migrate the existing tmux session (and
+                                // its pane tags) so the AI/shell panes
+                                // stay attached under the new path.
+                                self.tmux.migrate_session(&folder, &new_path);
                                 self.folder_list.refresh();
+                                self.folder_list.select_path(&new_path);
                             }
                             Err(msg) => {
                                 self.set_status(msg);

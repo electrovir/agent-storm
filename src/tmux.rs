@@ -601,6 +601,36 @@ impl TmuxController {
         }
     }
 
+    /// Move a folder's session to a new path (e.g. after `git worktree
+    /// move`). Updates the in-memory map, the persisted active-folder
+    /// pointer, and the `@ags-folder` tag on each pane so adoption on
+    /// relaunch finds the renamed worktree.
+    pub fn migrate_session(&mut self, old_folder: &Path, new_folder: &Path) {
+        let Some(session) = self.sessions.remove(old_folder) else {
+            return;
+        };
+        let new_folder_str = new_folder.to_str().unwrap_or("");
+        if let Some(ai_id) = &session.ai_pane_id {
+            tmux_cmd(&[
+                "set-option", "-p", "-t", ai_id, AGS_FOLDER_KEY, new_folder_str,
+            ]);
+        }
+        tmux_cmd(&[
+            "set-option", "-p", "-t", &session.shell_pane_id, AGS_FOLDER_KEY,
+            new_folder_str,
+        ]);
+        self.sessions.insert(new_folder.to_path_buf(), session);
+        if self.active_folder.as_deref() == Some(old_folder) {
+            self.active_folder = Some(new_folder.to_path_buf());
+            // Refresh the title since it's derived from the folder name.
+            let folder_name = new_folder
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            self.set_title(folder_name);
+        }
+    }
+
     /// Detach the client from the session without killing it. Panes and
     /// their claude processes live on so the next ags launch can adopt
     /// them. Invoked from the sidebar's Ctrl+Q handler.
@@ -693,17 +723,25 @@ impl TmuxController {
         active_folder
     }
 
-    /// Kill the entire tmux session.
+    /// Kill the entire tmux session and every process running in any of
+    /// its panes. We can't rely on `tmux kill-session` alone — it only
+    /// SIGHUPs each pane's direct child, leaving grandchildren and
+    /// reparented orphans alive. So we enumerate every pane in the
+    /// session and SIGKILL its full process session before letting tmux
+    /// tear the session down.
     pub fn kill_session(&self) {
-        // Resume any suspended AI processes first; tmux's kill-session sends
-        // SIGHUP to each pane's direct child, which a SIGSTOP'd process can't
-        // act on until SIGCONT'd. Skipping this would leave stopped claudes
-        // as orphans after quit.
-        for session in self.sessions.values() {
-            if let Some(ai_id) = &session.ai_pane_id
-                && let Some(pid) = get_pane_pid(ai_id)
-            {
-                resume_process_tree(pid);
+        if let Ok(output) = tmux_cmd_output(&[
+            "list-panes",
+            "-s",
+            "-t",
+            &self.session_name,
+            "-F",
+            "#{pane_pid}",
+        ]) {
+            for line in output.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>() {
+                    kill_pane_session(pid);
+                }
             }
         }
         tmux_cmd(&["kill-session", "-t", &self.session_name]);
@@ -736,44 +774,65 @@ impl TmuxController {
     }
 }
 
-/// Kill a tmux pane and all processes running inside it.
+/// Kill a tmux pane and every process running inside it.
 ///
-/// Plain `kill-pane` only sends SIGHUP to the direct child, which may leave
-/// grandchild processes (e.g. `claude` sub-processes) running as orphans.
-/// This helper first discovers the pane's root PID, walks the full descendant
-/// tree, and sends SIGTERM to every process before destroying the pane.
+/// Plain `kill-pane` only sends SIGHUP to the direct child, which leaves
+/// grandchildren as orphans. Walking `pgrep -P` recursively also misses
+/// processes that re-parented to init when their immediate parent exited.
+/// Tmux gives each pane its own session (the pane's root pid is the
+/// session leader), so `pkill -s <root_pid>` reliably matches every
+/// process whose session id is the pane — including reparented orphans.
+/// We do that with SIGKILL, plus a per-pid SIGKILL belt-and-suspenders
+/// for any process that escaped the session by calling setsid().
 fn kill_pane(pane_id: &str) {
-    // 1. Grab the root PID that tmux launched in this pane.
-    if let Ok(pid_str) = tmux_cmd_output(&[
+    let Ok(pid_str) = tmux_cmd_output(&[
         "display-message", "-p", "-t", pane_id, "#{pane_pid}",
-    ])
-        && let Ok(root_pid) = pid_str.parse::<u32>()
-    {
-        // Collect every descendant PID (children, grandchildren, …).
-        let mut pids = Vec::new();
-        collect_descendant_pids(root_pid, &mut pids);
-        // Include the root process itself.
-        pids.push(root_pid);
-
-        // SIGCONT first so stopped processes (the park logic SIGSTOPs the
-        // AI process tree) can actually act on SIGTERM. A stopped process
-        // queues signals but doesn't deliver them until resumed.
-        for &pid in pids.iter().rev() {
-            let _ = Command::new("kill")
-                .args(["-s", "CONT", &pid.to_string()])
-                .output();
-        }
-        // Send SIGTERM to each process (leaf-first so parents don't
-        // respawn children before we get to them).
-        for &pid in pids.iter().rev() {
-            let _ = Command::new("kill")
-                .args(["-s", "TERM", &pid.to_string()])
-                .output();
-        }
+    ]) else {
+        tmux_cmd(&["kill-pane", "-t", pane_id]);
+        return;
+    };
+    if let Ok(root_pid) = pid_str.parse::<u32>() {
+        kill_pane_session(root_pid);
     }
-
-    // 2. Destroy the tmux pane itself.
     tmux_cmd(&["kill-pane", "-t", pane_id]);
+}
+
+/// SIGKILL every process belonging to a pane's session (and any escapees
+/// reachable via the pgrep tree). `root_pid` should be the pane's root pid
+/// returned by `#{pane_pid}` — tmux makes that the session leader.
+fn kill_pane_session(root_pid: u32) {
+    // Walk the descendant tree first so we have a list of pids to fall
+    // back on for processes that may have escaped the session via setsid.
+    let mut pids = Vec::new();
+    collect_descendant_pids(root_pid, &mut pids);
+    pids.push(root_pid);
+
+    // SIGCONT anything stopped by the park logic so signals can land.
+    for &pid in &pids {
+        let _ = Command::new("kill")
+            .args(["-s", "CONT", &pid.to_string()])
+            .output();
+    }
+    // SIGTERM polite shot first — well-behaved processes get a chance
+    // to flush state before we hammer them with SIGKILL.
+    let _ = Command::new("pkill")
+        .args(["-TERM", "-s", &root_pid.to_string()])
+        .output();
+    for &pid in pids.iter().rev() {
+        let _ = Command::new("kill")
+            .args(["-s", "TERM", &pid.to_string()])
+            .output();
+    }
+    // Force-kill anything still alive. SIGKILL can't be trapped, so this
+    // catches misbehaving processes that ignored SIGTERM.
+    let _ = Command::new("pkill")
+        .args(["-KILL", "-s", &root_pid.to_string()])
+        .output();
+    for &pid in pids.iter().rev() {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output();
+    }
 }
 
 /// SIGSTOP every process in the tree rooted at `root_pid`.
