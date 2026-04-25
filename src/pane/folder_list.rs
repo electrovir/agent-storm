@@ -279,6 +279,17 @@ impl FolderList {
             .min(self.selectable_indices.len().saturating_sub(1));
     }
 
+    /// Select the selectable entry whose path matches `path`. No-op if not found.
+    pub fn select_path(&mut self, path: &Path) {
+        if let Some(idx) = self
+            .selectable_indices
+            .iter()
+            .position(|&i| self.entries[i].path() == path)
+        {
+            self.selected = idx;
+        }
+    }
+
     /// Select the entry at a given display row, accounting for line wrapping.
     pub fn select_at_row(&mut self, row: u16, width: u16) {
         let width = width as usize;
