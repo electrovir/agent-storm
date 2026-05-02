@@ -93,65 +93,6 @@ pub fn remove_worktree(any_worktree: &Path, target: &Path) -> Result<String, Str
     Ok(format!("Worktree '{name}' removed."))
 }
 
-/// Checks if a specific directory is a git worktree (has a `.git` file, not directory).
-pub fn is_worktree(path: &Path) -> bool {
-    let dot_git = path.join(".git");
-    dot_git.is_file()
-}
-
-/// Renames a folder. If it's a git worktree, uses `git worktree move`.
-/// Otherwise, uses a plain filesystem rename.
-pub fn rename_folder(folder: &Path, new_name: &str) -> Result<(String, std::path::PathBuf), String> {
-    let parent = folder
-        .parent()
-        .ok_or_else(|| "Cannot determine parent directory.".to_string())?;
-    let new_path = parent.join(new_name);
-
-    if new_path.exists() {
-        return Err(format!("'{new_name}' already exists."));
-    }
-
-    if is_worktree(folder) {
-        // Use git worktree move for proper reference updates.
-        let output = Command::new("git")
-            .args([
-                "worktree",
-                "move",
-                folder.to_str().ok_or("Invalid path.")?,
-                new_path.to_str().ok_or("Invalid path.")?,
-            ])
-            .current_dir(folder)
-            .output()
-            .map_err(|err| format!("Failed to run git: {err}"))?;
-
-        if output.status.success() {
-            let old_name = folder
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?");
-            Ok((
-                format!("Worktree renamed: {old_name} -> {new_name}"),
-                new_path,
-            ))
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("git worktree move failed: {stderr}"))
-        }
-    } else {
-        // Plain filesystem rename.
-        std::fs::rename(folder, &new_path)
-            .map_err(|err| format!("Rename failed: {err}"))?;
-        let old_name = folder
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
-        Ok((
-            format!("Renamed: {old_name} -> {new_name}"),
-            new_path,
-        ))
-    }
-}
-
 pub fn add_worktree(existing_worktree: &Path, branch_name: &str) -> Result<String, String> {
     let new_path = existing_worktree
         .parent()

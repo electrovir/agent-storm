@@ -93,9 +93,6 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .unwrap_or("?");
             render_new_repo_pwc_modal(frame, buffer, repo_name, global_pwc);
         }
-        Modal::Rename { folder, buffer } => {
-            render_rename_modal(frame, folder, buffer);
-        }
         Modal::Help => {
             render_help_modal(frame, app.selected_is_worktree(), app.is_lone());
         }
@@ -496,7 +493,6 @@ fn render_help_modal(frame: &mut Frame, is_worktree: bool, is_lone: bool) {
         help_line("Enter", "Open + focus AI"),
         help_line("Tab", "Open + stay"),
         help_line("j/k", "Navigate"),
-        help_line("r", "Rename"),
         help_line("i", "Toggle AI pane"),
         help_line("x", "Restart dead panes"),
         help_line("c", "Close panes"),
@@ -562,55 +558,6 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
         ),
         Span::raw(format!(" {desc}")),
     ])
-}
-
-fn render_rename_modal(frame: &mut Frame, folder: &std::path::Path, buffer: &str) {
-    let current_name = folder
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("?");
-
-    let area = frame.area().centered(
-        Constraint::Length(40.min(frame.area().width.saturating_sub(4))),
-        Constraint::Length(8),
-    );
-
-    frame.render_widget(Clear, area);
-
-    let block = Block::default()
-        .title(" Rename ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(FOCUS_COLOR));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Current: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(current_name, Style::default().fg(Color::DarkGray)),
-        ]),
-        Line::from(vec![
-            Span::styled("New:     ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{buffer}_"),
-                Style::default()
-                    .fg(FOCUS_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::raw(""),
-        Line::from(vec![
-            Span::styled("Enter", Style::default().fg(FOCUS_COLOR)),
-            Span::raw(" rename  "),
-            Span::styled("Esc", Style::default().fg(FOCUS_COLOR)),
-            Span::raw(" cancel"),
-        ]),
-    ];
-
-    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(content, inner);
 }
 
 fn render_add_worktree_modal(frame: &mut Frame, buffer: &str) {

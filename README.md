@@ -136,7 +136,6 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 | `Tab`                | Open sessions and stay in sidebar          |
 | `c`                  | Close panes for selected folder (confirm)  |
 | `x`                  | Restart dead panes for selected folder     |
-| `r`                  | Rename selected folder                     |
 | `i`                  | Toggle AI pane (shell-only mode)           |
 | `g`                  | Open GitHub PR in browser                  |
 | `a`                  | Add a new repo                             |
@@ -228,7 +227,6 @@ Worktree features:
 - Bare repo directories are hidden from the sidebar
 - `w` to create a new worktree (runs `post_worktree_cmd` after creation)
 - `d` to delete a worktree (with confirmation, blocked for the last worktree)
-- `r` to rename (uses `git worktree move` for proper reference updates)
 
 ### Logs
 
