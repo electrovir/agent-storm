@@ -601,36 +601,6 @@ impl TmuxController {
         }
     }
 
-    /// Move a folder's session to a new path (e.g. after `git worktree
-    /// move`). Updates the in-memory map, the persisted active-folder
-    /// pointer, and the `@ags-folder` tag on each pane so adoption on
-    /// relaunch finds the renamed worktree.
-    pub fn migrate_session(&mut self, old_folder: &Path, new_folder: &Path) {
-        let Some(session) = self.sessions.remove(old_folder) else {
-            return;
-        };
-        let new_folder_str = new_folder.to_str().unwrap_or("");
-        if let Some(ai_id) = &session.ai_pane_id {
-            tmux_cmd(&[
-                "set-option", "-p", "-t", ai_id, AGS_FOLDER_KEY, new_folder_str,
-            ]);
-        }
-        tmux_cmd(&[
-            "set-option", "-p", "-t", &session.shell_pane_id, AGS_FOLDER_KEY,
-            new_folder_str,
-        ]);
-        self.sessions.insert(new_folder.to_path_buf(), session);
-        if self.active_folder.as_deref() == Some(old_folder) {
-            self.active_folder = Some(new_folder.to_path_buf());
-            // Refresh the title since it's derived from the folder name.
-            let folder_name = new_folder
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?");
-            self.set_title(folder_name);
-        }
-    }
-
     /// Detach the client from the session without killing it. Panes and
     /// their claude processes live on so the next ags launch can adopt
     /// them. Invoked from the sidebar's Ctrl+Q handler.

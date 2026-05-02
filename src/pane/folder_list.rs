@@ -279,17 +279,6 @@ impl FolderList {
             .min(self.selectable_indices.len().saturating_sub(1));
     }
 
-    /// Select the selectable entry whose path matches `path`. No-op if not found.
-    pub fn select_path(&mut self, path: &Path) {
-        if let Some(idx) = self
-            .selectable_indices
-            .iter()
-            .position(|&i| self.entries[i].path() == path)
-        {
-            self.selected = idx;
-        }
-    }
-
     /// Select the entry at a given display row, accounting for line wrapping.
     pub fn select_at_row(&mut self, row: u16, width: u16) {
         let width = width as usize;
@@ -525,12 +514,16 @@ fn get_branch_name(path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty() && s != "HEAD")
 }
 
+/// PRs merged longer ago than this are treated as not merged in the sidebar,
+/// so stale worktrees don't keep flashing the "merged" indicator forever.
+const MERGED_RECENCY_SECS: u64 = 7 * 24 * 60 * 60;
+
 fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
     let Some(branch) = get_branch_name(path) else {
         return Ok(None);
     };
     let output = Command::new("gh")
-        .args(["pr", "view", &branch, "--json", "url,state"])
+        .args(["pr", "view", &branch, "--json", "url,state,mergedAt"])
         .current_dir(path)
         .output()
         .map_err(|err| format!("gh pr view failed for {}: {err}", path.display()))?;
@@ -541,14 +534,8 @@ fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Parse minimal JSON: {"url":"https://...","state":"OPEN|MERGED|CLOSED"}
-    let url = stdout.find("\"url\"").and_then(|i| {
-        let rest = &stdout[i + 5..];
-        let colon_rest = &rest[rest.find(':')? + 1..];
-        let first_quote = &colon_rest[colon_rest.find('"')? + 1..];
-        let end = first_quote.find('"')?;
-        Some(first_quote[..end].to_string())
-    });
+    // Parse minimal JSON: {"url":"https://...","state":"OPEN|MERGED|CLOSED","mergedAt":"2024-04-22T15:30:00Z"}
+    let url = extract_json_string(&stdout, "url");
     let state = stdout.find("\"state\"").map(|i| {
         let rest = &stdout[i..];
         if rest.contains("MERGED") {
@@ -565,8 +552,59 @@ fn get_pr_info(path: &Path) -> Result<Option<PrInfo>, String> {
         return Ok(None);
     }
 
-    let merged = state == Some("MERGED");
+    let merged = state == Some("MERGED")
+        && extract_json_string(&stdout, "mergedAt")
+            .as_deref()
+            .and_then(parse_rfc3339_to_unix)
+            .zip(now_unix_secs())
+            .is_some_and(|(merged_at, now)| now.saturating_sub(merged_at) <= MERGED_RECENCY_SECS as i64);
     Ok(url.map(|url| PrInfo { url, merged }))
+}
+
+fn extract_json_string(stdout: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let i = stdout.find(&needle)?;
+    let rest = &stdout[i + needle.len()..];
+    let colon_rest = &rest[rest.find(':')? + 1..].trim_start();
+    if colon_rest.starts_with("null") {
+        return None;
+    }
+    let first_quote = &colon_rest[colon_rest.find('"')? + 1..];
+    let end = first_quote.find('"')?;
+    Some(first_quote[..end].to_string())
+}
+
+fn now_unix_secs() -> Option<i64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+/// Parse an RFC3339 UTC timestamp like `2024-04-22T15:30:00Z` into a Unix timestamp.
+fn parse_rfc3339_to_unix(s: &str) -> Option<i64> {
+    if s.len() < 20 {
+        return None;
+    }
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: u32 = s.get(5..7)?.parse().ok()?;
+    let day: u32 = s.get(8..10)?.parse().ok()?;
+    let hour: i64 = s.get(11..13)?.parse().ok()?;
+    let minute: i64 = s.get(14..16)?.parse().ok()?;
+    let second: i64 = s.get(17..19)?.parse().ok()?;
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Howard Hinnant's days_from_civil — days since 1970-01-01 for a proleptic Gregorian date.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let m = m as i64;
+    let doy = (153 * if m > 2 { m - 3 } else { m + 9 } + 2) / 5 + (d as i64) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 /// Check all folders for open PRs. Returns results and whether any errors occurred.

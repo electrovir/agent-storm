@@ -79,10 +79,6 @@ pub enum Modal {
     ConfirmClosePanes {
         folder: PathBuf,
     },
-    Rename {
-        folder: PathBuf,
-        buffer: String,
-    },
 }
 
 const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
@@ -716,54 +712,6 @@ impl App {
                     _ => {}
                 }
             }
-            Modal::Rename { folder, buffer } => {
-                let folder = folder.clone();
-                match key.code {
-                    KeyCode::Esc => {
-                        self.close_modal();
-                    }
-                    KeyCode::Enter => {
-                        let new_name = buffer.trim().to_string();
-                        self.close_modal();
-
-                        if new_name.is_empty() {
-                            self.set_status("Cancelled (empty name).".to_string());
-                            return;
-                        }
-
-                        let old_name = folder
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("");
-                        if new_name == old_name {
-                            self.set_status("Name unchanged.".to_string());
-                            return;
-                        }
-
-                        match worktree::rename_folder(&folder, &new_name) {
-                            Ok((msg, new_path)) => {
-                                self.set_status(msg);
-                                // Migrate the existing tmux session (and
-                                // its pane tags) so the AI/shell panes
-                                // stay attached under the new path.
-                                self.tmux.migrate_session(&folder, &new_path);
-                                self.folder_list.refresh();
-                                self.folder_list.select_path(&new_path);
-                            }
-                            Err(msg) => {
-                                self.set_status(msg);
-                            }
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        buffer.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        buffer.push(c);
-                    }
-                    _ => {}
-                }
-            }
         }
     }
 
@@ -856,20 +804,6 @@ impl App {
                     pwc_buffer: String::new(),
                     active_field: AddRepoField::Path,
                 };
-            }
-            KeyCode::Char('r') => {
-                if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
-                    let current_name = folder
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    self.tmux.zoom_sidebar();
-                    self.modal = Modal::Rename {
-                        folder,
-                        buffer: current_name,
-                    };
-                }
             }
             KeyCode::Char('x') => {
                 if let Some(folder) = self.folder_list.selected_folder().map(|p| p.to_path_buf()) {
