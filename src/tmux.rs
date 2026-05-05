@@ -108,6 +108,25 @@ impl TmuxController {
             "bind-key", "-n", "M-k", "run-shell", "tmux clear-history",
         ]);
 
+        // In copy-mode, pipe a mouse-drag selection straight to the system
+        // clipboard so the user doesn't need to fn+drag to select scrollback.
+        tmux_cmd(&["set-option", "-t", s, "-g", "mode-keys", "vi"]);
+        if let Some(clipboard_cmd) = detect_clipboard_command() {
+            // `copy-pipe-no-clear` keeps copy-mode active and preserves the
+            // selection so the pane doesn't snap back to the prompt.
+            tmux_cmd(&[
+                "bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",
+                "send-keys", "-X", "copy-pipe-no-clear", clipboard_cmd,
+            ]);
+        } else {
+            // No system clipboard tool — fall back to copying into tmux's own
+            // buffer so at least `prefix + ]` paste works.
+            tmux_cmd(&[
+                "bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",
+                "send-keys", "-X", "copy-selection-no-clear",
+            ]);
+        }
+
         // Tag the sidebar pane so future ags launches can find it via
         // `list-panes` and respawn it in place rather than creating a new
         // session.
@@ -888,6 +907,27 @@ fn tmux_cmd_output(args: &[&str]) -> Result<String, String> {
 
 fn focus_pane(pane_id: &str) {
     tmux_cmd(&["select-pane", "-t", pane_id]);
+}
+
+/// Pick a system clipboard command available on PATH, or `None` if none found.
+/// macOS ships `pbcopy`; Linux usually has `wl-copy`, `xclip`, or `xsel`.
+fn detect_clipboard_command() -> Option<&'static str> {
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("pbcopy", "pbcopy"),
+        ("wl-copy", "wl-copy"),
+        ("xclip", "xclip -selection clipboard -in"),
+        ("xsel", "xsel --clipboard --input"),
+    ];
+    CANDIDATES
+        .iter()
+        .find(|(bin, _)| {
+            Command::new("which")
+                .arg(bin)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .map(|(_, cmd)| *cmd)
 }
 
 /// Check if tmux is available on PATH.
