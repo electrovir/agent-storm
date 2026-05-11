@@ -119,13 +119,25 @@ impl TmuxController {
                 "send-keys", "-X", "copy-pipe-no-clear", clipboard_cmd,
             ]);
         } else {
-            // No system clipboard tool — fall back to copying into tmux's own
+            // No system clipboard tool, fall back to copying into tmux's own
             // buffer so at least `prefix + ]` paste works.
             tmux_cmd(&[
                 "bind-key", "-T", "copy-mode-vi", "MouseDragEnd1Pane",
                 "send-keys", "-X", "copy-selection-no-clear",
             ]);
         }
+
+        // Make Escape always exit copy-mode. The vi-mode default only clears
+        // the current selection, which strands the user in copy-mode.
+        tmux_cmd(&[
+            "bind-key", "-T", "copy-mode-vi", "Escape",
+            "send-keys", "-X", "cancel",
+        ]);
+        // A plain left click (no drag) also exits copy-mode.
+        tmux_cmd(&[
+            "bind-key", "-T", "copy-mode-vi", "MouseDown1Pane",
+            "select-pane", ";", "send-keys", "-X", "cancel",
+        ]);
 
         // Tag the sidebar pane so future ags launches can find it via
         // `list-panes` and respawn it in place rather than creating a new
