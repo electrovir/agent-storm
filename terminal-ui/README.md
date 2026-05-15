@@ -7,10 +7,11 @@ A terminal UI for managing multiple AI coding sessions across project folders. T
 ## Getting started
 
 1. Install agent-storm and [tmux](https://github.com/tmux/tmux/wiki/Installing):
+
     1. Tmux:
-       ```
-       brew install tmux # or: sudo apt install tmux
-       ```
+        ```
+        brew install tmux # or: sudo apt install tmux
+        ```
     2. agent-storm:
         ```sh
         curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/electrovir/agent-storm/dev/install.sh | bash
@@ -18,10 +19,10 @@ A terminal UI for managing multiple AI coding sessions across project folders. T
 
 2. Run `ags` from any directory you want to work in:
 
-   ```sh
-   cd ~/repos/my-project
-   ags
-   ```
+    ```sh
+    cd ~/repos/my-project
+    ags
+    ```
 
 3. Press `a` in the sidebar to add more repos. agent-storm automatically detects worktree roots.
 
@@ -121,31 +122,31 @@ The sidebar is a ratatui TUI showing your repos and their worktrees. The AI and 
 
 **Global (work from any pane — handled by tmux):**
 
-| Key                          | Action                                       |
-|------------------------------|----------------------------------------------|
-| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane               |
-| `Alt+F`                      | Zoom (fullscreen) current pane               |
-| `Ctrl+Q`                     | Detach (session + claude processes survive)  |
+| Key                         | Action                                      |
+| --------------------------- | ------------------------------------------- |
+| `Alt+1` / `Alt+2` / `Alt+3` | Focus sidebar / AI / shell pane             |
+| `Alt+F`                     | Zoom (fullscreen) current pane              |
+| `Ctrl+Q`                    | Detach (session + claude processes survive) |
 
 **Sidebar (when sidebar is focused):**
 
-| Key                  | Action                                     |
-|----------------------|--------------------------------------------|
-| `j` / `k` or arrows | Navigate                                    |
-| `Enter`              | Open sessions and focus AI pane            |
-| `Tab`                | Open sessions and stay in sidebar          |
-| `c`                  | Close panes for selected folder (confirm)  |
-| `x`                  | Restart dead panes for selected folder     |
-| `i`                  | Toggle AI pane (shell-only mode)           |
-| `g`                  | Open GitHub PR in browser                  |
-| `a`                  | Add a new repo                             |
-| `Backspace`          | Remove repo from config (with confirm)     |
-| `o`                  | Open config file in system file browser    |
-| `w`                  | Add git worktree (worktree repos only)     |
-| `d`                  | Delete worktree (worktree repos only)      |
-| `?`                  | Show help                                  |
-| `Alt+S`              | Open settings                              |
-| `Ctrl+K`             | Quit and kill the session (wipes claude state) |
+| Key                 | Action                                         |
+| ------------------- | ---------------------------------------------- |
+| `j` / `k` or arrows | Navigate                                       |
+| `Enter`             | Open sessions and focus AI pane                |
+| `Tab`               | Open sessions and stay in sidebar              |
+| `c`                 | Close panes for selected folder (confirm)      |
+| `x`                 | Restart dead panes for selected folder         |
+| `i`                 | Toggle AI pane (shell-only mode)               |
+| `g`                 | Open GitHub PR in browser                      |
+| `a`                 | Add a new repo                                 |
+| `Backspace`         | Remove repo from config (with confirm)         |
+| `o`                 | Open config file in system file browser        |
+| `w`                 | Add git worktree (worktree repos only)         |
+| `d`                 | Delete worktree (worktree repos only)          |
+| `?`                 | Show help                                      |
+| `Alt+S`             | Open settings                                  |
+| `Ctrl+K`            | Quit and kill the session (wipes claude state) |
 
 **Text selection:** Hold `Shift` while clicking and dragging to select text (bypasses tmux mouse mode). On macOS Terminal.app, use `fn` instead.
 
@@ -163,15 +164,17 @@ my-project           <-- repo header (not selectable)
 Plain repos are sorted alphabetically at the top, followed by worktree repos sorted alphabetically.
 
 Status indicators before each name: `[AI][Shell]`
-- spinner (green) — busy (recent output)
-- `-` (grey) — idle
-- `x` (red) — exited
-- blank — no session
+
+-   spinner (green) — busy (recent output)
+-   `-` (grey) — idle
+-   `x` (red) — exited
+-   blank — no session
 
 After the name:
-- `*` — uncommitted changes
-- `+` — unpushed commits
-- underlined — has an open GitHub PR (press `g` to open)
+
+-   `*` — uncommitted changes
+-   `+` — unpushed commits
+-   underlined — has an open GitHub PR (press `g` to open)
 
 ### GitHub PR integration
 
@@ -202,11 +205,11 @@ post_worktree_cmd = "npm ci && npm run init"
 path = "/Users/you/repos/other-project"
 ```
 
-- `ai_cmd` — command to run in the AI pane (default: `claude`)
-- `post_worktree_cmd` — global default command to run after creating a worktree
-- `auto_update` — automatically check for and install updates in the background (default: `true`). When enabled, agent-storm checks GitHub for new releases once per hour and installs them silently. An orange "restart to update" banner appears in the sidebar when an update has been downloaded.
-- `repos` — list of repos to browse, each with an optional per-repo `post_worktree_cmd`
-- `hidden_ai_pane` — list of folder paths where the AI pane is hidden (toggled with `i` in the sidebar)
+-   `ai_cmd` — command to run in the AI pane (default: `claude`)
+-   `post_worktree_cmd` — global default command to run after creating a worktree
+-   `auto_update` — automatically check for and install updates in the background (default: `true`). When enabled, agent-storm checks GitHub for new releases once per hour and installs them silently. An orange "restart to update" banner appears in the sidebar when an update has been downloaded.
+-   `repos` — list of repos to browse, each with an optional per-repo `post_worktree_cmd`
+-   `hidden_ai_pane` — list of folder paths where the AI pane is hidden (toggled with `i` in the sidebar)
 
 CLI flags (`--ai-cmd`, `--post-worktree-cmd`) override config values.
 
@@ -224,12 +227,13 @@ my-project/              <-- this path goes in repos
 When adding a repo (via `ags --add`, the `a` sidebar command, or the first-run prompt), agent-storm automatically detects if the path is inside a git worktree and adds the worktree root instead.
 
 Worktree features:
-- Bare repo directories are hidden from the sidebar
-- `w` to create a new worktree (runs `post_worktree_cmd` after creation)
-- `d` to delete a worktree (with confirmation, blocked for the last worktree)
+
+-   Bare repo directories are hidden from the sidebar
+-   `w` to create a new worktree (runs `post_worktree_cmd` after creation)
+-   `d` to delete a worktree (with confirmation, blocked for the last worktree)
 
 ### Logs
 
 Background update errors are logged to the system temp directory:
 
-- macOS/Linux: `/tmp/agent-storm.log`
+-   macOS/Linux: `/tmp/agent-storm.log`
