@@ -15,7 +15,9 @@ set -euo pipefail
 #
 # If no prefix is found in any commit since the last tag, the script aborts.
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_DIR="$(dirname "$SCRIPT_DIR")"
+REPO_ROOT="$(dirname "$PACKAGE_DIR")"
 
 # --- Step 0: Check for uncommitted changes ---
 if [ -n "$(git status --porcelain)" ]; then
@@ -24,7 +26,7 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 # --- Step 1: Read current version from Cargo.toml ---
-CURRENT_VERSION=$(grep '^version' "$REPO_ROOT/Cargo.toml" | head -1 | sed -E 's/version = "(.*)"/\1/')
+CURRENT_VERSION=$(grep '^version' "$PACKAGE_DIR/Cargo.toml" | head -1 | sed -E 's/version = "(.*)"/\1/')
 TAG="v$CURRENT_VERSION"
 echo "Current Cargo.toml version: $CURRENT_VERSION"
 
@@ -92,14 +94,14 @@ if $TAG_EXISTS_ON_REMOTE; then
     echo "Bump type: $BUMP_TYPE ($CURRENT_VERSION -> $NEXT_VERSION)"
 
     # Update Cargo.toml
-    sed -i '' -E "s/^version = \"$CURRENT_VERSION\"/version = \"$NEXT_VERSION\"/" "$REPO_ROOT/Cargo.toml"
+    sed -i '' -E "s/^version = \"$CURRENT_VERSION\"/version = \"$NEXT_VERSION\"/" "$PACKAGE_DIR/Cargo.toml"
     echo "Updated Cargo.toml to $NEXT_VERSION"
 
     # Update Cargo.lock
-    (cd "$REPO_ROOT" && cargo check --quiet 2>/dev/null || true)
+    (cd "$PACKAGE_DIR" && cargo check --quiet 2>/dev/null || true)
 
     # Commit and tag
-    git add "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock"
+    git add "$PACKAGE_DIR/Cargo.toml" "$PACKAGE_DIR/Cargo.lock"
     git commit -m "v$NEXT_VERSION"
     git tag "$NEXT_TAG"
     echo "Created tag $NEXT_TAG"

@@ -1,4 +1,4 @@
-name: CI
+name: TUI CI checks
 
 on:
   push:
@@ -12,6 +12,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: cargo check
-      - run: cargo test
-      - run: cargo clippy -- -D warnings
+      - run: make check
+      - run: make test
+      - run: make lint

@@ -4,6 +4,4 @@
 *.tgz
 /Icon?
 
-# Added by cargo
-
-/target
+terminal-ui/target
