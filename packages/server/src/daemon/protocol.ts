@@ -1,0 +1,133 @@
+import {PaneKind, PaneStatus} from '@agent-storm/common';
+import {Buffer} from 'node:buffer';
+
+export enum FrameType {
+    Data = 0,
+    Control = 1,
+}
+
+const headerSize = 5;
+
+function encodeFrame(type: FrameType, payload: Buffer): Buffer {
+    const header = Buffer.alloc(headerSize);
+    header.writeUInt8(type, 0);
+    header.writeUInt32BE(payload.length, 1);
+    return Buffer.concat([
+        header,
+        payload,
+    ]);
+}
+
+export function encodeControlFrame(message: unknown): Buffer {
+    return encodeFrame(FrameType.Control, Buffer.from(JSON.stringify(message)));
+}
+
+export function encodeDataFrame(data: string | Buffer): Buffer {
+    const payload = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+    return encodeFrame(FrameType.Data, payload);
+}
+
+export type ParsedFrame = {
+    type: FrameType;
+    payload: Buffer;
+};
+
+/**
+ * Stateful decoder that accumulates byte chunks and emits complete frames as they arrive. Buffers
+ * are mutated in place because this sits on a hot socket-read path.
+ */
+export class FrameDecoder {
+    private buffer: Buffer = Buffer.alloc(0);
+
+    push(chunk: Buffer): ParsedFrame[] {
+        this.buffer = Buffer.concat([
+            this.buffer,
+            chunk,
+        ]);
+        const frames: ParsedFrame[] = [];
+        while (this.buffer.length >= headerSize) {
+            const type = this.buffer.readUInt8(0) as FrameType;
+            const length = this.buffer.readUInt32BE(1);
+            if (this.buffer.length < headerSize + length) {
+                break;
+            }
+            const payload = Buffer.from(this.buffer.subarray(headerSize, headerSize + length));
+            frames.push({
+                type,
+                payload,
+            });
+            this.buffer = this.buffer.subarray(headerSize + length);
+        }
+        return frames;
+    }
+}
+
+export enum DaemonAction {
+    Attach = 'attach',
+    Status = 'status',
+    Restart = 'restart',
+    Kill = 'kill',
+    Shutdown = 'shutdown',
+}
+
+export type AttachHandshake = {
+    action: DaemonAction.Attach;
+    folder: string;
+    kind: PaneKind;
+};
+
+export type StatusHandshake = {
+    action: DaemonAction.Status;
+};
+
+export type RestartHandshake = {
+    action: DaemonAction.Restart;
+    folder: string;
+    kind: PaneKind;
+};
+
+export type KillHandshake = {
+    action: DaemonAction.Kill;
+    folder: string;
+};
+
+export type ShutdownHandshake = {
+    action: DaemonAction.Shutdown;
+};
+
+export type ClientHandshake =
+    | AttachHandshake
+    | StatusHandshake
+    | RestartHandshake
+    | KillHandshake
+    | ShutdownHandshake;
+
+export type StatusEntry = {
+    folder: string;
+    kind: PaneKind;
+    status: PaneStatus;
+};
+
+export type AttachResponse = {
+    ok: true;
+    isNew: boolean;
+};
+
+export type StatusResponse = {
+    ok: true;
+    panes: StatusEntry[];
+};
+
+export type SimpleResponse = {
+    ok: true;
+};
+
+export type ErrorResponse = {
+    ok: false;
+    error: string;
+};
+
+export type ExitNotification = {
+    type: 'exit';
+    exitCode: number | undefined;
+};

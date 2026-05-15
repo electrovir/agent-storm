@@ -1,11 +1,43 @@
-import {ptyService} from '@agent-storm/common';
+import {agentStormService, type PaneKind} from '@agent-storm/common';
 import {connectWebSocket} from '@rest-vir/define-service';
 import {FitAddon} from '@xterm/addon-fit';
-import {Terminal} from '@xterm/xterm';
+import {Terminal, type ITheme} from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
 import {css, defineElement, html, onDomCreated, unsafeCSS} from 'element-vir';
 
-export const VirTerminal = defineElement()({
+/**
+ * Extracted from Terminal.app's `vir-light` profile via the bundled `extract-terminal-theme.swift`
+ * helper. Slots that the plist omits (because they match Terminal.app's built-in defaults) are
+ * filled in here so xterm renders the full 16-color palette.
+ */
+const terminalAppTheme: ITheme = {
+    background: '#ffffff',
+    foreground: '#0220b3',
+    cursor: '#ff2600',
+    cursorAccent: '#ffffff',
+    selectionBackground: 'rgba(56, 213, 255, 0.5)',
+    black: '#000000',
+    red: '#990000',
+    green: '#009400',
+    yellow: '#737300',
+    blue: '#0038ee',
+    magenta: '#b300b3',
+    cyan: '#007f89',
+    white: '#818181',
+    brightBlack: '#666666',
+    brightRed: '#ff0004',
+    brightGreen: '#00bb0f',
+    brightYellow: '#a5a500',
+    brightBlue: '#0064ff',
+    brightMagenta: '#e500e5',
+    brightCyan: '#2799bb',
+    brightWhite: '#bababa',
+};
+
+export const VirTerminal = defineElement<{
+    folder: string;
+    kind: PaneKind;
+}>()({
     tagName: 'vir-terminal',
     state() {
         return {
@@ -21,7 +53,7 @@ export const VirTerminal = defineElement()({
             height: 100%;
             box-sizing: border-box;
             padding: 8px;
-            background: #000;
+            background: ${unsafeCSS(terminalAppTheme.background || 'transparent')};
         }
 
         .terminal-host {
@@ -36,7 +68,7 @@ export const VirTerminal = defineElement()({
         state.disconnect?.();
         state.terminal?.dispose();
     },
-    render({state, updateState}) {
+    render({inputs, state, updateState}) {
         return html`
             <div
                 class="terminal-host"
@@ -49,13 +81,20 @@ export const VirTerminal = defineElement()({
                         fontFamily: 'Menlo, monospace',
                         fontSize: 13,
                         cursorBlink: true,
+                        cursorStyle: 'bar',
+                        cursorWidth: 3,
+                        theme: terminalAppTheme,
                     });
                     const fitAddon = new FitAddon();
                     terminal.loadAddon(fitAddon);
                     terminal.open(element);
                     fitAddon.fit();
 
-                    const socket = await connectWebSocket(ptyService.webSockets['/pty'], {
+                    const socket = await connectWebSocket(agentStormService.webSockets['/pty'], {
+                        searchParams: {
+                            folder: [inputs.folder],
+                            kind: [inputs.kind],
+                        },
                         listeners: {
                             message({message}) {
                                 terminal.write(message);
@@ -70,11 +109,24 @@ export const VirTerminal = defineElement()({
                         socket.send(data);
                     });
 
+                    const keyBindings: Record<string, string> = {
+                        'meta+Backspace': '\x15',
+                        'alt+Backspace': '\x17',
+                        'meta+ArrowLeft': '\x01',
+                        'meta+ArrowRight': '\x05',
+                        'alt+ArrowLeft': '\x1b[1;3D',
+                        'alt+ArrowRight': '\x1b[1;3C',
+                    };
+
                     terminal.attachCustomKeyEventHandler((event) => {
                         if (event.type !== 'keydown') {
                             return true;
-                        } else if (event.metaKey && event.key === 'Backspace') {
-                            socket.send('\x15');
+                        }
+                        const modifier = event.metaKey ? 'meta' : event.altKey ? 'alt' : '';
+                        const bytes = keyBindings[`${modifier}+${event.key}`];
+                        if (bytes) {
+                            socket.send(bytes);
+                            event.preventDefault();
                             return false;
                         }
                         return true;
