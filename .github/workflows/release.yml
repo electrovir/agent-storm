@@ -1,4 +1,4 @@
-name: Release
+name: TUI Release
 
 on:
   push:
@@ -39,14 +39,13 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cd terminal-ui && cargo build --release --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../agent-storm-${{ matrix.target }}.tar.gz agent-storm
-          cd ../../..
+          cd terminal-ui/target/${{ matrix.target }}/release
+          tar czf "$GITHUB_WORKSPACE/agent-storm-${{ matrix.target }}.tar.gz" agent-storm
 
       - uses: actions/upload-artifact@v7
         with:

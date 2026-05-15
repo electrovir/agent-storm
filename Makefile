@@ -1,15 +1,17 @@
 .PHONY: check test lint all publish
 
+PACKAGE_DIR = terminal-ui
+
 all: check test lint
 
 check:
-	cargo check
+	cd $(PACKAGE_DIR) && cargo check
 
 test:
-	cargo test
+	cd $(PACKAGE_DIR) && cargo test
 
 lint:
-	cargo clippy -- -D warnings
+	cd $(PACKAGE_DIR) && cargo clippy -- -D warnings
 
 publish:
-	./scripts/publish.sh
+	./$(PACKAGE_DIR)/scripts/publish.sh
