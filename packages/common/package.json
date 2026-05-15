@@ -1,0 +1,44 @@
+{
+    "name": "@agent-storm/common",
+    "private": true,
+    "description": "",
+    "keywords": [],
+    "homepage": "https://github.com/electrovir/agent-storm",
+    "bugs": {
+        "url": "https://github.com/electrovir/agent-storm/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/electrovir/agent-storm.git"
+    },
+    "license": "(MIT or CC0 1.0)",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "sideEffects": false,
+    "type": "module",
+    "main": "src/index.ts",
+    "module": "src/index.ts",
+    "types": "src/index.ts",
+    "scripts": {
+        "build": "virmator frontend build",
+        "compile": "virmator compile",
+        "docs": "virmator docs",
+        "start": "virmator frontend",
+        "test": "virmator test web",
+        "test:coverage": "npm run test coverage",
+        "test:docs": "virmator docs check",
+        "test:update": "npm test update"
+    },
+    "dependencies": {
+        "@rest-vir/define-service": "^1.7.2",
+        "object-shape-tester": "^6.12.1"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
+}
