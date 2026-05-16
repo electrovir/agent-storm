@@ -1,7 +1,14 @@
 import {defaultConfig, type Config} from '@agent-storm/common';
 import {css, defineElement, html, listen, onDomCreated} from 'element-vir';
 import {type JsonValue} from 'type-fest';
-import {ViraButton, ViraColorVariant, ViraJsonForm, ViraModal, type ViraJsonSchema} from 'vira';
+import {
+    ViraButton,
+    ViraColorVariant,
+    ViraJsonForm,
+    ViraModal,
+    viraThemeByKeys,
+    type ViraJsonSchema,
+} from 'vira';
 import {getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
 
 const configJsonSchema = {
@@ -104,15 +111,15 @@ export const VirSettingsModal = defineElement<{
             padding: 8px 12px;
             border-radius: 6px;
             border: 1px solid currentColor;
-            color: var(--vira-red-foreground-body);
-            background: var(--vira-red-behind-bg-body);
+            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+            background: ${viraThemeByKeys.red['behind-bg'].body.background.value};
             white-space: pre-wrap;
         }
 
         .loading {
             padding: 24px;
             text-align: center;
-            color: var(--vira-grey-foreground-body);
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
     `,
     render({inputs, state, updateState}) {
