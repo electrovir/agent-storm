@@ -9,10 +9,8 @@ const idleThresholdMs = 2_000;
 const aiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
 
 /**
- * Run the AI command through a login + interactive shell. The `-l` flag is what matters here:
- * the managed Claude installer (and many tools) add their PATH lines to `.zprofile`, which only
- * runs in login shells. Without `-l`, even an interactive `zsh -ic` misses those additions and
- * resolves to a different `claude` binary than your TUI / Terminal.app would.
+ * AI pane runs through a login + interactive shell so `.zprofile` / `.zshrc` get sourced (those
+ * are where managed-Claude installers usually inject their PATH lines).
  */
 const paneCommands: Record<PaneKind, () => string[]> = {
     [PaneKind.Ai]: () => [
@@ -87,6 +85,20 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
     return entry;
 }
 
+/**
+ * Build the env we hand to a freshly spawned shell. Critically, we DROP `PATH` so the spawned
+ * login+interactive shell rebuilds it from /etc/paths and the user's rc files — exactly the way
+ * Terminal.app does. Inheriting `PATH` from the daemon process pollutes the start with
+ * npm-injected `node_modules/.bin` entries (because `npm start` was the daemon's grandparent),
+ * which push the user's `.zprofile` PATH prepends into late positions and can mask the
+ * preferred copy of `claude` (or any other binary they expect to find first).
+ */
+function spawnEnv(): NodeJS.ProcessEnv {
+    /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
+    const {PATH: _ignored, ...rest} = process.env;
+    return rest;
+}
+
 function startPty(folder: string, kind: PaneKind, entry: PaneEntry): void {
     const [
         command,
@@ -102,6 +114,7 @@ function startPty(folder: string, kind: PaneKind, entry: PaneEntry): void {
             cols: 120,
             rows: 32,
             cwd,
+            env: spawnEnv() as Record<string, string>,
         });
         entry.pty = pty;
         entry.exitCode = undefined;
