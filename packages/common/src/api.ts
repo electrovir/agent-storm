@@ -11,6 +11,13 @@ const ptySearchParamsShape = defineShape({
     kind: tupleShape(enumShape(PaneKind)),
 });
 
+/**
+ * The WebSocket upgrade can't carry an `Authorization` header from a browser, but it *can* carry
+ * subprotocols. The auth bearer rides in `Sec-WebSocket-Protocol`; the server validates it and
+ * sends back this same value to complete the upgrade handshake.
+ */
+const ptyProtocolsShape = defineShape(tupleShape(''));
+
 const repoConfigShape = defineShape({
     path: '',
     postWorktreeCmd: nullableShape(''),
@@ -68,6 +75,15 @@ const okResponseShape = defineShape({
     ok: true,
 });
 
+const uploadRequestShape = defineShape({
+    filename: '',
+    dataBase64: '',
+});
+
+const uploadResponseShape = defineShape({
+    path: '',
+});
+
 export const agentStormService = defineService({
     serviceName: 'agent-storm',
     serviceOrigin: `http://localhost:${port}`,
@@ -123,12 +139,20 @@ export const agentStormService = defineService({
             requestDataShape: undefined,
             responseDataShape: okResponseShape,
         },
+        '/uploads/create': {
+            methods: {
+                [HttpMethod.Post]: true,
+            },
+            requestDataShape: uploadRequestShape,
+            responseDataShape: uploadResponseShape,
+        },
     },
     webSockets: {
         '/pty': {
             messageFromClientShape: stringMessageShape,
             messageFromHostShape: stringMessageShape,
             searchParamsShape: ptySearchParamsShape,
+            protocolsShape: ptyProtocolsShape,
         },
     },
 });

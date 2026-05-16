@@ -2,6 +2,7 @@ import {type FolderInfo} from '@agent-storm/common';
 import {css, defineElement, html} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
+import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
@@ -36,8 +37,8 @@ export const VirApp = defineElement()({
             width: 100%;
             height: 100%;
             font-family: ui-sans-serif, system-ui, sans-serif;
-            background: var(${viraThemeByKeys.grey['behind-bg'].body.background.name});
-            color: var(${viraThemeByKeys.grey.foreground.body.foreground.name});
+            background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
         vir-sidebar {
@@ -56,7 +57,7 @@ export const VirApp = defineElement()({
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(${viraThemeByKeys.grey.foreground.placeholder.foreground.name});
+            color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
             font-size: 13px;
             height: 100%;
         }
@@ -120,6 +121,7 @@ export const VirApp = defineElement()({
                 open: state.settingsOpen,
                 onClose: () => updateState({settingsOpen: false}),
             })}></${VirSettingsModal}>
+            <${VirAuthModal}></${VirAuthModal}>
         `;
     },
 });

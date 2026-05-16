@@ -21,11 +21,11 @@ const paneStatusGlyph: Record<PaneStatus, string> = {
     [PaneStatus.Exited]: '✕',
 };
 
-const paneStatusCssVar: Record<PaneStatus, string> = {
-    [PaneStatus.None]: `var(${String(viraThemeByKeys.grey.foreground.decoration.foreground.name)})`,
-    [PaneStatus.Busy]: `var(${String(viraThemeByKeys.green.foreground.body.foreground.name)})`,
-    [PaneStatus.Idle]: `var(${String(viraThemeByKeys.grey.foreground.body.foreground.name)})`,
-    [PaneStatus.Exited]: `var(${String(viraThemeByKeys.red.foreground.body.foreground.name)})`,
+const paneStatusColor: Record<PaneStatus, string> = {
+    [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
+    [PaneStatus.Busy]: String(viraThemeByKeys.green.foreground.body.foreground.value),
+    [PaneStatus.Idle]: String(viraThemeByKeys.grey.foreground.body.foreground.value),
+    [PaneStatus.Exited]: String(viraThemeByKeys.red.foreground.body.foreground.value),
 };
 
 type SidebarState = {
@@ -57,7 +57,7 @@ export const VirSidebar = defineElement<{
             font-family: ui-sans-serif, system-ui, sans-serif;
             font-size: 12px;
             border-right: 1px solid
-                var(${viraThemeByKeys.grey['behind-bg'].decoration.background.name});
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             overflow: hidden;
             ${colorCss(viraThemeByKeys.grey['behind-bg'].decoration)};
         }
@@ -68,7 +68,7 @@ export const VirSidebar = defineElement<{
             justify-content: space-between;
             padding: 8px 10px;
             border-bottom: 1px solid
-                var(${viraThemeByKeys.grey['behind-bg'].decoration.background.name});
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             gap: 6px;
         }
 
@@ -76,7 +76,7 @@ export const VirSidebar = defineElement<{
             font-weight: 600;
             letter-spacing: 0.04em;
             text-transform: uppercase;
-            color: var(${viraThemeByKeys.grey.foreground.header.foreground.name});
+            color: ${viraThemeByKeys.grey.foreground.header.foreground.value};
             font-size: 11px;
         }
 
@@ -94,7 +94,7 @@ export const VirSidebar = defineElement<{
 
         .repo-header {
             padding: 6px 10px 2px;
-            color: var(${viraThemeByKeys.grey.foreground.header.foreground.name});
+            color: ${viraThemeByKeys.grey.foreground.header.foreground.value};
             font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
@@ -147,16 +147,16 @@ export const VirSidebar = defineElement<{
 
         .name[data-pr-open] {
             text-decoration: underline;
-            text-decoration-color: var(${viraThemeByKeys.blue.foreground.body.foreground.name});
+            text-decoration-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
         }
 
         .name[data-pr-merged] {
             text-decoration: underline;
-            text-decoration-color: var(${viraThemeByKeys.purple.foreground.body.foreground.name});
+            text-decoration-color: ${viraThemeByKeys.purple.foreground.body.foreground.value};
         }
 
         .markers {
-            color: var(${viraThemeByKeys.yellow.foreground.body.foreground.name});
+            color: ${viraThemeByKeys.yellow.foreground.body.foreground.value};
             font-weight: 700;
         }
 
@@ -175,13 +175,13 @@ export const VirSidebar = defineElement<{
             padding: 8px 10px;
             ${colorCss(viraThemeByKeys.red['behind-bg'].body)};
             border-bottom: 1px solid
-                var(${viraThemeByKeys.red['behind-bg'].decoration.background.name});
+                ${viraThemeByKeys.red['behind-bg'].decoration.background.value};
             white-space: pre-wrap;
         }
 
         .empty {
             padding: 16px 10px;
-            color: var(${viraThemeByKeys.grey.foreground.placeholder.foreground.name});
+            color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
             text-align: center;
         }
     `,
@@ -319,14 +319,14 @@ function renderRow({
             <span class="chips">
                 <span
                     class="chip"
-                    style="color: ${paneStatusCssVar[folder.panes.ai]};"
+                    style="color: ${paneStatusColor[folder.panes.ai]};"
                     title="AI pane: ${folder.panes.ai}"
                 >
                     ${paneStatusGlyph[folder.panes.ai]}
                 </span>
                 <span
                     class="chip"
-                    style="color: ${paneStatusCssVar[folder.panes.shell]};"
+                    style="color: ${paneStatusColor[folder.panes.shell]};"
                     title="Shell pane: ${folder.panes.shell}"
                 >
                     ${paneStatusGlyph[folder.panes.shell]}
