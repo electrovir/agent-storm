@@ -12,6 +12,7 @@ import {
     type ClientHandshake,
     type ErrorResponse,
     type ExitNotification,
+    type ResizeNotification,
     type SimpleResponse,
     type StatusResponse,
 } from './protocol.js';
@@ -59,7 +60,7 @@ function handleAttach(socket: Socket, decoder: FrameDecoder, folder: string, kin
         };
         socket.write(encodeControlFrame(notification));
     };
-    const {isNew, scrollback, detach} = attachPane({
+    const {isNew, scrollback, setSize, detach} = attachPane({
         folder,
         kind,
         onData,
@@ -81,6 +82,13 @@ function handleAttach(socket: Socket, decoder: FrameDecoder, folder: string, kin
                     kind,
                     data: frame.payload.toString('utf-8'),
                 });
+                return;
+            }
+            if (frame.type === FrameType.Control) {
+                const parsed = JSON.parse(frame.payload.toString('utf-8')) as ResizeNotification;
+                if (parsed.type === 'resize') {
+                    setSize(parsed.cols, parsed.rows);
+                }
             }
         });
     });

@@ -1,10 +1,25 @@
 import {AnyOrigin, defineService, HttpMethod} from '@rest-vir/define-service';
-import {defineShape, enumShape, nullableShape, tupleShape} from 'object-shape-tester';
+import {defineShape, enumShape, nullableShape, tupleShape, unionShape} from 'object-shape-tester';
 import {PaneKind, PaneStatus} from './enums.js';
 
-const port = 3000;
+const port = 41880;
 
 const stringMessageShape = defineShape('');
+
+/**
+ * Client → host messages on the `/pty` socket are either raw keystroke data (a string) or a resize
+ * notification carrying the xterm viewport's current column/row count. The host pushes those
+ * dimensions through to the underlying PTY so the spawned shell wraps at the right column — without
+ * this, `node-pty` keeps the cols/rows it was spawned with and output wraps at the wrong width.
+ */
+const ptyClientMessageShape = defineShape(
+    unionShape('', {
+        resize: {
+            cols: 0,
+            rows: 0,
+        },
+    }),
+);
 
 const ptySearchParamsShape = defineShape({
     folder: tupleShape(''),
@@ -12,7 +27,7 @@ const ptySearchParamsShape = defineShape({
 });
 
 /**
- * The WebSocket upgrade can't carry an `Authorization` header from a browser, but it *can* carry
+ * The WebSocket upgrade can't carry an `Authorization` header from a browser, but it _can_ carry
  * subprotocols. The auth bearer rides in `Sec-WebSocket-Protocol`; the server validates it and
  * sends back this same value to complete the upgrade handshake.
  */
@@ -149,7 +164,7 @@ export const agentStormService = defineService({
     },
     webSockets: {
         '/pty': {
-            messageFromClientShape: stringMessageShape,
+            messageFromClientShape: ptyClientMessageShape,
             messageFromHostShape: stringMessageShape,
             searchParamsShape: ptySearchParamsShape,
             protocolsShape: ptyProtocolsShape,

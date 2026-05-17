@@ -1,12 +1,12 @@
 import {agentStormService, type PaneKind} from '@agent-storm/common';
 import {connectWebSocket} from '@rest-vir/define-service';
-import {ensureSecret} from '../../util/auth.js';
-import {uploadFile} from '../../util/api-client.js';
 import {FitAddon} from '@xterm/addon-fit';
 import {Terminal, type ITheme} from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
 import {css, defineElement, html, onDomCreated, unsafeCSS} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
+import {uploadFile} from '../../util/api-client.js';
+import {ensureSecret} from '../../util/auth.js';
 
 const uploadErrorDismissMs = 5_000;
 
@@ -42,8 +42,8 @@ async function uploadDroppedFiles(files: ReadonlyArray<File>): Promise<string[]>
 
 /**
  * Browsers don't agree on whether dragged files land in `dataTransfer.files` or
- * `dataTransfer.items`. The macOS screenshot-thumbnail drag in particular tends to surface
- * the file only through `items` (kind === 'file'). Collect from both, dedupe by reference.
+ * `dataTransfer.items`. The macOS screenshot-thumbnail drag in particular tends to surface the file
+ * only through `items` (kind === 'file'). Collect from both, dedupe by reference.
  */
 function collectDroppedFiles(transfer: DataTransfer): File[] {
     const seen = new Set<File>();
@@ -125,7 +125,7 @@ const terminalAppTheme: ITheme = {
     cursor: '#ff2600',
     cursorAccent: '#ffffff',
     /**
-     * xterm pre-blends `selectionBackground` against the terminal-level background once at theme
+     * Xterm pre-blends `selectionBackground` against the terminal-level background once at theme
      * load and paints the result as an opaque rectangle over the cells; it does not invert or
      * alpha-composite per cell at draw time (that's an xterm renderer limitation).
      */
@@ -267,6 +267,17 @@ export const VirTerminal = defineElement<{
                         },
                     });
 
+                    const sendResize = () => {
+                        socket.send({
+                            resize: {
+                                cols: terminal.cols,
+                                rows: terminal.rows,
+                            },
+                        });
+                    };
+
+                    sendResize();
+
                     terminal.onData((data) => {
                         socket.send(data);
                     });
@@ -369,11 +380,7 @@ export const VirTerminal = defineElement<{
                                         error instanceof Error ? error.message : String(error);
                                     /* eslint-disable-next-line no-console */
                                     console.error('agent-storm paste upload failed:', error);
-                                    reportDropError(
-                                        updateState,
-                                        state,
-                                        `Paste failed: ${message}`,
-                                    );
+                                    reportDropError(updateState, state, `Paste failed: ${message}`);
                                 });
                         },
                         true,
@@ -381,6 +388,7 @@ export const VirTerminal = defineElement<{
 
                     const resizeObserver = new ResizeObserver(() => {
                         fitAddon.fit();
+                        sendResize();
                     });
                     resizeObserver.observe(element);
 

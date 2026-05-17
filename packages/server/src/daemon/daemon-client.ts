@@ -11,6 +11,7 @@ import {
     type ClientHandshake,
     type ErrorResponse,
     type ExitNotification,
+    type ResizeNotification,
     type SimpleResponse,
     type StatusEntry,
     type StatusResponse,
@@ -84,6 +85,7 @@ export async function shutdownDaemon(): Promise<void> {
 export type PaneAttachment = {
     isNew: boolean;
     write(data: string): void;
+    resize(cols: number, rows: number): void;
     close(): void;
 };
 
@@ -166,6 +168,14 @@ export async function attachPane({
         isNew: handshakeResult.isNew,
         write(data) {
             socket.write(encodeDataFrame(data));
+        },
+        resize(cols, rows) {
+            const notification: ResizeNotification = {
+                type: 'resize',
+                cols,
+                rows,
+            };
+            socket.write(encodeControlFrame(notification));
         },
         close() {
             socket.end();

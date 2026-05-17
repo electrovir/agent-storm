@@ -1,6 +1,7 @@
 import {type FolderInfo, PaneKind, PaneStatus} from '@agent-storm/common';
 import {colorCss} from '@electrovir/color';
 import {css, defineElement, html, listen} from 'element-vir';
+import {parseUrl} from 'url-vir';
 import {lucideIcons, ViraButton, ViraColorVariant, ViraSize, viraThemeByKeys} from 'vira';
 import {
     createWorktree,
@@ -11,6 +12,27 @@ import {
     putConfig,
     restartPane,
 } from '../../util/api-client.js';
+
+/**
+ * Only `https://github.com/...` URLs are allowed through `window.open`. `prUrl` ultimately comes
+ * from `gh pr view --json url` which we trust, but `window.open` will happily navigate to
+ * `javascript:...` (executes in opener context) and `file://...` URLs, and a hypothetical
+ * compromised `gh` output could redirect to an attacker domain. Parsing with `url-vir`'s `parseUrl`
+ * (instead of regex) gives us a structured scheme + hostname split that can't be tricked by
+ * `https://github.com.evil.com` (different hostname) or `https://github.com@evil.com` (different
+ * host) — both of which a simple `startsWith` check would let through.
+ */
+function openPrUrl(prUrl: string | null | undefined): void {
+    if (!prUrl) {
+        return;
+    }
+    const parsed = parseUrl(prUrl);
+    const isHttp = parsed.protocol === 'https' || parsed.protocol === 'http';
+    if (!isHttp || parsed.hostname !== 'github.com') {
+        return;
+    }
+    window.open(prUrl, '_blank', 'noopener');
+}
 
 const pollIntervalMs = 2_000;
 
@@ -56,8 +78,7 @@ export const VirSidebar = defineElement<{
             height: 100%;
             font-family: ui-sans-serif, system-ui, sans-serif;
             font-size: 12px;
-            border-right: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            border-right: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             overflow: hidden;
             ${colorCss(viraThemeByKeys.grey['behind-bg'].decoration)};
         }
@@ -174,8 +195,7 @@ export const VirSidebar = defineElement<{
         .error {
             padding: 8px 10px;
             ${colorCss(viraThemeByKeys.red['behind-bg'].body)};
-            border-bottom: 1px solid
-                ${viraThemeByKeys.red['behind-bg'].decoration.background.value};
+            border-bottom: 1px solid ${viraThemeByKeys.red['behind-bg'].decoration.background.value};
             white-space: pre-wrap;
         }
 
@@ -351,7 +371,7 @@ function renderRow({
                               title="Open PR"
                               ${listen('click', (event) => {
                                   event.stopPropagation();
-                                  window.open(folder.prUrl || '', '_blank', 'noopener');
+                                  openPrUrl(folder.prUrl);
                               })}
                           ></${ViraButton}>
                       `

@@ -4,7 +4,7 @@ import {homedir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {normalizePath} from './paths.js';
 
-const configPath = join(homedir(), '.config', 'agent-storm-web.json');
+const configPath = join(homedir(), '.config', 'agent-storm.json');
 
 function normalizeConfig(config: Readonly<Config>): Config {
     return {

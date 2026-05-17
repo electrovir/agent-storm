@@ -1,0 +1,14 @@
+{
+    "compilerOptions": {
+        "outDir": "./dist/",
+        "rootDir": "./src/"
+    },
+    "exclude": [
+        "./configs/",
+        "./coverage/",
+        "./dist-*/",
+        "./dist/",
+        "./node_modules/"
+    ],
+    "extends": "../../configs/tsconfig.base.json"
+}

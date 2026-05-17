@@ -8,9 +8,9 @@ const uploadsDir = join(tmpdir(), 'agent-storm-uploads');
 function safeFilename(input: string): string {
     const trimmed = input.trim() || 'upload';
     /**
-     * Strip anything that isn't word/dash/dot/underscore so the resulting filesystem name can't
-     * be a directory traversal attempt or contain shell metacharacters that bite us later when
-     * the path is dropped into a terminal.
+     * Strip anything that isn't word/dash/dot/underscore so the resulting filesystem name can't be
+     * a directory traversal attempt or contain shell metacharacters that bite us later when the
+     * path is dropped into a terminal.
      */
     const sanitized = trimmed.replace(/[^\w.-]/g, '_');
     return sanitized.slice(0, 80);

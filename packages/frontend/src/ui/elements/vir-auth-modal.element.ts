@@ -73,7 +73,8 @@ export const VirAuthModal = defineElement()({
                 <div class="body">
                     <div class="description">
                         Paste the auth secret the server printed on startup, or read it from
-                        <code>.not-committed/auth-secret</code>.
+                        <code>.not-committed/auth-secret</code>
+                        .
                     </div>
                     <${ViraInput.assign({
                         value: state.pending,
