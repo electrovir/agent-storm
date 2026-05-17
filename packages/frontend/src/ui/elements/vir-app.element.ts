@@ -2,6 +2,7 @@ import {type FolderInfo} from '@agent-storm/common';
 import {css, defineElement, html} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
+import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';

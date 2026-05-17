@@ -131,3 +131,13 @@ export type ExitNotification = {
     type: 'exit';
     exitCode: number | undefined;
 };
+
+/**
+ * Sent from a daemon-client to the daemon over an already-attached socket. The daemon forwards the
+ * dimensions to the underlying PTY so the spawned shell wraps at the right column.
+ */
+export type ResizeNotification = {
+    type: 'resize';
+    cols: number;
+    rows: number;
+};

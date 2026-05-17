@@ -149,8 +149,7 @@ export const VirSettingsModal = defineElement<{
             } catch (error: unknown) {
                 updateState({
                     restartingDaemon: false,
-                    daemonRestartError:
-                        error instanceof Error ? error.message : String(error),
+                    daemonRestartError: error instanceof Error ? error.message : String(error),
                 });
             }
         };
@@ -218,9 +217,7 @@ export const VirSettingsModal = defineElement<{
                                   : ''}
                               ${state.daemonRestartError
                                   ? html`
-                                        <div class="error">
-                                            ${state.daemonRestartError}
-                                        </div>
+                                        <div class="error">${state.daemonRestartError}</div>
                                     `
                                   : ''}
                               ${state.pending

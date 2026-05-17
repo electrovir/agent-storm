@@ -30,12 +30,10 @@ export const VirPaneGroup = defineElement<{
            the vir-terminal shadow boundary into xterm hidden textarea) has focus. */
         .pane:not(:focus-within) {
             filter: brightness(0.93) saturate(0.85);
-            transition:
-                filter 120ms ease;
+            transition: filter 120ms ease;
         }
         .pane:focus-within {
-            transition:
-                filter 120ms ease;
+            transition: filter 120ms ease;
         }
 
         .shell-pane {

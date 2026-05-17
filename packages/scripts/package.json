@@ -1,0 +1,32 @@
+{
+    "name": "@agent-storm/scripts",
+    "private": true,
+    "description": "Dev-only orchestration scripts (port allocation, run-with-log, etc).",
+    "homepage": "https://github.com/electrovir/agent-storm",
+    "bugs": {
+        "url": "https://github.com/electrovir/agent-storm/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/electrovir/agent-storm.git"
+    },
+    "license": "(MIT or CC0 1.0)",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "sideEffects": false,
+    "type": "module",
+    "main": "src/start.script.ts",
+    "module": "src/start.script.ts",
+    "types": "src/start.script.ts",
+    "scripts": {
+        "compile": "virmator compile"
+    },
+    "dependencies": {
+        "portfinder": "^1.0.38"
+    },
+    "engines": {
+        "node": ">=22"
+    }
+}

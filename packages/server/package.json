@@ -24,7 +24,7 @@
     "scripts": {
         "compile": "virmator compile",
         "docs": "virmator docs",
-        "start": "tsx src/index.ts",
+        "start": "tsx --watch src/index.ts",
         "test": "virmator test node",
         "test:coverage": "npm run test coverage",
         "test:docs": "virmator docs check",
