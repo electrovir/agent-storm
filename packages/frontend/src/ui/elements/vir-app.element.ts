@@ -108,11 +108,13 @@ export const VirApp = defineElement()({
                     : ''}
                 ${state.openedFolders.map((folder) => {
                     const info = state.folderInfo.get(folder);
+                    const active = folder === state.activeFolder;
                     return html`
-                        <div class="pane-slot" ?data-active=${folder === state.activeFolder}>
+                        <div class="pane-slot" ?data-active=${active}>
                             <${VirPaneGroup.assign({
                                 folder,
                                 aiHidden: !!info?.aiHidden,
+                                active,
                             })}></${VirPaneGroup}>
                         </div>
                     `;

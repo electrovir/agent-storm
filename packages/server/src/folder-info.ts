@@ -1,7 +1,19 @@
-import {PaneKind, type Config, type FolderInfo, type PaneStatus} from '@agent-storm/common';
-import {basename} from 'node:path';
+import {PaneKind, PaneStatus, type Config, type FolderInfo} from '@agent-storm/common';
+import {awaitedForEach, wait} from '@augment-vir/common';
+import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {basename, dirname, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {loadConfig} from './config.js';
 import {getGitInfo, getPrInfo, isWorktreeRoot, listWorktreeChildren, type PrInfo} from './git.js';
 import {getPaneStatusLookup} from './pty.js';
+
+/**
+ * Persisted-cache location. Sits next to `auth-secret` under `.not-committed/`, which is
+ * git-ignored at the repo root. Lets the sidebar reappear with last-known git/PR/pane state on
+ * server restart instead of waiting a full sweep cycle to repopulate.
+ */
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const persistedCachePath = resolve(repoRoot, '.not-committed', 'folder-info-cache.json');
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
@@ -28,27 +40,64 @@ async function getCachedPrInfo(folder: string, branch: string | null): Promise<P
     return info;
 }
 
-async function buildFolderInfo({
-    folder,
-    parentRepoPath,
-    isWorktreeRoot: isRoot,
-    aiHidden,
-    statusLookup,
-}: Readonly<{
+type RefreshTarget = {
     folder: string;
     parentRepoPath: string | null;
     isWorktreeRoot: boolean;
     aiHidden: boolean;
+};
+
+async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget[]> {
+    const perRepo = await Promise.all(
+        config.repos.map(async (repo): Promise<RefreshTarget[]> => {
+            const isRoot = await isWorktreeRoot(repo.path);
+            if (!isRoot) {
+                return [
+                    {
+                        folder: repo.path,
+                        parentRepoPath: null,
+                        isWorktreeRoot: false,
+                        aiHidden: config.hiddenAiPane.includes(repo.path),
+                    },
+                ];
+            }
+            const children = await listWorktreeChildren(repo.path);
+            return [
+                {
+                    folder: repo.path,
+                    parentRepoPath: null,
+                    isWorktreeRoot: true,
+                    aiHidden: false,
+                },
+                ...children.map(
+                    (child): RefreshTarget => ({
+                        folder: child,
+                        parentRepoPath: repo.path,
+                        isWorktreeRoot: false,
+                        aiHidden: config.hiddenAiPane.includes(child),
+                    }),
+                ),
+            ];
+        }),
+    );
+    return perRepo.flat();
+}
+
+async function buildFolderInfo({
+    target,
+    statusLookup,
+}: Readonly<{
+    target: RefreshTarget;
     statusLookup: PaneStatusLookup;
 }>): Promise<FolderInfo> {
-    const git = await getGitInfo(folder);
-    const pr = isRoot ? null : await getCachedPrInfo(folder, git.branch);
+    const git = await getGitInfo(target.folder);
+    const pr = target.isWorktreeRoot ? null : await getCachedPrInfo(target.folder, git.branch);
     return {
-        path: folder,
-        name: basename(folder),
-        parentRepoPath,
-        isWorktreeRoot: isRoot,
-        aiHidden,
+        path: target.folder,
+        name: basename(target.folder),
+        parentRepoPath: target.parentRepoPath,
+        isWorktreeRoot: target.isWorktreeRoot,
+        aiHidden: target.aiHidden,
         branch: git.branch,
         git: {
             dirty: git.dirty,
@@ -57,52 +106,210 @@ async function buildFolderInfo({
         prUrl: pr?.url || null,
         prMerged: !!pr?.merged,
         panes: {
-            ai: statusLookup(folder, PaneKind.Ai),
-            shell: statusLookup(folder, PaneKind.Shell),
+            ai: statusLookup(target.folder, PaneKind.Ai),
+            shell: statusLookup(target.folder, PaneKind.Shell),
         },
     };
 }
 
-export async function buildAllFolderInfo(config: Readonly<Config>): Promise<FolderInfo[]> {
-    const statusLookup = await getPaneStatusLookup();
-    const perRepo = await Promise.all(
-        config.repos.map(async (repo) => {
-            const isRoot = await isWorktreeRoot(repo.path);
-            if (!isRoot) {
-                return [
-                    await buildFolderInfo({
-                        folder: repo.path,
-                        parentRepoPath: null,
-                        isWorktreeRoot: false,
-                        aiHidden: config.hiddenAiPane.includes(repo.path),
-                        statusLookup,
-                    }),
-                ];
-            }
-            const children = await listWorktreeChildren(repo.path);
-            const header = await buildFolderInfo({
-                folder: repo.path,
-                parentRepoPath: null,
-                isWorktreeRoot: true,
-                aiHidden: false,
-                statusLookup,
-            });
-            const childInfos = await Promise.all(
-                children.map((child) =>
-                    buildFolderInfo({
-                        folder: child,
-                        parentRepoPath: repo.path,
-                        isWorktreeRoot: false,
-                        aiHidden: config.hiddenAiPane.includes(child),
-                        statusLookup,
-                    }),
-                ),
-            );
-            return [
-                header,
-                ...childInfos,
-            ];
-        }),
+/**
+ * Last-known FolderInfo per folder path. The `/folders` endpoint returns a snapshot of this map;
+ * the background loop below is the only thing that writes to it. Frontend polling NEVER triggers a
+ * refresh — it just reads whatever is here. Order is preserved in insertion-time order, which is
+ * the iteration order of the current config's repos + their worktree children, so consumers can
+ * render without re-sorting.
+ */
+const cache = new Map<string, FolderInfo>();
+/**
+ * Mutable module-level state for the refresh loop. Kept on a single object so we can avoid `let`
+ * for each field. `targets` is the most recent enumeration result; the endpoint walks it to emit
+ * folders in config order, falling back to a git-less placeholder for any target the background
+ * sweep hasn't refreshed yet. `loopStarted` guards `startFolderInfoRefreshLoop` against being
+ * called twice.
+ */
+const refreshState: {
+    targets: ReadonlyArray<RefreshTarget>;
+    loopStarted: boolean;
+} = {
+    targets: [],
+    loopStarted: false,
+};
+
+/**
+ * Synthesize a FolderInfo with the bits we can know without running git or talking to the daemon.
+ * Used by `getCachedFolders` so the sidebar can render every configured folder immediately on first
+ * load; git/PR/pane fields pop in as the background sweep fills the cache.
+ */
+function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
+    return {
+        path: target.folder,
+        name: basename(target.folder),
+        parentRepoPath: target.parentRepoPath,
+        isWorktreeRoot: target.isWorktreeRoot,
+        aiHidden: target.aiHidden,
+        branch: null,
+        git: {
+            dirty: false,
+            unpushed: false,
+        },
+        prUrl: null,
+        prMerged: false,
+        panes: {
+            ai: PaneStatus.None,
+            shell: PaneStatus.None,
+        },
+    };
+}
+
+export function getCachedFolders(): FolderInfo[] {
+    return refreshState.targets.map(
+        (target) => cache.get(target.folder) || placeholderFolderInfo(target),
     );
-    return perRepo.flat();
+}
+
+type PersistedCache = {
+    targets: RefreshTarget[];
+    entries: ReadonlyArray<
+        readonly [
+            string,
+            FolderInfo,
+        ]
+    >;
+};
+
+/**
+ * Chain of in-flight cache writes. New writes append rather than racing so we never have two
+ * `writeFile` calls overlapping on the same path; each `persistCache` snapshot is captured
+ * synchronously at call time so the chained write reflects the state at the moment of the call.
+ */
+const persistState: {pending: Promise<void>} = {
+    pending: Promise.resolve(),
+};
+
+function persistCache(): void {
+    const snapshot: PersistedCache = {
+        targets: [...refreshState.targets],
+        entries: Array.from(cache.entries()),
+    };
+    persistState.pending = persistState.pending
+        .catch(() => {
+            /* prior write failed; carry on so the next one still has a chance */
+        })
+        .then(async () => {
+            await mkdir(dirname(persistedCachePath), {recursive: true});
+            await writeFile(persistedCachePath, JSON.stringify(snapshot), 'utf-8');
+        })
+        .catch(() => {
+            /* persistence is best-effort — losing a write just means a cold restart */
+        });
+}
+
+async function loadPersistedCache(): Promise<void> {
+    const contents = await readFile(persistedCachePath, 'utf-8').catch(() => undefined);
+    if (!contents) {
+        return;
+    }
+    try {
+        const parsed = JSON.parse(contents) as PersistedCache;
+        if (Array.isArray(parsed.targets) && Array.isArray(parsed.entries)) {
+            refreshState.targets = parsed.targets;
+            parsed.entries.forEach(
+                ([
+                    path,
+                    info,
+                ]) => {
+                    cache.set(path, info);
+                },
+            );
+        }
+    } catch {
+        /* corrupted persisted file — ignore and let the live sweep rebuild it */
+    }
+}
+
+/**
+ * Pause between consecutive folder refreshes within a sweep. Each folder costs roughly 4 git
+ * subprocesses (`rev-parse`, `status --porcelain`, upstream check, `log` ahead-count); spreading
+ * them out keeps the backend from pegging a core when the user has many configured repos.
+ */
+const perFolderDelayMs = 500;
+/**
+ * Idle pause after each complete sweep through every folder. With ~30 folders × 500ms each, a sweep
+ * takes ~15s; a 10s idle on top gives roughly one full refresh every 25s. Plenty fresh for a
+ * slow-moving UI; cheap on the host.
+ */
+const sweepIdleMs = 10_000;
+
+async function refreshOnce(target: RefreshTarget, statusLookup: PaneStatusLookup): Promise<void> {
+    try {
+        const info = await buildFolderInfo({target, statusLookup});
+        cache.set(target.folder, info);
+        persistCache();
+    } catch {
+        /* swallow per-folder errors so one bad repo doesn't stop the sweep */
+    }
+}
+
+async function runSweep(): Promise<void> {
+    const config = await loadConfig().catch(() => undefined);
+    if (!config) {
+        return;
+    }
+    const targets = await enumerateTargets(config);
+    /**
+     * Publish the target list before the slow per-folder loop runs so `/folders` can return
+     * placeholders for every configured folder immediately, without waiting for git to finish.
+     */
+    refreshState.targets = targets;
+    persistCache();
+    const statusLookup = await getPaneStatusLookup();
+    /**
+     * Sequential on purpose: parallel refresh is what created the original 100% CPU problem.
+     * `awaitedForEach` awaits each callback before invoking the next, so subprocess pressure stays
+     * at one folder at a time.
+     */
+    await awaitedForEach(targets, async (target) => {
+        await refreshOnce(target, statusLookup);
+        await wait({milliseconds: perFolderDelayMs});
+    });
+    const validPaths = new Set(targets.map((target) => target.folder));
+    const stale = Array.from(cache.keys()).filter((path) => !validPaths.has(path));
+    stale.forEach((path) => cache.delete(path));
+    if (stale.length > 0) {
+        persistCache();
+    }
+}
+
+/**
+ * Schedules the next sweep `sweepIdleMs` after the current one finishes. Recursive `setTimeout`
+ * rather than `setInterval` so sweeps never overlap if one runs long.
+ */
+function scheduleNextSweep(): void {
+    setTimeout(() => {
+        runSweep()
+            .catch(() => {
+                /* never let the loop die; just move on to the next sweep */
+            })
+            .finally(scheduleNextSweep);
+    }, sweepIdleMs);
+}
+
+/**
+ * Load any previously-persisted cache from disk, then kick off the never-ending background refresh
+ * loop. Safe to call multiple times; only the first call has any effect. Each sweep walks every
+ * configured folder in serial, refreshing one at a time, then idles before starting the next sweep.
+ * Callers should `await` this before serving requests so the first `/folders` call sees
+ * last-session data rather than an empty list.
+ */
+export async function startFolderInfoRefreshLoop(): Promise<void> {
+    if (refreshState.loopStarted) {
+        return;
+    }
+    refreshState.loopStarted = true;
+    await loadPersistedCache();
+    runSweep()
+        .catch(() => {
+            /* never let the loop die; just move on to the next sweep */
+        })
+        .finally(scheduleNextSweep);
 }

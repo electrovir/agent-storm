@@ -1,4 +1,4 @@
-import {agentStormService, defaultConfig, type PaneKind} from '@agent-storm/common';
+import {agentStormService, type PaneKind} from '@agent-storm/common';
 import {HttpMethod, log} from '@augment-vir/common';
 import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/implement-service';
 import {attachService} from '@rest-vir/run-service';
@@ -13,7 +13,7 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {buildAllFolderInfo} from './folder-info.js';
+import {getCachedFolders, startFolderInfoRefreshLoop} from './folder-info.js';
 import {addWorktree, removeWorktree} from './git.js';
 import {saveUpload} from './uploads.js';
 
@@ -72,6 +72,8 @@ type SocketAttachment = {
 const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 
 await ensureDaemon();
+
+await startFolderInfoRefreshLoop();
 
 const authSecret = await ensureAuthSecret();
 
@@ -134,12 +136,10 @@ const implementation = implementService({
             };
         },
         async '/folders'() {
-            const config = await loadConfig().catch(() => defaultConfig);
-            const folders = await buildAllFolderInfo(config);
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
-                    folders,
+                    folders: getCachedFolders(),
                 },
             };
         },

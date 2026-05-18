@@ -8,7 +8,7 @@ import {viraThemeByKeys} from 'vira';
 import {uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 
-const uploadErrorDismissMs = 5_000;
+const uploadErrorDismissMs = 5000;
 
 function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -101,7 +101,7 @@ function shellQuote(input: string): string {
     if (/^[\w@%+=:,./-]+$/.test(input)) {
         return input;
     }
-    return `'${input.replace(/'/g, "'\\''")}'`;
+    return `'${input.replace(/'/g, String.raw`'\''`)}'`;
 }
 
 function extractDroppedPaths(transfer: DataTransfer): string[] {
@@ -151,6 +151,13 @@ const terminalAppTheme: ITheme = {
 export const VirTerminal = defineElement<{
     folder: string;
     kind: PaneKind;
+    /**
+     * True when this terminal's pane is the user's currently active folder. Used to re-fit and push
+     * a fresh size to the server on the false→true transition: a CSS-hidden pane reports a 0×0
+     * content rect and won't have observed live window-resize events, so its server-side dimensions
+     * may be stale by the time the user clicks back in.
+     */
+    active: boolean;
 }>()({
     tagName: 'vir-terminal',
     state() {
@@ -158,6 +165,13 @@ export const VirTerminal = defineElement<{
             terminal: undefined as Terminal | undefined,
             resizeObserver: undefined as ResizeObserver | undefined,
             disconnect: undefined as (() => void) | undefined,
+            /**
+             * Set once the terminal+socket finish initializing. Invoking it re-runs
+             * `fitAddon.fit()` and pushes the new cols/rows to the server so a previously-hidden
+             * pane catches up to the current viewport when it becomes visible.
+             */
+            onActivate: undefined as (() => void) | undefined,
+            wasActive: false,
             uploadError: undefined as string | undefined,
             uploadErrorTimeout: undefined as ReturnType<typeof setTimeout> | undefined,
         };
@@ -169,7 +183,7 @@ export const VirTerminal = defineElement<{
             width: 100%;
             height: 100%;
             box-sizing: border-box;
-            padding: 8px;
+            padding: 2px;
             background: ${unsafeCSS(terminalAppTheme.background || 'transparent')};
         }
 
@@ -214,6 +228,27 @@ export const VirTerminal = defineElement<{
         }
     },
     render({inputs, state, updateState}) {
+        /**
+         * Fire fit-and-resend on the false→true active transition. A pane that was `display: none`
+         * while the user resized the window won't have observed live `ResizeObserver` entries; this
+         * catches up the moment it becomes visible. `requestAnimationFrame` defers the call until
+         * after the CSS flip has landed so `fitAddon.fit()` sees the post-activation host rect
+         * instead of 0×0.
+         *
+         * Even when the post-activation dims happen to match the last-sent ones (so the pty resize
+         * is a no-op), the TUI app in the pty — Claude in particular — may have an alt-screen
+         * buffer drawn at a stale width that needs a fresh `SIGWINCH` to redraw.
+         * `socket.send({redraw: true})` makes the daemon kick that signal regardless of dims.
+         */
+        if (inputs.active && !state.wasActive) {
+            updateState({wasActive: true});
+            const onActivate = state.onActivate;
+            if (onActivate) {
+                requestAnimationFrame(onActivate);
+            }
+        } else if (!inputs.active && state.wasActive) {
+            updateState({wasActive: false});
+        }
         return html`
             ${state.uploadError
                 ? html`
@@ -344,7 +379,7 @@ export const VirTerminal = defineElement<{
                             .catch((error: unknown) => {
                                 const message =
                                     error instanceof Error ? error.message : String(error);
-                                /* eslint-disable-next-line no-console */
+
                                 console.error('agent-storm upload failed:', error);
                                 reportDropError(updateState, state, `Upload failed: ${message}`);
                             });
@@ -378,7 +413,7 @@ export const VirTerminal = defineElement<{
                                 .catch((error: unknown) => {
                                     const message =
                                         error instanceof Error ? error.message : String(error);
-                                    /* eslint-disable-next-line no-console */
+
                                     console.error('agent-storm paste upload failed:', error);
                                     reportDropError(updateState, state, `Paste failed: ${message}`);
                                 });
@@ -386,15 +421,42 @@ export const VirTerminal = defineElement<{
                         true,
                     );
 
-                    const resizeObserver = new ResizeObserver(() => {
+                    const fitAndResend = () => {
+                        /**
+                         * Bail when the host has no real layout — the pane is `display: none`
+                         * because the user switched to a different folder. If we fit anyway,
+                         * `fitAddon.fit()` shrinks xterm to a minimum cols, then `sendResize`
+                         * pushes those tiny dims to the pty, Claude redraws at the tiny
+                         * width, and that narrow rendering goes into xterm's scrollback
+                         * permanently — visible the next time the user returns to this
+                         * folder. When the pane becomes visible again, `ResizeObserver` will
+                         * fire another entry with real dims and we'll catch up then.
+                         */
+                        if (element.offsetWidth < 10 || element.offsetHeight < 10) {
+                            return;
+                        }
                         fitAddon.fit();
                         sendResize();
-                    });
+                    };
+
+                    const resizeObserver = new ResizeObserver(fitAndResend);
                     resizeObserver.observe(element);
+
+                    /**
+                     * Activation handler: just re-fit and push dims. We tried adding a force-
+                     * SIGWINCH on top of this to coax TUIs (Claude) into re-rendering stale
+                     * scrollback at the new width, but every approach produced visual artifacts —
+                     * the pty and xterm went out of sync mid-redraw and Claude's UI shredded
+                     * itself. So this is back to a plain "make sure dims match" on activation; any
+                     * stale alt-screen content the user wants reflowed can be cleared with Claude's
+                     * own Ctrl+L.
+                     */
+                    const onActivate = fitAndResend;
 
                     updateState({
                         terminal,
                         resizeObserver,
+                        onActivate,
                         disconnect: () => {
                             socket.close();
                         },
