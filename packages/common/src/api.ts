@@ -2,15 +2,15 @@ import {AnyOrigin, defineService, HttpMethod} from '@rest-vir/define-service';
 import {defineShape, enumShape, nullableShape, tupleShape, unionShape} from 'object-shape-tester';
 import {PaneKind, PaneStatus} from './enums.js';
 
-const port = 41880;
+const port = 41_880;
 
 const stringMessageShape = defineShape('');
 
 /**
- * Client → host messages on the `/pty` socket are either raw keystroke data (a string) or a resize
- * notification carrying the xterm viewport's current column/row count. The host pushes those
- * dimensions through to the underlying PTY so the spawned shell wraps at the right column — without
- * this, `node-pty` keeps the cols/rows it was spawned with and output wraps at the wrong width.
+ * Client → host messages on the `/pty` socket are either raw keystroke / paste data written
+ * directly to the pty, or `{resize: {cols, rows}}` carrying the xterm viewport's current
+ * dimensions. The host pushes those dimensions through to `node-pty` so the spawned shell wraps at
+ * the right column.
  */
 const ptyClientMessageShape = defineShape(
     unionShape('', {

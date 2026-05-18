@@ -6,6 +6,13 @@ import {VirTerminal} from './vir-terminal.element.js';
 export const VirPaneGroup = defineElement<{
     folder: string;
     aiHidden: boolean;
+    /**
+     * True when this pane-group is the user's currently focused folder. Forwarded to each
+     * `VirTerminal` so they can re-fit and push a fresh size to the server when transitioning to
+     * visible — a CSS-hidden pane may have missed window-resize events while it was `display:
+     * none`.
+     */
+    active: boolean;
 }>()({
     tagName: 'vir-pane-group',
     styles: css`
@@ -29,7 +36,7 @@ export const VirPaneGroup = defineElement<{
            keystrokes will land in. :focus-within matches when any descendant (including across
            the vir-terminal shadow boundary into xterm hidden textarea) has focus. */
         .pane:not(:focus-within) {
-            filter: brightness(0.93) saturate(0.85);
+            filter: brightness(0.75) saturate(0.9);
             transition: filter 120ms ease;
         }
         .pane:focus-within {
@@ -66,6 +73,7 @@ export const VirPaneGroup = defineElement<{
                               <${VirTerminal.assign({
                                   folder: inputs.folder,
                                   kind: PaneKind.Ai,
+                                  active: inputs.active,
                               })}></${VirTerminal}>
                           </div>
                       </div>
@@ -76,6 +84,7 @@ export const VirPaneGroup = defineElement<{
                     <${VirTerminal.assign({
                         folder: inputs.folder,
                         kind: PaneKind.Shell,
+                        active: inputs.active,
                     })}></${VirTerminal}>
                 </div>
             </div>
