@@ -47,9 +47,13 @@ export const VirAuthModal = defineElement()({
     `,
     init({updateState}) {
         const unsubscribe = subscribeSecret((secret) => {
-            updateState({open: !secret});
+            updateState({
+                open: !secret,
+            });
         });
-        updateState({unsubscribe});
+        updateState({
+            unsubscribe,
+        });
     },
     cleanup({state}) {
         state.unsubscribe?.();
@@ -61,7 +65,9 @@ export const VirAuthModal = defineElement()({
                 return;
             }
             setStoredSecret(trimmed);
-            updateState({pending: ''});
+            updateState({
+                pending: '',
+            });
         };
 
         return html`
@@ -72,9 +78,9 @@ export const VirAuthModal = defineElement()({
             })}>
                 <div class="body">
                     <div class="description">
-                        Paste the auth secret the server printed on startup, or read it from
+                        Paste the auth secret the server printed on startup. Delete
                         <code>.not-committed/auth-secret</code>
-                        .
+                        if you need to generate a new key.
                     </div>
                     <${ViraInput.assign({
                         value: state.pending,
@@ -83,7 +89,9 @@ export const VirAuthModal = defineElement()({
                         showClearButton: true,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) =>
-                            updateState({pending: event.detail}),
+                            updateState({
+                                pending: event.detail,
+                            }),
                         )}
                         ${listen('keydown', (event) => {
                             if (event instanceof KeyboardEvent && event.key === 'Enter') {
