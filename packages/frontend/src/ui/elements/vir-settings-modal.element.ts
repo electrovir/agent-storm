@@ -58,6 +58,12 @@ const configJsonSchema = {
                 type: 'string',
             },
         },
+        disabledGitHubPolling: {
+            type: 'boolean',
+            title: 'Disable GitHub polling',
+            description:
+                'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
+        },
     },
     required: [
         'aiCmd',
@@ -142,10 +148,15 @@ export const VirSettingsModal = defineElement<{
             ) {
                 return;
             }
-            updateState({restartingDaemon: true, daemonRestartError: undefined});
+            updateState({
+                restartingDaemon: true,
+                daemonRestartError: undefined,
+            });
             try {
                 await restartDaemon();
-                updateState({restartingDaemon: false});
+                updateState({
+                    restartingDaemon: false,
+                });
             } catch (error: unknown) {
                 updateState({
                     restartingDaemon: false,
@@ -172,7 +183,10 @@ export const VirSettingsModal = defineElement<{
             if (!state.pending || state.saving) {
                 return;
             }
-            updateState({saving: true, saveError: undefined});
+            updateState({
+                saving: true,
+                saveError: undefined,
+            });
             try {
                 await putConfig(fromJsonValue(state.pending));
                 reset();
@@ -228,7 +242,9 @@ export const VirSettingsModal = defineElement<{
                                             isDisabled: state.saving,
                                         })}
                                             ${listen(ViraJsonForm.events.valueChange, (event) => {
-                                                updateState({pending: event.detail});
+                                                updateState({
+                                                    pending: event.detail,
+                                                });
                                             })}
                                         ></${ViraJsonForm}>
                                     `

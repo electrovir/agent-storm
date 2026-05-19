@@ -33,6 +33,7 @@
     "dependencies": {
         "@agent-storm/common": "*",
         "@augment-vir/common": "^31.70.0",
+        "@augment-vir/node": "^31.70.0",
         "@rest-vir/implement-service": "^1.7.2",
         "@rest-vir/run-service": "^1.7.2",
         "fastify": "^5.0.0",

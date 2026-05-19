@@ -1,10 +1,18 @@
 import {PaneKind, PaneStatus, type Config, type FolderInfo} from '@agent-storm/common';
-import {awaitedForEach, wait} from '@augment-vir/common';
+import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename, dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {loadConfig} from './config.js';
-import {getGitInfo, getPrInfo, isWorktreeRoot, listWorktreeChildren, type PrInfo} from './git.js';
+import {
+    GitHubPollingError,
+    getGitInfo,
+    getPrInfo,
+    isWorktreeRoot,
+    listWorktreeChildren,
+    type GitHubPollingDisableReason,
+    type PrInfo,
+} from './git.js';
 import {getPaneStatusLookup} from './pty.js';
 
 /**
@@ -26,18 +34,49 @@ type PrCacheEntry = {
 
 const prCache = new Map<string, PrCacheEntry>();
 
+/**
+ * In-memory auto-disable state for GitHub polling. Set the first time `gh` reports a rate-limit or
+ * auth failure; subsequent sweeps short-circuit the `gh pr view` call. Cleared on server restart —
+ * that's the recovery path for rate limits, and the moment the user is most likely to have fixed an
+ * auth issue. The user's explicit `disabledGitHubPolling: true` config takes precedence either way;
+ * this only flips an implicit off-switch.
+ */
+const githubPollingState: {
+    autoDisabled: boolean;
+    reason: GitHubPollingDisableReason | undefined;
+} = {
+    autoDisabled: false,
+    reason: undefined,
+};
+
+function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
+    return !!config.disabledGitHubPolling || githubPollingState.autoDisabled;
+}
+
 async function getCachedPrInfo(folder: string, branch: string | null): Promise<PrInfo | null> {
     const key = `${folder}@${branch || ''}`;
     const existing = prCache.get(key);
     if (existing && Date.now() - existing.fetchedAt < prCacheTtlMs) {
         return existing.info;
     }
-    const info = await getPrInfo(folder, branch);
-    prCache.set(key, {
-        fetchedAt: Date.now(),
-        info,
-    });
-    return info;
+    try {
+        const info = await getPrInfo(folder, branch);
+        prCache.set(key, {
+            fetchedAt: Date.now(),
+            info,
+        });
+        return info;
+    } catch (error) {
+        if (error instanceof GitHubPollingError) {
+            githubPollingState.autoDisabled = true;
+            githubPollingState.reason = error.reason;
+            log.warning(
+                `GitHub polling auto-disabled (${error.reason}); restart the server to retry. ${error.message}`,
+            );
+            return null;
+        }
+        throw error;
+    }
 }
 
 type RefreshTarget = {
@@ -86,12 +125,17 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
 async function buildFolderInfo({
     target,
     statusLookup,
+    disabledGitHubPolling,
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
+    disabledGitHubPolling: boolean;
 }>): Promise<FolderInfo> {
     const git = await getGitInfo(target.folder);
-    const pr = target.isWorktreeRoot ? null : await getCachedPrInfo(target.folder, git.branch);
+    const pr =
+        target.isWorktreeRoot || disabledGitHubPolling
+            ? null
+            : await getCachedPrInfo(target.folder, git.branch);
     return {
         path: target.folder,
         name: basename(target.folder),
@@ -196,7 +240,9 @@ function persistCache(): void {
             /* prior write failed; carry on so the next one still has a chance */
         })
         .then(async () => {
-            await mkdir(dirname(persistedCachePath), {recursive: true});
+            await mkdir(dirname(persistedCachePath), {
+                recursive: true,
+            });
             await writeFile(persistedCachePath, JSON.stringify(snapshot), 'utf-8');
         })
         .catch(() => {
@@ -240,9 +286,17 @@ const perFolderDelayMs = 500;
  */
 const sweepIdleMs = 10_000;
 
-async function refreshOnce(target: RefreshTarget, statusLookup: PaneStatusLookup): Promise<void> {
+async function refreshOnce(
+    target: RefreshTarget,
+    statusLookup: PaneStatusLookup,
+    disabledGitHubPolling: boolean,
+): Promise<void> {
     try {
-        const info = await buildFolderInfo({target, statusLookup});
+        const info = await buildFolderInfo({
+            target,
+            statusLookup,
+            disabledGitHubPolling,
+        });
         cache.set(target.folder, info);
         persistCache();
     } catch {
@@ -263,14 +317,17 @@ async function runSweep(): Promise<void> {
     refreshState.targets = targets;
     persistCache();
     const statusLookup = await getPaneStatusLookup();
+    const disabledGitHubPolling = isGitHubPollingDisabled(config);
     /**
      * Sequential on purpose: parallel refresh is what created the original 100% CPU problem.
      * `awaitedForEach` awaits each callback before invoking the next, so subprocess pressure stays
      * at one folder at a time.
      */
     await awaitedForEach(targets, async (target) => {
-        await refreshOnce(target, statusLookup);
-        await wait({milliseconds: perFolderDelayMs});
+        await refreshOnce(target, statusLookup, disabledGitHubPolling);
+        await wait({
+            milliseconds: perFolderDelayMs,
+        });
     });
     const validPaths = new Set(targets.map((target) => target.folder));
     const stale = Array.from(cache.keys()).filter((path) => !validPaths.has(path));

@@ -1,5 +1,12 @@
 import {AnyOrigin, defineService, HttpMethod} from '@rest-vir/define-service';
-import {defineShape, enumShape, nullableShape, tupleShape, unionShape} from 'object-shape-tester';
+import {
+    defineShape,
+    enumShape,
+    nullableShape,
+    optionalShape,
+    tupleShape,
+    unionShape,
+} from 'object-shape-tester';
 import {PaneKind, PaneStatus} from './enums.js';
 
 const port = 41_880;
@@ -43,6 +50,14 @@ const configShape = defineShape({
     postWorktreeCmd: nullableShape(''),
     repos: [repoConfigShape],
     hiddenAiPane: [''],
+    /**
+     * Opt-out flag for the background `gh pr view` calls the refresh loop makes on each non-root
+     * folder. Optional and falsy by default so GitHub polling is on out of the box; set to true to
+     * skip the `gh` shell-outs entirely when GitHub starts rate-limiting the account (the API
+     * starts returning 403s and the sidebar's PR badges go stale anyway, so the calls become pure
+     * overhead until the limit resets).
+     */
+    disabledGitHubPolling: optionalShape(false),
 });
 
 const folderInfoShape = defineShape({
