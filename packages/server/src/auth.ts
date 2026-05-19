@@ -1,38 +1,117 @@
+import {ensureErrorAndPrependMessage, log} from '@augment-vir/common';
+import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
 import {randomBytes} from 'node:crypto';
+import {watch, type FSWatcher} from 'node:fs';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {dirname, resolve} from 'node:path';
+import {basename, dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-/**
- * The repo root, resolved relative to this file (which lives at packages/server/src/auth.ts).
- * `.not-committed` is git-ignored at the repo root.
- */
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const secretPath = resolve(repoRoot, '.not-committed', 'auth-secret');
+const secretDir = resolve(repoRoot, '.not-committed');
+const secretPath = resolve(secretDir, 'auth-secret');
+const secretFileName = basename(secretPath);
 
-let cachedSecret: string | undefined;
+/**
+ * Argon2 encoded hashes always start with `$argon2`. Any other content (e.g. a plain-text key left
+ * over from an older version of this server) is treated as missing and replaced.
+ */
+const argon2Prefix = '$argon2';
 
-export async function ensureAuthSecret(): Promise<string> {
-    if (cachedSecret) {
-        return cachedSecret;
+let cachedHash: string | undefined;
+let watcher: FSWatcher | undefined;
+let regenerating: Promise<void> | undefined;
+let writingSelf = false;
+
+async function readStoredHash(): Promise<string | undefined> {
+    const contents = await readFile(secretPath, 'utf-8').catch(() => undefined);
+    if (contents == undefined) {
+        return undefined;
     }
-    const existing = await readFile(secretPath, 'utf-8')
-        .then((contents) => contents.trim())
-        .catch(() => undefined);
-    if (existing) {
-        cachedSecret = existing;
-        return existing;
+    const trimmed = contents.trim();
+    if (!trimmed.startsWith(argon2Prefix)) {
+        return undefined;
     }
-    const fresh = randomBytes(32).toString('hex');
-    await mkdir(dirname(secretPath), {recursive: true});
-    await writeFile(secretPath, fresh, {mode: 0o600});
-    cachedSecret = fresh;
-    return fresh;
+    return trimmed;
 }
 
-export function getAuthSecret(): string {
-    if (!cachedSecret) {
-        throw new Error('Auth secret has not been initialized. Call ensureAuthSecret() first.');
+async function generateAndStoreSecret(): Promise<string> {
+    const cleartext = randomBytes(32).toString('hex');
+    const hash = await hashPassword(cleartext);
+    await mkdir(secretDir, {
+        recursive: true,
+    });
+    writingSelf = true;
+    try {
+        await writeFile(secretPath, hash, {
+            mode: 0o600,
+        });
+    } finally {
+        writingSelf = false;
     }
-    return cachedSecret;
+    cachedHash = hash;
+    return cleartext;
+}
+
+function logNewSecret(cleartext: string): void {
+    log.info(
+        [
+            `auth secret: ${cleartext}`,
+            'Save this — only the argon2id hash is stored on disk.',
+            `Delete ${secretPath} to generate a new key.`,
+        ].join('\n'),
+    );
+}
+
+async function regenerate(): Promise<void> {
+    const cleartext = await generateAndStoreSecret();
+    logNewSecret(cleartext);
+}
+
+function handleWatchEvent(filename: string | null): void {
+    if (filename !== secretFileName || writingSelf || regenerating) {
+        return;
+    }
+    regenerating = (async () => {
+        const existing = await readStoredHash();
+        if (existing) {
+            cachedHash = existing;
+            return;
+        }
+        await regenerate();
+    })()
+        .catch((error: unknown) => {
+            log.error(
+                ensureErrorAndPrependMessage(error, 'Failed to regenerate auth secret.').message,
+            );
+        })
+        .finally(() => {
+            regenerating = undefined;
+        });
+}
+
+export async function initAuth(): Promise<void> {
+    await mkdir(secretDir, {
+        recursive: true,
+    });
+    const existing = await readStoredHash();
+    if (existing) {
+        cachedHash = existing;
+    } else {
+        const cleartext = await generateAndStoreSecret();
+        logNewSecret(cleartext);
+    }
+    watcher?.close();
+    watcher = watch(secretDir, (_eventType, filename) => {
+        handleWatchEvent(filename);
+    });
+}
+
+export async function verifyAuthToken(provided: string | undefined): Promise<boolean> {
+    if (!provided || !cachedHash) {
+        return false;
+    }
+    return await doesPasswordMatchHash({
+        password: provided,
+        hash: cachedHash,
+    });
 }

@@ -3,7 +3,8 @@ import {HttpMethod, log} from '@augment-vir/common';
 import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/implement-service';
 import {attachService} from '@rest-vir/run-service';
 import fastify from 'fastify';
-import {ensureAuthSecret} from './auth.js';
+import {parseUrl} from 'url-vir';
+import {initAuth, verifyAuthToken} from './auth.js';
 import {loadConfig, saveConfig} from './config.js';
 import {
     attachPane,
@@ -24,7 +25,7 @@ import {saveUpload} from './uploads.js';
  * dev server (on any LAN hostname, on this port) is accepted — the auth secret in `createContext`
  * is the actual security boundary, but a port-scoped origin check is cheap defense-in-depth.
  */
-const port = Number(process.env.BACKEND_PORT) || 41880;
+const port = Number(process.env.BACKEND_PORT) || 41_880;
 const frontendPort = Number(process.env.FRONTEND_PORT) || undefined;
 
 /**
@@ -49,7 +50,7 @@ if (frontendPort !== undefined) {
             return false;
         }
         try {
-            const parsed = new URL(origin);
+            const parsed = parseUrl(origin);
             return parsed.port === String(frontendPort);
         } catch {
             return false;
@@ -75,7 +76,7 @@ await ensureDaemon();
 
 await startFolderInfoRefreshLoop();
 
-const authSecret = await ensureAuthSecret();
+await initAuth();
 
 function extractBearerToken(header: string | string[] | undefined): string | undefined {
     if (typeof header !== 'string') {
@@ -96,13 +97,14 @@ const implementation = implementService({
     logger: {
         info: silentServiceLogger.info,
     },
-    createContext({requestHeaders, webSocketDefinition}) {
+    async createContext({requestHeaders, webSocketDefinition}) {
         const provided = webSocketDefinition
             ? typeof requestHeaders['sec-websocket-protocol'] === 'string'
                 ? requestHeaders['sec-websocket-protocol'].trim()
                 : undefined
             : extractBearerToken(requestHeaders.authorization);
-        if (provided !== authSecret) {
+        const isValid = await verifyAuthToken(provided);
+        if (!isValid) {
             return {
                 reject: {
                     statusCode: HttpStatus.Unauthorized,
@@ -135,7 +137,7 @@ const implementation = implementService({
                 responseData: requestData,
             };
         },
-        async '/folders'() {
+        '/folders'() {
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
@@ -227,8 +229,7 @@ const implementation = implementService({
                 const socketAttachment = attachmentsByWebSocket.get(webSocket);
                 if (!socketAttachment) {
                     return;
-                }
-                if (typeof message === 'string') {
+                } else if (typeof message === 'string') {
                     socketAttachment.attachment.write(message);
                     return;
                 }
@@ -265,4 +266,3 @@ const listenAddress = await server.listen({
 });
 
 log.success(`agent-storm server listening on ${listenAddress}`);
-log.info(`auth secret: ${authSecret}`);
