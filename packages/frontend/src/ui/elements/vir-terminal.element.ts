@@ -241,13 +241,17 @@ export const VirTerminal = defineElement<{
          * `socket.send({redraw: true})` makes the daemon kick that signal regardless of dims.
          */
         if (inputs.active && !state.wasActive) {
-            updateState({wasActive: true});
+            updateState({
+                wasActive: true,
+            });
             const onActivate = state.onActivate;
             if (onActivate) {
                 requestAnimationFrame(onActivate);
             }
         } else if (!inputs.active && state.wasActive) {
-            updateState({wasActive: false});
+            updateState({
+                wasActive: false,
+            });
         }
         return html`
             ${state.uploadError
@@ -426,11 +430,11 @@ export const VirTerminal = defineElement<{
                          * Bail when the host has no real layout — the pane is `display: none`
                          * because the user switched to a different folder. If we fit anyway,
                          * `fitAddon.fit()` shrinks xterm to a minimum cols, then `sendResize`
-                         * pushes those tiny dims to the pty, Claude redraws at the tiny
-                         * width, and that narrow rendering goes into xterm's scrollback
-                         * permanently — visible the next time the user returns to this
-                         * folder. When the pane becomes visible again, `ResizeObserver` will
-                         * fire another entry with real dims and we'll catch up then.
+                         * pushes those tiny dims to the pty, Claude redraws at the tiny width, and
+                         * that narrow rendering goes into xterm's scrollback permanently — visible
+                         * the next time the user returns to this folder. When the pane becomes
+                         * visible again, `ResizeObserver` will fire another entry with real dims
+                         * and we'll catch up then.
                          */
                         if (element.offsetWidth < 10 || element.offsetHeight < 10) {
                             return;
