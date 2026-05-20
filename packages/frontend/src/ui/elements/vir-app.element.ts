@@ -1,7 +1,8 @@
 import {type FolderInfo} from '@agent-storm/common';
-import {css, defineElement, html} from 'element-vir';
+import {css, defineElement, html, listen} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
+import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {router, type AppRoute} from '../../util/router.js';
 import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
@@ -12,6 +13,13 @@ import {VirSidebar} from './vir-sidebar.element.js';
 
 const folderInfoPollMs = 2_000;
 
+function clampSidebarWidth(value: number): number {
+    if (!Number.isFinite(value)) {
+        return sidebarWidth.default;
+    }
+    return Math.min(sidebarWidth.max, Math.max(sidebarWidth.min, value));
+}
+
 type AppState = {
     activeFolder: string | undefined;
     openedFolders: ReadonlyArray<string>;
@@ -20,6 +28,8 @@ type AppState = {
     settingsOpen: boolean;
     route: AppRoute;
     removeRouteListener: (() => void) | undefined;
+    sidebarWidth: number;
+    sidebarDragging: boolean;
 };
 
 type AppUpdate = (newState: Partial<AppState>) => void;
@@ -35,6 +45,8 @@ export const VirApp = defineElement()({
             settingsOpen: false,
             route: router.readCurrentRoute(),
             removeRouteListener: undefined,
+            sidebarWidth: localStorageClient.sidebarWidth.read(),
+            sidebarDragging: false,
         };
     },
     styles: css`
@@ -49,8 +61,35 @@ export const VirApp = defineElement()({
         }
 
         vir-sidebar {
-            width: 280px;
+            width: var(--sidebar-width, 280px);
             flex-shrink: 0;
+        }
+
+        .sidebar-divider {
+            flex: 0 0 4px;
+            position: relative;
+            cursor: col-resize;
+            background: ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            transition: background 120ms ease;
+            /* Sit above the sidebar so the hit-area extension below catches the pointer
+               instead of being eaten by sidebar event handlers. */
+            z-index: 1;
+            touch-action: none;
+        }
+
+        /* Visible bar stays a thin 4px, but the user gets ~14px of grabbable surface. */
+        .sidebar-divider::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: -5px;
+            right: -5px;
+        }
+
+        .sidebar-divider:hover,
+        .sidebar-divider.dragging {
+            background: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
         .stage {
@@ -95,7 +134,7 @@ export const VirApp = defineElement()({
         }
         state.removeRouteListener?.();
     },
-    render({state, updateState}) {
+    render({state, updateState, host}) {
         if (state.route.paths[0] === 'book') {
             return html`
                 <${VirBook.assign({
@@ -103,6 +142,50 @@ export const VirApp = defineElement()({
                 })}></${VirBook}>
             `;
         }
+
+        const currentSidebarWidth = clampSidebarWidth(state.sidebarWidth);
+        host.style.setProperty('--sidebar-width', `${currentSidebarWidth}px`);
+
+        const onDividerMouseDown = (event: MouseEvent) => {
+            event.preventDefault();
+
+            // Mute selection + force resize cursor globally during drag — otherwise crossing
+            // into the terminal canvas flips the cursor to i-beam and selects terminal text.
+            const previousUserSelect = document.body.style.userSelect;
+            const previousCursor = document.body.style.cursor;
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'col-resize';
+
+            let latestWidth = currentSidebarWidth;
+            updateState({sidebarDragging: true});
+
+            const onMove = (moveEvent: MouseEvent) => {
+                const rect = host.getBoundingClientRect();
+                if (rect.width <= 0) {
+                    return;
+                }
+                latestWidth = clampSidebarWidth(moveEvent.clientX - rect.left);
+                updateState({sidebarWidth: latestWidth});
+            };
+
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                document.body.style.userSelect = previousUserSelect;
+                document.body.style.cursor = previousCursor;
+                updateState({sidebarDragging: false});
+                localStorageClient.sidebarWidth.write(latestWidth);
+            };
+
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+        };
+
+        const onDividerDoubleClick = () => {
+            updateState({sidebarWidth: sidebarWidth.default});
+            localStorageClient.sidebarWidth.write(sidebarWidth.default);
+        };
+
         return html`
             <${VirSidebar.assign({
                 activeFolder: state.activeFolder,
@@ -117,6 +200,14 @@ export const VirApp = defineElement()({
                 },
                 onOpenSettings: () => updateState({settingsOpen: true}),
             })}></${VirSidebar}>
+            <div
+                class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
+                role="separator"
+                aria-orientation="vertical"
+                title="Drag to resize. Double-click to reset."
+                ${listen('mousedown', onDividerMouseDown)}
+                ${listen('dblclick', onDividerDoubleClick)}
+            ></div>
             <div class="stage">
                 ${state.openedFolders.length === 0
                     ? html`

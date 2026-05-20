@@ -1,25 +1,21 @@
-const storageKey = 'agent-storm-auth-secret';
+import {localStorageClient} from './local-storage-client.js';
 
-type Listener = (secret: string | undefined) => void;
-const listeners = new Set<Listener>();
+const setting = localStorageClient.authSecret;
 
 export function getStoredSecret(): string | undefined {
-    return globalThis.localStorage?.getItem(storageKey) || undefined;
+    return setting.read();
 }
 
 export function setStoredSecret(secret: string): void {
-    globalThis.localStorage?.setItem(storageKey, secret);
-    listeners.forEach((fn) => fn(secret));
+    setting.write(secret);
 }
 
 export function clearStoredSecret(): void {
-    globalThis.localStorage?.removeItem(storageKey);
-    listeners.forEach((fn) => fn(undefined));
+    setting.clear();
 }
 
-export function subscribeSecret(fn: Listener): () => void {
-    listeners.add(fn);
-    return () => listeners.delete(fn);
+export function subscribeSecret(fn: (secret: string | undefined) => void): () => void {
+    return setting.subscribe(fn);
 }
 
 /**
