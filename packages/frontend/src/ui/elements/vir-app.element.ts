@@ -2,8 +2,10 @@ import {type FolderInfo} from '@agent-storm/common';
 import {css, defineElement, html} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
+import {router, type AppRoute} from '../../util/router.js';
 import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
+import {VirBook} from './vir-book.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
@@ -16,6 +18,8 @@ type AppState = {
     folderInfo: Map<string, FolderInfo>;
     pollHandle: ReturnType<typeof setInterval> | undefined;
     settingsOpen: boolean;
+    route: AppRoute;
+    removeRouteListener: (() => void) | undefined;
 };
 
 type AppUpdate = (newState: Partial<AppState>) => void;
@@ -29,6 +33,8 @@ export const VirApp = defineElement()({
             folderInfo: new Map(),
             pollHandle: undefined,
             settingsOpen: false,
+            route: router.readCurrentRoute(),
+            removeRouteListener: undefined,
         };
     },
     styles: css`
@@ -78,14 +84,25 @@ export const VirApp = defineElement()({
         const pollHandle = setInterval(() => {
             void refreshFolderInfo(updateState);
         }, folderInfoPollMs);
-        updateState({pollHandle});
+        const removeRouteListener = router.listen(true, (route) => {
+            updateState({route});
+        });
+        updateState({pollHandle, removeRouteListener});
     },
     cleanup({state}) {
         if (state.pollHandle) {
             clearInterval(state.pollHandle);
         }
+        state.removeRouteListener?.();
     },
     render({state, updateState}) {
+        if (state.route.paths[0] === 'book') {
+            return html`
+                <${VirBook.assign({
+                    subPaths: state.route.paths.slice(1),
+                })}></${VirBook}>
+            `;
+        }
         return html`
             <${VirSidebar.assign({
                 activeFolder: state.activeFolder,
