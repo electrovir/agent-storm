@@ -64,6 +64,12 @@ const configJsonSchema = {
             description:
                 'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
         },
+        useWebgl: {
+            type: 'boolean',
+            title: 'Use WebGL terminal renderer',
+            description:
+                'When on, the in-app terminal uses xterm\'s WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.',
+        },
     },
     required: [
         'aiCmd',
@@ -91,6 +97,11 @@ export const VirSettingsModal = defineElement<{
     state() {
         return {
             pending: undefined as JsonValue | undefined,
+            /**
+             * The useWebgl value at load time, captured so save() can detect a flip and trigger a
+             * page reload — existing terminals only read the config at construction.
+             */
+            useWebgl: undefined as boolean | undefined,
             loadError: undefined as string | undefined,
             saveError: undefined as string | undefined,
             saving: false,
@@ -132,6 +143,7 @@ export const VirSettingsModal = defineElement<{
         const reset = () => {
             updateState({
                 pending: undefined,
+                useWebgl: undefined,
                 loadError: undefined,
                 saveError: undefined,
                 saving: false,
@@ -170,6 +182,8 @@ export const VirSettingsModal = defineElement<{
                 const config = await getConfig();
                 updateState({
                     pending: toJsonValue(config),
+                    // optionalShape default is true; coerce undefined → true for comparison.
+                    useWebgl: config.useWebgl !== false,
                     loadError: undefined,
                 });
             } catch (error: unknown) {
@@ -188,9 +202,19 @@ export const VirSettingsModal = defineElement<{
                 saveError: undefined,
             });
             try {
-                await putConfig(fromJsonValue(state.pending));
+                const next = fromJsonValue(state.pending);
+                await putConfig(next);
+                const nextUseWebgl = next.useWebgl !== false;
+                const webglChanged =
+                    state.useWebgl !== undefined &&
+                    state.useWebgl !== nextUseWebgl;
                 reset();
                 inputs.onClose();
+                if (webglChanged) {
+                    // Existing terminals only read useWebgl at construction; reload so the
+                    // new renderer choice applies everywhere.
+                    window.location.reload();
+                }
             } catch (error: unknown) {
                 updateState({
                     saving: false,
