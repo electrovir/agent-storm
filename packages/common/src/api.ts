@@ -58,6 +58,12 @@ const configShape = defineShape({
      * overhead until the limit resets).
      */
     disabledGitHubPolling: optionalShape(false),
+    /**
+     * Whether the in-app terminal should use the xterm WebGL renderer. Optional and defaulted to
+     * true; users on machines without WebGL2 (or with flaky GPU drivers) can switch this off to
+     * fall back to xterm's DOM renderer.
+     */
+    useWebgl: optionalShape(true),
 });
 
 const folderInfoShape = defineShape({

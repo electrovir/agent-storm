@@ -1,11 +1,13 @@
 import {agentStormService, type PaneKind} from '@agent-storm/common';
 import {connectWebSocket} from '@rest-vir/define-service';
 import {FitAddon} from '@xterm/addon-fit';
+import {WebLinksAddon} from '@xterm/addon-web-links';
+import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal, type ITheme} from '@xterm/xterm';
 import xtermCss from '@xterm/xterm/css/xterm.css?inline';
 import {css, defineElement, html, onDomCreated, unsafeCSS} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
-import {uploadFile} from '../../util/api-client.js';
+import {getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 
 const uploadErrorDismissMs = 5000;
@@ -268,13 +270,17 @@ export const VirTerminal = defineElement<{
 
                     // Wait for the bundled MesloLGS NF to load before xterm measures cell
                     // widths against the fallback (Menlo) and ends up with wrong column metrics.
-                    await Promise.all([
-                        document.fonts.load('13px "MesloLGS NF"'),
-                        document.fonts.load('bold 13px "MesloLGS NF"'),
-                        document.fonts.load('italic 13px "MesloLGS NF"'),
-                    ]).catch(() => {
-                        /* font load failure is non-fatal; xterm falls back to Menlo */
-                    });
+                    // Fetch config in parallel so the WebGL toggle is ready by the time we need it.
+                    const [, , , config] = await Promise.all([
+                        document.fonts.load('13px "MesloLGS NF"').catch(() => undefined),
+                        document.fonts.load('bold 13px "MesloLGS NF"').catch(() => undefined),
+                        document.fonts.load('italic 13px "MesloLGS NF"').catch(() => undefined),
+                        // If the config fetch fails (e.g. server briefly unreachable), default
+                        // to WebGL on — matches the optionalShape default and pre-toggle behavior.
+                        getConfig().catch(() => undefined),
+                    ]);
+                    // optionalShape default is true; treat undefined as on.
+                    const useWebgl = config?.useWebgl !== false;
 
                     const terminal = new Terminal({
                         fontFamily: '"MesloLGS NF", Menlo, monospace',
@@ -286,7 +292,32 @@ export const VirTerminal = defineElement<{
                     });
                     const fitAddon = new FitAddon();
                     terminal.loadAddon(fitAddon);
+                    terminal.loadAddon(new WebLinksAddon());
                     terminal.open(element);
+
+                    /**
+                     * WebGL must be attached after `open()` because it needs the DOM-mounted
+                     * canvases to bind to. On a context loss (tab backgrounded long enough for the
+                     * browser to reclaim the GPU context, driver crash, etc.) we dispose the addon
+                     * and let xterm fall through to its DOM renderer rather than leave the terminal
+                     * blank. WebGL construction itself can throw on machines without WebGL2 — wrap
+                     * it so those users also fall through to DOM rather than getting a blank pane.
+                     *
+                     * Toggleable via the settings modal; the preference is read once at terminal
+                     * construction, so the modal reloads the page after a change to apply it.
+                     */
+                    if (useWebgl) {
+                        try {
+                            const webglAddon = new WebglAddon();
+                            webglAddon.onContextLoss(() => {
+                                webglAddon.dispose();
+                            });
+                            terminal.loadAddon(webglAddon);
+                        } catch (error) {
+                            console.warn('xterm WebGL renderer unavailable, falling back to DOM', error);
+                        }
+                    }
+
                     fitAddon.fit();
 
                     const secret = await ensureSecret();

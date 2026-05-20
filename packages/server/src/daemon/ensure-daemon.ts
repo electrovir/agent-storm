@@ -67,10 +67,11 @@ export async function ensureDaemon(): Promise<void> {
     );
     child.unref();
 
-    const ready = await waitForDaemonReady(8_000);
+    const readyTimeoutMs = 8_000;
+    const ready = await waitForDaemonReady(readyTimeoutMs);
     if (!ready) {
         throw new Error(
-            `PTY daemon did not become ready within 8s. Check the daemon log for details.`,
+            `PTY daemon did not become ready within ${readyTimeoutMs / 1_000}s. Check the daemon log for details.`,
         );
     }
     log.success('PTY daemon ready.');
