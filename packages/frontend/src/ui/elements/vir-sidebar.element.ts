@@ -2,7 +2,17 @@ import {type FolderInfo, PaneKind, PaneStatus} from '@agent-storm/common';
 import {colorCss} from '@electrovir/color';
 import {css, defineElement, html, listen} from 'element-vir';
 import {parseUrl} from 'url-vir';
-import {lucideIcons, ViraButton, ViraColorVariant, ViraSize, viraThemeByKeys} from 'vira';
+import {
+    HorizontalAnchor,
+    lucideIcons,
+    renderMenuItemEntries,
+    ViraButton,
+    ViraColorVariant,
+    ViraMenuTrigger,
+    type ViraMenuItemEntry,
+    ViraSize,
+    viraThemeByKeys,
+} from 'vira';
 import {
     createWorktree,
     deleteWorktree,
@@ -54,6 +64,7 @@ type SidebarState = {
     folders: ReadonlyArray<FolderInfo>;
     pollHandle: ReturnType<typeof setInterval> | undefined;
     loadError: string | undefined;
+    openMenuKey: string | undefined;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -69,6 +80,7 @@ export const VirSidebar = defineElement<{
             folders: [],
             pollHandle: undefined,
             loadError: undefined,
+            openMenuKey: undefined,
         };
     },
     styles: css`
@@ -188,7 +200,9 @@ export const VirSidebar = defineElement<{
         }
 
         .row:hover .actions,
-        .repo-header:hover .actions {
+        .repo-header:hover .actions,
+        .row[data-menu-open] .actions,
+        .repo-header[data-menu-open] .actions {
             opacity: 1;
         }
 
@@ -260,6 +274,7 @@ export const VirSidebar = defineElement<{
                         folder,
                         indented: false,
                         activeFolder: inputs.activeFolder,
+                        openMenuKey: state.openMenuKey,
                         onActivate: inputs.onActivate,
                         updateState,
                     }),
@@ -268,32 +283,48 @@ export const VirSidebar = defineElement<{
                     const children = state.folders.filter(
                         (folder) => folder.parentRepoPath === root.path,
                     );
+                    const repoMenuKey = `repo:${root.path}`;
                     return html`
-                        <div class="repo-header">
+                        <div
+                            class="repo-header"
+                            ?data-menu-open=${state.openMenuKey === repoMenuKey}
+                        >
                             <span>${root.name}</span>
                             <span class="actions">
-                                <${ViraButton.assign({
-                                    icon: lucideIcons.GitBranchPlus,
-                                    buttonSize: ViraSize.Small,
-                                    color: ViraColorVariant.Neutral,
+                                <${ViraMenuTrigger.assign({
+                                    horizontalAnchor: HorizontalAnchor.Right,
                                 })}
-                                    title="Add worktree"
-                                    ${listen(
-                                        'click',
-                                        () => void promptAddWorktree(root.path, updateState),
-                                    )}
-                                ></${ViraButton}>
-                                <${ViraButton.assign({
-                                    icon: lucideIcons.X,
-                                    buttonSize: ViraSize.Small,
-                                    color: ViraColorVariant.Danger,
-                                })}
-                                    title="Remove repo"
-                                    ${listen(
-                                        'click',
-                                        () => void confirmRemoveRepo(root.path, updateState),
-                                    )}
-                                ></${ViraButton}>
+                                    ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                                        updateState({
+                                            openMenuKey: event.detail ? repoMenuKey : undefined,
+                                        });
+                                    })}
+                                >
+                                    <${ViraButton.assign({
+                                        icon: lucideIcons.EllipsisVertical,
+                                        buttonSize: ViraSize.Small,
+                                        color: ViraColorVariant.Neutral,
+                                    })}
+                                        slot=${ViraMenuTrigger.slotNames.trigger}
+                                        title="Repo actions"
+                                    ></${ViraButton}>
+                                    ${renderMenuItemEntries([
+                                        {
+                                            content: 'Add worktree',
+                                            iconOverride: lucideIcons.GitBranchPlus,
+                                            onClick: () => {
+                                                void promptAddWorktree(root.path, updateState);
+                                            },
+                                        },
+                                        {
+                                            content: 'Remove repo',
+                                            iconOverride: lucideIcons.X,
+                                            onClick: () => {
+                                                void confirmRemoveRepo(root.path, updateState);
+                                            },
+                                        },
+                                    ])}
+                                </${ViraMenuTrigger}>
                             </span>
                         </div>
                         ${children.map((child) =>
@@ -301,6 +332,7 @@ export const VirSidebar = defineElement<{
                                 folder: child,
                                 indented: true,
                                 activeFolder: inputs.activeFolder,
+                                openMenuKey: state.openMenuKey,
                                 onActivate: inputs.onActivate,
                                 updateState,
                             }),
@@ -316,12 +348,14 @@ function renderRow({
     folder,
     indented,
     activeFolder,
+    openMenuKey,
     onActivate,
     updateState,
 }: Readonly<{
     folder: FolderInfo;
     indented: boolean;
     activeFolder: string | undefined;
+    openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
     updateState: SidebarUpdate;
 }>) {
@@ -329,11 +363,13 @@ function renderRow({
         folder.git.dirty ? '*' : '',
         folder.git.unpushed ? '+' : '',
     ].join('');
+    const rowMenuKey = `row:${folder.path}`;
     return html`
         <div
             class="row"
             ?data-active=${activeFolder === folder.path}
             ?data-indented=${indented}
+            ?data-menu-open=${openMenuKey === rowMenuKey}
             ${listen('click', () => onActivate(folder.path))}
         >
             <span class="chips">
@@ -360,89 +396,88 @@ function renderRow({
                 ${folder.name}
             </span>
             <span class="markers">${markers}</span>
-            <span class="actions">
-                ${folder.prUrl
-                    ? html`
-                          <${ViraButton.assign({
-                              icon: lucideIcons.ExternalLink,
-                              buttonSize: ViraSize.Small,
-                              color: ViraColorVariant.Info,
-                          })}
-                              title="Open PR"
-                              ${listen('click', (event) => {
-                                  event.stopPropagation();
-                                  openPrUrl(folder.prUrl);
-                              })}
-                          ></${ViraButton}>
-                      `
-                    : ''}
-                <${ViraButton.assign({
-                    icon: folder.aiHidden ? lucideIcons.EyeOff : lucideIcons.Eye,
-                    buttonSize: ViraSize.Small,
-                    color: ViraColorVariant.Neutral,
+            <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
+                <${ViraMenuTrigger.assign({
+                    horizontalAnchor: HorizontalAnchor.Right,
                 })}
-                    title="Toggle AI pane"
-                    ${listen('click', (event) => {
-                        event.stopPropagation();
-                        void toggleAiHidden(folder.path, updateState);
+                    ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                        updateState({
+                            openMenuKey: event.detail ? rowMenuKey : undefined,
+                        });
                     })}
-                ></${ViraButton}>
-                <${ViraButton.assign({
-                    icon: lucideIcons.RotateCw,
-                    buttonSize: ViraSize.Small,
-                    color: ViraColorVariant.Neutral,
-                })}
-                    title="Restart AI"
-                    ${listen('click', (event) => {
-                        event.stopPropagation();
-                        void restartPane({folder: folder.path, kind: PaneKind.Ai}).catch(
-                            (error: unknown) => showError(updateState, error),
-                        );
+                >
+                    <${ViraButton.assign({
+                        icon: lucideIcons.EllipsisVertical,
+                        buttonSize: ViraSize.Small,
+                        color: ViraColorVariant.Neutral,
                     })}
-                ></${ViraButton}>
-                <${ViraButton.assign({
-                    icon: lucideIcons.PowerOff,
-                    buttonSize: ViraSize.Small,
-                    color: ViraColorVariant.Warning,
-                })}
-                    title="Kill folder panes"
-                    ${listen('click', (event) => {
-                        event.stopPropagation();
-                        void killFolderPanes({folder: folder.path}).catch((error: unknown) =>
-                            showError(updateState, error),
-                        );
-                    })}
-                ></${ViraButton}>
-                ${folder.parentRepoPath
-                    ? html`
-                          <${ViraButton.assign({
-                              icon: lucideIcons.Trash2,
-                              buttonSize: ViraSize.Small,
-                              color: ViraColorVariant.Danger,
-                          })}
-                              title="Delete worktree"
-                              ${listen('click', (event) => {
-                                  event.stopPropagation();
-                                  void confirmDeleteWorktree(folder.path, updateState);
-                              })}
-                          ></${ViraButton}>
-                      `
-                    : html`
-                          <${ViraButton.assign({
-                              icon: lucideIcons.X,
-                              buttonSize: ViraSize.Small,
-                              color: ViraColorVariant.Danger,
-                          })}
-                              title="Remove repo"
-                              ${listen('click', (event) => {
-                                  event.stopPropagation();
-                                  void confirmRemoveRepo(folder.path, updateState);
-                              })}
-                          ></${ViraButton}>
-                      `}
+                        slot=${ViraMenuTrigger.slotNames.trigger}
+                        title="Folder actions"
+                    ></${ViraButton}>
+                    ${renderMenuItemEntries(buildRowMenuEntries(folder, updateState))}
+                </${ViraMenuTrigger}>
             </span>
         </div>
     `;
+}
+
+function buildRowMenuEntries(
+    folder: FolderInfo,
+    updateState: SidebarUpdate,
+): ReadonlyArray<ViraMenuItemEntry> {
+    const entries: ViraMenuItemEntry[] = [];
+    if (folder.prUrl) {
+        entries.push({
+            content: 'Open PR',
+            iconOverride: lucideIcons.ExternalLink,
+            onClick: () => {
+                openPrUrl(folder.prUrl);
+            },
+        });
+    }
+    entries.push({
+        content: folder.aiHidden ? 'Show AI pane' : 'Hide AI pane',
+        iconOverride: folder.aiHidden ? lucideIcons.Eye : lucideIcons.EyeOff,
+        onClick: () => {
+            void toggleAiHidden(folder.path, updateState);
+        },
+    });
+    entries.push({
+        content: 'Restart AI',
+        iconOverride: lucideIcons.RotateCw,
+        onClick: () => {
+            void restartPane({folder: folder.path, kind: PaneKind.Ai}).catch((error: unknown) =>
+                showError(updateState, error),
+            );
+        },
+    });
+    entries.push({
+        content: 'Kill folder panes',
+        iconOverride: lucideIcons.PowerOff,
+        onClick: () => {
+            void killFolderPanes({folder: folder.path}).catch((error: unknown) =>
+                showError(updateState, error),
+            );
+        },
+    });
+    if (folder.parentRepoPath) {
+        entries.push({
+            content: 'Delete worktree',
+            iconOverride: lucideIcons.Trash2,
+            onClick: () => {
+                void confirmDeleteWorktree(folder.path, updateState);
+            },
+        });
+    } else {
+        entries.push({
+            content: 'Remove repo',
+            iconOverride: lucideIcons.X,
+            onClick: () => {
+                void confirmRemoveRepo(folder.path, updateState);
+            },
+        });
+    }
+    return entries;
 }
 
 async function refresh(state: SidebarState, updateState: SidebarUpdate): Promise<void> {
@@ -479,7 +514,10 @@ async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
                 },
             ],
         });
-        await refresh({folders: [], pollHandle: undefined, loadError: undefined}, updateState);
+        await refresh(
+            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            updateState,
+        );
     } catch (error: unknown) {
         showError(updateState, error);
     }
@@ -496,7 +534,10 @@ async function confirmRemoveRepo(repoPath: string, updateState: SidebarUpdate): 
             repos: config.repos.filter((repo) => repo.path !== repoPath),
             hiddenAiPane: config.hiddenAiPane.filter((path) => path !== repoPath),
         });
-        await refresh({folders: [], pollHandle: undefined, loadError: undefined}, updateState);
+        await refresh(
+            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            updateState,
+        );
     } catch (error: unknown) {
         showError(updateState, error);
     }
@@ -509,7 +550,10 @@ async function promptAddWorktree(repoPath: string, updateState: SidebarUpdate): 
     }
     try {
         await createWorktree({repoPath, name: name.trim()});
-        await refresh({folders: [], pollHandle: undefined, loadError: undefined}, updateState);
+        await refresh(
+            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            updateState,
+        );
     } catch (error: unknown) {
         showError(updateState, error);
     }
@@ -524,7 +568,10 @@ async function confirmDeleteWorktree(
     }
     try {
         await deleteWorktree({worktreePath});
-        await refresh({folders: [], pollHandle: undefined, loadError: undefined}, updateState);
+        await refresh(
+            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            updateState,
+        );
     } catch (error: unknown) {
         showError(updateState, error);
     }
@@ -543,7 +590,10 @@ async function toggleAiHidden(folderPath: string, updateState: SidebarUpdate): P
                       folderPath,
                   ],
         });
-        await refresh({folders: [], pollHandle: undefined, loadError: undefined}, updateState);
+        await refresh(
+            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            updateState,
+        );
     } catch (error: unknown) {
         showError(updateState, error);
     }
