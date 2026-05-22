@@ -12,6 +12,7 @@ import {
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
+    ViraEmphasis,
     ViraIcon,
     ViraLink,
     type ViraMenuItemEntry,
@@ -28,6 +29,7 @@ import {
     putConfig,
     restartPane,
 } from '../../util/api-client.js';
+import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
 
 const allowedLinkHostnames = ['github.com'];
 
@@ -35,6 +37,12 @@ const pollIntervalMs = 2000;
 
 const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
 const dashIcon = createSizedIcon(lucideIcons.Minus, 12);
+
+const buttonIconSize = 16;
+const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
+const settingsIcon = createSizedIcon(lucideIcons.Settings, buttonIconSize);
+const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
+const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
@@ -88,11 +96,13 @@ export const VirSidebar = defineElement<{
         }
 
         .title {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             font-weight: 600;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
+            letter-spacing: 0.02em;
             color: ${viraThemeByKeys.grey.foreground.header.foreground.value};
-            font-size: 11px;
+            font-size: 13px;
         }
 
         .header-actions {
@@ -123,17 +133,17 @@ export const VirSidebar = defineElement<{
             display: flex;
             align-items: center;
             gap: 6px;
-            padding: 4px 10px;
+            padding: 0 10px;
             cursor: pointer;
             user-select: none;
         }
 
         .row:hover {
-            ${colorCss(viraThemeByKeys.grey['behind-bg'].placeholder)};
+            background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
         }
 
         .row[data-active] {
-            ${colorCss(viraThemeByKeys.blue['behind-bg'].placeholder)};
+            background-color: ${viraThemeByKeys.blue['behind-fg']['small-body'].background.value};
         }
 
         .row[data-indented] {
@@ -171,20 +181,22 @@ export const VirSidebar = defineElement<{
             text-decoration-color: ${viraThemeByKeys.purple.foreground.body.foreground.value};
         }
 
-        .markers {
-            color: ${viraThemeByKeys.yellow.foreground.body.foreground.value};
-            font-weight: 700;
-        }
-
         .actions {
             display: inline-flex;
             gap: 2px;
+        }
+
+        .row .actions {
+            opacity: 0.35;
+        }
+
+        .repo-header .actions {
             opacity: 0;
         }
 
         .row:hover .actions,
-        .repo-header:hover .actions,
         .row[data-menu-open] .actions,
+        .repo-header:hover .actions,
         .repo-header[data-menu-open] .actions {
             opacity: 1;
         }
@@ -224,19 +236,23 @@ export const VirSidebar = defineElement<{
 
         return html`
             <div class="header">
-                <span class="title">Repos</span>
+                <span class="title">
+                    <${ViraIcon.assign({icon: brandMarkIcon})}></${ViraIcon}>
+                    agent-storm
+                </span>
                 <span class="header-actions">
                     <${ViraButton.assign({
                         text: 'Add',
-                        icon: lucideIcons.Plus,
+                        icon: plusIcon,
                         buttonSize: ViraSize.Small,
                         color: ViraColorVariant.Brand,
                     })}
                         ${listen('click', () => void promptAddRepo(updateState))}
                     ></${ViraButton}>
                     <${ViraButton.assign({
-                        icon: lucideIcons.Settings,
+                        icon: settingsIcon,
                         buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
                     })}
                         ${listen('click', () => inputs.onOpenSettings())}
@@ -268,7 +284,9 @@ export const VirSidebar = defineElement<{
                     const children = state.folders
                         .filter((folder) => folder.parentRepoPath === root.path)
                         .toSorted((a, b) =>
-                            a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}),
+                            a.name.localeCompare(b.name, undefined, {
+                                sensitivity: 'base',
+                            }),
                         );
                     const repoMenuKey = `repo:${root.path}`;
                     return html`
@@ -288,8 +306,9 @@ export const VirSidebar = defineElement<{
                                     })}
                                 >
                                     <${ViraButton.assign({
-                                        icon: lucideIcons.EllipsisVertical,
+                                        icon: ellipsisIcon,
                                         buttonSize: ViraSize.Small,
+                                        buttonEmphasis: ViraEmphasis.Subtle,
                                         color: ViraColorVariant.Neutral,
                                     })}
                                         slot=${ViraMenuTrigger.slotNames.trigger}
@@ -300,7 +319,11 @@ export const VirSidebar = defineElement<{
                                             content: 'Add worktree',
                                             iconOverride: lucideIcons.GitBranchPlus,
                                             onClick: () => {
-                                                void promptAddWorktree(root.path, updateState);
+                                                void promptAddWorktree(
+                                                    root.path,
+                                                    updateState,
+                                                    inputs.onActivate,
+                                                );
                                             },
                                         },
                                         {
@@ -344,7 +367,9 @@ function renderPaneChip(label: string, status: PaneStatus) {
             style="color: ${paneStatusColor[status]};"
             title="${label} pane: ${status}"
         >
-            <${ViraIcon.assign({icon})}></${ViraIcon}>
+            <${ViraIcon.assign({
+                icon,
+            })}></${ViraIcon}>
         </span>
     `;
 }
@@ -364,7 +389,8 @@ function renderRow({
     onActivate: (folder: string) => void;
     updateState: SidebarUpdate;
 }>) {
-    const markers = [
+    const nameWithMarkers = [
+        folder.name,
         folder.git.dirty ? '*' : '',
         folder.git.notPushed ? '+' : '',
     ].join('');
@@ -386,9 +412,8 @@ function renderRow({
                 ?data-pr-open=${!!folder.prUrl && !folder.prMerged}
                 ?data-pr-merged=${!!folder.prUrl && folder.prMerged}
             >
-                ${folder.name}
+                ${nameWithMarkers}
             </span>
-            <span class="markers">${markers}</span>
             <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
                 <${ViraMenuTrigger.assign({
                     horizontalAnchor: HorizontalAnchor.Right,
@@ -400,8 +425,9 @@ function renderRow({
                     })}
                 >
                     <${ViraButton.assign({
-                        icon: lucideIcons.EllipsisVertical,
+                        icon: ellipsisIcon,
                         buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
                     })}
                         slot=${ViraMenuTrigger.slotNames.trigger}
@@ -577,25 +603,32 @@ async function confirmRemoveRepo(repoPath: string, updateState: SidebarUpdate): 
     }
 }
 
-async function promptAddWorktree(repoPath: string, updateState: SidebarUpdate): Promise<void> {
+async function promptAddWorktree(
+    repoPath: string,
+    updateState: SidebarUpdate,
+    onActivate: (folder: string) => void,
+): Promise<void> {
     const name = window.prompt(`Name for new worktree under ${repoPath}:`);
     if (!name) {
         return;
     }
+    const trimmedName = name.trim();
     try {
         await createWorktree({
             repoPath,
-            name: name.trim(),
+            name: trimmedName,
         });
-        await refresh(
-            {
-                folders: [],
-                pollHandle: undefined,
-                loadError: undefined,
-                openMenuKey: undefined,
-            },
-            updateState,
+        const folders = await getFolders();
+        updateState({
+            folders,
+            loadError: undefined,
+        });
+        const newWorktree = folders.find(
+            (folder) => folder.parentRepoPath === repoPath && folder.name === trimmedName,
         );
+        if (newWorktree) {
+            onActivate(newWorktree.path);
+        }
     } catch (error: unknown) {
         showError(updateState, error);
     }
