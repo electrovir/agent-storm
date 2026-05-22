@@ -1,9 +1,7 @@
 import {randomBytes} from 'node:crypto';
 import {mkdir, writeFile} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
 import {extname, join} from 'node:path';
-
-const uploadsDir = join(tmpdir(), 'agent-storm-uploads');
+import {uploadsDir} from './file-paths.js';
 
 function safeFilename(input: string): string {
     const trimmed = input.trim() || 'upload';
@@ -20,7 +18,9 @@ export async function saveUpload({
     filename,
     dataBase64,
 }: Readonly<{filename: string; dataBase64: string}>): Promise<string> {
-    await mkdir(uploadsDir, {recursive: true});
+    await mkdir(uploadsDir, {
+        recursive: true,
+    });
     const safe = safeFilename(filename);
     const stem = safe.slice(0, safe.length - extname(safe).length) || 'upload';
     const ext = extname(safe);

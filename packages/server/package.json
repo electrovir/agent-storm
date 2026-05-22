@@ -26,19 +26,27 @@
         "docs": "virmator docs",
         "start": "tsx --watch src/index.ts",
         "test": "virmator test node",
-        "test:coverage": "npm run test coverage",
         "test:docs": "virmator docs check",
         "test:update": "npm test update"
     },
     "dependencies": {
         "@agent-storm/common": "*",
+        "@augment-vir/assert": "^31.69.0",
         "@augment-vir/common": "^31.70.0",
         "@augment-vir/node": "^31.70.0",
         "@rest-vir/implement-service": "^1.7.2",
         "@rest-vir/run-service": "^1.7.2",
         "auth-vir": "^5.2.0",
         "fastify": "^5.8.5",
-        "node-pty": "^1.1.0"
+        "node-pty": "^1.1.0",
+        "object-shape-tester": "^6.12.1",
+        "url-vir": "^2.1.9"
+    },
+    "devDependencies": {
+        "@augment-vir/test": "^31.69.0",
+        "@types/node": "^25.6.0",
+        "c8": "^11.0.0",
+        "istanbul-smart-text-reporter": "^1.1.5"
     },
     "engines": {
         "node": ">=22"

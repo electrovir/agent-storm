@@ -27,6 +27,14 @@ export const VirPaneGroup = defineElement<{
         return {
             split: localStorageClient.paneSplit.read(),
             dragging: false,
+            /**
+             * Which pane last received focus inside this group. Sticky across window blur/focus
+             * cycles: a `:focus-within` CSS-based highlight loses match when the user cmd+tabs
+             * away (xterm's hidden textarea blurs and doesn't reliably regain focus through the
+             * shadow boundary on return), so we mirror focus into local state and drive the
+             * highlight off that instead. Undefined before the user has clicked into either pane.
+             */
+            focusedKind: undefined as PaneKind | undefined,
         };
     },
     styles: css`
@@ -54,10 +62,12 @@ export const VirPaneGroup = defineElement<{
             border-left: 1px solid ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
-        /* Dim whichever pane doesn't hold keyboard focus so it's obvious which one keystrokes
-           will land in. :focus-within crosses the vir-terminal shadow boundary into xterm's
-           hidden textarea. */
-        .pane:not(:focus-within) {
+        /* Dim whichever pane isn't the last-focused one so it's obvious which one keystrokes
+           will land in. Driven by an explicit data attribute (see focusedKind in state) rather
+           than :focus-within so the highlight survives cmd+tab away/back — xterm's hidden
+           textarea blurs on window blur and doesn't reliably refocus on return, which would
+           otherwise drop the indicator. */
+        .pane[data-pane-focused='false'] {
             filter: brightness(0.75) saturate(0.9);
         }
 
@@ -119,7 +129,9 @@ export const VirPaneGroup = defineElement<{
             document.body.style.cursor = 'col-resize';
 
             let latestSplit = split;
-            updateState({dragging: true});
+            updateState({
+                dragging: true,
+            });
 
             const onMove = (moveEvent: MouseEvent) => {
                 const rect = host.getBoundingClientRect();
@@ -127,7 +139,9 @@ export const VirPaneGroup = defineElement<{
                     return;
                 }
                 latestSplit = clampSplit((moveEvent.clientX - rect.left) / rect.width);
-                updateState({split: latestSplit});
+                updateState({
+                    split: latestSplit,
+                });
             };
 
             const onUp = () => {
@@ -135,7 +149,9 @@ export const VirPaneGroup = defineElement<{
                 window.removeEventListener('mouseup', onUp);
                 document.body.style.userSelect = previousUserSelect;
                 document.body.style.cursor = previousCursor;
-                updateState({dragging: false});
+                updateState({
+                    dragging: false,
+                });
                 localStorageClient.paneSplit.write(latestSplit);
             };
 
@@ -144,15 +160,35 @@ export const VirPaneGroup = defineElement<{
         };
 
         const onDividerDoubleClick = () => {
-            updateState({split: paneSplit.default});
+            updateState({
+                split: paneSplit.default,
+            });
             localStorageClient.paneSplit.write(paneSplit.default);
         };
+
+        /**
+         * `focusin` bubbles through the shadow boundary (composed events), so xterm's hidden
+         * textarea gaining focus reaches this listener via the outer `.pane` div. Default the
+         * highlight to whichever pane is visible first when nothing has been focused yet, so the
+         * initial render doesn't show both panes dimmed.
+         */
+        const focusedKind = state.focusedKind ?? (inputs.aiHidden ? PaneKind.Shell : PaneKind.Ai);
+        const aiFocused = focusedKind === PaneKind.Ai;
+        const shellFocused = focusedKind === PaneKind.Shell;
 
         return html`
             ${inputs.aiHidden
                 ? ''
                 : html`
-                      <div class="pane ai-pane">
+                      <div
+                          class="pane ai-pane"
+                          data-pane-focused=${aiFocused ? 'true' : 'false'}
+                          ${listen('focusin', () =>
+                              updateState({
+                                  focusedKind: PaneKind.Ai,
+                              }),
+                          )}
+                      >
                           <div class="pane-label">AI</div>
                           <div class="pane-body">
                               <${VirTerminal.assign({
@@ -171,7 +207,15 @@ export const VirPaneGroup = defineElement<{
                           ${listen('dblclick', onDividerDoubleClick)}
                       ></div>
                   `}
-            <div class="pane shell-pane">
+            <div
+                class="pane shell-pane"
+                data-pane-focused=${shellFocused ? 'true' : 'false'}
+                ${listen('focusin', () =>
+                    updateState({
+                        focusedKind: PaneKind.Shell,
+                    }),
+                )}
+            >
                 <div class="pane-label">Shell</div>
                 <div class="pane-body">
                     <${VirTerminal.assign({

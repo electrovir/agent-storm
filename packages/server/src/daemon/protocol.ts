@@ -1,4 +1,4 @@
-import {PaneKind, PaneStatus} from '@agent-storm/common';
+import {type PaneKind, type PaneStatus} from '@agent-storm/common';
 import {Buffer} from 'node:buffer';
 
 export enum FrameType {
@@ -39,7 +39,7 @@ export type ParsedFrame = {
 export class FrameDecoder {
     private buffer: Buffer = Buffer.alloc(0);
 
-    push(chunk: Buffer): ParsedFrame[] {
+    public push(chunk: Buffer): ParsedFrame[] {
         this.buffer = Buffer.concat([
             this.buffer,
             chunk,

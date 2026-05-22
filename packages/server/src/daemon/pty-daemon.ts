@@ -1,7 +1,7 @@
-import {PaneKind} from '@agent-storm/common';
+import {type PaneKind} from '@agent-storm/common';
 import {appendFileSync, existsSync, unlinkSync} from 'node:fs';
 import {createServer, type Socket} from 'node:net';
-import {daemonLogPath, daemonSocketPath} from './daemon-paths.js';
+import {daemonLogPath, daemonSocketPath} from '../file-paths.js';
 import {
     DaemonAction,
     encodeControlFrame,
@@ -10,7 +10,6 @@ import {
     FrameType,
     type AttachResponse,
     type ClientHandshake,
-    type ErrorResponse,
     type ExitNotification,
     type ResizeNotification,
     type SimpleResponse,
@@ -38,15 +37,6 @@ if (existsSync(daemonSocketPath)) {
     } catch (error) {
         log(`failed to remove stale socket: ${String(error)}`);
     }
-}
-
-function sendError(socket: Socket, message: string): void {
-    const response: ErrorResponse = {
-        ok: false,
-        error: message,
-    };
-    socket.write(encodeControlFrame(response));
-    socket.end();
 }
 
 function handleAttach(socket: Socket, decoder: FrameDecoder, folder: string, kind: PaneKind): void {
@@ -84,12 +74,8 @@ function handleAttach(socket: Socket, decoder: FrameDecoder, folder: string, kin
                 });
                 return;
             }
-            if (frame.type === FrameType.Control) {
-                const parsed = JSON.parse(frame.payload.toString('utf-8')) as ResizeNotification;
-                if (parsed.type === 'resize') {
-                    setSize(parsed.cols, parsed.rows);
-                }
-            }
+            const parsed = JSON.parse(frame.payload.toString('utf-8')) as ResizeNotification;
+            setSize(parsed.cols, parsed.rows);
         });
     });
     const cleanup = () => {
@@ -113,10 +99,7 @@ const server = createServer((socket) => {
     const handshakeHandler = (chunk: Buffer | string) => {
         const frames = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         const controlFrame = frames.find((frame) => frame.type === FrameType.Control);
-        if (!controlFrame) {
-            return;
-        }
-        if (handshakeSeen) {
+        if (!controlFrame || handshakeSeen) {
             return;
         }
         handshakeSeen = true;
@@ -126,33 +109,36 @@ const server = createServer((socket) => {
 
         if (handshake.action === DaemonAction.Attach) {
             handleAttach(socket, decoder, handshake.folder, handshake.kind);
-            return;
-        }
-        if (handshake.action === DaemonAction.Status) {
+        } else if (handshake.action === DaemonAction.Status) {
             const response: StatusResponse = {
                 ok: true,
                 panes: listAllPaneStatuses(),
             };
             socket.write(encodeControlFrame(response));
             socket.end();
-            return;
-        }
-        if (handshake.action === DaemonAction.Restart) {
-            restartPane({folder: handshake.folder, kind: handshake.kind});
-            const response: SimpleResponse = {ok: true};
+        } else if (handshake.action === DaemonAction.Restart) {
+            restartPane({
+                folder: handshake.folder,
+                kind: handshake.kind,
+            });
+            const response: SimpleResponse = {
+                ok: true,
+            };
             socket.write(encodeControlFrame(response));
             socket.end();
-            return;
-        }
-        if (handshake.action === DaemonAction.Kill) {
-            killFolderPanes({folder: handshake.folder});
-            const response: SimpleResponse = {ok: true};
+        } else if (handshake.action === DaemonAction.Kill) {
+            killFolderPanes({
+                folder: handshake.folder,
+            });
+            const response: SimpleResponse = {
+                ok: true,
+            };
             socket.write(encodeControlFrame(response));
             socket.end();
-            return;
-        }
-        if (handshake.action === DaemonAction.Shutdown) {
-            const response: SimpleResponse = {ok: true};
+        } else {
+            const response: SimpleResponse = {
+                ok: true,
+            };
             socket.write(encodeControlFrame(response));
             socket.end();
             /**
@@ -160,9 +146,7 @@ const server = createServer((socket) => {
              * `forceShutdown` exits the process; nothing after the timeout runs.
              */
             setTimeout(() => forceShutdown('shutdown command'), 100);
-            return;
         }
-        sendError(socket, `Unknown action: ${String((handshake as {action: string}).action)}`);
     };
 
     socket.on('data', handshakeHandler);

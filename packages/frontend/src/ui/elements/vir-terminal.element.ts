@@ -4,11 +4,11 @@ import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal, type ITheme} from '@xterm/xterm';
-import xtermCss from '@xterm/xterm/css/xterm.css?inline';
 import {css, defineElement, html, onDomCreated, unsafeCSS} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
+import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
 
@@ -25,7 +25,9 @@ function fileToBase64(file: File): Promise<string> {
             const comma = result.indexOf(',');
             resolve(comma >= 0 ? result.slice(comma + 1) : '');
         });
-        reader.addEventListener('error', () => reject(reader.error));
+        reader.addEventListener('error', () =>
+            reject(reader.error ?? new Error('FileReader failed.')),
+        );
         reader.readAsDataURL(file);
     });
 }
@@ -103,7 +105,8 @@ function shellQuote(input: string): string {
     if (/^[\w@%+=:,./-]+$/.test(input)) {
         return input;
     }
-    return `'${input.replace(/'/g, String.raw`'\''`)}'`;
+    const escaped = input.replace(/'/g, String.raw`'\''`);
+    return `'${escaped}'`;
 }
 
 function extractDroppedPaths(transfer: DataTransfer): string[] {
@@ -194,7 +197,7 @@ export const VirTerminal = defineElement<{
             height: 100%;
         }
 
-        ${unsafeCSS(xtermCss)}
+        ${defaultXtermStyles}
 
         /* xterm.css sets cursor: default on the viewport, which sits on top of the canvas.
            We want the classic terminal i-beam everywhere the user can click. */
@@ -271,7 +274,12 @@ export const VirTerminal = defineElement<{
                     // Wait for the bundled MesloLGS NF to load before xterm measures cell
                     // widths against the fallback (Menlo) and ends up with wrong column metrics.
                     // Fetch config in parallel so the WebGL toggle is ready by the time we need it.
-                    const [, , , config] = await Promise.all([
+                    const [
+                        ,
+                        ,
+                        ,
+                        config,
+                    ] = await Promise.all([
                         document.fonts.load('13px "MesloLGS NF"').catch(() => undefined),
                         document.fonts.load('bold 13px "MesloLGS NF"').catch(() => undefined),
                         document.fonts.load('italic 13px "MesloLGS NF"').catch(() => undefined),
@@ -297,11 +305,12 @@ export const VirTerminal = defineElement<{
 
                     /**
                      * WebGL must be attached after `open()` because it needs the DOM-mounted
-                     * canvases to bind to. On a context loss (tab backgrounded long enough for the
-                     * browser to reclaim the GPU context, driver crash, etc.) we dispose the addon
-                     * and let xterm fall through to its DOM renderer rather than leave the terminal
-                     * blank. WebGL construction itself can throw on machines without WebGL2 — wrap
-                     * it so those users also fall through to DOM rather than getting a blank pane.
+                     * canvases to bind to. On a context loss (tab send to the background long
+                     * enough for the browser to reclaim the GPU context, driver crash, etc.) we
+                     * dispose the addon and let xterm fall through to its DOM renderer rather than
+                     * leave the terminal blank. WebGL construction itself can throw on machines
+                     * without WebGL2 — wrap it so those users also fall through to DOM rather than
+                     * getting a blank pane.
                      *
                      * Toggleable via the settings modal; the preference is read once at terminal
                      * construction, so the modal reloads the page after a change to apply it.
@@ -314,7 +323,10 @@ export const VirTerminal = defineElement<{
                             });
                             terminal.loadAddon(webglAddon);
                         } catch (error) {
-                            console.warn('xterm WebGL renderer unavailable, falling back to DOM', error);
+                            console.warn(
+                                'xterm WebGL renderer unavailable, falling back to DOM',
+                                error,
+                            );
                         }
                     }
 
@@ -493,7 +505,7 @@ export const VirTerminal = defineElement<{
                         resizeObserver,
                         onActivate,
                         disconnect: () => {
-                            socket.close();
+                            void socket.close();
                         },
                     });
                 })}

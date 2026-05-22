@@ -1,4 +1,6 @@
 import {type FolderInfo, PaneKind, PaneStatus} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {log} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {css, defineElement, html, listen} from 'element-vir';
 import {parseUrl} from 'url-vir';
@@ -8,8 +10,9 @@ import {
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
-    ViraMenuTrigger,
+    ViraLink,
     type ViraMenuItemEntry,
+    ViraMenuTrigger,
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
@@ -23,28 +26,9 @@ import {
     restartPane,
 } from '../../util/api-client.js';
 
-/**
- * Only `https://github.com/...` URLs are allowed through `window.open`. `prUrl` ultimately comes
- * from `gh pr view --json url` which we trust, but `window.open` will happily navigate to
- * `javascript:...` (executes in opener context) and `file://...` URLs, and a hypothetical
- * compromised `gh` output could redirect to an attacker domain. Parsing with `url-vir`'s `parseUrl`
- * (instead of regex) gives us a structured scheme + hostname split that can't be tricked by
- * `https://github.com.evil.com` (different hostname) or `https://github.com@evil.com` (different
- * host) — both of which a simple `startsWith` check would let through.
- */
-function openPrUrl(prUrl: string | null | undefined): void {
-    if (!prUrl) {
-        return;
-    }
-    const parsed = parseUrl(prUrl);
-    const isHttp = parsed.protocol === 'https' || parsed.protocol === 'http';
-    if (!isHttp || parsed.hostname !== 'github.com') {
-        return;
-    }
-    window.open(prUrl, '_blank', 'noopener');
-}
+const allowedLinkHostnames = ['github.com'];
 
-const pollIntervalMs = 2_000;
+const pollIntervalMs = 2000;
 
 const paneStatusGlyph: Record<PaneStatus, string> = {
     [PaneStatus.None]: '·',
@@ -92,7 +76,6 @@ export const VirSidebar = defineElement<{
             font-size: 12px;
             border-right: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             overflow: hidden;
-            ${colorCss(viraThemeByKeys.grey['behind-bg'].decoration)};
         }
 
         .header {
@@ -224,7 +207,9 @@ export const VirSidebar = defineElement<{
         const pollHandle = setInterval(() => {
             void refresh(state, updateState);
         }, pollIntervalMs);
-        updateState({pollHandle});
+        updateState({
+            pollHandle,
+        });
     },
     cleanup({state}) {
         if (state.pollHandle) {
@@ -232,7 +217,7 @@ export const VirSidebar = defineElement<{
         }
     },
     render({inputs, state, updateState}) {
-        const standalones = state.folders.filter(
+        const standaloneFolders = state.folders.filter(
             (folder) => !folder.isWorktreeRoot && !folder.parentRepoPath,
         );
         const worktreeRoots = state.folders.filter((folder) => folder.isWorktreeRoot);
@@ -269,7 +254,7 @@ export const VirSidebar = defineElement<{
                           <div class="empty">No repos configured. Click + to add one.</div>
                       `
                     : ''}
-                ${standalones.map((folder) =>
+                ${standaloneFolders.map((folder) =>
                     renderRow({
                         folder,
                         indented: false,
@@ -361,7 +346,7 @@ function renderRow({
 }>) {
     const markers = [
         folder.git.dirty ? '*' : '',
-        folder.git.unpushed ? '+' : '',
+        folder.git.notPushed ? '+' : '',
     ].join('');
     const rowMenuKey = `row:${folder.path}`;
     return html`
@@ -421,76 +406,107 @@ function renderRow({
     `;
 }
 
+function isValidPrUrl(url: string | null | undefined): boolean {
+    if (!url) {
+        return false;
+    }
+
+    const parsed = parseUrl(url);
+    const isHttp = parsed.protocol === 'https' || parsed.protocol === 'http';
+
+    if (!isHttp) {
+        log.error(`Cannot open non http URL: '${url}'`);
+        return false;
+    } else if (allowedLinkHostnames.includes(parsed.hostname)) {
+        return true;
+    } else {
+        log.error(`Cannot open non approved host name: '${url}'`);
+        return false;
+    }
+}
+
 function buildRowMenuEntries(
     folder: FolderInfo,
     updateState: SidebarUpdate,
 ): ReadonlyArray<ViraMenuItemEntry> {
-    const entries: ViraMenuItemEntry[] = [];
-    if (folder.prUrl) {
-        entries.push({
-            content: 'Open PR',
-            iconOverride: lucideIcons.ExternalLink,
-            onClick: () => {
-                openPrUrl(folder.prUrl);
+    return [
+        folder.prUrl &&
+            isValidPrUrl(folder.prUrl) && {
+                content: html`
+                    <${ViraLink.assign({
+                        link: {
+                            url: folder.prUrl,
+                            newTab: true,
+                        },
+                        disableLinkStyles: true,
+                    })}>
+                        Open PR
+                    </${ViraLink}>
+                `,
+                iconOverride: lucideIcons.ExternalLink,
             },
-        });
-    }
-    entries.push({
-        content: folder.aiHidden ? 'Show AI pane' : 'Hide AI pane',
-        iconOverride: folder.aiHidden ? lucideIcons.Eye : lucideIcons.EyeOff,
-        onClick: () => {
-            void toggleAiHidden(folder.path, updateState);
-        },
-    });
-    entries.push({
-        content: 'Restart AI',
-        iconOverride: lucideIcons.RotateCw,
-        onClick: () => {
-            void restartPane({folder: folder.path, kind: PaneKind.Ai}).catch((error: unknown) =>
-                showError(updateState, error),
-            );
-        },
-    });
-    entries.push({
-        content: 'Kill folder panes',
-        iconOverride: lucideIcons.PowerOff,
-        onClick: () => {
-            void killFolderPanes({folder: folder.path}).catch((error: unknown) =>
-                showError(updateState, error),
-            );
-        },
-    });
-    if (folder.parentRepoPath) {
-        entries.push({
-            content: 'Delete worktree',
-            iconOverride: lucideIcons.Trash2,
+        {
+            content: folder.aiHidden ? 'Show AI pane' : 'Hide AI pane',
+            iconOverride: folder.aiHidden ? lucideIcons.Eye : lucideIcons.EyeOff,
             onClick: () => {
-                void confirmDeleteWorktree(folder.path, updateState);
+                void toggleAiHidden(folder.path, updateState);
             },
-        });
-    } else {
-        entries.push({
-            content: 'Remove repo',
-            iconOverride: lucideIcons.X,
+        },
+        {
+            content: 'Restart AI',
+            iconOverride: lucideIcons.RotateCw,
             onClick: () => {
-                void confirmRemoveRepo(folder.path, updateState);
+                void restartPane({
+                    folder: folder.path,
+                    kind: PaneKind.Ai,
+                }).catch((error: unknown) => showError(updateState, error));
             },
-        });
-    }
-    return entries;
+        },
+        {
+            content: 'Kill folder panes',
+            iconOverride: lucideIcons.PowerOff,
+            onClick: () => {
+                void killFolderPanes({
+                    folder: folder.path,
+                }).catch((error: unknown) => showError(updateState, error));
+            },
+        },
+        folder.parentRepoPath
+            ? {
+                  content: 'Delete worktree',
+                  iconOverride: lucideIcons.Trash2,
+                  onClick: () => {
+                      void confirmDeleteWorktree(folder.path, updateState);
+                  },
+              }
+            : {
+                  content: 'Remove repo',
+                  iconOverride: lucideIcons.X,
+                  onClick: () => {
+                      void confirmRemoveRepo(folder.path, updateState);
+                  },
+              },
+    ].filter(check.isTruthy);
 }
 
 async function refresh(state: SidebarState, updateState: SidebarUpdate): Promise<void> {
     try {
         const folders = await getFolders();
-        updateState({folders, loadError: undefined});
+        updateState({
+            folders,
+            loadError: undefined,
+        });
     } catch (error: unknown) {
-        updateState({loadError: error instanceof Error ? error.message : String(error)});
+        updateState({
+            loadError: error instanceof Error ? error.message : String(error),
+        });
     }
 }
 
 function showError(updateState: SidebarUpdate, error: unknown): void {
-    updateState({loadError: error instanceof Error ? error.message : String(error)});
+    updateState({
+        loadError: error instanceof Error ? error.message : String(error),
+    });
 }
 
 async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
@@ -515,7 +531,12 @@ async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
             ],
         });
         await refresh(
-            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            {
+                folders: [],
+                pollHandle: undefined,
+                loadError: undefined,
+                openMenuKey: undefined,
+            },
             updateState,
         );
     } catch (error: unknown) {
@@ -535,7 +556,12 @@ async function confirmRemoveRepo(repoPath: string, updateState: SidebarUpdate): 
             hiddenAiPane: config.hiddenAiPane.filter((path) => path !== repoPath),
         });
         await refresh(
-            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            {
+                folders: [],
+                pollHandle: undefined,
+                loadError: undefined,
+                openMenuKey: undefined,
+            },
             updateState,
         );
     } catch (error: unknown) {
@@ -549,9 +575,17 @@ async function promptAddWorktree(repoPath: string, updateState: SidebarUpdate): 
         return;
     }
     try {
-        await createWorktree({repoPath, name: name.trim()});
+        await createWorktree({
+            repoPath,
+            name: name.trim(),
+        });
         await refresh(
-            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            {
+                folders: [],
+                pollHandle: undefined,
+                loadError: undefined,
+                openMenuKey: undefined,
+            },
             updateState,
         );
     } catch (error: unknown) {
@@ -567,9 +601,16 @@ async function confirmDeleteWorktree(
         return;
     }
     try {
-        await deleteWorktree({worktreePath});
+        await deleteWorktree({
+            worktreePath,
+        });
         await refresh(
-            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            {
+                folders: [],
+                pollHandle: undefined,
+                loadError: undefined,
+                openMenuKey: undefined,
+            },
             updateState,
         );
     } catch (error: unknown) {
@@ -591,7 +632,12 @@ async function toggleAiHidden(folderPath: string, updateState: SidebarUpdate): P
                   ],
         });
         await refresh(
-            {folders: [], pollHandle: undefined, loadError: undefined, openMenuKey: undefined},
+            {
+                folders: [],
+                pollHandle: undefined,
+                loadError: undefined,
+                openMenuKey: undefined,
+            },
             updateState,
         );
     } catch (error: unknown) {

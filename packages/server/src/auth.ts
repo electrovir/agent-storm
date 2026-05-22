@@ -3,13 +3,7 @@ import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
 import {randomBytes} from 'node:crypto';
 import {watch, type FSWatcher} from 'node:fs';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {basename, dirname, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const secretDir = resolve(repoRoot, '.not-committed');
-const secretPath = resolve(secretDir, 'auth-secret');
-const secretFileName = basename(secretPath);
+import {authSecretFileName, authSecretPath, notCommittedDir} from './file-paths.js';
 
 /**
  * Argon2 encoded hashes always start with `$argon2`. Any other content (e.g. a plain-text key left
@@ -23,7 +17,7 @@ let regenerating: Promise<void> | undefined;
 let writingSelf = false;
 
 async function readStoredHash(): Promise<string | undefined> {
-    const contents = await readFile(secretPath, 'utf-8').catch(() => undefined);
+    const contents = await readFile(authSecretPath, 'utf-8').catch(() => undefined);
     if (contents == undefined) {
         return undefined;
     }
@@ -37,12 +31,12 @@ async function readStoredHash(): Promise<string | undefined> {
 async function generateAndStoreSecret(): Promise<string> {
     const cleartext = randomBytes(32).toString('hex');
     const hash = await hashPassword(cleartext);
-    await mkdir(secretDir, {
+    await mkdir(notCommittedDir, {
         recursive: true,
     });
     writingSelf = true;
     try {
-        await writeFile(secretPath, hash, {
+        await writeFile(authSecretPath, hash, {
             mode: 0o600,
         });
     } finally {
@@ -57,7 +51,7 @@ function logNewSecret(cleartext: string): void {
         [
             `auth secret: ${cleartext}`,
             'Save this — only the argon2id hash is stored on disk.',
-            `Delete ${secretPath} to generate a new key.`,
+            `Delete ${authSecretPath} to generate a new key.`,
         ].join('\n'),
     );
 }
@@ -68,7 +62,7 @@ async function regenerate(): Promise<void> {
 }
 
 function handleWatchEvent(filename: string | null): void {
-    if (filename !== secretFileName || writingSelf || regenerating) {
+    if (filename !== authSecretFileName || writingSelf || regenerating) {
         return;
     }
     regenerating = (async () => {
@@ -90,7 +84,7 @@ function handleWatchEvent(filename: string | null): void {
 }
 
 export async function initAuth(): Promise<void> {
-    await mkdir(secretDir, {
+    await mkdir(notCommittedDir, {
         recursive: true,
     });
     const existing = await readStoredHash();
@@ -101,7 +95,7 @@ export async function initAuth(): Promise<void> {
         logNewSecret(cleartext);
     }
     watcher?.close();
-    watcher = watch(secretDir, (_eventType, filename) => {
+    watcher = watch(notCommittedDir, (_eventType, filename) => {
         handleWatchEvent(filename);
     });
 }

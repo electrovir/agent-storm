@@ -8,5 +8,13 @@ module.exports = {
     ],
     words: [
         ...baseConfig.words,
+        'grabbable',
+        'Menlo',
+        'Meslo',
+        'pid',
+        'pids',
+        'prebuilds',
+        'toggleable',
+        'webgl',
     ],
 };

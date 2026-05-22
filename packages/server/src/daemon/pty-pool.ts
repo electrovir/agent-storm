@@ -1,10 +1,11 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
+import {omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
 import type {StatusEntry} from './protocol.js';
 
-const idleThresholdMs = 2_000;
+const idleThresholdMs = 2000;
 
 const aiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
 
@@ -107,9 +108,7 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
  * (or any other binary they expect to find first).
  */
 function spawnEnv(): NodeJS.ProcessEnv {
-    /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
-    const {PATH: _ignored, ...rest} = process.env;
-    return rest;
+    return omitObjectKeys(process.env, ['PATH']);
 }
 
 /**
@@ -225,7 +224,10 @@ export function attachPane({
             if (cols < 1 || rows < 1) {
                 return;
             }
-            subscriber.size = {cols, rows};
+            subscriber.size = {
+                cols,
+                rows,
+            };
             applyMinSize(entry);
         },
         detach() {
@@ -276,8 +278,7 @@ export function killFolderPanes({folder}: Readonly<{folder: string}>): void {
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {
     if (!entry) {
         return PaneStatus.None;
-    }
-    if (!entry.pty) {
+    } else if (!entry.pty) {
         return entry.exitCode == undefined ? PaneStatus.None : PaneStatus.Exited;
     }
     return Date.now() - entry.lastOutputAt < idleThresholdMs ? PaneStatus.Busy : PaneStatus.Idle;

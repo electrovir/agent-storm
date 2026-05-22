@@ -1,10 +1,8 @@
 import {type Config, defaultConfig} from '@agent-storm/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {homedir} from 'node:os';
-import {dirname, join} from 'node:path';
+import {dirname} from 'node:path';
+import {configPath} from './file-paths.js';
 import {normalizePath} from './paths.js';
-
-const configPath = join(homedir(), '.config', 'agent-storm.json');
 
 function normalizeConfig(config: Readonly<Config>): Config {
     return {
@@ -34,7 +32,9 @@ export async function loadConfig(): Promise<Config> {
 }
 
 export async function saveConfig(config: Readonly<Config>): Promise<void> {
-    await mkdir(dirname(configPath), {recursive: true});
+    await mkdir(dirname(configPath), {
+        recursive: true,
+    });
     const normalized = normalizeConfig(config);
     await writeFile(configPath, JSON.stringify(normalized, undefined, 4), 'utf-8');
 }

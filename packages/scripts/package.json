@@ -21,9 +21,12 @@
     "module": "src/start.script.ts",
     "types": "src/start.script.ts",
     "scripts": {
-        "compile": "virmator compile"
+        "compile": "virmator compile",
+        "test": "exit 0;"
     },
     "dependencies": {
+        "@agent-storm/server": "*",
+        "@augment-vir/common": "^31.70.0",
         "portfinder": "^1.0.38"
     },
     "engines": {
