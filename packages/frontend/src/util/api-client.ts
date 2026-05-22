@@ -2,6 +2,7 @@ import {agentStormService, type Config, type FolderInfo, type PaneKind} from '@a
 import {HttpMethod} from '@augment-vir/common';
 import {fetchEndpoint} from '@rest-vir/define-service';
 import {clearStoredSecret, ensureSecret} from './auth.js';
+import {notifyBackendFailure, notifyBackendSuccess} from './backend-watchdog.js';
 
 async function authOptions(): Promise<{options: {headers: Record<string, string>}}> {
     return {
@@ -13,50 +14,74 @@ async function authOptions(): Promise<{options: {headers: Record<string, string>
     };
 }
 
-function ensureOk<Data>(
-    result:
-        | {ok: true; data: Data}
-        | {ok: false; data: unknown; response?: {status?: number} | undefined},
+async function callApi<Data>(
     label: string,
-): Data {
+    request: Promise<
+        | {ok: true; data: Data}
+        | {ok: false; data: unknown; response?: {status?: number} | undefined}
+    >,
+): Promise<Data> {
+    /**
+     * `fetchEndpoint` re-throws when the underlying `fetch` itself rejects (DNS / connect refused /
+     * aborted — i.e. the backend process is gone). The result branch below only covers HTTP-level
+     * failures where the server actually answered. Catch the throw here so the watchdog can count
+     * it toward the recovery threshold; without this, a dead backend just produces silent polling
+     * rejections and the page never reloads when the server comes back.
+     */
+    const result = await request.catch((error: unknown) => {
+        notifyBackendFailure();
+        throw error;
+    });
     if (!result.ok) {
         if (result.response?.status === 401) {
             clearStoredSecret();
         }
+        /**
+         * Distinguish a transport failure (no `response.status` — fetch itself threw, backend is
+         * unreachable) from an application-level error (any HTTP status, including 401/500). Only
+         * the former should bump the watchdog toward a recovery reload; everything else means the
+         * backend is alive and replying, even if the reply is an error.
+         */
+        if (result.response?.status == undefined) {
+            notifyBackendFailure();
+        } else {
+            notifyBackendSuccess();
+        }
         throw new Error(`${label} failed: ${String(result.data)}`);
     }
+    notifyBackendSuccess();
     return result.data;
 }
 
 export async function getConfig(): Promise<Config> {
     const options = await authOptions();
-    return ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/config'], {
+    return await callApi(
+        'GET /config',
+        fetchEndpoint(agentStormService.endpoints['/config'], {
             ...options,
             method: HttpMethod.Get,
             requestData: undefined,
         }),
-        'GET /config',
     );
 }
 
 export async function putConfig(config: Readonly<Config>): Promise<Config> {
     const options = await authOptions();
-    return ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/config'], {
+    return await callApi(
+        'PUT /config',
+        fetchEndpoint(agentStormService.endpoints['/config'], {
             ...options,
             method: HttpMethod.Put,
             requestData: config,
         }),
-        'PUT /config',
     );
 }
 
 export async function getFolders(): Promise<FolderInfo[]> {
     const options = await authOptions();
-    const data = ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/folders'], options),
+    const data = await callApi(
         'GET /folders',
+        fetchEndpoint(agentStormService.endpoints['/folders'], options),
     );
     return data.folders;
 }
@@ -65,23 +90,23 @@ export async function createWorktree(
     params: Readonly<{repoPath: string; name: string}>,
 ): Promise<void> {
     const options = await authOptions();
-    ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/worktrees/create'], {
+    await callApi(
+        'POST /worktrees/create',
+        fetchEndpoint(agentStormService.endpoints['/worktrees/create'], {
             ...options,
             requestData: params,
         }),
-        'POST /worktrees/create',
     );
 }
 
 export async function deleteWorktree(params: Readonly<{worktreePath: string}>): Promise<void> {
     const options = await authOptions();
-    ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/worktrees/delete'], {
+    await callApi(
+        'POST /worktrees/delete',
+        fetchEndpoint(agentStormService.endpoints['/worktrees/delete'], {
             ...options,
             requestData: params,
         }),
-        'POST /worktrees/delete',
     );
 }
 
@@ -89,31 +114,31 @@ export async function restartPane(
     params: Readonly<{folder: string; kind: PaneKind}>,
 ): Promise<void> {
     const options = await authOptions();
-    ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/panes/restart'], {
+    await callApi(
+        'POST /panes/restart',
+        fetchEndpoint(agentStormService.endpoints['/panes/restart'], {
             ...options,
             requestData: params,
         }),
-        'POST /panes/restart',
     );
 }
 
 export async function killFolderPanes(params: Readonly<{folder: string}>): Promise<void> {
     const options = await authOptions();
-    ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/panes/kill'], {
+    await callApi(
+        'POST /panes/kill',
+        fetchEndpoint(agentStormService.endpoints['/panes/kill'], {
             ...options,
             requestData: params,
         }),
-        'POST /panes/kill',
     );
 }
 
 export async function restartDaemon(): Promise<void> {
     const options = await authOptions();
-    ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/daemon/restart'], options),
+    await callApi(
         'POST /daemon/restart',
+        fetchEndpoint(agentStormService.endpoints['/daemon/restart'], options),
     );
 }
 
@@ -121,12 +146,12 @@ export async function uploadFile(
     params: Readonly<{filename: string; dataBase64: string}>,
 ): Promise<string> {
     const options = await authOptions();
-    const data = ensureOk(
-        await fetchEndpoint(agentStormService.endpoints['/uploads/create'], {
+    const data = await callApi(
+        'POST /uploads/create',
+        fetchEndpoint(agentStormService.endpoints['/uploads/create'], {
             ...options,
             requestData: params,
         }),
-        'POST /uploads/create',
     );
     return data.path;
 }

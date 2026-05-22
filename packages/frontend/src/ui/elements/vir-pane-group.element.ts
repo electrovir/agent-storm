@@ -29,10 +29,10 @@ export const VirPaneGroup = defineElement<{
             dragging: false,
             /**
              * Which pane last received focus inside this group. Sticky across window blur/focus
-             * cycles: a `:focus-within` CSS-based highlight loses match when the user cmd+tabs
-             * away (xterm's hidden textarea blurs and doesn't reliably regain focus through the
-             * shadow boundary on return), so we mirror focus into local state and drive the
-             * highlight off that instead. Undefined before the user has clicked into either pane.
+             * cycles: a `:focus-within` CSS-based highlight loses match when the user cmd+tabs away
+             * (xterm's hidden textarea blurs and doesn't reliably regain focus through the shadow
+             * boundary on return), so we mirror focus into local state and drive the highlight off
+             * that instead. Undefined before the user has clicked into either pane.
              */
             focusedKind: undefined as PaneKind | undefined,
         };

@@ -5,11 +5,14 @@ import {colorCss} from '@electrovir/color';
 import {css, defineElement, html, listen} from 'element-vir';
 import {parseUrl} from 'url-vir';
 import {
+    createSizedIcon,
     HorizontalAnchor,
+    LoaderAnimated24Icon,
     lucideIcons,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
+    ViraIcon,
     ViraLink,
     type ViraMenuItemEntry,
     ViraMenuTrigger,
@@ -30,12 +33,8 @@ const allowedLinkHostnames = ['github.com'];
 
 const pollIntervalMs = 2000;
 
-const paneStatusGlyph: Record<PaneStatus, string> = {
-    [PaneStatus.None]: '·',
-    [PaneStatus.Busy]: '●',
-    [PaneStatus.Idle]: '○',
-    [PaneStatus.Exited]: '✕',
-};
+const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
+const dashIcon = createSizedIcon(lucideIcons.Minus, 12);
 
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
@@ -144,13 +143,14 @@ export const VirSidebar = defineElement<{
         .chips {
             display: inline-flex;
             gap: 2px;
-            font-size: 11px;
-            font-family: ui-monospace, monospace;
         }
 
         .chip {
-            width: 10px;
-            text-align: center;
+            width: 12px;
+            height: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .name {
@@ -265,9 +265,11 @@ export const VirSidebar = defineElement<{
                     }),
                 )}
                 ${worktreeRoots.map((root) => {
-                    const children = state.folders.filter(
-                        (folder) => folder.parentRepoPath === root.path,
-                    );
+                    const children = state.folders
+                        .filter((folder) => folder.parentRepoPath === root.path)
+                        .toSorted((a, b) =>
+                            a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}),
+                        );
                     const repoMenuKey = `repo:${root.path}`;
                     return html`
                         <div
@@ -329,6 +331,24 @@ export const VirSidebar = defineElement<{
     },
 });
 
+function renderPaneChip(label: string, status: PaneStatus) {
+    if (status === PaneStatus.None) {
+        return html`
+            <span class="chip" title="${label} pane: ${status}"></span>
+        `;
+    }
+    const icon = status === PaneStatus.Busy ? loaderIcon : dashIcon;
+    return html`
+        <span
+            class="chip"
+            style="color: ${paneStatusColor[status]};"
+            title="${label} pane: ${status}"
+        >
+            <${ViraIcon.assign({icon})}></${ViraIcon}>
+        </span>
+    `;
+}
+
 function renderRow({
     folder,
     indented,
@@ -358,20 +378,8 @@ function renderRow({
             ${listen('click', () => onActivate(folder.path))}
         >
             <span class="chips">
-                <span
-                    class="chip"
-                    style="color: ${paneStatusColor[folder.panes.ai]};"
-                    title="AI pane: ${folder.panes.ai}"
-                >
-                    ${paneStatusGlyph[folder.panes.ai]}
-                </span>
-                <span
-                    class="chip"
-                    style="color: ${paneStatusColor[folder.panes.shell]};"
-                    title="Shell pane: ${folder.panes.shell}"
-                >
-                    ${paneStatusGlyph[folder.panes.shell]}
-                </span>
+                ${renderPaneChip('AI', folder.panes.ai)}
+                ${renderPaneChip('Shell', folder.panes.shell)}
             </span>
             <span
                 class="name"
