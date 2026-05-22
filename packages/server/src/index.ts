@@ -14,7 +14,11 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {getCachedFolders, startFolderInfoRefreshLoop} from './folder-info.js';
+import {
+    getCachedFolders,
+    refreshFolderInfoNow,
+    startFolderInfoRefreshLoop,
+} from './folder-info.js';
 import {addWorktree, removeWorktree} from './git.js';
 import {saveUpload} from './uploads.js';
 
@@ -82,8 +86,12 @@ function extractBearerToken(header: string | string[] | undefined): string | und
     if (typeof header !== 'string') {
         return undefined;
     }
-    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-    return match ? match[1] : undefined;
+    const trimmed = header.trim();
+    const schemePrefix = 'bearer ';
+    if (trimmed.slice(0, schemePrefix.length).toLowerCase() !== schemePrefix) {
+        return undefined;
+    }
+    return trimmed.slice(schemePrefix.length).trimStart() || undefined;
 }
 
 const implementation = implementService({
@@ -147,6 +155,7 @@ const implementation = implementService({
         },
         async '/worktrees/create'({requestData}) {
             await addWorktree(requestData);
+            await refreshFolderInfoNow();
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
@@ -156,6 +165,7 @@ const implementation = implementService({
         },
         async '/worktrees/delete'({requestData}) {
             await removeWorktree(requestData);
+            await refreshFolderInfoNow();
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {

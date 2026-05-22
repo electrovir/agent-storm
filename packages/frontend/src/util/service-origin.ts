@@ -1,16 +1,14 @@
 import {agentStormService} from '@agent-storm/common';
+import {readInjectedGlobalData} from './global-data.js';
 
 /**
  * Backend port. Injected by `packages/scripts/src/start.script.ts` at npm-start time as
- * `VITE_BACKEND_PORT`, which Vite inlines into `import.meta.env.VITE_BACKEND_PORT` at dev-server /
- * build time. Falls back to 41880 if the env var isn't present (e.g. you ran vite directly without
- * going through the orchestrator).
+ * `BACKEND_PORT`, which `packages/frontend/configs/vite.config.ts` inserts into the
+ * `VITE_INJECTED_DATA` global via Vite's `define` config at dev-server / build time. Falls back to
+ * 41880 if the global isn't present (e.g. you ran vite directly without going through the
+ * orchestrator).
  */
-const backendPort = (() => {
-    const raw = import.meta.env.VITE_BACKEND_PORT;
-    const parsed = Number(raw);
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : 41880;
-})();
+const backendPort = readInjectedGlobalData().backendPort || 41_880;
 
 /**
  * Patch `serviceOrigin` at module load to point at whatever host the page itself is served from on

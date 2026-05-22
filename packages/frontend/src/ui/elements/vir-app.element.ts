@@ -11,7 +11,7 @@ import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
 
-const folderInfoPollMs = 2_000;
+const folderInfoPollMs = 2000;
 
 function clampSidebarWidth(value: number): number {
     if (!Number.isFinite(value)) {
@@ -55,9 +55,7 @@ export const VirApp = defineElement()({
             flex-direction: row;
             width: 100%;
             height: 100%;
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            font-family: sans-serif;
         }
 
         vir-sidebar {
@@ -124,9 +122,14 @@ export const VirApp = defineElement()({
             void refreshFolderInfo(updateState);
         }, folderInfoPollMs);
         const removeRouteListener = router.listen(true, (route) => {
-            updateState({route});
+            updateState({
+                route,
+            });
         });
-        updateState({pollHandle, removeRouteListener});
+        updateState({
+            pollHandle,
+            removeRouteListener,
+        });
     },
     cleanup({state}) {
         if (state.pollHandle) {
@@ -157,7 +160,9 @@ export const VirApp = defineElement()({
             document.body.style.cursor = 'col-resize';
 
             let latestWidth = currentSidebarWidth;
-            updateState({sidebarDragging: true});
+            updateState({
+                sidebarDragging: true,
+            });
 
             const onMove = (moveEvent: MouseEvent) => {
                 const rect = host.getBoundingClientRect();
@@ -165,7 +170,9 @@ export const VirApp = defineElement()({
                     return;
                 }
                 latestWidth = clampSidebarWidth(moveEvent.clientX - rect.left);
-                updateState({sidebarWidth: latestWidth});
+                updateState({
+                    sidebarWidth: latestWidth,
+                });
             };
 
             const onUp = () => {
@@ -173,7 +180,9 @@ export const VirApp = defineElement()({
                 window.removeEventListener('mouseup', onUp);
                 document.body.style.userSelect = previousUserSelect;
                 document.body.style.cursor = previousCursor;
-                updateState({sidebarDragging: false});
+                updateState({
+                    sidebarDragging: false,
+                });
                 localStorageClient.sidebarWidth.write(latestWidth);
             };
 
@@ -182,7 +191,9 @@ export const VirApp = defineElement()({
         };
 
         const onDividerDoubleClick = () => {
-            updateState({sidebarWidth: sidebarWidth.default});
+            updateState({
+                sidebarWidth: sidebarWidth.default,
+            });
             localStorageClient.sidebarWidth.write(sidebarWidth.default);
         };
 
@@ -196,9 +207,15 @@ export const VirApp = defineElement()({
                               ...state.openedFolders,
                               folder,
                           ];
-                    updateState({activeFolder: folder, openedFolders});
+                    updateState({
+                        activeFolder: folder,
+                        openedFolders,
+                    });
                 },
-                onOpenSettings: () => updateState({settingsOpen: true}),
+                onOpenSettings: () =>
+                    updateState({
+                        settingsOpen: true,
+                    }),
             })}></${VirSidebar}>
             <div
                 class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
@@ -230,7 +247,10 @@ export const VirApp = defineElement()({
             </div>
             <${VirSettingsModal.assign({
                 open: state.settingsOpen,
-                onClose: () => updateState({settingsOpen: false}),
+                onClose: () =>
+                    updateState({
+                        settingsOpen: false,
+                    }),
             })}></${VirSettingsModal}>
             <${VirAuthModal}></${VirAuthModal}>
         `;
@@ -244,7 +264,9 @@ async function refreshFolderInfo(updateState: AppUpdate): Promise<void> {
         folders.forEach((folder) => {
             folderInfo.set(folder.path, folder);
         });
-        updateState({folderInfo});
+        updateState({
+            folderInfo,
+        });
     } catch {
         /* sidebar surfaces the load error */
     }

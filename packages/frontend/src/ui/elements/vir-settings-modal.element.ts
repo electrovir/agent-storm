@@ -68,7 +68,7 @@ const configJsonSchema = {
             type: 'boolean',
             title: 'Use WebGL terminal renderer',
             description:
-                'When on, the in-app terminal uses xterm\'s WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.',
+                "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.",
         },
     },
     required: [
@@ -206,8 +206,7 @@ export const VirSettingsModal = defineElement<{
                 await putConfig(next);
                 const nextUseWebgl = next.useWebgl !== false;
                 const webglChanged =
-                    state.useWebgl !== undefined &&
-                    state.useWebgl !== nextUseWebgl;
+                    state.useWebgl !== undefined && state.useWebgl !== nextUseWebgl;
                 reset();
                 inputs.onClose();
                 if (webglChanged) {

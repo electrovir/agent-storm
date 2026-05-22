@@ -2,10 +2,7 @@ import {log, wait} from '@augment-vir/common';
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {createConnection} from 'node:net';
-import {fileURLToPath} from 'node:url';
-import {daemonSocketPath} from './daemon-paths.js';
-
-const daemonScriptPath = fileURLToPath(new URL('./pty-daemon.ts', import.meta.url));
+import {daemonScriptPath, daemonSocketPath} from '../file-paths.js';
 
 async function pingDaemon(): Promise<boolean> {
     if (!existsSync(daemonSocketPath)) {
@@ -30,7 +27,9 @@ async function waitForDaemonReady(timeoutMs: number): Promise<boolean> {
         if (await pingDaemon()) {
             return true;
         }
-        await wait({milliseconds: 100});
+        await wait({
+            milliseconds: 100,
+        });
     }
     return false;
 }
@@ -41,7 +40,9 @@ export async function waitForDaemonGone(timeoutMs: number): Promise<boolean> {
         if (!(await pingDaemon())) {
             return true;
         }
-        await wait({milliseconds: 100});
+        await wait({
+            milliseconds: 100,
+        });
     }
     return false;
 }
@@ -53,6 +54,7 @@ export async function ensureDaemon(): Promise<void> {
     }
 
     log.info(`Starting PTY daemon (script: ${daemonScriptPath})...`);
+    /* eslint-disable sonarjs/no-os-command-from-path -- `npx` is resolved via the developer's PATH; this CLI only runs locally. */
     const child = spawn(
         'npx',
         [
@@ -65,13 +67,14 @@ export async function ensureDaemon(): Promise<void> {
             env: process.env,
         },
     );
+    /* eslint-enable sonarjs/no-os-command-from-path */
     child.unref();
 
-    const readyTimeoutMs = 8_000;
+    const readyTimeoutMs = 8000;
     const ready = await waitForDaemonReady(readyTimeoutMs);
     if (!ready) {
         throw new Error(
-            `PTY daemon did not become ready within ${readyTimeoutMs / 1_000}s. Check the daemon log for details.`,
+            `PTY daemon did not become ready within ${readyTimeoutMs / 1000}s. Check the daemon log for details.`,
         );
     }
     log.success('PTY daemon ready.');

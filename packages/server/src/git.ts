@@ -9,13 +9,13 @@ const exec = promisify(execFile);
 type GitInfo = {
     branch: string | null;
     dirty: boolean;
-    unpushed: boolean;
+    notPushed: boolean;
 };
 
 const cleanGitInfo: GitInfo = {
     branch: null,
     dirty: false,
-    unpushed: false,
+    notPushed: false,
 };
 
 export async function getGitInfo(folder: string): Promise<GitInfo> {
@@ -42,7 +42,7 @@ export async function getGitInfo(folder: string): Promise<GitInfo> {
         '@{upstream}',
     ]).then((output) => output != undefined);
 
-    const unpushed = hasUpstream
+    const notPushed = hasUpstream
         ? await runGit(folder, [
               'log',
               '--oneline',
@@ -53,7 +53,7 @@ export async function getGitInfo(folder: string): Promise<GitInfo> {
     return {
         branch,
         dirty,
-        unpushed,
+        notPushed,
     };
 }
 
@@ -102,9 +102,7 @@ export async function listWorktreeChildren(folder: string): Promise<string[]> {
             }
             const childPath = join(folder, name);
             const childStat = await stat(childPath).catch(() => undefined);
-            if (!childStat?.isDirectory()) {
-                return undefined;
-            } else if (await isBareGitRepo(childPath)) {
+            if (!childStat?.isDirectory() || (await isBareGitRepo(childPath))) {
                 return undefined;
             }
             const dotGit = join(childPath, '.git');
@@ -260,7 +258,8 @@ export async function getPrInfo(folder: string, branch: string | null): Promise<
      * Single-quote the branch since `runShellCommand` invokes a shell and branch names can legally
      * contain `/`. Git rejects single quotes in refs anyway, but escape defensively.
      */
-    const safeBranch = `'${branch.replace(/'/g, String.raw`'\''`)}'`;
+    const escapedBranch = branch.replace(/'/g, String.raw`'\''`);
+    const safeBranch = `'${escapedBranch}'`;
     const result = await runShellCommand(`gh pr view ${safeBranch} --json url,state,mergedAt`, {
         cwd: folder,
     });
@@ -287,9 +286,7 @@ export async function getPrInfo(folder: string, branch: string | null): Promise<
         state?: string;
         mergedAt?: string | null;
     };
-    if (parsed.state === 'CLOSED') {
-        return null;
-    } else if (!parsed.url) {
+    if (parsed.state === 'CLOSED' || !parsed.url) {
         return null;
     }
     const merged =

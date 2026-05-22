@@ -34,7 +34,10 @@ export const VirBook = defineElement<{
                         paths: [
                             'book',
                             ...newPaths.slice(1),
-                        ] as ['book', ...string[]],
+                        ] as [
+                            'book',
+                            ...string[],
+                        ],
                     });
                 })}
             ></${ElementBookApp}>

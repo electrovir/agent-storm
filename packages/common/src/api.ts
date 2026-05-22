@@ -66,7 +66,7 @@ const configShape = defineShape({
     useWebgl: optionalShape(true),
 });
 
-const folderInfoShape = defineShape({
+export const folderInfoShape = defineShape({
     path: '',
     name: '',
     parentRepoPath: nullableShape(''),
@@ -75,7 +75,7 @@ const folderInfoShape = defineShape({
     branch: nullableShape(''),
     git: {
         dirty: false,
-        unpushed: false,
+        notPushed: false,
     },
     prUrl: nullableShape(''),
     prMerged: false,

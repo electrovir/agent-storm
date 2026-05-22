@@ -24,8 +24,8 @@ function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
         key: config.key,
         read() {
             try {
-                const raw = globalThis.localStorage?.getItem(config.key);
-                if (raw == null) {
+                const raw = globalThis.localStorage.getItem(config.key);
+                if (raw == undefined) {
                     return config.defaultValue;
                 }
                 return config.parse(raw);
@@ -37,10 +37,10 @@ function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
         write(value) {
             try {
                 const serialized = config.serialize(value);
-                if (serialized == null) {
-                    globalThis.localStorage?.removeItem(config.key);
+                if (serialized == undefined) {
+                    globalThis.localStorage.removeItem(config.key);
                 } else {
-                    globalThis.localStorage?.setItem(config.key, serialized);
+                    globalThis.localStorage.setItem(config.key, serialized);
                 }
             } catch {
                 // localStorage may throw in private mode / sandboxed contexts.
@@ -49,7 +49,7 @@ function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
         },
         clear() {
             try {
-                globalThis.localStorage?.removeItem(config.key);
+                globalThis.localStorage.removeItem(config.key);
             } catch {
                 // localStorage may throw in private mode / sandboxed contexts.
             }

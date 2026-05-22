@@ -1,6 +1,6 @@
-import {PaneKind} from '@agent-storm/common';
+import {type PaneKind} from '@agent-storm/common';
 import {createConnection, type Socket} from 'node:net';
-import {daemonSocketPath} from './daemon-paths.js';
+import {daemonSocketPath} from '../file-paths.js';
 import {
     DaemonAction,
     encodeControlFrame,
@@ -40,10 +40,10 @@ async function singleShot<Response extends {ok: true}>(
             const parsed = JSON.parse(controlFrame.payload.toString('utf-8')) as
                 | Response
                 | ErrorResponse;
-            if (!parsed.ok) {
-                reject(new Error(parsed.error));
-            } else {
+            if (parsed.ok) {
                 resolve(parsed);
+            } else {
+                reject(new Error(parsed.error));
             }
             socket.end();
         });
@@ -121,23 +121,17 @@ export async function attachPane({
             frames.forEach((frame) => {
                 if (handshakeState.resolved) {
                     routeFrame(frame);
-                    return;
-                }
-                if (frame.type === FrameType.Control) {
+                } else if (frame.type === FrameType.Control) {
                     handshakeState.resolved = true;
                     const parsed = JSON.parse(frame.payload.toString('utf-8')) as
                         | AttachResponse
                         | ErrorResponse;
-                    if (!parsed.ok) {
+                    if (parsed.ok) {
+                        resolve(parsed);
+                    } else {
                         socket.end();
                         reject(new Error(parsed.error));
-                    } else {
-                        resolve(parsed);
                     }
-                    return;
-                }
-                if (handshakeState.resolved && frame.type === FrameType.Data) {
-                    onData(frame.payload.toString('utf-8'));
                 }
             });
         };
@@ -146,20 +140,16 @@ export async function attachPane({
                 onData(frame.payload.toString('utf-8'));
                 return;
             }
-            if (frame.type === FrameType.Control) {
-                const parsed = JSON.parse(frame.payload.toString('utf-8')) as ExitNotification;
-                if (parsed.type === 'exit') {
-                    onExit(parsed.exitCode);
-                }
-            }
+            const parsed = JSON.parse(frame.payload.toString('utf-8')) as ExitNotification;
+            onExit(parsed.exitCode);
         };
         socket.on('data', handler);
         socket.once('error', reject);
         socket.once('close', () => {
-            if (!handshakeState.resolved) {
-                reject(new Error('Daemon socket closed before handshake response.'));
-            } else {
+            if (handshakeState.resolved) {
                 onExit(undefined);
+            } else {
+                reject(new Error('Daemon socket closed before handshake response.'));
             }
         });
     });

@@ -1,27 +1,26 @@
-import {PaneKind, PaneStatus, type Config, type FolderInfo} from '@agent-storm/common';
+import {
+    folderInfoShape,
+    PaneKind,
+    PaneStatus,
+    type Config,
+    type FolderInfo,
+} from '@agent-storm/common';
 import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {basename, dirname, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {basename} from 'node:path';
+import {checkValidShape} from 'object-shape-tester';
 import {loadConfig} from './config.js';
+import {folderInfoCachePath, notCommittedDir} from './file-paths.js';
 import {
-    GitHubPollingError,
     getGitInfo,
     getPrInfo,
+    GitHubPollingError,
     isWorktreeRoot,
     listWorktreeChildren,
     type GitHubPollingDisableReason,
     type PrInfo,
 } from './git.js';
 import {getPaneStatusLookup} from './pty.js';
-
-/**
- * Persisted-cache location. Sits next to `auth-secret` under `.not-committed/`, which is
- * git-ignored at the repo root. Lets the sidebar reappear with last-known git/PR/pane state on
- * server restart instead of waiting a full sweep cycle to repopulate.
- */
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const persistedCachePath = resolve(repoRoot, '.not-committed', 'folder-info-cache.json');
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
@@ -145,7 +144,7 @@ async function buildFolderInfo({
         branch: git.branch,
         git: {
             dirty: git.dirty,
-            unpushed: git.unpushed,
+            notPushed: git.notPushed,
         },
         prUrl: pr?.url || null,
         prMerged: !!pr?.merged,
@@ -194,7 +193,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         branch: null,
         git: {
             dirty: false,
-            unpushed: false,
+            notPushed: false,
         },
         prUrl: null,
         prMerged: false,
@@ -240,10 +239,10 @@ function persistCache(): void {
             /* prior write failed; carry on so the next one still has a chance */
         })
         .then(async () => {
-            await mkdir(dirname(persistedCachePath), {
+            await mkdir(notCommittedDir, {
                 recursive: true,
             });
-            await writeFile(persistedCachePath, JSON.stringify(snapshot), 'utf-8');
+            await writeFile(folderInfoCachePath, JSON.stringify(snapshot), 'utf-8');
         })
         .catch(() => {
             /* persistence is best-effort — losing a write just means a cold restart */
@@ -251,7 +250,7 @@ function persistCache(): void {
 }
 
 async function loadPersistedCache(): Promise<void> {
-    const contents = await readFile(persistedCachePath, 'utf-8').catch(() => undefined);
+    const contents = await readFile(folderInfoCachePath, 'utf-8').catch(() => undefined);
     if (!contents) {
         return;
     }
@@ -259,12 +258,19 @@ async function loadPersistedCache(): Promise<void> {
         const parsed = JSON.parse(contents) as PersistedCache;
         if (Array.isArray(parsed.targets) && Array.isArray(parsed.entries)) {
             refreshState.targets = parsed.targets;
+            /**
+             * Validate each entry against the current shape so a schema change (renamed/added
+             * field) doesn't poison the `/folders` response with stale objects. Invalid entries are
+             * dropped; the next sweep refills them.
+             */
             parsed.entries.forEach(
                 ([
                     path,
                     info,
                 ]) => {
-                    cache.set(path, info);
+                    if (checkValidShape(info, folderInfoShape)) {
+                        cache.set(path, info);
+                    }
                 },
             );
         }
@@ -335,6 +341,28 @@ async function runSweep(): Promise<void> {
     if (stale.length > 0) {
         persistCache();
     }
+}
+
+/**
+ * Re-enumerate targets right now and kick off a fresh sweep, in addition to (not replacing) the
+ * scheduled background loop. The returned promise resolves once `refreshState.targets` reflects
+ * the new layout, so by the time this returns the next `/folders` call will see new folders as
+ * placeholders. Git/PR fields fill in via the background sweep started here, which may overlap
+ * with an already-scheduled sweep — that's fine: cache writes are last-write-wins, `persistCache`
+ * chains its writes, and the duplicate per-folder git work is cheap. Endpoints that mutate the
+ * worktree layout (create/delete) call this so the UI updates within one poll instead of waiting
+ * up to a full sweep cycle.
+ */
+export async function refreshFolderInfoNow(): Promise<void> {
+    const config = await loadConfig().catch(() => undefined);
+    if (!config) {
+        return;
+    }
+    refreshState.targets = await enumerateTargets(config);
+    persistCache();
+    void runSweep().catch(() => {
+        /* never let an out-of-band sweep crash the process */
+    });
 }
 
 /**
