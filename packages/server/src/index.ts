@@ -1,4 +1,4 @@
-import {agentStormService, type PaneKind} from '@agent-storm/common';
+import {agentStormService, PaneKind} from '@agent-storm/common';
 import {HttpMethod, log} from '@augment-vir/common';
 import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/implement-service';
 import {attachService} from '@rest-vir/run-service';
@@ -14,11 +14,7 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {
-    getCachedFolders,
-    refreshFolderInfoNow,
-    startFolderInfoRefreshLoop,
-} from './folder-info.js';
+import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {addWorktree, removeWorktree} from './git.js';
 import {saveUpload} from './uploads.js';
 
@@ -94,6 +90,29 @@ function extractBearerToken(header: string | string[] | undefined): string | und
     return trimmed.slice(schemePrefix.length).trimStart() || undefined;
 }
 
+async function runPostWorktreeCmd({
+    repoPath,
+    worktreePath,
+}: Readonly<{
+    repoPath: string;
+    worktreePath: string;
+}>): Promise<void> {
+    const config = await loadConfig();
+    const repoConfig = config.repos.find((repo) => repo.path === repoPath);
+    const cmd = repoConfig?.postWorktreeCmd || config.postWorktreeCmd;
+    if (!cmd) {
+        return;
+    }
+    const attachment = await attachPane({
+        folder: worktreePath,
+        kind: PaneKind.Shell,
+        onData() {},
+        onExit() {},
+    });
+    attachment.write(`${cmd}\n`);
+    attachment.close();
+}
+
 const implementation = implementService({
     service: agentStormService,
     customHeaders: ['Authorization'],
@@ -145,17 +164,21 @@ const implementation = implementService({
                 responseData: requestData,
             };
         },
-        '/folders'() {
+        async '/folders'() {
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
-                    folders: getCachedFolders(),
+                    folders: await getCachedFolders(),
                 },
             };
         },
         async '/worktrees/create'({requestData}) {
-            await addWorktree(requestData);
+            const {worktreePath} = await addWorktree(requestData);
             await refreshFolderInfoNow();
+            await runPostWorktreeCmd({
+                repoPath: requestData.repoPath,
+                worktreePath,
+            });
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
@@ -164,6 +187,7 @@ const implementation = implementService({
             };
         },
         async '/worktrees/delete'({requestData}) {
+            await killFolderPanes({folder: requestData.worktreePath});
             await removeWorktree(requestData);
             await refreshFolderInfoNow();
             return {

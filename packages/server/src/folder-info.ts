@@ -12,33 +12,55 @@ import {checkValidShape} from 'object-shape-tester';
 import {loadConfig} from './config.js';
 import {folderInfoCachePath, notCommittedDir} from './file-paths.js';
 import {
+    fetchRepoPrs,
     getGitInfo,
-    getPrInfo,
+    getRepoSlug,
     GitHubPollingError,
     isWorktreeRoot,
     listWorktreeChildren,
     type GitHubPollingDisableReason,
     type PrInfo,
+    type RepoSlug,
 } from './git.js';
 import {getPaneStatusLookup} from './pty.js';
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
-const prCacheTtlMs = 60_000;
+/**
+ * How long a freshly-fetched per-repo PR map is reused before the next folder sweep re-fetches it.
+ * Per-repo (not per-branch) caching is what keeps GitHub traffic small: one GraphQL call per unique
+ * repo per ~5 min, regardless of how many worktrees the user has against that repo. At 50 nodes per
+ * call this comes out to ~600 GraphQL points/hour per active repo — well under the 5000 points/hour
+ * primary rate limit, even with several repos configured.
+ */
+const repoPrCacheTtlMs = 5 * 60 * 1_000;
 
-type PrCacheEntry = {
+type RepoPrCacheEntry = {
     fetchedAt: number;
-    info: PrInfo | null;
+    prsByBranch: Map<string, PrInfo>;
 };
 
-const prCache = new Map<string, PrCacheEntry>();
+/** Key: `${owner}/${name}`. See {@link repoCacheKey}. */
+const repoPrCache = new Map<string, RepoPrCacheEntry>();
 
 /**
- * In-memory auto-disable state for GitHub polling. Set the first time `gh` reports a rate-limit or
- * auth failure; subsequent sweeps short-circuit the `gh pr view` call. Cleared on server restart —
- * that's the recovery path for rate limits, and the moment the user is most likely to have fixed an
- * auth issue. The user's explicit `disabledGitHubPolling: true` config takes precedence either way;
- * this only flips an implicit off-switch.
+ * Per-folder resolved GitHub slug. The slug comes from `git remote get-url origin` and never
+ * changes during a single server run, so we resolve it once and reuse forever. `null` entries cache
+ * "folder isn't a GitHub repo" answers so we don't shell out to git on every sweep just to
+ * re-confirm.
+ */
+const repoSlugByFolder = new Map<string, RepoSlug | null>();
+
+function repoCacheKey(slug: Readonly<RepoSlug>): string {
+    return `${slug.owner}/${slug.name}`;
+}
+
+/**
+ * In-memory auto-disable state for GitHub polling. Set the first time the GraphQL call surfaces a
+ * rate-limit or auth failure; subsequent sweeps skip the GitHub call entirely. Cleared on server
+ * restart — that's the recovery path for rate limits, and the moment the user is most likely to
+ * have fixed an auth issue. The user's explicit `disabledGitHubPolling: true` config takes
+ * precedence either way; this only flips an implicit off-switch.
  */
 const githubPollingState: {
     autoDisabled: boolean;
@@ -52,19 +74,29 @@ function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
     return !!config.disabledGitHubPolling || githubPollingState.autoDisabled;
 }
 
-async function getCachedPrInfo(folder: string, branch: string | null): Promise<PrInfo | null> {
-    const key = `${folder}@${branch || ''}`;
-    const existing = prCache.get(key);
-    if (existing && Date.now() - existing.fetchedAt < prCacheTtlMs) {
-        return existing.info;
+async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
+    const cached = repoSlugByFolder.get(folder);
+    if (cached !== undefined) {
+        return cached;
+    }
+    const slug = await getRepoSlug(folder);
+    repoSlugByFolder.set(folder, slug);
+    return slug;
+}
+
+async function getCachedRepoPrMap(slug: Readonly<RepoSlug>): Promise<Map<string, PrInfo>> {
+    const key = repoCacheKey(slug);
+    const existing = repoPrCache.get(key);
+    if (existing && Date.now() - existing.fetchedAt < repoPrCacheTtlMs) {
+        return existing.prsByBranch;
     }
     try {
-        const info = await getPrInfo(folder, branch);
-        prCache.set(key, {
+        const prsByBranch = await fetchRepoPrs(slug);
+        repoPrCache.set(key, {
             fetchedAt: Date.now(),
-            info,
+            prsByBranch,
         });
-        return info;
+        return prsByBranch;
     } catch (error) {
         if (error instanceof GitHubPollingError) {
             githubPollingState.autoDisabled = true;
@@ -72,10 +104,22 @@ async function getCachedPrInfo(folder: string, branch: string | null): Promise<P
             log.warning(
                 `GitHub polling auto-disabled (${error.reason}); restart the server to retry. ${error.message}`,
             );
-            return null;
+            return new Map();
         }
         throw error;
     }
+}
+
+async function getCachedPrInfo(folder: string, branch: string | null): Promise<PrInfo | null> {
+    if (!branch) {
+        return null;
+    }
+    const slug = await ensureRepoSlug(folder);
+    if (!slug) {
+        return null;
+    }
+    const prsByBranch = await getCachedRepoPrMap(slug);
+    return prsByBranch.get(branch) || null;
 }
 
 type RefreshTarget = {
@@ -147,7 +191,7 @@ async function buildFolderInfo({
             notPushed: git.notPushed,
         },
         prUrl: pr?.url || null,
-        prMerged: !!pr?.merged,
+        prMerged: !!pr?.closed,
         panes: {
             ai: statusLookup(target.folder, PaneKind.Ai),
             shell: statusLookup(target.folder, PaneKind.Shell),
@@ -204,10 +248,25 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
     };
 }
 
-export function getCachedFolders(): FolderInfo[] {
-    return refreshState.targets.map(
-        (target) => cache.get(target.folder) || placeholderFolderInfo(target),
-    );
+/**
+ * Pane status changes (Busy ↔ Idle) need to surface within a frontend poll, not within the slow
+ * git-driven sweep cycle. Overlay live statuses from the daemon (cached at 500ms in
+ * `getPaneStatusLookup`) on top of the cached FolderInfo so the sidebar's loader icon flips ~within
+ * one poll interval of the pane going busy, instead of waiting for the next 25s sweep to bake the
+ * new status into the cache.
+ */
+export async function getCachedFolders(): Promise<FolderInfo[]> {
+    const statusLookup = await getPaneStatusLookup();
+    return refreshState.targets.map((target) => {
+        const base = cache.get(target.folder) || placeholderFolderInfo(target);
+        return {
+            ...base,
+            panes: {
+                ai: statusLookup(target.folder, PaneKind.Ai),
+                shell: statusLookup(target.folder, PaneKind.Shell),
+            },
+        };
+    });
 }
 
 type PersistedCache = {
@@ -345,13 +404,13 @@ async function runSweep(): Promise<void> {
 
 /**
  * Re-enumerate targets right now and kick off a fresh sweep, in addition to (not replacing) the
- * scheduled background loop. The returned promise resolves once `refreshState.targets` reflects
- * the new layout, so by the time this returns the next `/folders` call will see new folders as
- * placeholders. Git/PR fields fill in via the background sweep started here, which may overlap
- * with an already-scheduled sweep — that's fine: cache writes are last-write-wins, `persistCache`
- * chains its writes, and the duplicate per-folder git work is cheap. Endpoints that mutate the
- * worktree layout (create/delete) call this so the UI updates within one poll instead of waiting
- * up to a full sweep cycle.
+ * scheduled background loop. The returned promise resolves once `refreshState.targets` reflects the
+ * new layout, so by the time this returns the next `/folders` call will see new folders as
+ * placeholders. Git/PR fields fill in via the background sweep started here, which may overlap with
+ * an already-scheduled sweep — that's fine: cache writes are last-write-wins, `persistCache` chains
+ * its writes, and the duplicate per-folder git work is cheap. Endpoints that mutate the worktree
+ * layout (create/delete) call this so the UI updates within one poll instead of waiting up to a
+ * full sweep cycle.
  */
 export async function refreshFolderInfoNow(): Promise<void> {
     const config = await loadConfig().catch(() => undefined);
