@@ -114,7 +114,7 @@ export const VirSidebar = defineElement<{
         .list {
             flex-grow: 1;
             overflow-y: auto;
-            padding: 4px 0;
+            padding: 4px 0 32px;
         }
 
         .repo-header {
