@@ -187,7 +187,9 @@ const implementation = implementService({
             };
         },
         async '/worktrees/delete'({requestData}) {
-            await killFolderPanes({folder: requestData.worktreePath});
+            await killFolderPanes({
+                folder: requestData.worktreePath,
+            });
             await removeWorktree(requestData);
             await refreshFolderInfoNow();
             return {

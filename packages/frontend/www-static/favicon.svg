@@ -1,17 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="1000"><style>
-    #light-icon {
-      display: inline;
-    }
-    #dark-icon {
-      display: none;
-    }
+<svg
+    xmlns="http://www.w3.org/2000/svg"
+    version="1.1"
+    xmlns:xlink="http://www.w3.org/1999/xlink"
+    width="1000"
+    height="1000"
+>
+    <style>
+        #light-icon {
+            display: inline;
+        }
+        #dark-icon {
+            display: none;
+        }
 
-    @media (prefers-color-scheme: dark) {
-      #light-icon {
-        display: none;
-      }
-      #dark-icon {
-        display: inline;
-      }
-    }
-  </style><g id="light-icon"><svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="1000"><g><g transform="matrix(15.625,0,0,15.625,0,0)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" aria-hidden="true" width="64" height="64"><path d="M4 34 L22 2 L30 22 L62 14 L42 32 L26 30 Z" fill="#2BC0DC"></path><path d="M60 30 L42 62 L34 42 L2 50 L22 32 L38 34 Z" fill="#1F4F70"></path></svg></g></g></svg></g><g id="dark-icon"><svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="1000" height="1000"><g clip-path="url(#SvgjsClipPath1036)"><rect width="1000" height="1000" fill="#ffffff"></rect><g transform="matrix(10.9375,0,0,10.9375,150,150)"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" aria-hidden="true" width="64" height="64"><path d="M4 34 L22 2 L30 22 L62 14 L42 32 L26 30 Z" fill="#2BC0DC"></path><path d="M60 30 L42 62 L34 42 L2 50 L22 32 L38 34 Z" fill="#1F4F70"></path></svg></g></g><defs><clipPath id="SvgjsClipPath1036"><rect width="1000" height="1000" x="0" y="0" rx="350" ry="350"></rect></clipPath></defs></svg></g></svg>
+        @media (prefers-color-scheme: dark) {
+            #light-icon {
+                display: none;
+            }
+            #dark-icon {
+                display: inline;
+            }
+        }
+    </style>
+    <g id="light-icon">
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            version="1.1"
+            xmlns:xlink="http://www.w3.org/1999/xlink"
+            width="1000"
+            height="1000"
+        >
+            <g>
+                <g transform="matrix(15.625,0,0,15.625,0,0)">
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 64 64"
+                        fill="none"
+                        aria-hidden="true"
+                        width="64"
+                        height="64"
+                    >
+                        <path d="M4 34 L22 2 L30 22 L62 14 L42 32 L26 30 Z" fill="#2BC0DC"></path>
+                        <path d="M60 30 L42 62 L34 42 L2 50 L22 32 L38 34 Z" fill="#1F4F70"></path>
+                    </svg>
+                </g>
+            </g>
+        </svg>
+    </g>
+    <g id="dark-icon">
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            version="1.1"
+            xmlns:xlink="http://www.w3.org/1999/xlink"
+            width="1000"
+            height="1000"
+        >
+            <g clip-path="url(#SvgJsClipPath1036)">
+                <rect width="1000" height="1000" fill="#ffffff"></rect>
+                <g transform="matrix(10.9375,0,0,10.9375,150,150)">
+                    <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 64 64"
+                        fill="none"
+                        aria-hidden="true"
+                        width="64"
+                        height="64"
+                    >
+                        <path d="M4 34 L22 2 L30 22 L62 14 L42 32 L26 30 Z" fill="#2BC0DC"></path>
+                        <path d="M60 30 L42 62 L34 42 L2 50 L22 32 L38 34 Z" fill="#1F4F70"></path>
+                    </svg>
+                </g>
+            </g>
+            <defs>
+                <clipPath id="SvgJsClipPath1036">
+                    <rect width="1000" height="1000" x="0" y="0" rx="350" ry="350"></rect>
+                </clipPath>
+            </defs>
+        </svg>
+    </g>
+</svg>

@@ -246,7 +246,9 @@ export const VirSidebar = defineElement<{
         return html`
             <div class="header">
                 <span class="title">
-                    <${ViraIcon.assign({icon: brandMarkIcon})}></${ViraIcon}>
+                    <${ViraIcon.assign({
+                        icon: brandMarkIcon,
+                    })}></${ViraIcon}>
                     agent-storm
                 </span>
                 <span class="header-actions">

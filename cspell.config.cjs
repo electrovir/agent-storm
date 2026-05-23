@@ -4,7 +4,6 @@ module.exports = {
     ...baseConfig,
     ignorePaths: [
         ...baseConfig.ignorePaths,
-        'terminal-ui/',
     ],
     words: [
         ...baseConfig.words,

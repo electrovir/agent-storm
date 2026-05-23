@@ -261,7 +261,7 @@ function looksUnauthenticated(stderr: string): boolean {
     );
 }
 
-const sevenDaysMs = 7 * 24 * 60 * 60 * 1_000;
+const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Match the three GitHub remote URL shapes we expect to see in a developer's `.git/config`:
