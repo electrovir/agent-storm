@@ -156,7 +156,7 @@ export const VirApp = defineElement()({
         const activeFolderName = state.activeFolder
             ? state.folderInfo.get(state.activeFolder)?.name
             : undefined;
-        document.title = activeFolderName ? `Agent Storm • ${activeFolderName}` : 'Agent Storm';
+        document.title = activeFolderName ? `agent-storm • ${activeFolderName}` : 'agent-storm';
 
         const onDividerPointerDown = (event: PointerEvent) => {
             event.preventDefault();
