@@ -166,9 +166,7 @@ export const VirSidebar = defineElement<{
         .name {
             flex-grow: 1;
             min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            overflow-wrap: anywhere;
         }
 
         .name[data-pr-open] {
@@ -541,11 +539,22 @@ function buildRowMenuEntries(
     ].filter(check.isTruthy);
 }
 
+/**
+ * Worktrees the user has asked to delete that the backend is still processing. The 2s sidebar poll
+ * fetches `/folders` while `git worktree remove --force` + `refreshFolderInfoNow` are still in
+ * flight, so without this filter the deleted row would pop back in until the backend's response
+ * lands. Entries clear in `confirmDeleteWorktree`'s `finally` once the delete settles (success or
+ * failure).
+ */
+const pendingWorktreeDeletions = new Set<string>();
+
 async function refresh(state: SidebarState, updateState: SidebarUpdate): Promise<void> {
     try {
         const folders = await getFolders();
         updateState({
-            folders,
+            folders: pendingWorktreeDeletions.size
+                ? folders.filter((folder) => !pendingWorktreeDeletions.has(folder.path))
+                : folders,
             loadError: undefined,
         });
     } catch (error: unknown) {
@@ -663,25 +672,21 @@ async function confirmDeleteWorktree(
     /**
      * Optimistically drop the row from the sidebar before the API trip. `git worktree remove
      * --force` plus the subsequent `refreshFolderInfoNow` can take a couple of seconds; without
-     * this the row sits stale until the response lands. If the backend rejects the delete the
-     * `catch` below re-fetches and the row reappears.
+     * this the row sits stale until the response lands. Adding to `pendingWorktreeDeletions` keeps
+     * the 2s background poll from un-removing it while the backend is still chewing through the
+     * delete. If the backend rejects the delete the `catch` below re-fetches and the row
+     * reappears.
      */
     removeFolderLocally(worktreePath);
+    pendingWorktreeDeletions.add(worktreePath);
     try {
         await deleteWorktree({
             worktreePath,
         });
-        await refresh(
-            {
-                folders: [],
-                pollHandle: undefined,
-                loadError: undefined,
-                openMenuKey: undefined,
-            },
-            updateState,
-        );
     } catch (error: unknown) {
         showError(updateState, error);
+    } finally {
+        pendingWorktreeDeletions.delete(worktreePath);
         await refresh(
             {
                 folders: [],

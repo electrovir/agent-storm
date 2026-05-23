@@ -2,13 +2,19 @@ html,
 body {
     margin: 0;
     padding: 0;
+    /* `100dvh` tracks the dynamic viewport height — on iPadOS Safari (paired with the viewport
+       meta's `interactive-widget=resizes-content` option set in index.html) this shrinks when the
+       on-screen keyboard appears so the terminals aren't hidden behind it. `100%` is the fallback
+       for browsers without `dvh` support; `dvh` overrides when both are honored. */
     height: 100%;
+    height: 100dvh;
     width: 100%;
-}
-
-vir-app {
-    height: 100%;
-    width: 100%;
+    /* Stop iOS from rubber-banding the whole page when a touch gesture inside the app reaches
+       the edge of its container. `overscroll-behavior: none` short-circuits the scroll chain; the
+       `overflow: hidden` belt-and-braces blocks the document itself from accepting touch scrolls
+       at all so the app's own scroll regions (sidebar, terminals) own every gesture. */
+    overflow: hidden;
+    overscroll-behavior: none;
 }
 
 /* cspell:word André */
