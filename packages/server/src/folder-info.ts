@@ -29,11 +29,12 @@ type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 /**
  * How long a freshly-fetched per-repo PR map is reused before the next folder sweep re-fetches it.
  * Per-repo (not per-branch) caching is what keeps GitHub traffic small: one GraphQL call per unique
- * repo per ~10 min, regardless of how many worktrees the user has against that repo. At 50 nodes
- * per call this comes out to ~300 GraphQL points/hour per active repo — well under the 5000
- * points/hour primary rate limit, even with several repos configured.
+ * repo per ~1 min, regardless of how many worktrees the user has against that repo. At 20 nodes per
+ * call this comes out to ~1200 GraphQL points/hour per active repo — still well under the 5000
+ * points/hour primary rate limit, but watch the per-call `cost=` log line if multiple repos are
+ * active simultaneously since traffic scales linearly with active-repo count.
  */
-const repoPrCacheTtlMs = 10 * 60 * 1000;
+const repoPrCacheTtlMs = 60 * 1000;
 
 type RepoPrCacheEntry = {
     fetchedAt: number;

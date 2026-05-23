@@ -2,7 +2,7 @@ import {type FolderInfo, PaneKind, PaneStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {log} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
-import {css, defineElement, html, listen} from 'element-vir';
+import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
 import {parseUrl} from 'url-vir';
 import {
     createSizedIcon,
@@ -37,6 +37,8 @@ const pollIntervalMs = 2000;
 
 const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
 const dashIcon = createSizedIcon(lucideIcons.Minus, 12);
+const exitedIcon = createSizedIcon(lucideIcons.X, 12);
+const mergedCheckIcon = createSizedIcon(lucideIcons.Check, 14);
 
 const buttonIconSize = 16;
 const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
@@ -46,9 +48,9 @@ const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
-    [PaneStatus.Busy]: String(viraThemeByKeys.green.foreground.body.foreground.value),
-    [PaneStatus.Idle]: String(viraThemeByKeys.grey.foreground.body.foreground.value),
-    [PaneStatus.Exited]: String(viraThemeByKeys.red.foreground.body.foreground.value),
+    [PaneStatus.Busy]: String(viraThemeByKeys.pink.foreground.header.foreground.value),
+    [PaneStatus.Idle]: String(viraThemeByKeys.grey.foreground.header.foreground.value),
+    [PaneStatus.Exited]: String(viraThemeByKeys.red.foreground.header.foreground.value),
 };
 
 type SidebarState = {
@@ -66,6 +68,16 @@ export const VirSidebar = defineElement<{
     onOpenSettings: () => void;
 }>()({
     tagName: 'vir-sidebar',
+    events: {
+        /**
+         * Emitted just after the user confirms a worktree-delete or repo-remove, before the API
+         * trip starts. The detail carries every folder path that is now gone (the removed item
+         * plus, for repo removal, all of its worktree children). The parent listens to clear
+         * `activeFolder` if it pointed at one of them and drop them from `openedFolders` so the
+         * right-hand pane unmounts immediately instead of waiting for the next folder-info poll.
+         */
+        foldersRemoved: defineElementEvent<ReadonlyArray<string>>(),
+    },
     state(): SidebarState {
         return {
             folders: [],
@@ -115,14 +127,18 @@ export const VirSidebar = defineElement<{
             flex-grow: 1;
             overflow-y: auto;
             padding: 4px 0 32px;
+            /* Atkinson Hyperlegible Next — proportional sans designed for legibility (especially
+               for low-vision readers). The rest of the sidebar (logo title, error banner, etc.)
+               keeps the system sans-serif inherited from :host. */
+            font-family: 'Atkinson Hyperlegible Next', ui-sans-serif, system-ui, sans-serif;
+            font-size: 13px;
+            font-weight: 300;
+            letter-spacing: 0.01em;
         }
 
         .repo-header {
             padding: 6px 10px 2px;
-            color: ${viraThemeByKeys.grey.foreground.header.foreground.value};
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
+            font-weight: 600;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -132,10 +148,14 @@ export const VirSidebar = defineElement<{
         .row {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 4px;
             padding: 0 10px;
             cursor: pointer;
             user-select: none;
+        }
+
+        .row .chips + .name {
+            margin-left: -2px;
         }
 
         .row:hover {
@@ -152,7 +172,7 @@ export const VirSidebar = defineElement<{
 
         .chips {
             display: inline-flex;
-            gap: 2px;
+            gap: 0;
         }
 
         .chip {
@@ -167,6 +187,7 @@ export const VirSidebar = defineElement<{
             flex-grow: 1;
             min-width: 0;
             overflow-wrap: anywhere;
+            padding: 2px 0;
         }
 
         .name[data-pr-open] {
@@ -177,6 +198,16 @@ export const VirSidebar = defineElement<{
         .name[data-pr-merged] {
             text-decoration: underline;
             text-decoration-color: ${viraThemeByKeys.purple.foreground.body.foreground.value};
+        }
+
+        .pr-merged-check {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            color: ${viraThemeByKeys.green.foreground.header.foreground.value};
+            flex-shrink: 0;
         }
 
         .actions {
@@ -226,10 +257,10 @@ export const VirSidebar = defineElement<{
             clearInterval(state.pollHandle);
         }
     },
-    render({inputs, state, updateState}) {
-        const standaloneFolders = state.folders.filter(
-            (folder) => !folder.isWorktreeRoot && !folder.parentRepoPath,
-        );
+    render({inputs, state, updateState, dispatch, events}) {
+        const standaloneFolders = state.folders
+            .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
+            .toSorted((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}));
         const worktreeRoots = state.folders.filter((folder) => folder.isWorktreeRoot);
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
@@ -239,6 +270,14 @@ export const VirSidebar = defineElement<{
             updateState({
                 folders: state.folders.filter((folder) => folder.path !== path),
             });
+        };
+        /**
+         * Fire the `foldersRemoved` event so the parent can drop `activeFolder` / `openedFolders`
+         * entries pointing at the gone folders. Used by the delete-worktree and remove-repo flows
+         * after the user confirms but before the API trip.
+         */
+        const emitFoldersRemoved = (paths: ReadonlyArray<string>) => {
+            dispatch(new events.foldersRemoved(paths));
         };
 
         return html`
@@ -287,6 +326,7 @@ export const VirSidebar = defineElement<{
                         openMenuKey: state.openMenuKey,
                         onActivate: inputs.onActivate,
                         removeFolderLocally,
+                        emitFoldersRemoved,
                         updateState,
                     }),
                 )}
@@ -340,7 +380,12 @@ export const VirSidebar = defineElement<{
                                             content: 'Remove repo',
                                             iconOverride: lucideIcons.X,
                                             onClick: () => {
-                                                void confirmRemoveRepo(root.path, updateState);
+                                                void confirmRemoveRepo(root.path, updateState, () =>
+                                                    emitFoldersRemoved([
+                                                        root.path,
+                                                        ...children.map((child) => child.path),
+                                                    ]),
+                                                );
                                             },
                                         },
                                     ])}
@@ -355,6 +400,7 @@ export const VirSidebar = defineElement<{
                                 openMenuKey: state.openMenuKey,
                                 onActivate: inputs.onActivate,
                                 removeFolderLocally,
+                                emitFoldersRemoved,
                                 updateState,
                             }),
                         )}
@@ -371,7 +417,12 @@ function renderPaneChip(label: string, status: PaneStatus) {
             <span class="chip" title="${label} pane: ${status}"></span>
         `;
     }
-    const icon = status === PaneStatus.Busy ? loaderIcon : dashIcon;
+    const icon =
+        status === PaneStatus.Busy
+            ? loaderIcon
+            : status === PaneStatus.Exited
+              ? exitedIcon
+              : dashIcon;
     return html`
         <span
             class="chip"
@@ -392,6 +443,7 @@ function renderRow({
     openMenuKey,
     onActivate,
     removeFolderLocally,
+    emitFoldersRemoved,
     updateState,
 }: Readonly<{
     folder: FolderInfo;
@@ -400,6 +452,7 @@ function renderRow({
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
     removeFolderLocally: (path: string) => void;
+    emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
     updateState: SidebarUpdate;
 }>) {
     const nameWithMarkers = [
@@ -427,6 +480,15 @@ function renderRow({
             >
                 ${nameWithMarkers}
             </span>
+            ${folder.prMerged
+                ? html`
+                      <span class="pr-merged-check" title="PR merged">
+                          <${ViraIcon.assign({
+                              icon: mergedCheckIcon,
+                          })}></${ViraIcon}>
+                      </span>
+                  `
+                : ''}
             <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
                 <${ViraMenuTrigger.assign({
                     horizontalAnchor: HorizontalAnchor.Right,
@@ -447,7 +509,12 @@ function renderRow({
                         title="Folder actions"
                     ></${ViraButton}>
                     ${renderMenuItemEntries(
-                        buildRowMenuEntries(folder, updateState, removeFolderLocally),
+                        buildRowMenuEntries(
+                            folder,
+                            updateState,
+                            removeFolderLocally,
+                            emitFoldersRemoved,
+                        ),
                     )}
                 </${ViraMenuTrigger}>
             </span>
@@ -478,6 +545,7 @@ function buildRowMenuEntries(
     folder: FolderInfo,
     updateState: SidebarUpdate,
     removeFolderLocally: (path: string) => void,
+    emitFoldersRemoved: (paths: ReadonlyArray<string>) => void,
 ): ReadonlyArray<ViraMenuItemEntry> {
     return [
         folder.prUrl &&
@@ -526,14 +594,21 @@ function buildRowMenuEntries(
                   content: 'Delete worktree',
                   iconOverride: lucideIcons.Trash2,
                   onClick: () => {
-                      void confirmDeleteWorktree(folder.path, updateState, removeFolderLocally);
+                      void confirmDeleteWorktree(
+                          folder.path,
+                          updateState,
+                          removeFolderLocally,
+                          () => emitFoldersRemoved([folder.path]),
+                      );
                   },
               }
             : {
                   content: 'Remove repo',
                   iconOverride: lucideIcons.X,
                   onClick: () => {
-                      void confirmRemoveRepo(folder.path, updateState);
+                      void confirmRemoveRepo(folder.path, updateState, () =>
+                          emitFoldersRemoved([folder.path]),
+                      );
                   },
               },
     ].filter(check.isTruthy);
@@ -605,10 +680,20 @@ async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
     }
 }
 
-async function confirmRemoveRepo(repoPath: string, updateState: SidebarUpdate): Promise<void> {
+async function confirmRemoveRepo(
+    repoPath: string,
+    updateState: SidebarUpdate,
+    notifyRemoved: () => void,
+): Promise<void> {
     if (!window.confirm(`Remove repo ${repoPath}?`)) {
         return;
     }
+    /**
+     * Clear app-level selection / opened panes for this repo (and its worktrees) before the API
+     * trip so the right pane unmounts immediately instead of waiting for the next folder-info
+     * poll.
+     */
+    notifyRemoved();
     try {
         const config = await getConfig();
         await putConfig({
@@ -665,6 +750,7 @@ async function confirmDeleteWorktree(
     worktreePath: string,
     updateState: SidebarUpdate,
     removeFolderLocally: (path: string) => void,
+    notifyRemoved: () => void,
 ): Promise<void> {
     if (!window.confirm(`Delete worktree ${worktreePath}?`)) {
         return;
@@ -674,10 +760,12 @@ async function confirmDeleteWorktree(
      * --force` plus the subsequent `refreshFolderInfoNow` can take a couple of seconds; without
      * this the row sits stale until the response lands. Adding to `pendingWorktreeDeletions` keeps
      * the 2s background poll from un-removing it while the backend is still chewing through the
-     * delete. If the backend rejects the delete the `catch` below re-fetches and the row
-     * reappears.
+     * delete. `notifyRemoved` lets the parent clear `activeFolder` / `openedFolders` entries for
+     * this worktree so the right-hand pane unmounts immediately. If the backend rejects the delete
+     * the `catch` below re-fetches and the row reappears.
      */
     removeFolderLocally(worktreePath);
+    notifyRemoved();
     pendingWorktreeDeletions.add(worktreePath);
     try {
         await deleteWorktree({

@@ -8,8 +8,9 @@ module.exports = {
     words: [
         ...baseConfig.words,
         'grabbable',
-        'Menlo',
-        'Meslo',
+        'hyperlegible',
+        'menlo',
+        'meslo',
         'pid',
         'pids',
         'prebuilds',
