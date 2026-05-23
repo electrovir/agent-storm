@@ -9,8 +9,8 @@ import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
-import {loadConfig} from './config.js';
-import {folderInfoCachePath, notCommittedDir} from './file-paths.js';
+import {loadConfig, saveConfig} from './config.js';
+import {folderInfoCachePath, githubCachePath, notCommittedDir} from './file-paths.js';
 import {
     fetchRepoPrs,
     getGitInfo,
@@ -56,22 +56,122 @@ function repoCacheKey(slug: Readonly<RepoSlug>): string {
 }
 
 /**
- * In-memory auto-disable state for GitHub polling. Set the first time the GraphQL call surfaces a
- * rate-limit or auth failure; subsequent sweeps skip the GitHub call entirely. Cleared on server
- * restart — that's the recovery path for rate limits, and the moment the user is most likely to
- * have fixed an auth issue. The user's explicit `disabledGitHubPolling: true` config takes
- * precedence either way; this only flips an implicit off-switch.
+ * GitHub primary rate limit resets hourly. When we observe a rate-limit error we can't read the
+ * exact reset timestamp from `gh`'s stderr, so back off for a full hour — long enough to cover the
+ * worst case where we hit the limit right after the previous reset.
+ */
+const autoDisableRateLimitMs = 60 * 60 * 1_000;
+/**
+ * Auth failures don't auto-recover; the user has to re-run `gh auth login`. Back off long enough
+ * that the warning isn't spamming logs, but short enough that the next sweep after they fix it
+ * picks it back up.
+ */
+const autoDisableAuthMs = 10 * 60 * 1_000;
+
+/**
+ * Auto-disable state for GitHub polling. Set when a GraphQL call surfaces rate-limit or auth
+ * failure; subsequent sweeps skip the GitHub call until `disabledUntilMs` elapses. Persisted to
+ * disk so `tsx --watch` restarts during dev don't immediately re-poll GitHub and hit the same rate
+ * limit again. The user's explicit `disabledGitHubPolling: true` config takes precedence either
+ * way; this only flips an implicit off-switch.
  */
 const githubPollingState: {
     autoDisabled: boolean;
     reason: GitHubPollingDisableReason | undefined;
+    disabledUntilMs: number;
 } = {
     autoDisabled: false,
     reason: undefined,
+    disabledUntilMs: 0,
 };
 
+function isAutoDisabled(): boolean {
+    if (!githubPollingState.autoDisabled) {
+        return false;
+    }
+    if (Date.now() >= githubPollingState.disabledUntilMs) {
+        githubPollingState.autoDisabled = false;
+        githubPollingState.reason = undefined;
+        githubPollingState.disabledUntilMs = 0;
+        void persistAutoDisableToConfig();
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Chain of in-flight config writes for the auto-disable field. The config file is a user-edited
+ * JSON; we don't want overlapping writes from successive rate-limit events to interleave or to race
+ * with a config save from the settings modal — chaining serializes them.
+ */
+const autoDisableWriteState: {pending: Promise<void>} = {
+    pending: Promise.resolve(),
+};
+
+async function persistAutoDisableToConfig(): Promise<void> {
+    autoDisableWriteState.pending = autoDisableWriteState.pending
+        .catch(() => {
+            /* prior write failed; carry on so the next one still has a chance */
+        })
+        .then(async () => {
+            const config = await loadConfig();
+            await saveConfig({
+                ...config,
+                githubPollingAutoDisable:
+                    githubPollingState.autoDisabled && githubPollingState.reason
+                        ? {
+                              reason: githubPollingState.reason,
+                              disabledUntilMs: githubPollingState.disabledUntilMs,
+                          }
+                        : null,
+            });
+        })
+        .catch(() => {
+            /* persistence is best-effort — losing a write just means a cold restart */
+        });
+    return autoDisableWriteState.pending;
+}
+
+function isValidAutoDisableReason(value: unknown): value is GitHubPollingDisableReason {
+    return value === 'rate-limited' || value === 'unauthenticated';
+}
+
+function loadAutoDisableFromConfig(config: Readonly<Config>): void {
+    const saved = config.githubPollingAutoDisable;
+    if (
+        !saved ||
+        typeof saved.disabledUntilMs !== 'number' ||
+        Date.now() >= saved.disabledUntilMs ||
+        !isValidAutoDisableReason(saved.reason)
+    ) {
+        return;
+    }
+    githubPollingState.autoDisabled = true;
+    githubPollingState.reason = saved.reason;
+    githubPollingState.disabledUntilMs = saved.disabledUntilMs;
+    const minutesLeft = Math.max(1, Math.round((saved.disabledUntilMs - Date.now()) / 60_000));
+    log.warning(
+        `GitHub polling still auto-disabled from prior run (${saved.reason}); ${minutesLeft} min remaining.`,
+    );
+}
+
+function markAutoDisabled(reason: GitHubPollingDisableReason, message: string): void {
+    const wasDisabled = githubPollingState.autoDisabled;
+    const backoffMs = reason === 'rate-limited' ? autoDisableRateLimitMs : autoDisableAuthMs;
+    githubPollingState.autoDisabled = true;
+    githubPollingState.reason = reason;
+    githubPollingState.disabledUntilMs = Date.now() + backoffMs;
+    if (!wasDisabled) {
+        const minutes = Math.round(backoffMs / 60_000);
+        log.warning(
+            `GitHub polling auto-disabled (${reason}); backing off ${minutes} min. ${message}`,
+        );
+    }
+    void persistAutoDisableToConfig();
+}
+
 function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
-    return !!config.disabledGitHubPolling || githubPollingState.autoDisabled;
+    return !!config.disabledGitHubPolling || isAutoDisabled();
 }
 
 async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
@@ -84,11 +184,31 @@ async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
     return slug;
 }
 
-async function getCachedRepoPrMap(slug: Readonly<RepoSlug>): Promise<Map<string, PrInfo>> {
+async function getCachedRepoPrMap(
+    slug: Readonly<RepoSlug>,
+    allowFetch: boolean,
+): Promise<Map<string, PrInfo>> {
     const key = repoCacheKey(slug);
     const existing = repoPrCache.get(key);
     if (existing && Date.now() - existing.fetchedAt < repoPrCacheTtlMs) {
         return existing.prsByBranch;
+    }
+    /**
+     * The caller-decided gate: skip the network trip entirely when the repo has no active panes.
+     * Cache hits above still serve stale data (within the TTL) so the sidebar's PR badges stay
+     * accurate for inactive folders; we just don't spend GraphQL points refreshing them.
+     */
+    if (!allowFetch) {
+        return new Map();
+    }
+    /**
+     * Belt-and-braces gate: `buildFolderInfo` already short-circuits on the per-sweep
+     * `disabledGitHubPolling` flag, but that flag is captured once at sweep start so a folder that
+     * triggers auto-disable mid-sweep would still let later folders in the same sweep hit the API.
+     * Re-check on every call so the very next folder skips its own GraphQL trip.
+     */
+    if (isAutoDisabled()) {
+        return new Map();
     }
     try {
         const prsByBranch = await fetchRepoPrs(slug);
@@ -96,21 +216,22 @@ async function getCachedRepoPrMap(slug: Readonly<RepoSlug>): Promise<Map<string,
             fetchedAt: Date.now(),
             prsByBranch,
         });
+        persistGithubCache();
         return prsByBranch;
     } catch (error) {
         if (error instanceof GitHubPollingError) {
-            githubPollingState.autoDisabled = true;
-            githubPollingState.reason = error.reason;
-            log.warning(
-                `GitHub polling auto-disabled (${error.reason}); restart the server to retry. ${error.message}`,
-            );
+            markAutoDisabled(error.reason, error.message);
             return new Map();
         }
         throw error;
     }
 }
 
-async function getCachedPrInfo(folder: string, branch: string | null): Promise<PrInfo | null> {
+async function getCachedPrInfo(
+    folder: string,
+    branch: string | null,
+    allowFetch: boolean,
+): Promise<PrInfo | null> {
     if (!branch) {
         return null;
     }
@@ -118,7 +239,7 @@ async function getCachedPrInfo(folder: string, branch: string | null): Promise<P
     if (!slug) {
         return null;
     }
-    const prsByBranch = await getCachedRepoPrMap(slug);
+    const prsByBranch = await getCachedRepoPrMap(slug, allowFetch);
     return prsByBranch.get(branch) || null;
 }
 
@@ -169,16 +290,18 @@ async function buildFolderInfo({
     target,
     statusLookup,
     disabledGitHubPolling,
+    repoHasActivePane,
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
     disabledGitHubPolling: boolean;
+    repoHasActivePane: boolean;
 }>): Promise<FolderInfo> {
     const git = await getGitInfo(target.folder);
     const pr =
         target.isWorktreeRoot || disabledGitHubPolling
             ? null
-            : await getCachedPrInfo(target.folder, git.branch);
+            : await getCachedPrInfo(target.folder, git.branch, repoHasActivePane);
     return {
         path: target.folder,
         name: basename(target.folder),
@@ -338,35 +461,153 @@ async function loadPersistedCache(): Promise<void> {
     }
 }
 
+type PersistedGithubCache = {
+    repos: ReadonlyArray<
+        readonly [
+            string,
+            {
+                fetchedAt: number;
+                prs: ReadonlyArray<
+                    readonly [
+                        string,
+                        PrInfo,
+                    ]
+                >;
+            },
+        ]
+    >;
+};
+
+const githubPersistState: {pending: Promise<void>} = {
+    pending: Promise.resolve(),
+};
+
+function persistGithubCache(): void {
+    const snapshot: PersistedGithubCache = {
+        repos: Array.from(
+            repoPrCache.entries(),
+            ([
+                key,
+                entry,
+            ]) => [
+                key,
+                {
+                    fetchedAt: entry.fetchedAt,
+                    prs: Array.from(entry.prsByBranch.entries()),
+                },
+            ],
+        ),
+    };
+    githubPersistState.pending = githubPersistState.pending
+        .catch(() => {
+            /* prior write failed; carry on so the next one still has a chance */
+        })
+        .then(async () => {
+            await mkdir(notCommittedDir, {
+                recursive: true,
+            });
+            await writeFile(githubCachePath, JSON.stringify(snapshot), 'utf-8');
+        })
+        .catch(() => {
+            /* persistence is best-effort — losing a write just means a cold restart */
+        });
+}
+
+async function loadPersistedGithubCache(): Promise<void> {
+    const contents = await readFile(githubCachePath, 'utf-8').catch(() => undefined);
+    if (!contents) {
+        return;
+    }
+    try {
+        const parsed = JSON.parse(contents) as PersistedGithubCache;
+        if (Array.isArray(parsed.repos)) {
+            parsed.repos.forEach(
+                ([
+                    key,
+                    entry,
+                ]) => {
+                    if (typeof entry?.fetchedAt !== 'number' || !Array.isArray(entry.prs)) {
+                        return;
+                    }
+                    /** Drop already-expired entries so we don't pretend stale data is fresh. */
+                    if (Date.now() - entry.fetchedAt >= repoPrCacheTtlMs) {
+                        return;
+                    }
+                    repoPrCache.set(key, {
+                        fetchedAt: entry.fetchedAt,
+                        prsByBranch: new Map(entry.prs),
+                    });
+                },
+            );
+        }
+    } catch {
+        /* corrupted persisted file — ignore and let the live sweep rebuild it */
+    }
+}
+
 /**
  * Pause between consecutive folder refreshes within a sweep. Each folder costs roughly 4 git
  * subprocesses (`rev-parse`, `status --porcelain`, upstream check, `log` ahead-count); spreading
- * them out keeps the backend from pegging a core when the user has many configured repos.
+ * them out keeps the backend from pegging a core when the user has many configured repos. 100ms
+ * gives a ~3s sweep over ~30 folders while keeping CPU usage modest.
  */
-const perFolderDelayMs = 500;
+const perFolderDelayMs = 100;
 /**
- * Idle pause after each complete sweep through every folder. With ~30 folders × 500ms each, a sweep
- * takes ~15s; a 10s idle on top gives roughly one full refresh every 25s. Plenty fresh for a
- * slow-moving UI; cheap on the host.
+ * Idle pause after each complete sweep through every folder. Tuned so the full cycle (sweep + idle)
+ * lands near ~10s for typical folder counts, so the sidebar's `*` / `+` markers reflect dirty /
+ * unpushed state within a poll interval of git activity. PR fetches piggy-back on this sweep but
+ * are gated by the 10-min `repoPrCacheTtlMs`, so a faster sweep does not mean more GitHub traffic.
  */
-const sweepIdleMs = 10_000;
+const sweepIdleMs = 5_000;
 
 async function refreshOnce(
     target: RefreshTarget,
     statusLookup: PaneStatusLookup,
     disabledGitHubPolling: boolean,
+    repoHasActivePane: boolean,
 ): Promise<void> {
     try {
         const info = await buildFolderInfo({
             target,
             statusLookup,
             disabledGitHubPolling,
+            repoHasActivePane,
         });
         cache.set(target.folder, info);
         persistCache();
     } catch {
         /* swallow per-folder errors so one bad repo doesn't stop the sweep */
     }
+}
+
+function isLivePaneStatus(status: PaneStatus): boolean {
+    return status === PaneStatus.Busy || status === PaneStatus.Idle;
+}
+
+/**
+ * Group key used to decide whether a repo "has an active pane". All worktrees of a given repo, plus
+ * the worktree-root entry itself, share the same key — `parentRepoPath` when the target is a
+ * worktree child, or the target's own path when it's the repo entry. Activity on any one folder
+ * unlocks the GraphQL fetch for the whole group.
+ */
+function repoActivityKey(target: RefreshTarget): string {
+    return target.parentRepoPath || target.folder;
+}
+
+function computeActiveRepoKeys(
+    targets: ReadonlyArray<RefreshTarget>,
+    statusLookup: PaneStatusLookup,
+): Set<string> {
+    const active = new Set<string>();
+    targets.forEach((target) => {
+        if (
+            isLivePaneStatus(statusLookup(target.folder, PaneKind.Ai)) ||
+            isLivePaneStatus(statusLookup(target.folder, PaneKind.Shell))
+        ) {
+            active.add(repoActivityKey(target));
+        }
+    });
+    return active;
 }
 
 async function runSweep(): Promise<void> {
@@ -384,12 +625,24 @@ async function runSweep(): Promise<void> {
     const statusLookup = await getPaneStatusLookup();
     const disabledGitHubPolling = isGitHubPollingDisabled(config);
     /**
+     * Snapshot which repos have at least one live pane (AI or Shell, Busy or Idle) at sweep start.
+     * `getCachedRepoPrMap` uses this to skip the GraphQL fetch for repos the user isn't actively
+     * working with — cache hits still serve their stale data, but no network trip is spent
+     * refreshing PRs for an inactive repo.
+     */
+    const activeRepoKeys = computeActiveRepoKeys(targets, statusLookup);
+    /**
      * Sequential on purpose: parallel refresh is what created the original 100% CPU problem.
      * `awaitedForEach` awaits each callback before invoking the next, so subprocess pressure stays
      * at one folder at a time.
      */
     await awaitedForEach(targets, async (target) => {
-        await refreshOnce(target, statusLookup, disabledGitHubPolling);
+        await refreshOnce(
+            target,
+            statusLookup,
+            disabledGitHubPolling,
+            activeRepoKeys.has(repoActivityKey(target)),
+        );
         await wait({
             milliseconds: perFolderDelayMs,
         });
@@ -451,6 +704,11 @@ export async function startFolderInfoRefreshLoop(): Promise<void> {
     }
     refreshState.loopStarted = true;
     await loadPersistedCache();
+    await loadPersistedGithubCache();
+    const initialConfig = await loadConfig().catch(() => undefined);
+    if (initialConfig) {
+        loadAutoDisableFromConfig(initialConfig);
+    }
     runSweep()
         .catch(() => {
             /* never let the loop die; just move on to the next sweep */

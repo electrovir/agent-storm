@@ -59,6 +59,17 @@ const configShape = defineShape({
      */
     disabledGitHubPolling: optionalShape(false),
     /**
+     * Runtime-set auto-disable state for GitHub polling, persisted across server restarts so `tsx
+     * --watch` reloads during dev don't immediately re-poll GitHub after a rate-limit / auth
+     * failure. Set by the backend when a GraphQL call surfaces such an error; cleared once
+     * `disabledUntilMs` elapses or the user explicitly toggles polling off-and-on. Distinct from
+     * `disabledGitHubPolling` above, which is the manual user kill-switch.
+     */
+    githubPollingAutoDisable: nullableShape({
+        reason: '',
+        disabledUntilMs: 0,
+    }),
+    /**
      * Whether the in-app terminal should use the xterm WebGL renderer. Optional and defaulted to
      * true; users on machines without WebGL2 (or with flaky GPU drivers) can switch this off to
      * fall back to xterm's DOM renderer.

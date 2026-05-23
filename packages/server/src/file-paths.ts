@@ -24,6 +24,14 @@ export const authSecretFileName = basename(authSecretPath);
  */
 export const folderInfoCachePath = resolve(notCommittedDir, 'folder-info-cache.json');
 
+/**
+ * Persisted GitHub PR cache + auto-disable state. Survives server restarts so `tsx --watch` reloads
+ * during dev don't blow away the 10-minute PR cache and trigger a fresh round of GraphQL fetches on
+ * every file save, and so a rate-limit/auth auto-disable sticks until its expiry rather than
+ * resetting on every restart.
+ */
+export const githubCachePath = resolve(notCommittedDir, 'github-cache.json');
+
 /** Unix domain socket the pty daemon listens on for new pane attachments. */
 export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
 

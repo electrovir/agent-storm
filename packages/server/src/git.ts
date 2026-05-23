@@ -1,3 +1,4 @@
+import {log} from '@augment-vir/common';
 import {execFile} from 'node:child_process';
 import {lstat, readdir, stat} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
@@ -318,10 +319,26 @@ export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
  * itself stays constant and the cost-per-call is bounded by node count, keeping us well under the
  * GraphQL hourly point budget.
  */
+/**
+ * Upper bound on PRs returned per repo per call. The GraphQL "cost" the API charges scales with the
+ * number of returned objects (rough rule: ~1 point per connection node, capped by `first:`), so
+ * lowering this cuts our headroom against the 5000-points/hour primary rate limit. 20 is plenty for
+ * the sidebar's use case (we only need to find any open / recently-terminal PR for the branches the
+ * user has worktrees against).
+ */
+const fetchRepoPrsBatchSize = 20;
+
 const repoPrsGraphqlQuery = [
     'query($owner: String!, $name: String!) {',
+    /** Free info: lets the caller log how many points the response cost and how many remain. */
+    '  rateLimit {',
+    '    cost',
+    '    remaining',
+    '    limit',
+    '    resetAt',
+    '  }',
     '  repository(owner: $owner, name: $name) {',
-    '    pullRequests(states: [OPEN, CLOSED, MERGED], first: 50, orderBy: {field: UPDATED_AT, direction: DESC}) {',
+    `    pullRequests(states: [OPEN, CLOSED, MERGED], first: ${fetchRepoPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
     '      nodes {',
     '        url',
     '        headRefName',
@@ -332,13 +349,6 @@ const repoPrsGraphqlQuery = [
     '  }',
     '}',
 ].join('\n');
-
-/**
- * Upper bound on PRs returned per repo per call. Lower bound on rate-limit headroom: the GraphQL
- * cost is 1 point per returned node, so a repo with 50 recent PRs costs 50 points (against a 5000
- * points/hour budget). Repos with fewer PRs cost proportionally less.
- */
-const fetchRepoPrsBatchSize = 50;
 
 type RawPrNode = {
     url?: string;
@@ -416,6 +426,12 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
     }
     const parsed = JSON.parse(result.stdout) as {
         data?: {
+            rateLimit?: {
+                cost?: number;
+                remaining?: number;
+                limit?: number;
+                resetAt?: string;
+            };
             repository?: {
                 pullRequests?: {
                     nodes?: ReadonlyArray<RawPrNode>;
@@ -423,6 +439,12 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
             };
         };
     };
+    const rateLimit = parsed.data?.rateLimit;
+    if (rateLimit) {
+        log.info(
+            `GitHub GraphQL ${slug.owner}/${slug.name}: cost=${rateLimit.cost}, remaining=${rateLimit.remaining}/${rateLimit.limit}, resetAt=${rateLimit.resetAt}`,
+        );
+    }
     const nodes = parsed.data?.repository?.pullRequests?.nodes || [];
     const cutoff = Date.now() - sevenDaysMs;
     const map = new Map<string, PrInfo>();
