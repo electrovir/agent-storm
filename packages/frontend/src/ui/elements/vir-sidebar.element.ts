@@ -233,6 +233,15 @@ export const VirSidebar = defineElement<{
             (folder) => !folder.isWorktreeRoot && !folder.parentRepoPath,
         );
         const worktreeRoots = state.folders.filter((folder) => folder.isWorktreeRoot);
+        /**
+         * Closes over `state.folders` from the latest render so the optimistic-delete handler can
+         * filter against the freshest snapshot without having to ask for a re-read.
+         */
+        const removeFolderLocally = (path: string) => {
+            updateState({
+                folders: state.folders.filter((folder) => folder.path !== path),
+            });
+        };
 
         return html`
             <div class="header">
@@ -277,6 +286,7 @@ export const VirSidebar = defineElement<{
                         activeFolder: inputs.activeFolder,
                         openMenuKey: state.openMenuKey,
                         onActivate: inputs.onActivate,
+                        removeFolderLocally,
                         updateState,
                     }),
                 )}
@@ -344,6 +354,7 @@ export const VirSidebar = defineElement<{
                                 activeFolder: inputs.activeFolder,
                                 openMenuKey: state.openMenuKey,
                                 onActivate: inputs.onActivate,
+                                removeFolderLocally,
                                 updateState,
                             }),
                         )}
@@ -380,6 +391,7 @@ function renderRow({
     activeFolder,
     openMenuKey,
     onActivate,
+    removeFolderLocally,
     updateState,
 }: Readonly<{
     folder: FolderInfo;
@@ -387,6 +399,7 @@ function renderRow({
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
+    removeFolderLocally: (path: string) => void;
     updateState: SidebarUpdate;
 }>) {
     const nameWithMarkers = [
@@ -433,7 +446,9 @@ function renderRow({
                         slot=${ViraMenuTrigger.slotNames.trigger}
                         title="Folder actions"
                     ></${ViraButton}>
-                    ${renderMenuItemEntries(buildRowMenuEntries(folder, updateState))}
+                    ${renderMenuItemEntries(
+                        buildRowMenuEntries(folder, updateState, removeFolderLocally),
+                    )}
                 </${ViraMenuTrigger}>
             </span>
         </div>
@@ -462,6 +477,7 @@ function isValidPrUrl(url: string | null | undefined): boolean {
 function buildRowMenuEntries(
     folder: FolderInfo,
     updateState: SidebarUpdate,
+    removeFolderLocally: (path: string) => void,
 ): ReadonlyArray<ViraMenuItemEntry> {
     return [
         folder.prUrl &&
@@ -510,7 +526,7 @@ function buildRowMenuEntries(
                   content: 'Delete worktree',
                   iconOverride: lucideIcons.Trash2,
                   onClick: () => {
-                      void confirmDeleteWorktree(folder.path, updateState);
+                      void confirmDeleteWorktree(folder.path, updateState, removeFolderLocally);
                   },
               }
             : {
@@ -637,10 +653,18 @@ async function promptAddWorktree(
 async function confirmDeleteWorktree(
     worktreePath: string,
     updateState: SidebarUpdate,
+    removeFolderLocally: (path: string) => void,
 ): Promise<void> {
     if (!window.confirm(`Delete worktree ${worktreePath}?`)) {
         return;
     }
+    /**
+     * Optimistically drop the row from the sidebar before the API trip. `git worktree remove
+     * --force` plus the subsequent `refreshFolderInfoNow` can take a couple of seconds; without
+     * this the row sits stale until the response lands. If the backend rejects the delete the
+     * `catch` below re-fetches and the row reappears.
+     */
+    removeFolderLocally(worktreePath);
     try {
         await deleteWorktree({
             worktreePath,
@@ -656,6 +680,15 @@ async function confirmDeleteWorktree(
         );
     } catch (error: unknown) {
         showError(updateState, error);
+        await refresh(
+            {
+                folders: [],
+                pollHandle: undefined,
+                loadError: undefined,
+                openMenuKey: undefined,
+            },
+            updateState,
+        );
     }
 }
 
