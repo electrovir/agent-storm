@@ -33,7 +33,7 @@ type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
  * per call this comes out to ~300 GraphQL points/hour per active repo — well under the 5000
  * points/hour primary rate limit, even with several repos configured.
  */
-const repoPrCacheTtlMs = 10 * 60 * 1_000;
+const repoPrCacheTtlMs = 10 * 60 * 1000;
 
 type RepoPrCacheEntry = {
     fetchedAt: number;
@@ -60,13 +60,13 @@ function repoCacheKey(slug: Readonly<RepoSlug>): string {
  * exact reset timestamp from `gh`'s stderr, so back off for a full hour — long enough to cover the
  * worst case where we hit the limit right after the previous reset.
  */
-const autoDisableRateLimitMs = 60 * 60 * 1_000;
+const autoDisableRateLimitMs = 60 * 60 * 1000;
 /**
  * Auth failures don't auto-recover; the user has to re-run `gh auth login`. Back off long enough
  * that the warning isn't spamming logs, but short enough that the next sweep after they fix it
  * picks it back up.
  */
-const autoDisableAuthMs = 10 * 60 * 1_000;
+const autoDisableAuthMs = 10 * 60 * 1000;
 
 /**
  * Auto-disable state for GitHub polling. Set when a GraphQL call surfaces rate-limit or auth
@@ -88,8 +88,7 @@ const githubPollingState: {
 function isAutoDisabled(): boolean {
     if (!githubPollingState.autoDisabled) {
         return false;
-    }
-    if (Date.now() >= githubPollingState.disabledUntilMs) {
+    } else if (Date.now() >= githubPollingState.disabledUntilMs) {
         githubPollingState.autoDisabled = false;
         githubPollingState.reason = undefined;
         githubPollingState.disabledUntilMs = 0;
@@ -170,6 +169,20 @@ function markAutoDisabled(reason: GitHubPollingDisableReason, message: string): 
     void persistAutoDisableToConfig();
 }
 
+/**
+ * Mirror of `config.disabledGitHubPolling`, refreshed on each sweep + on startup. Lets the
+ * lowest-level fetch site short-circuit without re-reading the config file on every call. The
+ * config is still the source of truth — this is just a hot cache so `getCachedRepoPrMap` can gate
+ * without I/O.
+ */
+const userPollingState: {manuallyDisabled: boolean} = {
+    manuallyDisabled: false,
+};
+
+function isUserPollingDisabled(): boolean {
+    return userPollingState.manuallyDisabled;
+}
+
 function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
     return !!config.disabledGitHubPolling || isAutoDisabled();
 }
@@ -188,26 +201,34 @@ async function getCachedRepoPrMap(
     slug: Readonly<RepoSlug>,
     allowFetch: boolean,
 ): Promise<Map<string, PrInfo>> {
+    /**
+     * Belt-and-braces gate against the user's manual kill-switch. The high-level caller in
+     * `buildFolderInfo` already short-circuits on `disabledGitHubPolling`, but checking here too
+     * means any future call path can't accidentally bypass the user's preference — even cache
+     * misses get short-circuited before any network call could be attempted.
+     */
+    if (isUserPollingDisabled()) {
+        return new Map();
+    }
     const key = repoCacheKey(slug);
     const existing = repoPrCache.get(key);
     if (existing && Date.now() - existing.fetchedAt < repoPrCacheTtlMs) {
         return existing.prsByBranch;
-    }
-    /**
-     * The caller-decided gate: skip the network trip entirely when the repo has no active panes.
-     * Cache hits above still serve stale data (within the TTL) so the sidebar's PR badges stay
-     * accurate for inactive folders; we just don't spend GraphQL points refreshing them.
-     */
-    if (!allowFetch) {
+        /**
+         * The caller-decided gate: skip the network trip entirely when the repo has no active
+         * panes. Cache hits above still serve stale data (within the TTL) so the sidebar's PR
+         * badges stay accurate for inactive folders; we just don't spend GraphQL points refreshing
+         * them.
+         */
+    } else if (!allowFetch) {
         return new Map();
-    }
-    /**
-     * Belt-and-braces gate: `buildFolderInfo` already short-circuits on the per-sweep
-     * `disabledGitHubPolling` flag, but that flag is captured once at sweep start so a folder that
-     * triggers auto-disable mid-sweep would still let later folders in the same sweep hit the API.
-     * Re-check on every call so the very next folder skips its own GraphQL trip.
-     */
-    if (isAutoDisabled()) {
+        /**
+         * Belt-and-braces gate: `buildFolderInfo` already short-circuits on the per-sweep
+         * `disabledGitHubPolling` flag, but that flag is captured once at sweep start so a folder
+         * that triggers auto-disable mid-sweep would still let later folders in the same sweep hit
+         * the API. Re-check on every call so the very next folder skips its own GraphQL trip.
+         */
+    } else if (isAutoDisabled()) {
         return new Map();
     }
     try {
@@ -526,11 +547,12 @@ async function loadPersistedGithubCache(): Promise<void> {
                     key,
                     entry,
                 ]) => {
-                    if (typeof entry?.fetchedAt !== 'number' || !Array.isArray(entry.prs)) {
-                        return;
-                    }
-                    /** Drop already-expired entries so we don't pretend stale data is fresh. */
-                    if (Date.now() - entry.fetchedAt >= repoPrCacheTtlMs) {
+                    if (
+                        typeof entry?.fetchedAt !== 'number' ||
+                        !Array.isArray(entry.prs) ||
+                        /** Drop already-expired entries so we don't pretend stale data is fresh. */
+                        Date.now() - entry.fetchedAt >= repoPrCacheTtlMs
+                    ) {
                         return;
                     }
                     repoPrCache.set(key, {
@@ -554,11 +576,11 @@ async function loadPersistedGithubCache(): Promise<void> {
 const perFolderDelayMs = 100;
 /**
  * Idle pause after each complete sweep through every folder. Tuned so the full cycle (sweep + idle)
- * lands near ~10s for typical folder counts, so the sidebar's `*` / `+` markers reflect dirty /
- * unpushed state within a poll interval of git activity. PR fetches piggy-back on this sweep but
- * are gated by the 10-min `repoPrCacheTtlMs`, so a faster sweep does not mean more GitHub traffic.
+ * lands near ~10s for typical folder counts, so the sidebar's `*` / `+` markers reflect dirty / not
+ * pushed state within a poll interval of git activity. PR fetches piggy-back on this sweep but are
+ * gated by the 10-min `repoPrCacheTtlMs`, so a faster sweep does not mean more GitHub traffic.
  */
-const sweepIdleMs = 5_000;
+const sweepIdleMs = 5000;
 
 async function refreshOnce(
     target: RefreshTarget,
