@@ -195,6 +195,13 @@ export const VirTerminal = defineElement<{
         .terminal-host {
             width: 100%;
             height: 100%;
+            /* We translate touch drags into terminal.scrollLines ourselves, so tell iOS to keep
+               its hands off the gesture entirely. pan-y would still let the browser try a
+               vertical pan — when xterm has nothing more to scroll, that pan chains up to the page
+               and triggers the rubber-band / scroll-past behavior. none blocks that and also
+               disables iOS double-tap zoom on the canvas. */
+            touch-action: none;
+            overscroll-behavior: contain;
         }
 
         ${defaultXtermStyles}
@@ -386,6 +393,66 @@ export const VirTerminal = defineElement<{
                         }
                         return true;
                     });
+
+                    /**
+                     * IPad touch-drag scrolling. xterm's WebGL canvas captures touch events and its
+                     * own viewport-scroll behavior doesn't kick in on touch, so the terminal
+                     * scrollback is unreachable on iOS without this. Translate a one-finger drag
+                     * into `terminal.scrollLines` calls, sized against the actual rendered row
+                     * height when we can read it (falls back to the configured font size with
+                     * xterm's 1.2 line-height multiplier).
+                     */
+                    const touchScrollState: {
+                        pointerId: number | undefined;
+                        lastY: number;
+                    } = {
+                        pointerId: undefined,
+                        lastY: 0,
+                    };
+                    element.addEventListener(
+                        'pointerdown',
+                        (event) => {
+                            if (event.pointerType !== 'touch') {
+                                return;
+                            }
+                            touchScrollState.pointerId = event.pointerId;
+                            touchScrollState.lastY = event.clientY;
+                        },
+                        {passive: true},
+                    );
+                    element.addEventListener(
+                        'pointermove',
+                        (event) => {
+                            if (
+                                event.pointerType !== 'touch' ||
+                                event.pointerId !== touchScrollState.pointerId
+                            ) {
+                                return;
+                            }
+                            const rowsEl = element.querySelector('.xterm-rows');
+                            const sampleRow = rowsEl?.firstElementChild;
+                            const rowHeight =
+                                sampleRow instanceof HTMLElement
+                                    ? sampleRow.getBoundingClientRect().height || 0
+                                    : 0;
+                            const effectiveRowHeight =
+                                rowHeight > 0 ? rowHeight : (terminal.options.fontSize ?? 13 * 1.2);
+                            const deltaY = event.clientY - touchScrollState.lastY;
+                            const lines = Math.trunc(-deltaY / effectiveRowHeight);
+                            if (lines !== 0) {
+                                terminal.scrollLines(lines);
+                                touchScrollState.lastY -= lines * effectiveRowHeight;
+                            }
+                        },
+                        {passive: true},
+                    );
+                    const endTouchScroll = (event: PointerEvent) => {
+                        if (event.pointerId === touchScrollState.pointerId) {
+                            touchScrollState.pointerId = undefined;
+                        }
+                    };
+                    element.addEventListener('pointerup', endTouchScroll, {passive: true});
+                    element.addEventListener('pointercancel', endTouchScroll, {passive: true});
 
                     element.addEventListener('dragover', (event) => {
                         // dragover must be handled (preventDefault'd) for the matching drop event

@@ -118,8 +118,17 @@ export const VirPaneGroup = defineElement<{
         host.style.setProperty('--ai-grow', String(split));
         host.style.setProperty('--shell-grow', String(1 - split));
 
-        const onDividerMouseDown = (event: MouseEvent) => {
+        const onDividerPointerDown = (event: PointerEvent) => {
             event.preventDefault();
+            /**
+             * Pointer Events unify mouse, touch, and pen so the same handler covers desktop and
+             * iPad. `setPointerCapture` keeps `pointermove`/`pointerup` flowing to this element
+             * even if the finger drifts off it mid-drag.
+             */
+            const divider = event.currentTarget;
+            if (divider instanceof Element) {
+                divider.setPointerCapture(event.pointerId);
+            }
 
             // Mute selection + force resize cursor globally during drag — otherwise crossing
             // into the xterm canvas flips the cursor to i-beam and selects terminal text.
@@ -133,7 +142,10 @@ export const VirPaneGroup = defineElement<{
                 dragging: true,
             });
 
-            const onMove = (moveEvent: MouseEvent) => {
+            const onMove = (moveEvent: PointerEvent) => {
+                if (moveEvent.pointerId !== event.pointerId) {
+                    return;
+                }
                 const rect = host.getBoundingClientRect();
                 if (rect.width <= 0) {
                     return;
@@ -144,9 +156,13 @@ export const VirPaneGroup = defineElement<{
                 });
             };
 
-            const onUp = () => {
-                window.removeEventListener('mousemove', onMove);
-                window.removeEventListener('mouseup', onUp);
+            const onUp = (upEvent: PointerEvent) => {
+                if (upEvent.pointerId !== event.pointerId) {
+                    return;
+                }
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                window.removeEventListener('pointercancel', onUp);
                 document.body.style.userSelect = previousUserSelect;
                 document.body.style.cursor = previousCursor;
                 updateState({
@@ -155,8 +171,9 @@ export const VirPaneGroup = defineElement<{
                 localStorageClient.paneSplit.write(latestSplit);
             };
 
-            window.addEventListener('mousemove', onMove);
-            window.addEventListener('mouseup', onUp);
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+            window.addEventListener('pointercancel', onUp);
         };
 
         const onDividerDoubleClick = () => {
@@ -203,7 +220,7 @@ export const VirPaneGroup = defineElement<{
                           role="separator"
                           aria-orientation="vertical"
                           title="Drag to resize. Double-click to reset."
-                          ${listen('mousedown', onDividerMouseDown)}
+                          ${listen('pointerdown', onDividerPointerDown)}
                           ${listen('dblclick', onDividerDoubleClick)}
                       ></div>
                   `}

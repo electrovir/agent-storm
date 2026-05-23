@@ -20,6 +20,12 @@ function clampSidebarWidth(value: number): number {
     return Math.min(sidebarWidth.max, Math.max(sidebarWidth.min, value));
 }
 
+function basenameFromPath(path: string): string {
+    const trimmed = path.replace(/\/+$/, '');
+    const lastSlash = trimmed.lastIndexOf('/');
+    return lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
+}
+
 type AppState = {
     activeFolder: string | undefined;
     openedFolders: ReadonlyArray<string>;
@@ -54,7 +60,11 @@ export const VirApp = defineElement()({
             display: flex;
             flex-direction: row;
             width: 100%;
-            height: 100%;
+            /* 100dvh tracks the dynamic viewport height — on iPadOS Safari (paired with the
+               viewport meta's interactive-widget=resizes-content option in index.html) this
+               shrinks when the on-screen keyboard appears so the terminals aren't hidden behind
+               it. The 100% above it is the fallback for browsers without dvh support. */
+            height: 100dvh;
             font-family: sans-serif;
         }
 
@@ -149,8 +159,23 @@ export const VirApp = defineElement()({
         const currentSidebarWidth = clampSidebarWidth(state.sidebarWidth);
         host.style.setProperty('--sidebar-width', `${currentSidebarWidth}px`);
 
-        const onDividerMouseDown = (event: MouseEvent) => {
+        const activeFolderName = state.activeFolder
+            ? state.folderInfo.get(state.activeFolder)?.name || basenameFromPath(state.activeFolder)
+            : undefined;
+        document.title = activeFolderName ? `Agent Storm • ${activeFolderName}` : 'Agent Storm';
+
+        const onDividerPointerDown = (event: PointerEvent) => {
             event.preventDefault();
+            /**
+             * Pointer Events unify mouse, touch, and pen so the same handler covers desktop and
+             * iPad. `setPointerCapture` keeps `pointermove`/`pointerup` flowing to this element
+             * even if the finger drifts off it mid-drag — crucial on touch where the OS otherwise
+             * routes events to whatever the touch is currently over.
+             */
+            const divider = event.currentTarget;
+            if (divider instanceof Element) {
+                divider.setPointerCapture(event.pointerId);
+            }
 
             // Mute selection + force resize cursor globally during drag — otherwise crossing
             // into the terminal canvas flips the cursor to i-beam and selects terminal text.
@@ -164,7 +189,10 @@ export const VirApp = defineElement()({
                 sidebarDragging: true,
             });
 
-            const onMove = (moveEvent: MouseEvent) => {
+            const onMove = (moveEvent: PointerEvent) => {
+                if (moveEvent.pointerId !== event.pointerId) {
+                    return;
+                }
                 const rect = host.getBoundingClientRect();
                 if (rect.width <= 0) {
                     return;
@@ -175,9 +203,13 @@ export const VirApp = defineElement()({
                 });
             };
 
-            const onUp = () => {
-                window.removeEventListener('mousemove', onMove);
-                window.removeEventListener('mouseup', onUp);
+            const onUp = (upEvent: PointerEvent) => {
+                if (upEvent.pointerId !== event.pointerId) {
+                    return;
+                }
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                window.removeEventListener('pointercancel', onUp);
                 document.body.style.userSelect = previousUserSelect;
                 document.body.style.cursor = previousCursor;
                 updateState({
@@ -186,8 +218,9 @@ export const VirApp = defineElement()({
                 localStorageClient.sidebarWidth.write(latestWidth);
             };
 
-            window.addEventListener('mousemove', onMove);
-            window.addEventListener('mouseup', onUp);
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+            window.addEventListener('pointercancel', onUp);
         };
 
         const onDividerDoubleClick = () => {
@@ -222,7 +255,7 @@ export const VirApp = defineElement()({
                 role="separator"
                 aria-orientation="vertical"
                 title="Drag to resize. Double-click to reset."
-                ${listen('mousedown', onDividerMouseDown)}
+                ${listen('pointerdown', onDividerPointerDown)}
                 ${listen('dblclick', onDividerDoubleClick)}
             ></div>
             <div class="stage">
