@@ -249,7 +249,18 @@ export const VirApp = defineElement()({
                     updateState({
                         settingsOpen: true,
                     }),
-            })}></${VirSidebar}>
+            })}
+                ${listen(VirSidebar.events.foldersRemoved, (event) => {
+                    const removed = new Set(event.detail);
+                    updateState({
+                        activeFolder:
+                            state.activeFolder && removed.has(state.activeFolder)
+                                ? undefined
+                                : state.activeFolder,
+                        openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
+                    });
+                })}
+            ></${VirSidebar}>
             <div
                 class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
                 role="separator"
