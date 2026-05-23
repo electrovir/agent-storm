@@ -20,12 +20,6 @@ function clampSidebarWidth(value: number): number {
     return Math.min(sidebarWidth.max, Math.max(sidebarWidth.min, value));
 }
 
-function basenameFromPath(path: string): string {
-    const trimmed = path.replace(/\/+$/, '');
-    const lastSlash = trimmed.lastIndexOf('/');
-    return lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed;
-}
-
 type AppState = {
     activeFolder: string | undefined;
     openedFolders: ReadonlyArray<string>;
@@ -160,7 +154,7 @@ export const VirApp = defineElement()({
         host.style.setProperty('--sidebar-width', `${currentSidebarWidth}px`);
 
         const activeFolderName = state.activeFolder
-            ? state.folderInfo.get(state.activeFolder)?.name || basenameFromPath(state.activeFolder)
+            ? state.folderInfo.get(state.activeFolder)?.name
             : undefined;
         document.title = activeFolderName ? `Agent Storm • ${activeFolderName}` : 'Agent Storm';
 
@@ -233,7 +227,9 @@ export const VirApp = defineElement()({
         return html`
             <${VirSidebar.assign({
                 activeFolder: state.activeFolder,
-                onActivate: (folder: string) => {
+            })}
+                ${listen(VirSidebar.events.folderActivated, (event) => {
+                    const folder = event.detail;
                     const openedFolders = state.openedFolders.includes(folder)
                         ? state.openedFolders
                         : [
@@ -244,12 +240,7 @@ export const VirApp = defineElement()({
                         activeFolder: folder,
                         openedFolders,
                     });
-                },
-                onOpenSettings: () =>
-                    updateState({
-                        settingsOpen: true,
-                    }),
-            })}
+                })}
                 ${listen(VirSidebar.events.foldersRemoved, (event) => {
                     const removed = new Set(event.detail);
                     updateState({
@@ -258,6 +249,11 @@ export const VirApp = defineElement()({
                                 ? undefined
                                 : state.activeFolder,
                         openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
+                    });
+                })}
+                ${listen(VirSidebar.events.openSettingsRequested, () => {
+                    updateState({
+                        settingsOpen: true,
                     });
                 })}
             ></${VirSidebar}>
@@ -291,11 +287,13 @@ export const VirApp = defineElement()({
             </div>
             <${VirSettingsModal.assign({
                 open: state.settingsOpen,
-                onClose: () =>
+            })}
+                ${listen(VirSettingsModal.events.closeRequested, () => {
                     updateState({
                         settingsOpen: false,
-                    }),
-            })}></${VirSettingsModal}>
+                    });
+                })}
+            ></${VirSettingsModal}>
             <${VirAuthModal}></${VirAuthModal}>
         `;
     },

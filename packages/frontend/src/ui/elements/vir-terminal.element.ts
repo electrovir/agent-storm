@@ -418,7 +418,9 @@ export const VirTerminal = defineElement<{
                             touchScrollState.pointerId = event.pointerId;
                             touchScrollState.lastY = event.clientY;
                         },
-                        {passive: true},
+                        {
+                            passive: true,
+                        },
                     );
                     element.addEventListener(
                         'pointermove',
@@ -444,15 +446,21 @@ export const VirTerminal = defineElement<{
                                 touchScrollState.lastY -= lines * effectiveRowHeight;
                             }
                         },
-                        {passive: true},
+                        {
+                            passive: true,
+                        },
                     );
                     const endTouchScroll = (event: PointerEvent) => {
                         if (event.pointerId === touchScrollState.pointerId) {
                             touchScrollState.pointerId = undefined;
                         }
                     };
-                    element.addEventListener('pointerup', endTouchScroll, {passive: true});
-                    element.addEventListener('pointercancel', endTouchScroll, {passive: true});
+                    element.addEventListener('pointerup', endTouchScroll, {
+                        passive: true,
+                    });
+                    element.addEventListener('pointercancel', endTouchScroll, {
+                        passive: true,
+                    });
 
                     element.addEventListener('dragover', (event) => {
                         // dragover must be handled (preventDefault'd) for the matching drop event

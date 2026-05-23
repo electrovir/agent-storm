@@ -64,11 +64,16 @@ type SidebarUpdate = (newState: Partial<SidebarState>) => void;
 
 export const VirSidebar = defineElement<{
     activeFolder: string | undefined;
-    onActivate: (folder: string) => void;
-    onOpenSettings: () => void;
 }>()({
     tagName: 'vir-sidebar',
     events: {
+        /**
+         * Emitted when the user clicks a folder row or when an internal action (e.g. creating a
+         * worktree) wants to make the new folder the active one. Detail is the absolute folder
+         * path. Parent owns the `activeFolder` / `openedFolders` state, so it listens for this and
+         * updates accordingly.
+         */
+        folderActivated: defineElementEvent<string>(),
         /**
          * Emitted just after the user confirms a worktree-delete or repo-remove, before the API
          * trip starts. The detail carries every folder path that is now gone (the removed item
@@ -77,6 +82,8 @@ export const VirSidebar = defineElement<{
          * right-hand pane unmounts immediately instead of waiting for the next folder-info poll.
          */
         foldersRemoved: defineElementEvent<ReadonlyArray<string>>(),
+        /** Emitted when the user clicks the gear button. Parent owns the modal open state. */
+        openSettingsRequested: defineElementEvent<void>(),
     },
     state(): SidebarState {
         return {
@@ -260,7 +267,11 @@ export const VirSidebar = defineElement<{
     render({inputs, state, updateState, dispatch, events}) {
         const standaloneFolders = state.folders
             .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
-            .toSorted((a, b) => a.name.localeCompare(b.name, undefined, {sensitivity: 'base'}));
+            .toSorted((a, b) =>
+                a.name.localeCompare(b.name, undefined, {
+                    sensitivity: 'base',
+                }),
+            );
         const worktreeRoots = state.folders.filter((folder) => folder.isWorktreeRoot);
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
@@ -278,6 +289,9 @@ export const VirSidebar = defineElement<{
          */
         const emitFoldersRemoved = (paths: ReadonlyArray<string>) => {
             dispatch(new events.foldersRemoved(paths));
+        };
+        const emitFolderActivated = (path: string) => {
+            dispatch(new events.folderActivated(path));
         };
 
         return html`
@@ -303,7 +317,7 @@ export const VirSidebar = defineElement<{
                         buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
                     })}
-                        ${listen('click', () => inputs.onOpenSettings())}
+                        ${listen('click', () => dispatch(new events.openSettingsRequested()))}
                     ></${ViraButton}>
                 </span>
             </div>
@@ -324,7 +338,7 @@ export const VirSidebar = defineElement<{
                         indented: false,
                         activeFolder: inputs.activeFolder,
                         openMenuKey: state.openMenuKey,
-                        onActivate: inputs.onActivate,
+                        onActivate: emitFolderActivated,
                         removeFolderLocally,
                         emitFoldersRemoved,
                         updateState,
@@ -372,7 +386,7 @@ export const VirSidebar = defineElement<{
                                                 void promptAddWorktree(
                                                     root.path,
                                                     updateState,
-                                                    inputs.onActivate,
+                                                    emitFolderActivated,
                                                 );
                                             },
                                         },
@@ -398,7 +412,7 @@ export const VirSidebar = defineElement<{
                                 indented: true,
                                 activeFolder: inputs.activeFolder,
                                 openMenuKey: state.openMenuKey,
-                                onActivate: inputs.onActivate,
+                                onActivate: emitFolderActivated,
                                 removeFolderLocally,
                                 emitFoldersRemoved,
                                 updateState,
