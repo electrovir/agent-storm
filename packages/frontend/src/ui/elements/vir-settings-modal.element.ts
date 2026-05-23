@@ -1,5 +1,5 @@
 import {defaultConfig, type Config} from '@agent-storm/common';
-import {css, defineElement, html, listen, onDomCreated} from 'element-vir';
+import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
 import {type JsonValue} from 'type-fest';
 import {
     ViraButton,
@@ -91,9 +91,15 @@ function fromJsonValue(value: JsonValue): Config {
 
 export const VirSettingsModal = defineElement<{
     open: boolean;
-    onClose: () => void;
 }>()({
     tagName: 'vir-settings-modal',
+    events: {
+        /**
+         * Emitted when the user dismisses the modal (clicks the underlying scrim, hits Cancel /
+         * Save, etc.). The parent owns the `open` input and is responsible for flipping it false.
+         */
+        closeRequested: defineElementEvent<void>(),
+    },
     state() {
         return {
             pending: undefined as JsonValue | undefined,
@@ -139,7 +145,7 @@ export const VirSettingsModal = defineElement<{
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
     `,
-    render({inputs, state, updateState}) {
+    render({inputs, state, updateState, dispatch, events}) {
         const reset = () => {
             updateState({
                 pending: undefined,
@@ -208,7 +214,7 @@ export const VirSettingsModal = defineElement<{
                 const webglChanged =
                     state.useWebgl !== undefined && state.useWebgl !== nextUseWebgl;
                 reset();
-                inputs.onClose();
+                dispatch(new events.closeRequested());
                 if (webglChanged) {
                     // Existing terminals only read useWebgl at construction; reload so the
                     // new renderer choice applies everywhere.
@@ -229,7 +235,7 @@ export const VirSettingsModal = defineElement<{
             })}
                 ${listen(ViraModal.events.modalClose, () => {
                     reset();
-                    inputs.onClose();
+                    dispatch(new events.closeRequested());
                 })}
             >
                 ${inputs.open
@@ -294,7 +300,7 @@ export const VirSettingsModal = defineElement<{
                                   })}
                                       ${listen('click', () => {
                                           reset();
-                                          inputs.onClose();
+                                          dispatch(new events.closeRequested());
                                       })}
                                   ></${ViraButton}>
                                   <${ViraButton.assign({
