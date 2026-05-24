@@ -1,48 +1,41 @@
-import {SpaRouter, type FullSpaRoute} from 'spa-router-vir';
+import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
 
-export type ValidPaths =
-    | ['home']
-    | ['add-repo']
-    | [
-          'add-worktree',
-          string,
-      ]
-    | [
-          'book',
-          ...string[],
-      ];
+/**
+ * The valid shape of the in-app URL.
+ *
+ * - `/` — default experience, nothing selected.
+ * - `/<repoName>` — a standalone (non-worktree) repo selected. If the segment matches a repo that
+ *   _has_ worktrees, the route is invalid; `vir-app` redirects back to `/` once it has folder info
+ *   to make that determination.
+ * - `/<repoName>/<worktreeName>` — a worktree under a worktree-root repo selected.
+ * - `/book/<...>` — the element-book route (preserved from the previous router so deep links keep
+ *   working).
+ *
+ * The `:repo-name` / `:worktree-name` segments are dynamic — sanitization keeps whatever value the
+ * user typed and lets `vir-app` resolve it against the live folder list.
+ */
+export const frontendPathTree = new PathTree({
+    allowBare: true,
+    children: {
+        ':repo-name': {
+            allowBare: true,
+            children: {
+                ':worktree-name': {},
+            },
+        },
+        book: {
+            anyChildren: true,
+        },
+    },
+});
 
-export type AppRoute = FullSpaRoute<ValidPaths, undefined, undefined>;
+export type FrontendPaths = typeof frontendPathTree.PathsType;
+export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, undefined, undefined>>;
 
-export const router = new SpaRouter<ValidPaths, undefined, undefined>({
+export const router = new SpaRouter<FrontendPaths, undefined, undefined>({
     sanitizeRoute(rawRoute) {
-        const topLevelPath = rawRoute.paths[0];
-        let paths: ValidPaths;
-        if (topLevelPath === 'add-repo') {
-            paths = ['add-repo'];
-        } else if (topLevelPath === 'add-worktree') {
-            // Second segment carries the URL-encoded path of the repo this worktree will be
-            // created under. A missing segment can't satisfy the type, so fall through to home.
-            const encodedRepo = rawRoute.paths[1];
-            paths = encodedRepo
-                ? [
-                      'add-worktree',
-                      encodedRepo,
-                  ]
-                : ['home'];
-        } else if (topLevelPath === 'book') {
-            paths = [
-                'book',
-                ...rawRoute.paths.slice(1),
-            ] as [
-                'book',
-                ...string[],
-            ];
-        } else {
-            paths = ['home'];
-        }
         return {
-            paths,
+            paths: frontendPathTree.sanitizePaths(rawRoute.paths),
             search: undefined,
             hash: undefined,
         };
