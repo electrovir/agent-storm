@@ -1,4 +1,4 @@
-import {agentStormService, type PaneKind} from '@agent-storm/common';
+import {agentStormService, PaneKind} from '@agent-storm/common';
 import {connectWebSocket} from '@rest-vir/define-service';
 import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
@@ -371,13 +371,32 @@ export const VirTerminal = defineElement<{
                         socket.send(data);
                     });
 
+                    /**
+                     * Shell (bash/zsh readline) and the AI TUI (Claude / Ink) interpret the same
+                     * key event differently:
+                     *
+                     * - Claude / Ink-based TUIs understand the xterm "modified arrow" CSI form
+                     *   `\x1b[1;3D` / `\x1b[1;3C` — that's the "Alt+ArrowLeft / ArrowRight" the
+                     *   library expects.
+                     * - Readline (the line editor inside bash and zsh) does NOT bind that form by
+                     *   default — it binds the canonical Meta-letter sequences `\eb`
+                     *   (backward-word) and `\ef` (forward-word). When the shell receives
+                     *   `\x1b[1;3D` it parses the CSI prefix, finds no binding for the modified
+                     *   arrow, and the trailing `D` / `C` falls through as a literal character
+                     *   (visible as the user types).
+                     *
+                     * So pick the form per pane kind. Backspace shortcuts are the same in both
+                     * because the control bytes they emit (\x15 backward-kill-line, \x17
+                     * backward-kill-word, \x01 home, \x05 end) are universally understood.
+                     */
+                    const isAiPane = inputs.kind === PaneKind.Ai;
                     const keyBindings: Record<string, string> = {
                         'meta+Backspace': '\x15',
                         'alt+Backspace': '\x17',
                         'meta+ArrowLeft': '\x01',
                         'meta+ArrowRight': '\x05',
-                        'alt+ArrowLeft': '\x1b[1;3D',
-                        'alt+ArrowRight': '\x1b[1;3C',
+                        'alt+ArrowLeft': isAiPane ? '\x1b[1;3D' : '\x1bb',
+                        'alt+ArrowRight': isAiPane ? '\x1b[1;3C' : '\x1bf',
                     };
 
                     terminal.attachCustomKeyEventHandler((event) => {
