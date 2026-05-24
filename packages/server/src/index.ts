@@ -3,20 +3,55 @@ import {HttpMethod, log} from '@augment-vir/common';
 import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/implement-service';
 import {attachService} from '@rest-vir/run-service';
 import fastify from 'fastify';
+import {appendFileSync, writeFileSync} from 'node:fs';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
 import {loadConfig, saveConfig} from './config.js';
 import {
     attachPane,
     killFolderPanes,
+    killVscode,
     restartPane,
     shutdownDaemon,
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
+import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {addWorktree, removeWorktree} from './git.js';
 import {saveUpload} from './uploads.js';
+import {attachVscodeProxy} from './vscode-proxy.js';
+
+/**
+ * Mirror stdout/stderr to `serverLogPath` so the assistant can tail the backend output instead of
+ * asking the user to copy/paste console lines. Truncate on startup so each `npm start` begins with
+ * a clean file. The original streams keep going to the terminal — we just `appendFileSync` a copy
+ * of each chunk. Wrapped in try/catch so a transient FS error never crashes the backend.
+ */
+try {
+    writeFileSync(serverLogPath, '');
+} catch {
+    /* ignore truncate errors */
+}
+function mirrorWriteTo<Stream extends NodeJS.WriteStream>(
+    original: Stream['write'],
+    stream: Stream,
+): Stream['write'] {
+    return ((chunk: unknown, ...rest: unknown[]) => {
+        try {
+            if (typeof chunk === 'string') {
+                appendFileSync(serverLogPath, chunk);
+            } else if (chunk instanceof Buffer) {
+                appendFileSync(serverLogPath, chunk);
+            }
+        } catch {
+            /* ignore mirror-write errors */
+        }
+        return (original as (...args: unknown[]) => boolean).call(stream, chunk, ...rest);
+    }) as Stream['write'];
+}
+process.stdout.write = mirrorWriteTo(process.stdout.write.bind(process.stdout), process.stdout);
+process.stderr.write = mirrorWriteTo(process.stderr.write.bind(process.stderr), process.stderr);
 
 /**
  * Backend listen port and the frontend's listen port come from
@@ -198,6 +233,9 @@ const implementation = implementService({
             await killFolderPanes({
                 folder: requestData.worktreePath,
             });
+            await killVscode({folder: requestData.worktreePath}).catch(() => {
+                /* if no vscode was running for this folder, killVscode is a no-op */
+            });
             await removeWorktree(requestData);
             await refreshFolderInfoNow();
             return {
@@ -218,6 +256,12 @@ const implementation = implementService({
         },
         async '/panes/kill'({requestData}) {
             await killFolderPanes(requestData);
+            /**
+             * Pair the VS Code instance lifecycle with the pane lifecycle — "kill folder panes"
+             * implies "tear down the editor I have for this folder too". Silently ignore the
+             * no-vscode case.
+             */
+            await killVscode({folder: requestData.folder}).catch(() => {});
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
@@ -299,6 +343,12 @@ const server = fastify({
 await attachService(server, implementation, {
     throwErrorsForExternalHandling: false,
 });
+/**
+ * Mount the embedded-VS-Code proxy after the main service so its `/vscode-proxy/*` route doesn't
+ * collide with rest-vir's path handling. Owns its own routes (`/vscode/ensure`, `/vscode/kill`, the
+ * proxy itself) and an HTTP-server `upgrade` listener for WebSocket forwarding.
+ */
+attachVscodeProxy(server);
 /**
  * Bind to `0.0.0.0` so the dev server is reachable over LAN (testing the UI from a phone or another
  * laptop after running the vite frontend with `--host`). The auth-secret check in `createContext`

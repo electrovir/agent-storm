@@ -38,6 +38,13 @@ export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
 /** Where the pty daemon's stdout/stderr is redirected (it runs detached from the server). */
 export const daemonLogPath = resolve(tmpdir(), 'agent-storm-pty-daemon.log');
 
+/**
+ * Mirror of the backend's stdout/stderr written from `index.ts`. Lets the assistant tail a file
+ * instead of asking the user to copy/paste console output, especially when debugging WS / proxy
+ * flows where the relevant log lines are dense and time-ordered.
+ */
+export const serverLogPath = resolve(tmpdir(), 'agent-storm-server.log');
+
 /** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocketPath}. */
 export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts');
 
