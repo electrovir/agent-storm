@@ -426,7 +426,21 @@ export const VirApp = defineElement()({
                                 folder,
                                 aiHidden: !!info?.aiHidden,
                                 active,
-                            })}></${VirPaneGroup}>
+                                codeTabActive: !!state.route.search?.code,
+                            })}
+                                ${listen(VirPaneGroup.events.cliTabRequested, () => {
+                                    router.setRoute({
+                                        paths: state.route.paths,
+                                        search: undefined,
+                                    });
+                                })}
+                                ${listen(VirPaneGroup.events.codeTabRequested, () => {
+                                    router.setRoute({
+                                        paths: state.route.paths,
+                                        search: {code: []},
+                                    });
+                                })}
+                            ></${VirPaneGroup}>
                         </div>
                     `;
                 })}

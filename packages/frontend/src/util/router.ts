@@ -30,13 +30,58 @@ export const frontendPathTree = new PathTree({
 });
 
 export type FrontendPaths = typeof frontendPathTree.PathsType;
-export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, undefined, undefined>>;
 
-export const router = new SpaRouter<FrontendPaths, undefined, undefined>({
-    sanitizeRoute(rawRoute) {
+/**
+ * Search params allowed on the URL.
+ *
+ * - `code` — a value-less flag (`?code`). Only kept on repo-selection routes (`/<repoName>` or
+ *   `/<repoName>/<worktreeName>`); stripped everywhere else. Unused for now, reserved for a future
+ *   feature.
+ *
+ * Each value is a `ReadonlyArray<string>` because `URLSearchParams` lets a key repeat. We
+ * normalize `code` to an _empty_ array — url-vir's `searchParamsToString` serializes a non-empty
+ * array as `code=...` (with the `=`) and an empty array as just `code` (no `=`), so this is what
+ * makes the URL canonical for a presence-only flag.
+ */
+export type FrontendSearchParams =
+    | Readonly<{
+          code?: ReadonlyArray<string>;
+      }>
+    | undefined;
+
+export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, FrontendSearchParams, undefined>>;
+
+function isRepoSelectionRoute(paths: ReadonlyArray<string>): boolean {
+    return paths.length >= 1 && paths[0] !== 'book';
+}
+
+function sanitizeSearch(
+    paths: ReadonlyArray<string>,
+    rawSearch: Readonly<Record<string, ReadonlyArray<string>>> | undefined,
+): FrontendSearchParams {
+    if (!rawSearch || !isRepoSelectionRoute(paths)) {
+        return undefined;
+    }
+    /**
+     * Presence-only flag. `?code` parses to `code: []`, `?code=foo` to `code: ['foo']`. Either way
+     * we collapse to an empty array — that's what url-vir's `searchParamsToString` serializes as
+     * just `code` (no `=`), keeping the URL canonical regardless of what the user typed (there is
+     * no value content to preserve).
+     */
+    if (rawSearch.code !== undefined) {
         return {
-            paths: frontendPathTree.sanitizePaths(rawRoute.paths),
-            search: undefined,
+            code: [],
+        };
+    }
+    return undefined;
+}
+
+export const router = new SpaRouter<FrontendPaths, FrontendSearchParams, undefined>({
+    sanitizeRoute(rawRoute) {
+        const paths = frontendPathTree.sanitizePaths(rawRoute.paths);
+        return {
+            paths,
+            search: sanitizeSearch(paths, rawRoute.search),
             hash: undefined,
         };
     },
