@@ -3,13 +3,114 @@ import {css, defineElement, html, listen} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
-import {router, type AppRoute} from '../../util/router.js';
+import {router, type AppRoute, type FrontendPaths} from '../../util/router.js';
 import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
+
+/**
+ * Result of resolving the current URL against the live folder list.
+ *
+ * - `folder` — the activated `FolderInfo` (standalone repo or worktree child) when the URL points to
+ *   a folder we can resolve. Used as the sidebar's `activeFolder` + the visible pane group.
+ * - `redirectToRoot` — when the URL is non-trivial but invalid given the current folder list (e.g.
+ *   `/<repoName>` where that repo has worktrees, or `/<repoName>/<worktreeName>` where neither
+ *   exists). `vir-app` reacts by calling `router.setRoute({paths: []})` to bounce the user back to
+ *   `/`. Suppressed when folder info hasn't loaded yet so we don't fight a still-loading page.
+ */
+type RouteResolution = {
+    folder: FolderInfo | undefined;
+    redirectToRoot: boolean;
+};
+
+function resolveRoute(
+    routePaths: ReadonlyArray<string>,
+    folderInfo: ReadonlyMap<string, FolderInfo>,
+): RouteResolution {
+    /** Reserved literal — element-book route doesn't map to a folder. */
+    if (routePaths[0] === 'book' || routePaths.length === 0) {
+        return {
+            folder: undefined,
+            redirectToRoot: false,
+        };
+    }
+    /** Don't redirect before we have data — the URL might be perfectly valid once folders load. */
+    if (folderInfo.size === 0) {
+        return {
+            folder: undefined,
+            redirectToRoot: false,
+        };
+    }
+    const [
+        repoName,
+        worktreeName,
+    ] = routePaths;
+    const folders = Array.from(folderInfo.values());
+    if (!worktreeName) {
+        /**
+         * Single-segment URL: only valid if it matches a standalone (non-worktree-root, no-parent)
+         * repo. Worktree-root matches are explicitly invalid per the route spec — the user must
+         * pick a worktree segment.
+         */
+        const standalone = folders.find(
+            (folder) =>
+                folder.name === repoName && !folder.isWorktreeRoot && !folder.parentRepoPath,
+        );
+        if (standalone) {
+            return {
+                folder: standalone,
+                redirectToRoot: false,
+            };
+        }
+        return {
+            folder: undefined,
+            redirectToRoot: true,
+        };
+    }
+    const repoRoot = folders.find((folder) => folder.name === repoName && folder.isWorktreeRoot);
+    if (!repoRoot) {
+        return {
+            folder: undefined,
+            redirectToRoot: true,
+        };
+    }
+    const worktree = folders.find(
+        (folder) => folder.parentRepoPath === repoRoot.path && folder.name === worktreeName,
+    );
+    return {
+        folder: worktree,
+        redirectToRoot: !worktree,
+    };
+}
+
+/**
+ * Compute the URL paths that should represent the given folder.
+ *
+ * - Standalone repo → `[folder.name]`.
+ * - Worktree child → `[parentRepoName, folder.name]` (we resolve the parent's name through
+ *   `folderInfo`; falls back to its basename via `parentRepoPath` if for some reason the parent
+ *   isn't in the map).
+ * - Worktree root → `[folder.name]` (the activation path for worktree-roots is "user clicked a
+ *   child", so this branch is mostly defensive; if it ever fires the redirect-to-root logic above
+ *   will undo it on the next render).
+ */
+function pathsForFolder(
+    folder: FolderInfo,
+    folderInfo: ReadonlyMap<string, FolderInfo>,
+): FrontendPaths {
+    if (folder.parentRepoPath) {
+        const parent = folderInfo.get(folder.parentRepoPath);
+        const parentName = parent?.name || folder.parentRepoPath.split('/').filter(Boolean).at(-1);
+        return [
+            parentName || folder.parentRepoPath,
+            folder.name,
+        ];
+    }
+    return [folder.name];
+}
 
 const folderInfoPollMs = 2000;
 
@@ -21,7 +122,11 @@ function clampSidebarWidth(value: number): number {
 }
 
 type AppState = {
-    activeFolder: string | undefined;
+    /**
+     * Folders the user has clicked into, by absolute path. Kept around so each pane keeps its
+     * terminal scrollback when the user switches folders. The currently-active folder is derived
+     * from the URL + folder info; this list is the "ever opened during this session" superset.
+     */
     openedFolders: ReadonlyArray<string>;
     folderInfo: Map<string, FolderInfo>;
     pollHandle: ReturnType<typeof setInterval> | undefined;
@@ -38,7 +143,6 @@ export const VirApp = defineElement()({
     tagName: 'vir-app',
     state(): AppState {
         return {
-            activeFolder: undefined,
             openedFolders: [],
             folderInfo: new Map(),
             pollHandle: undefined,
@@ -153,10 +257,38 @@ export const VirApp = defineElement()({
         const currentSidebarWidth = clampSidebarWidth(state.sidebarWidth);
         host.style.setProperty('--sidebar-width', `${currentSidebarWidth}px`);
 
-        const activeFolderName = state.activeFolder
-            ? state.folderInfo.get(state.activeFolder)?.name
-            : undefined;
-        document.title = activeFolderName ? `agent-storm • ${activeFolderName}` : 'agent-storm';
+        /**
+         * Single derivation of "the currently active folder" from URL + live folder info. Used to
+         * mark the sidebar row, show the right pane group, and set the document title. If the URL
+         * can't resolve (mistyped path, repo-with-worktrees + no second segment, etc.) and folder
+         * info has actually loaded, bounce the user back to `/` so we don't sit in a broken state.
+         */
+        const resolution = resolveRoute(state.route.paths, state.folderInfo);
+        const activeFolder = resolution.folder?.path;
+        if (resolution.redirectToRoot) {
+            void Promise.resolve().then(() => router.setRoute({paths: []}));
+        }
+
+        /**
+         * Keep `openedFolders` in sync with the URL so a freshly-resolved folder mounts its pane
+         * without a manual click. Defers the state update via a microtask so we don't mutate during
+         * render.
+         */
+        if (activeFolder && !state.openedFolders.includes(activeFolder)) {
+            const newOpened = [
+                ...state.openedFolders,
+                activeFolder,
+            ];
+            void Promise.resolve().then(() => {
+                updateState({
+                    openedFolders: newOpened,
+                });
+            });
+        }
+
+        document.title = resolution.folder
+            ? `agent-storm • ${resolution.folder.name}`
+            : 'agent-storm';
 
         const onDividerPointerDown = (event: PointerEvent) => {
             event.preventDefault();
@@ -226,28 +358,42 @@ export const VirApp = defineElement()({
 
         return html`
             <${VirSidebar.assign({
-                activeFolder: state.activeFolder,
+                activeFolder,
             })}
                 ${listen(VirSidebar.events.folderActivated, (event) => {
-                    const folder = event.detail;
-                    const openedFolders = state.openedFolders.includes(folder)
-                        ? state.openedFolders
-                        : [
-                              ...state.openedFolders,
-                              folder,
-                          ];
-                    updateState({
-                        activeFolder: folder,
-                        openedFolders,
-                    });
+                    const folderPath = event.detail;
+                    const folder = state.folderInfo.get(folderPath);
+                    /**
+                     * Drive the URL from the click; render will re-derive `activeFolder` from the
+                     * new route. If `folderInfo` doesn't yet know the folder (race with first poll)
+                     * we still add it to `openedFolders` so the pane mounts — the URL update
+                     * happens on a subsequent render once the data lands.
+                     */
+                    if (folder) {
+                        router.setRoute({
+                            paths: pathsForFolder(folder, state.folderInfo),
+                        });
+                    }
+                    if (!state.openedFolders.includes(folderPath)) {
+                        updateState({
+                            openedFolders: [
+                                ...state.openedFolders,
+                                folderPath,
+                            ],
+                        });
+                    }
                 })}
                 ${listen(VirSidebar.events.foldersRemoved, (event) => {
                     const removed = new Set(event.detail);
+                    /**
+                     * If the URL pointed at one of the gone folders, bounce to root so we don't sit
+                     * on a broken route. The render-time `redirectToRoot` would catch it on the
+                     * next sweep, but doing it eagerly avoids a flicker.
+                     */
+                    if (activeFolder && removed.has(activeFolder)) {
+                        router.setRoute({paths: []});
+                    }
                     updateState({
-                        activeFolder:
-                            state.activeFolder && removed.has(state.activeFolder)
-                                ? undefined
-                                : state.activeFolder,
                         openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
                     });
                 })}
@@ -273,7 +419,7 @@ export const VirApp = defineElement()({
                     : ''}
                 ${state.openedFolders.map((folder) => {
                     const info = state.folderInfo.get(folder);
-                    const active = folder === state.activeFolder;
+                    const active = folder === activeFolder;
                     return html`
                         <div class="pane-slot" ?data-active=${active}>
                             <${VirPaneGroup.assign({
