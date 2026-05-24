@@ -1,5 +1,5 @@
 import {PaneKind} from '@agent-storm/common';
-import {css, defineElement, html, listen} from 'element-vir';
+import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {VirTerminal} from './vir-terminal.element.js';
@@ -21,8 +21,26 @@ export const VirPaneGroup = defineElement<{
      * none`.
      */
     active: boolean;
+    /**
+     * Which tab the parent says is showing. `false` → CLI (terminal panes). `true` → Code (empty
+     * placeholder for now). Driven by the `?code` search param up at the app level so the URL is
+     * the source of truth.
+     */
+    codeTabActive: boolean;
 }>()({
     tagName: 'vir-pane-group',
+    events: {
+        /**
+         * Emitted when the user clicks the CLI tab. Parent should remove the `?code` search param
+         * from the URL (the actual route paths stay the same).
+         */
+        cliTabRequested: defineElementEvent<void>(),
+        /**
+         * Emitted when the user clicks the Code tab. Parent should add the `?code` search param to
+         * the URL.
+         */
+        codeTabRequested: defineElementEvent<void>(),
+    },
     state() {
         return {
             split: localStorageClient.paneSplit.read(),
@@ -40,9 +58,54 @@ export const VirPaneGroup = defineElement<{
     styles: css`
         :host {
             display: flex;
-            flex-direction: row;
+            flex-direction: column;
             width: 100%;
             height: 100%;
+        }
+
+        .tab-bar {
+            display: flex;
+            flex: 0 0 auto;
+            border-bottom: 1px solid
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            font-family: ui-sans-serif, system-ui, sans-serif;
+            font-size: 12px;
+        }
+
+        .tab {
+            appearance: none;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            padding: 6px 14px;
+            cursor: pointer;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+            font: inherit;
+            letter-spacing: 0.02em;
+            transition:
+                color 120ms ease,
+                border-bottom-color 120ms ease;
+        }
+
+        .tab:hover {
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+        }
+
+        .tab[data-selected] {
+            color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+            border-bottom-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+        }
+
+        .body {
+            display: flex;
+            flex-direction: row;
+            flex: 1 1 auto;
+            min-height: 0;
+            width: 100%;
+        }
+
+        .code-placeholder {
+            flex: 1 1 auto;
         }
 
         .pane {
@@ -102,7 +165,7 @@ export const VirPaneGroup = defineElement<{
             background: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
     `,
-    render({inputs, state, updateState, host}) {
+    render({inputs, state, updateState, host, dispatch, events}) {
         const split = clampSplit(state.split);
         host.style.setProperty('--ai-grow', String(split));
         host.style.setProperty('--shell-grow', String(1 - split));
@@ -183,51 +246,81 @@ export const VirPaneGroup = defineElement<{
         const shellFocused = focusedKind === PaneKind.Shell;
 
         return html`
-            ${inputs.aiHidden
-                ? ''
-                : html`
-                      <div
-                          class="pane ai-pane"
-                          data-pane-focused=${aiFocused ? 'true' : 'false'}
-                          ${listen('focusin', () =>
-                              updateState({
-                                  focusedKind: PaneKind.Ai,
-                              }),
-                          )}
-                      >
-                          <div class="pane-body">
-                              <${VirTerminal.assign({
-                                  folder: inputs.folder,
-                                  kind: PaneKind.Ai,
-                                  active: inputs.active,
-                              })}></${VirTerminal}>
+            <div class="tab-bar" role="tablist">
+                <button
+                    type="button"
+                    class="tab"
+                    role="tab"
+                    ?data-selected=${!inputs.codeTabActive}
+                    aria-selected=${!inputs.codeTabActive}
+                    ${listen('click', () => dispatch(new events.cliTabRequested()))}
+                >
+                    CLI
+                </button>
+                <button
+                    type="button"
+                    class="tab"
+                    role="tab"
+                    ?data-selected=${inputs.codeTabActive}
+                    aria-selected=${inputs.codeTabActive}
+                    ${listen('click', () => dispatch(new events.codeTabRequested()))}
+                >
+                    Code
+                </button>
+            </div>
+            <div class="body">
+                ${inputs.codeTabActive
+                    ? html`
+                          <div class="code-placeholder"></div>
+                      `
+                    : html`
+                          ${inputs.aiHidden
+                              ? ''
+                              : html`
+                                    <div
+                                        class="pane ai-pane"
+                                        data-pane-focused=${aiFocused ? 'true' : 'false'}
+                                        ${listen('focusin', () =>
+                                            updateState({
+                                                focusedKind: PaneKind.Ai,
+                                            }),
+                                        )}
+                                    >
+                                        <div class="pane-body">
+                                            <${VirTerminal.assign({
+                                                folder: inputs.folder,
+                                                kind: PaneKind.Ai,
+                                                active: inputs.active,
+                                            })}></${VirTerminal}>
+                                        </div>
+                                    </div>
+                                    <div
+                                        class="divider ${state.dragging ? 'dragging' : ''}"
+                                        role="separator"
+                                        aria-orientation="vertical"
+                                        title="Drag to resize. Double-click to reset."
+                                        ${listen('pointerdown', onDividerPointerDown)}
+                                        ${listen('dblclick', onDividerDoubleClick)}
+                                    ></div>
+                                `}
+                          <div
+                              class="pane shell-pane"
+                              data-pane-focused=${shellFocused ? 'true' : 'false'}
+                              ${listen('focusin', () =>
+                                  updateState({
+                                      focusedKind: PaneKind.Shell,
+                                  }),
+                              )}
+                          >
+                              <div class="pane-body">
+                                  <${VirTerminal.assign({
+                                      folder: inputs.folder,
+                                      kind: PaneKind.Shell,
+                                      active: inputs.active,
+                                  })}></${VirTerminal}>
+                              </div>
                           </div>
-                      </div>
-                      <div
-                          class="divider ${state.dragging ? 'dragging' : ''}"
-                          role="separator"
-                          aria-orientation="vertical"
-                          title="Drag to resize. Double-click to reset."
-                          ${listen('pointerdown', onDividerPointerDown)}
-                          ${listen('dblclick', onDividerDoubleClick)}
-                      ></div>
-                  `}
-            <div
-                class="pane shell-pane"
-                data-pane-focused=${shellFocused ? 'true' : 'false'}
-                ${listen('focusin', () =>
-                    updateState({
-                        focusedKind: PaneKind.Shell,
-                    }),
-                )}
-            >
-                <div class="pane-body">
-                    <${VirTerminal.assign({
-                        folder: inputs.folder,
-                        kind: PaneKind.Shell,
-                        active: inputs.active,
-                    })}></${VirTerminal}>
-                </div>
+                      `}
             </div>
         `;
     },
