@@ -71,19 +71,8 @@ export const VirPaneGroup = defineElement<{
             filter: brightness(0.75) saturate(0.9);
         }
 
-        .pane-label {
-            font-family: ui-monospace, monospace;
-            font-size: 11px;
-            color: ${viraThemeByKeys.grey.foreground.header.foreground.value};
-            padding: 2px 8px;
-            border-bottom: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-
         .pane-body {
-            height: calc(100% - 22px);
+            height: 100%;
         }
 
         .divider {
@@ -206,7 +195,6 @@ export const VirPaneGroup = defineElement<{
                               }),
                           )}
                       >
-                          <div class="pane-label">AI</div>
                           <div class="pane-body">
                               <${VirTerminal.assign({
                                   folder: inputs.folder,
@@ -233,7 +221,6 @@ export const VirPaneGroup = defineElement<{
                     }),
                 )}
             >
-                <div class="pane-label">Shell</div>
                 <div class="pane-body">
                     <${VirTerminal.assign({
                         folder: inputs.folder,
