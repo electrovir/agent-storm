@@ -309,7 +309,10 @@ export const VirSidebar = defineElement<{
                         buttonSize: ViraSize.Small,
                         color: ViraColorVariant.Brand,
                     })}
-                        ${listen('click', () => void promptAddRepo(updateState))}
+                        ${listen(
+                            'click',
+                            () => void promptAddRepo(updateState, emitFolderActivated),
+                        )}
                     ></${ViraButton}>
                     <${ViraButton.assign({
                         icon: settingsIcon,
@@ -659,7 +662,10 @@ function showError(updateState: SidebarUpdate, error: unknown): void {
     });
 }
 
-async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
+async function promptAddRepo(
+    updateState: SidebarUpdate,
+    notifyActivated: (path: string) => void,
+): Promise<void> {
     const input = window.prompt('Absolute path of the repo to add:');
     if (!input) {
         return;
@@ -668,6 +674,8 @@ async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
         const config = await getConfig();
         const path = input.trim();
         if (config.repos.some((repo) => repo.path === path)) {
+            /** Repo already configured — activate the existing entry instead of no-oping. */
+            notifyActivated(path);
             return;
         }
         await putConfig({
@@ -680,15 +688,23 @@ async function promptAddRepo(updateState: SidebarUpdate): Promise<void> {
                 },
             ],
         });
-        await refresh(
-            {
-                folders: [],
-                pollHandle: undefined,
-                loadError: undefined,
-                openMenuKey: undefined,
-            },
-            updateState,
-        );
+        /**
+         * Fetch the new folder list directly so we can find the repo's resolved path (may include a
+         * worktree-root vs. standalone-repo entry) and activate it. The backend's `PUT /config`
+         * already triggered `refreshFolderInfoNow`, so the targets are present by the time this GET
+         * returns.
+         */
+        const folders = await getFolders();
+        updateState({
+            folders: pendingWorktreeDeletions.size
+                ? folders.filter((folder) => !pendingWorktreeDeletions.has(folder.path))
+                : folders,
+            loadError: undefined,
+        });
+        const newFolder = folders.find((folder) => folder.path === path);
+        if (newFolder) {
+            notifyActivated(newFolder.path);
+        }
     } catch (error: unknown) {
         showError(updateState, error);
     }

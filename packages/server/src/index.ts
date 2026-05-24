@@ -159,6 +159,14 @@ const implementation = implementService({
                 };
             }
             await saveConfig(requestData);
+            /**
+             * Re-enumerate folder targets now so a freshly-added repo (or removed one) shows up in
+             * `/folders` immediately instead of waiting for the next background sweep cycle.
+             * `refreshFolderInfoNow` returns once `refreshState.targets` reflects the new layout,
+             * so by the time the frontend's follow-up `/folders` poll lands the new entry is
+             * already present (git/PR fields fill in over the next sweep).
+             */
+            await refreshFolderInfoNow();
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: requestData,
