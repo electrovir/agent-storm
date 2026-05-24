@@ -15,6 +15,9 @@ import {
     type SimpleResponse,
     type StatusEntry,
     type StatusResponse,
+    type VscodeEnsureResponse,
+    type VscodeListEntry,
+    type VscodeListResponse,
 } from './protocol.js';
 
 function connect(): Promise<Socket> {
@@ -80,6 +83,31 @@ export async function shutdownDaemon(): Promise<void> {
     await singleShot<SimpleResponse>({
         action: DaemonAction.Shutdown,
     });
+}
+
+export async function ensureVscode(
+    params: Readonly<{folder: string; basePath: string}>,
+): Promise<number> {
+    const response = await singleShot<VscodeEnsureResponse>({
+        action: DaemonAction.VscodeEnsure,
+        folder: params.folder,
+        basePath: params.basePath,
+    });
+    return response.port;
+}
+
+export async function killVscode(params: Readonly<{folder: string}>): Promise<void> {
+    await singleShot<SimpleResponse>({
+        action: DaemonAction.VscodeKill,
+        folder: params.folder,
+    });
+}
+
+export async function listVscode(): Promise<VscodeListEntry[]> {
+    const response = await singleShot<VscodeListResponse>({
+        action: DaemonAction.VscodeList,
+    });
+    return response.instances;
 }
 
 export type PaneAttachment = {

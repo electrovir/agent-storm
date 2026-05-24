@@ -38,10 +38,10 @@ export type FrontendPaths = typeof frontendPathTree.PathsType;
  *   `/<repoName>/<worktreeName>`); stripped everywhere else. Unused for now, reserved for a future
  *   feature.
  *
- * Each value is a `ReadonlyArray<string>` because `URLSearchParams` lets a key repeat. We
- * normalize `code` to an _empty_ array — url-vir's `searchParamsToString` serializes a non-empty
- * array as `code=...` (with the `=`) and an empty array as just `code` (no `=`), so this is what
- * makes the URL canonical for a presence-only flag.
+ * Each value is a `ReadonlyArray<string>` because `URLSearchParams` lets a key repeat. We normalize
+ * `code` to an _empty_ array — url-vir's `searchParamsToString` serializes a non-empty array as
+ * `code=...` (with the `=`) and an empty array as just `code` (no `=`), so this is what makes the
+ * URL canonical for a presence-only flag.
  */
 export type FrontendSearchParams =
     | Readonly<{

@@ -1,6 +1,7 @@
-import {PaneKind} from '@agent-storm/common';
+import {agentStormService, PaneKind} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
+import {ensureVscode, killVscode} from '../../util/api-client.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
@@ -53,6 +54,14 @@ export const VirPaneGroup = defineElement<{
              * that instead. Undefined before the user has clicked into either pane.
              */
             focusedKind: undefined as PaneKind | undefined,
+            /**
+             * VS Code iframe URL for THIS folder. Set after the first `ensureVscode` resolves; once
+             * set, the iframe stays mounted (hidden when CLI tab is active) so its in-memory editor
+             * state survives toggling between tabs. Cleared on close-button click.
+             */
+            vscodeUrl: undefined as string | undefined,
+            vscodeLoading: false,
+            vscodeError: undefined as string | undefined,
         };
     },
     styles: css`
@@ -96,16 +105,73 @@ export const VirPaneGroup = defineElement<{
             border-bottom-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
         }
 
+        .close-vscode {
+            appearance: none;
+            background: transparent;
+            border: none;
+            padding: 4px 6px;
+            margin: 2px 2px 2px 0;
+            border-radius: 3px;
+            cursor: pointer;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+            font: inherit;
+            line-height: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .close-vscode:hover {
+            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+            background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
+        }
+
         .body {
             display: flex;
             flex-direction: row;
             flex: 1 1 auto;
             min-height: 0;
             width: 100%;
+            position: relative;
         }
 
-        .code-placeholder {
+        .code-pane,
+        .cli-panes {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: row;
+        }
+
+        .code-pane[data-hidden],
+        .cli-panes[data-hidden] {
+            /* Keep the iframe mounted across CLI ↔ Code toggles so VS Code's in-memory editor
+               state (open files, scroll positions, terminal contents inside the editor) survives.
+               visibility:hidden + pointer-events:none preserves the iframe document while making
+               the hidden side click-through inert. */
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .vscode-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            background: white;
+        }
+
+        .vscode-status {
             flex: 1 1 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: ui-sans-serif, system-ui, sans-serif;
+            font-size: 13px;
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+        }
+
+        .vscode-error {
+            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
         }
 
         .pane {
@@ -245,6 +311,54 @@ export const VirPaneGroup = defineElement<{
         const aiFocused = focusedKind === PaneKind.Ai;
         const shellFocused = focusedKind === PaneKind.Shell;
 
+        /**
+         * Lazy: kick off the VS Code spawn the first time the user activates the Code tab. Deferred
+         * via microtask so we don't mutate state during render. Once `vscodeUrl` is set the iframe
+         * stays mounted across CLI ↔ Code toggles.
+         */
+        if (
+            inputs.codeTabActive &&
+            !state.vscodeUrl &&
+            !state.vscodeLoading &&
+            !state.vscodeError
+        ) {
+            updateState({
+                vscodeLoading: true,
+            });
+            const folder = inputs.folder;
+            void ensureVscode({folder})
+                .then(({basePath}) => {
+                    const url = `${agentStormService.serviceOrigin}${basePath}/?folder=${encodeURIComponent(folder)}`;
+                    updateState({
+                        vscodeUrl: url,
+                        vscodeLoading: false,
+                        vscodeError: undefined,
+                    });
+                })
+                .catch((error: unknown) => {
+                    updateState({
+                        vscodeLoading: false,
+                        vscodeError: error instanceof Error ? error.message : String(error),
+                    });
+                });
+        }
+
+        const onCloseVscode = () => {
+            const folder = inputs.folder;
+            updateState({
+                vscodeUrl: undefined,
+                vscodeLoading: false,
+                vscodeError: undefined,
+            });
+            void killVscode({folder}).catch(() => {
+                /* server-side cleanup is best-effort; the iframe is already gone */
+            });
+            /** If the user closes VS Code while looking at the Code tab, snap back to CLI. */
+            if (inputs.codeTabActive) {
+                dispatch(new events.cliTabRequested());
+            }
+        };
+
         return html`
             <div class="tab-bar" role="tablist">
                 <button
@@ -267,60 +381,91 @@ export const VirPaneGroup = defineElement<{
                 >
                     Code
                 </button>
+                ${state.vscodeUrl
+                    ? html`
+                          <button
+                              type="button"
+                              class="close-vscode"
+                              title="Close VS Code for this folder"
+                              ${listen('click', onCloseVscode)}
+                          >
+                              ×
+                          </button>
+                      `
+                    : ''}
             </div>
             <div class="body">
-                ${inputs.codeTabActive
+                ${state.vscodeUrl
                     ? html`
-                          <div class="code-placeholder"></div>
-                      `
-                    : html`
-                          ${inputs.aiHidden
-                              ? ''
-                              : html`
-                                    <div
-                                        class="pane ai-pane"
-                                        data-pane-focused=${aiFocused ? 'true' : 'false'}
-                                        ${listen('focusin', () =>
-                                            updateState({
-                                                focusedKind: PaneKind.Ai,
-                                            }),
-                                        )}
-                                    >
-                                        <div class="pane-body">
-                                            <${VirTerminal.assign({
-                                                folder: inputs.folder,
-                                                kind: PaneKind.Ai,
-                                                active: inputs.active,
-                                            })}></${VirTerminal}>
-                                        </div>
-                                    </div>
-                                    <div
-                                        class="divider ${state.dragging ? 'dragging' : ''}"
-                                        role="separator"
-                                        aria-orientation="vertical"
-                                        title="Drag to resize. Double-click to reset."
-                                        ${listen('pointerdown', onDividerPointerDown)}
-                                        ${listen('dblclick', onDividerDoubleClick)}
-                                    ></div>
-                                `}
-                          <div
-                              class="pane shell-pane"
-                              data-pane-focused=${shellFocused ? 'true' : 'false'}
-                              ${listen('focusin', () =>
-                                  updateState({
-                                      focusedKind: PaneKind.Shell,
-                                  }),
-                              )}
-                          >
-                              <div class="pane-body">
-                                  <${VirTerminal.assign({
-                                      folder: inputs.folder,
-                                      kind: PaneKind.Shell,
-                                      active: inputs.active,
-                                  })}></${VirTerminal}>
-                              </div>
+                          <div class="code-pane" ?data-hidden=${!inputs.codeTabActive}>
+                              <iframe
+                                  class="vscode-iframe"
+                                  src=${state.vscodeUrl}
+                                  title="VS Code"
+                              ></iframe>
                           </div>
-                      `}
+                      `
+                    : inputs.codeTabActive
+                      ? html`
+                            <div class="vscode-status">
+                                ${state.vscodeError
+                                    ? html`
+                                          <span class="vscode-error">
+                                              VS Code failed to start: ${state.vscodeError}
+                                          </span>
+                                      `
+                                    : 'Starting VS Code…'}
+                            </div>
+                        `
+                      : ''}
+                <div class="cli-panes" ?data-hidden=${inputs.codeTabActive}>
+                    ${inputs.aiHidden
+                        ? ''
+                        : html`
+                              <div
+                                  class="pane ai-pane"
+                                  data-pane-focused=${aiFocused ? 'true' : 'false'}
+                                  ${listen('focusin', () =>
+                                      updateState({
+                                          focusedKind: PaneKind.Ai,
+                                      }),
+                                  )}
+                              >
+                                  <div class="pane-body">
+                                      <${VirTerminal.assign({
+                                          folder: inputs.folder,
+                                          kind: PaneKind.Ai,
+                                          active: inputs.active,
+                                      })}></${VirTerminal}>
+                                  </div>
+                              </div>
+                              <div
+                                  class="divider ${state.dragging ? 'dragging' : ''}"
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  title="Drag to resize. Double-click to reset."
+                                  ${listen('pointerdown', onDividerPointerDown)}
+                                  ${listen('dblclick', onDividerDoubleClick)}
+                              ></div>
+                          `}
+                    <div
+                        class="pane shell-pane"
+                        data-pane-focused=${shellFocused ? 'true' : 'false'}
+                        ${listen('focusin', () =>
+                            updateState({
+                                focusedKind: PaneKind.Shell,
+                            }),
+                        )}
+                    >
+                        <div class="pane-body">
+                            <${VirTerminal.assign({
+                                folder: inputs.folder,
+                                kind: PaneKind.Shell,
+                                active: inputs.active,
+                            })}></${VirTerminal}>
+                        </div>
+                    </div>
+                </div>
             </div>
         `;
     },

@@ -142,6 +142,53 @@ export async function restartDaemon(): Promise<void> {
     );
 }
 
+/**
+ * Spawn (or reuse) a VS Code instance for the given folder and prime the proxy's session cookie.
+ * Returns the path prefix the iframe should use (e.g. `/vscode-proxy/<encoded folder>`); the
+ * frontend builds the full iframe `src` by concatenating with the backend origin.
+ *
+ * Bypasses `fetchEndpoint` / `agentStormService` because the proxy endpoints aren't part of the
+ * rest-vir service definition — they need raw cookie + WebSocket handling that rest-vir doesn't
+ * expose. Uses the same bearer header and credentials policy so the cookie is accepted by the
+ * browser.
+ */
+export async function ensureVscode(params: Readonly<{folder: string}>): Promise<{
+    basePath: string;
+}> {
+    const bearer = await ensureSecret();
+    const response = await fetch(`${agentStormService.serviceOrigin}/vscode/ensure`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${bearer}`,
+            'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(params),
+    });
+    if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(`POST /vscode/ensure failed: ${response.status} ${message}`);
+    }
+    return (await response.json()) as {basePath: string};
+}
+
+export async function killVscode(params: Readonly<{folder: string}>): Promise<void> {
+    const bearer = await ensureSecret();
+    const response = await fetch(`${agentStormService.serviceOrigin}/vscode/kill`, {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${bearer}`,
+            'Content-Type': 'application/json',
+        },
+        credentials: 'include',
+        body: JSON.stringify(params),
+    });
+    if (!response.ok) {
+        const message = await response.text().catch(() => '');
+        throw new Error(`POST /vscode/kill failed: ${response.status} ${message}`);
+    }
+}
+
 export async function uploadFile(
     params: Readonly<{filename: string; dataBase64: string}>,
 ): Promise<string> {
