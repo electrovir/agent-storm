@@ -362,14 +362,23 @@ export const VirApp = defineElement()({
             })}
                 ${listen(VirSidebar.events.folderActivated, (event) => {
                     const folderPath = event.detail;
-                    const folder = state.folderInfo.get(folderPath);
                     /**
-                     * Drive the URL from the click; render will re-derive `activeFolder` from the
-                     * new route. If `folderInfo` doesn't yet know the folder (race with first poll)
-                     * we still add it to `openedFolders` so the pane mounts — the URL update
-                     * happens on a subsequent render once the data lands.
+                     * Synchronous activation path: the folder is already in vir-app's `folderInfo`
+                     * cache, so we can set the route immediately. Most clicks hit this branch.
+                     *
+                     * Async fallback: a freshly-created worktree (just returned from
+                     * `/worktrees/create`) won't be in vir-app's cache yet because the cache is
+                     * polled on a 2 s interval and the sidebar's `getFolders` refresh updates its
+                     * own state, not ours. Without the fallback the activation drops on the floor
+                     * and the user has to wait for the next poll to land before the new worktree
+                     * becomes the active route. Refresh once on demand and retry; if it still isn't
+                     * there, the activation is genuinely against a stale path and we just keep the
+                     * entry in `openedFolders` for the eventual poll to catch up.
                      */
-                    if (folder) {
+                    const setRouteForFolder = (
+                        folder: FolderInfo,
+                        folderInfo: ReadonlyMap<string, FolderInfo>,
+                    ): void => {
                         /**
                          * Wipe `search` on a sidebar click so the new repo starts on the CLI tab.
                          * Without this, the `?code` flag from the previous repo carries over and
@@ -377,9 +386,30 @@ export const VirApp = defineElement()({
                          * usually surprising.
                          */
                         router.setRoute({
-                            paths: pathsForFolder(folder, state.folderInfo),
+                            paths: pathsForFolder(folder, folderInfo),
                             search: undefined,
                         });
+                    };
+                    const known = state.folderInfo.get(folderPath);
+                    if (known) {
+                        setRouteForFolder(known, state.folderInfo);
+                    } else {
+                        void (async () => {
+                            try {
+                                const folders = await getFolders();
+                                const folderInfo = new Map<string, FolderInfo>();
+                                folders.forEach((folder) => folderInfo.set(folder.path, folder));
+                                updateState({
+                                    folderInfo,
+                                });
+                                const fresh = folderInfo.get(folderPath);
+                                if (fresh) {
+                                    setRouteForFolder(fresh, folderInfo);
+                                }
+                            } catch {
+                                /* sidebar surfaces the load error */
+                            }
+                        })();
                     }
                     if (!state.openedFolders.includes(folderPath)) {
                         updateState({
