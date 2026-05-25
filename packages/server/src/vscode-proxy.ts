@@ -159,9 +159,46 @@ async function lookupPort(folder: string): Promise<number | undefined> {
 }
 
 /**
+ * CSS injected into the workbench HTML before `</head>` so we can hide UI chrome the embedded VS
+ * Code surfaces that doesn't make sense inside the agent-storm iframe (most prominently the custom
+ * title bar with command center + chat / account / settings icons, since the agent-storm tab strip
+ * already handles window context).
+ *
+ * Use `visibility: hidden`, NOT `display: none`. The latter removes the titlebar from the layout
+ * flow which perturbs VS Code's grid math in non-default activity-bar configurations (e.g. with
+ * `workbench.activityBar.location: "bottom"` the bottom activity-bar strip and status bar fall off
+ * the screen). `visibility: hidden` keeps the layout slot intact — the bar is just rendered blank,
+ * and the iframe-side `--vscode-titlebar-offset` shift hides the now-empty space behind the
+ * agent-storm tab strip.
+ */
+const workbenchCssInjection = `
+.monaco-workbench .part.titlebar { visibility: hidden !important; }
+`;
+
+/**
+ * Match the workbench HTML page. VS Code serves the main page at the server-base-path root, with
+ * the encoded folder id immediately under `/vscode-proxy/`. Examples:
+ *   /vscode-proxy/L1Vz...torm
+ *   /vscode-proxy/L1Vz...torm/
+ *   /vscode-proxy/L1Vz...torm?folder=...
+ *   /vscode-proxy/L1Vz...torm/?folder=...
+ * Static assets and API requests have additional path segments after the folder id, so we anchor on
+ * "no more slashes after the folder id (before the optional `?`)".
+ */
+function isWorkbenchHtmlRequest(request: FastifyRequest): boolean {
+    if (request.method !== 'GET') {
+        return false;
+    }
+    const url = request.url || '';
+    return /^\/vscode-proxy\/[^/?]+\/?(?:\?.*)?$/.test(url);
+}
+
+/**
  * Forward an HTTP request to a child VS Code instance. We unconditionally strip hop-by-hop headers;
  * everything else (cookies, accept-encoding, user-agent, etc.) is passed through so the VS Code
- * frontend behaves identically to a direct browser connection.
+ * frontend behaves identically to a direct browser connection. Exception: for the workbench HTML
+ * page itself we strip Accept-Encoding so upstream returns plain text — that lets us buffer the
+ * response and inject {@link workbenchCssInjection} before passing it along.
  */
 function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): void {
     /**
@@ -194,6 +231,11 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
         },
     );
 
+    const isHtmlPage = isWorkbenchHtmlRequest(request);
+    if (isHtmlPage) {
+        delete forwardHeaders['accept-encoding'];
+    }
+
     const upstream = httpRequest(
         {
             host: '127.0.0.1',
@@ -203,6 +245,50 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
             headers: forwardHeaders,
         },
         (upstreamRes) => {
+            const contentType = String(upstreamRes.headers['content-type'] ?? '');
+            if (isHtmlPage && contentType.toLowerCase().startsWith('text/html')) {
+                const chunks: Buffer[] = [];
+                upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+                upstreamRes.on('end', () => {
+                    const original = Buffer.concat(chunks).toString('utf-8');
+                    const injection = `<style>${workbenchCssInjection}</style>`;
+                    const modified = original.includes('</head>')
+                        ? original.replace('</head>', `${injection}</head>`)
+                        : injection + original;
+                    reply.status(upstreamRes.statusCode ?? 502);
+                    Object.entries(upstreamRes.headers).forEach(
+                        ([
+                            key,
+                            value,
+                        ]) => {
+                            if (value === undefined) {
+                                return;
+                            }
+                            const lower = key.toLowerCase();
+                            /**
+                             * Skip content-length / content-encoding — we changed the body length
+                             * and the response is now uncompressed regardless of what upstream said.
+                             */
+                            if (
+                                hopByHop.has(lower) ||
+                                lower === 'content-length' ||
+                                lower === 'content-encoding'
+                            ) {
+                                return;
+                            }
+                            reply.header(key, value);
+                        },
+                    );
+                    reply.send(modified);
+                });
+                upstreamRes.on('error', (error) => {
+                    log.error(`vscode proxy html buffer error: ${error.message}`);
+                    if (!reply.sent) {
+                        reply.status(502).send({error: 'VS Code upstream HTML error'});
+                    }
+                });
+                return;
+            }
             reply.status(upstreamRes.statusCode ?? 502);
             Object.entries(upstreamRes.headers).forEach(
                 ([

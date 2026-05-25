@@ -62,6 +62,15 @@ export const VirPaneGroup = defineElement<{
             vscodeUrl: undefined as string | undefined,
             vscodeLoading: false,
             vscodeError: undefined as string | undefined,
+            /**
+             * Set true when the user clicks the close (×) button next to the Code tab. While true,
+             * the render-time auto-ensure block is suppressed so the just-killed VS Code doesn't
+             * immediately respawn during the brief window where `codeTabActive` is still observed
+             * as true (the cliTabRequested event needs a round-trip through vir-app's router state
+             * before the prop flips). Reset to false when the user explicitly re-requests the Code
+             * tab via the tab-bar button.
+             */
+            vscodeUserClosed: false,
         };
     },
     styles: css`
@@ -141,6 +150,12 @@ export const VirPaneGroup = defineElement<{
             inset: 0;
             display: flex;
             flex-direction: row;
+            /*
+             * Clip the iframe's negative margin-top so the shifted-up VS Code workbench doesn't
+             * overflow into the tab strip above the pane group. See .vscode-iframe below for the
+             * offset itself.
+             */
+            overflow: hidden;
         }
 
         .code-pane[data-hidden],
@@ -154,8 +169,18 @@ export const VirPaneGroup = defineElement<{
         }
 
         .vscode-iframe {
+            /*
+             * Shift the iframe up by VS Code's now-hidden (via visibility: hidden in the proxy's
+             * injected CSS) title bar height so the empty slot sits behind the agent-storm tab
+             * strip. The titlebar still participates in VS Code's grid layout (we kept its slot,
+             * just made the bar invisible) so the workbench's grid math stays correct — only the
+             * visible offset is adjusted from this side. Bump --vscode-titlebar-offset if your VS
+             * Code version has a different titlebar height; 35px matches stable serve-web today.
+             */
+            --vscode-titlebar-offset: 35px;
             width: 100%;
-            height: 100%;
+            height: calc(100% + var(--vscode-titlebar-offset));
+            margin-top: calc(-1 * var(--vscode-titlebar-offset));
             border: none;
             background: white;
         }
@@ -320,7 +345,8 @@ export const VirPaneGroup = defineElement<{
             inputs.codeTabActive &&
             !state.vscodeUrl &&
             !state.vscodeLoading &&
-            !state.vscodeError
+            !state.vscodeError &&
+            !state.vscodeUserClosed
         ) {
             updateState({
                 vscodeLoading: true,
@@ -349,6 +375,7 @@ export const VirPaneGroup = defineElement<{
                 vscodeUrl: undefined,
                 vscodeLoading: false,
                 vscodeError: undefined,
+                vscodeUserClosed: true,
             });
             void killVscode({folder}).catch(() => {
                 /* server-side cleanup is best-effort; the iframe is already gone */
@@ -377,7 +404,18 @@ export const VirPaneGroup = defineElement<{
                     role="tab"
                     ?data-selected=${inputs.codeTabActive}
                     aria-selected=${inputs.codeTabActive}
-                    ${listen('click', () => dispatch(new events.codeTabRequested()))}
+                    ${listen('click', () => {
+                        /**
+                         * Reset the user-closed flag so the auto-ensure block fires on this Code
+                         * tab activation. Without this, after closing VS Code the user would have
+                         * to click Code, then click somewhere else, then click Code again to
+                         * actually respawn it.
+                         */
+                        if (state.vscodeUserClosed) {
+                            updateState({vscodeUserClosed: false});
+                        }
+                        dispatch(new events.codeTabRequested());
+                    })}
                 >
                     Code
                 </button>

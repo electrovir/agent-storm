@@ -370,8 +370,15 @@ export const VirApp = defineElement()({
                      * happens on a subsequent render once the data lands.
                      */
                     if (folder) {
+                        /**
+                         * Wipe `search` on a sidebar click so the new repo starts on the CLI tab.
+                         * Without this, the `?code` flag from the previous repo carries over and
+                         * the user lands on the Code tab of the freshly-selected one, which is
+                         * usually surprising.
+                         */
                         router.setRoute({
                             paths: pathsForFolder(folder, state.folderInfo),
+                            search: undefined,
                         });
                     }
                     if (!state.openedFolders.includes(folderPath)) {

@@ -44,6 +44,23 @@ function entryIsAlive(entry: VscodeEntry): boolean {
     return !entry.child.killed && entry.child.exitCode === null;
 }
 
+/**
+ * Signal the whole process group rooted at `child` so the bash wrapper + the nested code-tunnel + the
+ * actual `node server-main.js` all die together. Falls back to a direct `child.kill()` if pgroup
+ * signaling fails (e.g. child has already exited and its pgid was reaped).
+ */
+function killEntryGroup(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): void {
+    if (typeof child.pid === 'number') {
+        try {
+            process.kill(-child.pid, signal);
+            return;
+        } catch {
+            /* fall through to child.kill */
+        }
+    }
+    child.kill(signal);
+}
+
 function spawnVscode(folder: string, basePath: string): VscodeEntry {
     const normalized = normalizeFolder(folder);
     /**
@@ -66,6 +83,15 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
     if (basePath) {
         args.push('--server-base-path', basePath);
     }
+    /**
+     * `detached: true` makes the spawned `code` process a new process-group leader. The `code`
+     * binary is a bash wrapper that exec's `code-tunnel` which itself spawns the actual
+     * `node server-main.js`. Without a dedicated process group, `child.kill()` only signals the
+     * outer bash — which doesn't forward signals to its descendants — and the node server-main
+     * orphans and keeps listening on its port. By making the child its own pgroup leader, we can
+     * `process.kill(-pid, signal)` to deliver the signal to every process in the group at once,
+     * tearing the whole VS Code tree down cleanly.
+     */
     const child = spawn('code', args, {
         cwd: normalized,
         env: process.env,
@@ -74,6 +100,7 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
             'pipe',
             'pipe',
         ],
+        detached: true,
     });
 
     /**
@@ -168,7 +195,7 @@ export async function ensureVscode(folder: string, basePath: string): Promise<nu
      * spawning fresh — otherwise the iframe URL would 404.
      */
     if (existing) {
-        existing.child.kill();
+        killEntryGroup(existing.child);
         instances.delete(normalized);
     }
     log(`spawning vscode for ${normalized} (basePath=${basePath || '/'})`);
@@ -184,7 +211,7 @@ export function killVscode(folder: string): boolean {
         return false;
     }
     log(`killing vscode for ${normalized}`);
-    entry.child.kill();
+    killEntryGroup(entry.child);
     instances.delete(normalized);
     return true;
 }
@@ -204,6 +231,6 @@ export function listVscode(): VscodeListEntry[] {
 }
 
 export function killAllVscode(): void {
-    instances.forEach((entry) => entry.child.kill());
+    instances.forEach((entry) => killEntryGroup(entry.child));
     instances.clear();
 }
