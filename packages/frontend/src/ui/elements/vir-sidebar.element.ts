@@ -791,11 +791,29 @@ async function promptAddRepo(
         });
         const newFolder = folders.find((folder) => folder.path === path);
         if (newFolder) {
-            notifyActivated(newFolder.path);
+            notifyActivated(activationTargetFor(newFolder, folders).path);
         }
     } catch (error: unknown) {
         showError(updateState, error);
     }
+}
+
+/**
+ * Resolve which folder should actually be activated when the user "selects" the given one. For
+ * standalone repos the answer is just the folder itself; for worktree-roots the single-segment URL
+ * `/<repoName>` is invalid per the router spec (vir-app's `resolveRoute` redirects it to `/`), so
+ * we pick the first worktree child as the activation target instead. Falls back to the root if no
+ * children exist yet (shouldn't happen — a worktree-root by definition has at least one child).
+ */
+function activationTargetFor(
+    folder: FolderInfo,
+    folders: ReadonlyArray<FolderInfo>,
+): FolderInfo {
+    if (!folder.isWorktreeRoot) {
+        return folder;
+    }
+    const firstWorktree = folders.find((other) => other.parentRepoPath === folder.path);
+    return firstWorktree ?? folder;
 }
 
 async function confirmRemoveRepo(
