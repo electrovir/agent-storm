@@ -18,7 +18,6 @@
 import {monorepoRoot} from '@agent-storm/server/src/file-paths.js';
 import {filterMap, log} from '@augment-vir/common';
 import {execSync, spawn} from 'node:child_process';
-import {getPortPromise} from 'portfinder';
 
 type Signals = NodeJS.Signals;
 
@@ -115,14 +114,16 @@ function killPriorInstances(): void {
 killPriorInstances();
 
 /**
- * Preferred starting ports. Picked from the upper IANA unassigned range — above the noisy dev-tool
- * defaults (3000/4000/5173/8000/8080/9000) and below the ephemeral range macOS uses for outbound
- * connections (49152+), with no nearby IANA-registered services. `getPortPromise` starts here and
- * walks upward if the port is occupied, so subsequent runs almost always land on the same pair
- * without surprises.
+ * Fixed ports. Picked from the upper IANA unassigned range — above the noisy dev-tool defaults
+ * (3000/4000/5173/8000/8080/9000) and below the ephemeral range macOS uses for outbound connections
+ * (49152+), with no nearby IANA-registered services. Hard-coded (no auto-walk-up on a busy port) so
+ * the URL the user has bookmarked / open in their browser is stable across restarts. If a stale
+ * process is squatting on the port, the relevant server fails loudly with EADDRINUSE rather than
+ * silently moving — that's the desired behavior: free the port and try again instead of producing
+ * a session where the browser is pointed at the wrong port and quietly fails CORS.
  */
-const preferredBackendPort = 41_880;
-const preferredFrontendPort = 41_881;
+const defaultBackendPort = 41_880;
+const defaultFrontendPort = 41_881;
 
 function envPort(name: string): number | undefined {
     const raw = process.env[name];
@@ -136,22 +137,8 @@ function envPort(name: string): number | undefined {
     return parsed;
 }
 
-async function pickFreePort(preferred: number, exclude?: number): Promise<number> {
-    const startPort = exclude !== undefined && preferred === exclude ? preferred + 1 : preferred;
-    const port = await getPortPromise({
-        port: startPort,
-    });
-    if (port === exclude) {
-        return await getPortPromise({
-            port: port + 1,
-        });
-    }
-    return port;
-}
-
-const backendPort = envPort('BACKEND_PORT') ?? (await pickFreePort(preferredBackendPort));
-const frontendPort =
-    envPort('FRONTEND_PORT') ?? (await pickFreePort(preferredFrontendPort, backendPort));
+const backendPort = envPort('BACKEND_PORT') ?? defaultBackendPort;
+const frontendPort = envPort('FRONTEND_PORT') ?? defaultFrontendPort;
 
 const childEnv: NodeJS.ProcessEnv = {
     ...process.env,

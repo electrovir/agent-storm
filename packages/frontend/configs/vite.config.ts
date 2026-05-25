@@ -31,6 +31,14 @@ export default defineConfig(
                  */
                 port: envPort('FRONTEND_PORT') ?? baseConfig.server?.port,
                 /**
+                 * Bind to the requested port or fail. Without this vite silently walks upward when
+                 * the configured port is held by a stale process, which then breaks every existing
+                 * browser tab pointed at the original URL (CORS rejects them because the backend's
+                 * port-guard expects an exact `FRONTEND_PORT` match). Better to refuse to start so
+                 * the operator gets a clear "port in use" error and can fix it intentionally.
+                 */
+                strictPort: true,
+                /**
                  * `host: true` makes vite listen on all interfaces (equivalent to `--host`), so the
                  * dev server is reachable over LAN. The backend matches via `host: '0.0.0.0'` and
                  * the auth secret is what actually gates access.
