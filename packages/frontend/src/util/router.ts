@@ -61,14 +61,13 @@ function sanitizeSearch(
 ): FrontendSearchParams {
     if (!rawSearch || !isRepoSelectionRoute(paths)) {
         return undefined;
-    }
-    /**
-     * Presence-only flag. `?code` parses to `code: []`, `?code=foo` to `code: ['foo']`. Either way
-     * we collapse to an empty array — that's what url-vir's `searchParamsToString` serializes as
-     * just `code` (no `=`), keeping the URL canonical regardless of what the user typed (there is
-     * no value content to preserve).
-     */
-    if (rawSearch.code !== undefined) {
+        /**
+         * Presence-only flag. `?code` parses to `code: []`, `?code=foo` to `code: ['foo']`. Either
+         * way we collapse to an empty array — that's what url-vir's `searchParamsToString`
+         * serializes as just `code` (no `=`), keeping the URL canonical regardless of what the user
+         * typed (there is no value content to preserve).
+         */
+    } else if (rawSearch.code !== undefined) {
         return {
             code: [],
         };

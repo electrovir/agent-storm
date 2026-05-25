@@ -1,8 +1,8 @@
 import {agentStormService} from '@agent-storm/common';
 
 /**
- * How many consecutive transport-level failures count as "the backend really went away" instead of a
- * transient blip. With the frontend polling /folders every 2 s, a threshold of 2 means we declare
+ * How many consecutive transport-level failures count as "the backend really went away" instead of
+ * a transient blip. With the frontend polling /folders every 2 s, a threshold of 2 means we declare
  * the backend "down" after ~4 s of failed connect attempts — short enough to catch a `tsx --watch`
  * restart (typically ~2-3 s) when the timing lines up, generous enough to ignore a one-off poll
  * dropout caused by network noise.
@@ -40,9 +40,10 @@ function reloadOnce(): void {
 export function notifyBackendSuccess(): void {
     if (state.declaredDown) {
         /**
-         * We previously confirmed the backend was gone and now we got a successful response — that's
-         * a restart. Reload the whole window so every in-memory state (auth, route, WebSocket
-         * connections, pane attachments, VS Code iframes) is rebuilt against the fresh backend.
+         * We previously confirmed the backend was gone and now we got a successful response —
+         * that's a restart. Reload the whole window so every in-memory state (auth, route,
+         * WebSocket connections, pane attachments, VS Code iframes) is rebuilt against the fresh
+         * backend.
          */
         reloadOnce();
         return;
@@ -73,8 +74,7 @@ function scheduleProbe(): void {
 async function probeAndReload(): Promise<void> {
     if (state.reloading) {
         return;
-    }
-    if (await isBackendReachable()) {
+    } else if (await isBackendReachable()) {
         reloadOnce();
         return;
     }

@@ -1,3 +1,5 @@
+// cspell:words exfiltrating, titlebar, torm
+
 import {log} from '@augment-vir/common';
 import {type FastifyInstance, type FastifyReply, type FastifyRequest} from 'fastify';
 import {request as httpRequest, type IncomingMessage} from 'node:http';
@@ -14,24 +16,30 @@ const vscodeBearerCookieName = 'agent-storm-vscode-bearer';
 
 /**
  * Root prefix of the proxy. A single base64url-encoded folder id segment goes immediately after —
- * e.g. `/vscode-proxy/L1VzZXJzL2VsZWN0cm92aXIvcmVwb3MvbXktcmVwbw/`. We pass this prefix to
- * `code serve-web --server-base-path` so asset URLs in the served HTML resolve to the proxy.
+ * e.g. `/vscode-proxy/L1VzZXJzL2VsZWN0cm92aXIvcmVwb3MvbXktcmVwbw/`. We pass this prefix to `code
+ * serve-web --server-base-path` so asset URLs in the served HTML resolve to the proxy.
  *
  * Using base64url instead of `encodeURIComponent` matters because the encoded folder path can
  * contain `%2F` (the `/` separator URL-encoded). Some relative asset URLs in VS Code's HTML get
  * resolved by the browser against the page path, and the browser treats `%2F` as a directory
- * separator during resolution — so requests come back with the folder path *unencoded*, no longer
+ * separator during resolution — so requests come back with the folder path _unencoded_, no longer
  * matching our base path, and 404. base64url has no `/`, `?`, or other reserved chars, so the
  * round-trip is stable.
  */
 const proxyRoot = '/vscode-proxy';
 
 function encodeFolderId(folder: string): string {
-    return Buffer.from(folder, 'utf-8')
-        .toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
+    return (
+        Buffer.from(folder, 'utf-8')
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            /**
+             * Base64 padding is at most 2 `=` chars; bound the quantifier so sonarjs/slow-regex is
+             * happy.
+             */
+            .replace(/={0,2}$/, '')
+    );
 }
 
 function decodeFolderId(id: string): string | undefined {
@@ -177,13 +185,11 @@ const workbenchCssInjection = `
 
 /**
  * Match the workbench HTML page. VS Code serves the main page at the server-base-path root, with
- * the encoded folder id immediately under `/vscode-proxy/`. Examples:
- *   /vscode-proxy/L1Vz...torm
- *   /vscode-proxy/L1Vz...torm/
- *   /vscode-proxy/L1Vz...torm?folder=...
- *   /vscode-proxy/L1Vz...torm/?folder=...
- * Static assets and API requests have additional path segments after the folder id, so we anchor on
- * "no more slashes after the folder id (before the optional `?`)".
+ * the encoded folder id immediately under `/vscode-proxy/`. Examples: /vscode-proxy/L1Vz...torm
+ * /vscode-proxy/L1Vz...torm/ /vscode-proxy/L1Vz...torm?folder=...
+ * /vscode-proxy/L1Vz...torm/?folder=... Static assets and API requests have additional path
+ * segments after the folder id, so we anchor on "no more slashes after the folder id (before the
+ * optional `?`)".
  */
 function isWorkbenchHtmlRequest(request: FastifyRequest): boolean {
     if (request.method !== 'GET') {
@@ -226,7 +232,7 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
             value,
         ]) => {
             if (value !== undefined && !hopByHop.has(key.toLowerCase())) {
-                forwardHeaders[key] = value as string | string[];
+                forwardHeaders[key] = value;
             }
         },
     );
@@ -245,7 +251,7 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
             headers: forwardHeaders,
         },
         (upstreamRes) => {
-            const contentType = String(upstreamRes.headers['content-type'] ?? '');
+            const contentType = upstreamRes.headers['content-type'] ?? '';
             if (isHtmlPage && contentType.toLowerCase().startsWith('text/html')) {
                 const chunks: Buffer[] = [];
                 upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -267,7 +273,8 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
                             const lower = key.toLowerCase();
                             /**
                              * Skip content-length / content-encoding — we changed the body length
-                             * and the response is now uncompressed regardless of what upstream said.
+                             * and the response is now uncompressed regardless of what upstream
+                             * said.
                              */
                             if (
                                 hopByHop.has(lower) ||
@@ -284,7 +291,9 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
                 upstreamRes.on('error', (error) => {
                     log.error(`vscode proxy html buffer error: ${error.message}`);
                     if (!reply.sent) {
-                        reply.status(502).send({error: 'VS Code upstream HTML error'});
+                        reply.status(502).send({
+                            error: 'VS Code upstream HTML error',
+                        });
                     }
                 });
                 return;
@@ -306,7 +315,9 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
     upstream.on('error', (error) => {
         log.error(`vscode proxy upstream error: ${error.message}`);
         if (!reply.sent) {
-            reply.status(502).send({error: 'VS Code upstream unreachable'});
+            reply.status(502).send({
+                error: 'VS Code upstream unreachable',
+            });
         }
     });
     request.raw.pipe(upstream);
@@ -324,7 +335,10 @@ function pipeWebSocket(
     port: number,
 ): void {
     log.info(`[vscode-ws] pipeWebSocket entry: ${request.method} ${request.url} → :${port}`);
-    const upstreamSocket = netConnect({port, host: '127.0.0.1'});
+    const upstreamSocket = netConnect({
+        port,
+        host: '127.0.0.1',
+    });
     let upstreamBytes = 0;
     let clientBytes = 0;
     upstreamSocket.on('error', (error) => {
@@ -336,10 +350,10 @@ function pipeWebSocket(
         upstreamSocket.destroy();
     });
     clientSocket.once('end', () => {
-        log.info(`[vscode-ws] client emitted 'end'`);
+        log.info("[vscode-ws] client emitted 'end'");
     });
     upstreamSocket.once('end', () => {
-        log.info(`[vscode-ws] upstream emitted 'end'`);
+        log.info("[vscode-ws] upstream emitted 'end'");
     });
     /**
      * Critical: VS Code's `code serve-web` waits for the request body to be fully delivered before
@@ -381,8 +395,12 @@ function pipeWebSocket(
          * during that switch are delivered only to listeners attached up to that point. Attaching
          * pipe first guarantees pipe sees every chunk.
          */
-        clientSocket.pipe(upstreamSocket, {end: false});
-        upstreamSocket.pipe(clientSocket, {end: false});
+        clientSocket.pipe(upstreamSocket, {
+            end: false,
+        });
+        upstreamSocket.pipe(clientSocket, {
+            end: false,
+        });
         let upstreamChunks = 0;
         let clientChunks = 0;
         upstreamSocket.on('data', (chunk: Buffer) => {
@@ -392,9 +410,11 @@ function pipeWebSocket(
                 const preview = chunk
                     .subarray(0, 120)
                     .toString('utf-8')
-                    .replace(/\r/g, '\\r')
-                    .replace(/\n/g, '\\n');
-                log.info(`[vscode-ws] upstream→client #${upstreamChunks} +${chunk.length} ${preview}`);
+                    .replace(/\r/g, String.raw`\r`)
+                    .replace(/\n/g, String.raw`\n`);
+                log.info(
+                    `[vscode-ws] upstream→client #${upstreamChunks} +${chunk.length} ${preview}`,
+                );
             }
         });
         clientSocket.on('data', (chunk: Buffer) => {
@@ -424,8 +444,7 @@ function pipeWebSocket(
  * from refusing the response.
  */
 function applyCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
-    const origin =
-        typeof request.headers.origin === 'string' ? request.headers.origin : undefined;
+    const origin = typeof request.headers.origin === 'string' ? request.headers.origin : undefined;
     if (origin) {
         reply.header('access-control-allow-origin', origin);
         reply.header('vary', 'origin');
@@ -458,25 +477,36 @@ export function attachVscodeProxy(server: FastifyInstance): void {
     server.post('/vscode/ensure', async (request, reply) => {
         applyCorsHeaders(request, reply);
         if (!(await authorizeBearer(request))) {
-            return reply.status(401).send({error: 'Unauthorized'});
+            return reply.status(401).send({
+                error: 'Unauthorized',
+            });
         }
         const body = request.body as {folder?: string} | undefined;
         const folder = body?.folder;
         if (!folder) {
-            return reply.status(400).send({error: 'Missing folder.'});
+            return reply.status(400).send({
+                error: 'Missing folder.',
+            });
         }
         const basePath = basePathForFolder(folder);
         try {
-            await ensureVscode({folder, basePath});
+            await ensureVscode({
+                folder,
+                basePath,
+            });
         } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
-            return reply.status(500).send({error: message});
+            return reply.status(500).send({
+                error: message,
+            });
         }
         const bearer = extractBearerToken(request.headers.authorization);
         if (bearer) {
             setBearerCookie(reply, bearer);
         }
-        return reply.send({basePath});
+        return reply.send({
+            basePath,
+        });
     });
 
     /**
@@ -487,30 +517,44 @@ export function attachVscodeProxy(server: FastifyInstance): void {
     server.post('/vscode/kill', async (request, reply) => {
         applyCorsHeaders(request, reply);
         if (!(await authorizeBearer(request))) {
-            return reply.status(401).send({error: 'Unauthorized'});
+            return reply.status(401).send({
+                error: 'Unauthorized',
+            });
         }
         const body = request.body as {folder?: string} | undefined;
         const folder = body?.folder;
         if (!folder) {
-            return reply.status(400).send({error: 'Missing folder.'});
+            return reply.status(400).send({
+                error: 'Missing folder.',
+            });
         }
-        await killVscode({folder});
+        await killVscode({
+            folder,
+        });
         clearBearerCookie(reply);
-        return reply.send({ok: true});
+        return reply.send({
+            ok: true,
+        });
     });
 
     /** Cookie-auth'd HTTP proxy for everything the VS Code web client requests. */
     server.all(`${proxyRoot}/*`, async (request, reply) => {
         if (!(await authorizeCookie(request.raw.headers))) {
-            return reply.status(401).send({error: 'Unauthorized'});
+            return reply.status(401).send({
+                error: 'Unauthorized',
+            });
         }
         const folder = decodeFolderFromUrl(request.url);
         if (!folder) {
-            return reply.status(400).send({error: 'Bad proxy path.'});
+            return reply.status(400).send({
+                error: 'Bad proxy path.',
+            });
         }
         const port = await lookupPort(folder);
         if (!port) {
-            return reply.status(404).send({error: 'VS Code instance not running for folder.'});
+            return reply.status(404).send({
+                error: 'VS Code instance not running for folder.',
+            });
         }
         pipeHttp(request, reply, port);
         /** `reply.send` was already called inside pipeHttp via the streamed response. */
@@ -521,9 +565,9 @@ export function attachVscodeProxy(server: FastifyInstance): void {
      * WebSocket upgrade dispatcher. `@fastify/websocket` (used by rest-vir) registers its own
      * 'upgrade' listener that grabs every upgrade socket — regardless of URL — and routes it
      * through fastify's HTTP router. If we only `.on('upgrade', …)` alongside it, both handlers run
-     * for our `/vscode-proxy/*` upgrades and stomp on the same socket (fastify ends up writing a 404
-     * response while we write a 101 forwarded from VS Code), so the browser never gets a clean WS
-     * handshake.
+     * for our `/vscode-proxy/*` upgrades and stomp on the same socket (fastify ends up writing a
+     * 404 response while we write a 101 forwarded from VS Code), so the browser never gets a clean
+     * WS handshake.
      *
      * We work around this by replacing the listener chain with a single dispatcher: our paths go to
      * `pipeWebSocket`, everything else (notably `/pty` from the rest-vir service) is forwarded to

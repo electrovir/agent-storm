@@ -1,3 +1,5 @@
+// cspell:words titlebar
+
 import {agentStormService, PaneKind} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
@@ -352,7 +354,9 @@ export const VirPaneGroup = defineElement<{
                 vscodeLoading: true,
             });
             const folder = inputs.folder;
-            void ensureVscode({folder})
+            void ensureVscode({
+                folder,
+            })
                 .then(({basePath}) => {
                     const url = `${agentStormService.serviceOrigin}${basePath}/?folder=${encodeURIComponent(folder)}`;
                     updateState({
@@ -377,7 +381,9 @@ export const VirPaneGroup = defineElement<{
                 vscodeError: undefined,
                 vscodeUserClosed: true,
             });
-            void killVscode({folder}).catch(() => {
+            void killVscode({
+                folder,
+            }).catch(() => {
                 /* server-side cleanup is best-effort; the iframe is already gone */
             });
             /** If the user closes VS Code while looking at the Code tab, snap back to CLI. */
@@ -412,7 +418,9 @@ export const VirPaneGroup = defineElement<{
                          * actually respawn it.
                          */
                         if (state.vscodeUserClosed) {
-                            updateState({vscodeUserClosed: false});
+                            updateState({
+                                vscodeUserClosed: false,
+                            });
                         }
                         dispatch(new events.codeTabRequested());
                     })}

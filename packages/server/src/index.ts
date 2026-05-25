@@ -39,9 +39,7 @@ function mirrorWriteTo<Stream extends NodeJS.WriteStream>(
 ): Stream['write'] {
     return ((chunk: unknown, ...rest: unknown[]) => {
         try {
-            if (typeof chunk === 'string') {
-                appendFileSync(serverLogPath, chunk);
-            } else if (chunk instanceof Buffer) {
+            if (typeof chunk === 'string' || chunk instanceof Buffer) {
                 appendFileSync(serverLogPath, chunk);
             }
         } catch {
@@ -233,7 +231,9 @@ const implementation = implementService({
             await killFolderPanes({
                 folder: requestData.worktreePath,
             });
-            await killVscode({folder: requestData.worktreePath}).catch(() => {
+            await killVscode({
+                folder: requestData.worktreePath,
+            }).catch(() => {
                 /* if no vscode was running for this folder, killVscode is a no-op */
             });
             await removeWorktree(requestData);
@@ -261,7 +261,9 @@ const implementation = implementService({
              * implies "tear down the editor I have for this folder too". Silently ignore the
              * no-vscode case.
              */
-            await killVscode({folder: requestData.folder}).catch(() => {});
+            await killVscode({
+                folder: requestData.folder,
+            }).catch(() => {});
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
