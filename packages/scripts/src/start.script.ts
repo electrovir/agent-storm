@@ -119,8 +119,8 @@ killPriorInstances();
  * (49152+), with no nearby IANA-registered services. Hard-coded (no auto-walk-up on a busy port) so
  * the URL the user has bookmarked / open in their browser is stable across restarts. If a stale
  * process is squatting on the port, the relevant server fails loudly with EADDRINUSE rather than
- * silently moving — that's the desired behavior: free the port and try again instead of producing
- * a session where the browser is pointed at the wrong port and quietly fails CORS.
+ * silently moving — that's the desired behavior: free the port and try again instead of producing a
+ * session where the browser is pointed at the wrong port and quietly fails CORS.
  */
 const defaultBackendPort = 41_880;
 const defaultFrontendPort = 41_881;

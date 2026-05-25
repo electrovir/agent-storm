@@ -1,3 +1,5 @@
+// cspell:words pgroup, pgid
+
 import {spawn, type ChildProcess} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 import {homedir} from 'node:os';
@@ -45,9 +47,9 @@ function entryIsAlive(entry: VscodeEntry): boolean {
 }
 
 /**
- * Signal the whole process group rooted at `child` so the bash wrapper + the nested code-tunnel + the
- * actual `node server-main.js` all die together. Falls back to a direct `child.kill()` if pgroup
- * signaling fails (e.g. child has already exited and its pgid was reaped).
+ * Signal the whole process group rooted at `child` so the bash wrapper + the nested code-tunnel +
+ * the actual `node server-main.js` all die together. Falls back to a direct `child.kill()` if
+ * pgroup signaling fails (e.g. child has already exited and its pgid was reaped).
  */
 function killEntryGroup(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): void {
     if (typeof child.pid === 'number') {
@@ -85,13 +87,14 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
     }
     /**
      * `detached: true` makes the spawned `code` process a new process-group leader. The `code`
-     * binary is a bash wrapper that exec's `code-tunnel` which itself spawns the actual
-     * `node server-main.js`. Without a dedicated process group, `child.kill()` only signals the
-     * outer bash — which doesn't forward signals to its descendants — and the node server-main
-     * orphans and keeps listening on its port. By making the child its own pgroup leader, we can
+     * binary is a bash wrapper that exec's `code-tunnel` which itself spawns the actual `node
+     * server-main.js`. Without a dedicated process group, `child.kill()` only signals the outer
+     * bash — which doesn't forward signals to its descendants — and the node server-main orphans
+     * and keeps listening on its port. By making the child its own pgroup leader, we can
      * `process.kill(-pid, signal)` to deliver the signal to every process in the group at once,
      * tearing the whole VS Code tree down cleanly.
      */
+    // eslint-disable-next-line sonarjs/no-os-command-from-path
     const child = spawn('code', args, {
         cwd: normalized,
         env: process.env,
@@ -108,8 +111,8 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
      * already have the port. If we remove the listener, the OS-level pipe (default ~64KB on macOS)
      * fills with later log output and VS Code's worker threads BLOCK in a write syscall trying to
      * flush. Symptom looks identical to "the server stopped responding" — the TCP listener still
-     * accepts connections but never produces an HTTP response. So instead of detaching the
-     * listener on port discovery, we just stop matching against the buffer.
+     * accepts connections but never produces an HTTP response. So instead of detaching the listener
+     * on port discovery, we just stop matching against the buffer.
      */
     const entry: VscodeEntry = {
         child,
@@ -135,8 +138,8 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
                 }
                 /**
                  * Drain & discard once resolved; the listener stays attached for the child's life.
-                 * Temporarily mirroring upstream output to the daemon log so we can see what
-                 * `code serve-web` says about incoming requests during WS handshake debugging.
+                 * Temporarily mirroring upstream output to the daemon log so we can see what `code
+                 * serve-web` says about incoming requests during WS handshake debugging.
                  */
                 text.split('\n').forEach((line) => {
                     const trimmed = line.trim();
@@ -145,8 +148,8 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
                     }
                 });
             };
-            child.stdout?.on('data', onChunk);
-            child.stderr?.on('data', onChunk);
+            child.stdout.on('data', onChunk);
+            child.stderr.on('data', onChunk);
             const timeout = setTimeout(() => {
                 if (!resolved) {
                     rejectPort(

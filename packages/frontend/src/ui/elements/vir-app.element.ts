@@ -30,15 +30,11 @@ function resolveRoute(
     routePaths: ReadonlyArray<string>,
     folderInfo: ReadonlyMap<string, FolderInfo>,
 ): RouteResolution {
-    /** Reserved literal — element-book route doesn't map to a folder. */
-    if (routePaths[0] === 'book' || routePaths.length === 0) {
-        return {
-            folder: undefined,
-            redirectToRoot: false,
-        };
-    }
-    /** Don't redirect before we have data — the URL might be perfectly valid once folders load. */
-    if (folderInfo.size === 0) {
+    /**
+     * Reserved literal — element-book route doesn't map to a folder. Also bail before folder info
+     * has loaded so we don't redirect a URL that might be perfectly valid once data arrives.
+     */
+    if (routePaths[0] === 'book' || routePaths.length === 0 || folderInfo.size === 0) {
         return {
             folder: undefined,
             redirectToRoot: false,
@@ -103,7 +99,7 @@ function pathsForFolder(
 ): FrontendPaths {
     if (folder.parentRepoPath) {
         const parent = folderInfo.get(folder.parentRepoPath);
-        const parentName = parent?.name || folder.parentRepoPath.split('/').filter(Boolean).at(-1);
+        const parentName = parent?.name || folder.parentRepoPath.split('/').findLast(Boolean);
         return [
             parentName || folder.parentRepoPath,
             folder.name,
@@ -266,7 +262,11 @@ export const VirApp = defineElement()({
         const resolution = resolveRoute(state.route.paths, state.folderInfo);
         const activeFolder = resolution.folder?.path;
         if (resolution.redirectToRoot) {
-            void Promise.resolve().then(() => router.setRoute({paths: []}));
+            void Promise.resolve().then(() =>
+                router.setRoute({
+                    paths: [],
+                }),
+            );
         }
 
         /**
@@ -398,7 +398,9 @@ export const VirApp = defineElement()({
                      * next sweep, but doing it eagerly avoids a flicker.
                      */
                     if (activeFolder && removed.has(activeFolder)) {
-                        router.setRoute({paths: []});
+                        router.setRoute({
+                            paths: [],
+                        });
                     }
                     updateState({
                         openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
@@ -444,7 +446,9 @@ export const VirApp = defineElement()({
                                 ${listen(VirPaneGroup.events.codeTabRequested, () => {
                                     router.setRoute({
                                         paths: state.route.paths,
-                                        search: {code: []},
+                                        search: {
+                                            code: [],
+                                        },
                                     });
                                 })}
                             ></${VirPaneGroup}>
