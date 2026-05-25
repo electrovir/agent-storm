@@ -12,9 +12,10 @@ const aiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
 /**
  * AI pane runs through a login + interactive shell so `.zprofile` / `.zshrc` get sourced (those are
  * where managed-Claude installers usually inject their PATH lines). When the AI command exits (user
- * typed `/exit`, ran a one-shot, crashed, etc.) the trailing `exec <shell> -li` replaces the
- * wrapper with another login+interactive copy of the user's preferred shell, so the pty stays alive
- * and the user lands in a normal shell prompt instead of an `[exited with code …]` dead pane.
+ * typed `/exit`, ran a one-shot, crashed, etc.) the wrapper shell terminates with it — the pane
+ * lands in `Exited` state so the user can read whatever Claude printed (especially its
+ * end-of-session summary) without it being clobbered by a new shell prompt. Restart via the row's
+ * menu when ready to start a fresh session.
  */
 const paneCommands: Record<PaneKind, () => string[]> = {
     [PaneKind.Ai]: () => {
@@ -22,7 +23,7 @@ const paneCommands: Record<PaneKind, () => string[]> = {
         return [
             shell,
             '-lic',
-            `${aiCommand}; exec ${shell} -li`,
+            aiCommand,
         ];
     },
     [PaneKind.Shell]: () => [
