@@ -220,6 +220,22 @@ const uploadResponseShape = defineShape({
     path: '',
 });
 
+const pathRequestShape = defineShape({
+    path: '',
+});
+
+const pathCheckResponseShape = defineShape({
+    /** Server-resolved absolute path (with `~` expansion + `path.resolve`). */
+    resolvedPath: '',
+    /** True iff something exists at `resolvedPath` (file OR directory). */
+    exists: false,
+});
+
+const pathCreateResponseShape = defineShape({
+    /** Server-resolved absolute path that was created. */
+    resolvedPath: '',
+});
+
 export const agentStormService = defineService({
     serviceName: 'agent-storm',
     serviceOrigin: `http://localhost:${port}`,
@@ -274,6 +290,20 @@ export const agentStormService = defineService({
             },
             requestDataShape: undefined,
             responseDataShape: okResponseShape,
+        },
+        '/paths/check': {
+            methods: {
+                [HttpMethod.Post]: true,
+            },
+            requestDataShape: pathRequestShape,
+            responseDataShape: pathCheckResponseShape,
+        },
+        '/paths/create': {
+            methods: {
+                [HttpMethod.Post]: true,
+            },
+            requestDataShape: pathRequestShape,
+            responseDataShape: pathCreateResponseShape,
         },
         '/uploads/create': {
             methods: {

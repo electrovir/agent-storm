@@ -202,3 +202,29 @@ export async function uploadFile(
     );
     return data.path;
 }
+
+export async function checkPath(
+    params: Readonly<{path: string}>,
+): Promise<{resolvedPath: string; exists: boolean}> {
+    const options = await authOptions();
+    return await callApi(
+        'POST /paths/check',
+        fetchEndpoint(agentStormService.endpoints['/paths/check'], {
+            ...options,
+            requestData: params,
+        }),
+    );
+}
+
+export async function createPath(
+    params: Readonly<{path: string}>,
+): Promise<{resolvedPath: string}> {
+    const options = await authOptions();
+    return await callApi(
+        'POST /paths/create',
+        fetchEndpoint(agentStormService.endpoints['/paths/create'], {
+            ...options,
+            requestData: params,
+        }),
+    );
+}

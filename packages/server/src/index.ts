@@ -4,6 +4,7 @@ import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/imple
 import {attachService} from '@rest-vir/run-service';
 import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
+import {mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
 import {loadConfig, saveConfig} from './config.js';
@@ -19,6 +20,7 @@ import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {addWorktree, removeWorktree} from './git.js';
+import {normalizePath} from './paths.js';
 import {saveUpload} from './uploads.js';
 import {attachVscodeProxy} from './vscode-proxy.js';
 
@@ -290,6 +292,34 @@ const implementation = implementService({
                 statusCode: HttpStatus.Ok,
                 responseData: {
                     path,
+                },
+            };
+        },
+        async '/paths/check'({requestData}) {
+            const resolvedPath = normalizePath(requestData.path);
+            const exists = await stat(resolvedPath)
+                .then(() => true)
+                .catch(() => false);
+            return {
+                statusCode: HttpStatus.Ok,
+                responseData: {
+                    resolvedPath,
+                    exists,
+                },
+            };
+        },
+        async '/paths/create'({requestData}) {
+            /**
+             * `recursive: true` mkdirs every missing parent and is a no-op if the directory already
+             * exists — matches `mkdir -p` semantics, which is what the user expects from "type the
+             * path to create".
+             */
+            const resolvedPath = normalizePath(requestData.path);
+            await mkdir(resolvedPath, {recursive: true});
+            return {
+                statusCode: HttpStatus.Ok,
+                responseData: {
+                    resolvedPath,
                 },
             };
         },

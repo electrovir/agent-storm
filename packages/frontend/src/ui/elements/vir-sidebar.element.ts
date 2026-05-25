@@ -21,6 +21,8 @@ import {
     viraThemeByKeys,
 } from 'vira';
 import {
+    checkPath,
+    createPath,
     createWorktree,
     deleteWorktree,
     getConfig,
@@ -759,8 +761,32 @@ async function promptAddRepo(
         return;
     }
     try {
+        /**
+         * Resolve the user's input on the server (handles `~` expansion + `path.resolve`) so we
+         * can branch on existence using a stable, absolute path. The same `resolvedPath` is
+         * compared against the user's retype on the create-missing path so they can re-enter the
+         * path in any equivalent form (`~/foo` vs the absolute version).
+         */
+        const initial = await checkPath({path: input});
+        const path = initial.resolvedPath;
+        if (!initial.exists) {
+            const retypeInput = window.prompt(
+                `Path does not exist:\n\n${path}\n\nWould you like to create it? Re-type the path to confirm:`,
+            );
+            if (!retypeInput) {
+                return;
+            }
+            const retype = await checkPath({path: retypeInput});
+            if (retype.resolvedPath !== path) {
+                showError(
+                    updateState,
+                    `Retyped path resolved to ${retype.resolvedPath}, expected ${path}. Cancelled.`,
+                );
+                return;
+            }
+            await createPath({path});
+        }
         const config = await getConfig();
-        const path = input.trim();
         if (config.repos.some((repo) => repo.path === path)) {
             /** Repo already configured — activate the existing entry instead of no-oping. */
             notifyActivated(path);
