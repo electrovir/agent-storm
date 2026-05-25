@@ -1,4 +1,4 @@
-import {defaultConfig, type Config} from '@agent-storm/common';
+import {configJsonSchema, defaultConfig, type Config} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
 import {type JsonValue} from 'type-fest';
 import {
@@ -8,85 +8,60 @@ import {
     ViraModal,
     viraThemeByKeys,
     type ViraJsonSchema,
+    type ViraJsonSchemaObject,
 } from 'vira';
 import {getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
 
-const configJsonSchema = {
-    type: 'object',
-    title: 'agent-storm config',
-    properties: {
-        aiCmd: {
-            type: 'string',
-            title: 'AI command',
-            description: 'Command launched in the AI pane (e.g. `claude`).',
-        },
-        postWorktreeCmd: {
-            type: [
-                'string',
-                'null',
-            ],
-            title: 'Default post-worktree command',
-            description:
-                'Shell command run after a new worktree is created (per-repo overrides win).',
-        },
-        repos: {
-            type: 'array',
-            title: 'Repos',
-            items: {
-                type: 'object',
-                title: 'Repo',
-                properties: {
-                    path: {
-                        type: 'string',
-                        title: 'Path',
-                    },
-                    postWorktreeCmd: {
-                        type: [
-                            'string',
-                            'null',
-                        ],
-                        title: 'Post-worktree command (overrides global)',
-                    },
-                },
-                required: ['path'],
-            },
-        },
-        hiddenAiPane: {
-            type: 'array',
-            title: 'Folders with AI pane hidden',
-            items: {
-                type: 'string',
-            },
-        },
-        disabledGitHubPolling: {
-            type: 'boolean',
-            title: 'Disable GitHub polling',
-            description:
-                'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
-        },
-        useWebgl: {
-            type: 'boolean',
-            title: 'Use WebGL terminal renderer',
-            description:
-                "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.",
-        },
-    },
-    required: [
-        'aiCmd',
-        'repos',
-        'hiddenAiPane',
-    ],
-} as const satisfies ViraJsonSchema;
+/**
+ * Config properties that round-trip through `/config` (so the backend can persist them across
+ * restarts) but are entirely backend-managed — the user has no business editing them in the
+ * settings UI. Stripped from both the schema we hand to `ViraJsonForm` and from the form's
+ * input/output so changes to user-editable fields don't blow away the runtime state.
+ */
+const backendManagedKeys = ['githubPollingAutoDisable'] as const satisfies ReadonlyArray<
+    keyof Config
+>;
+
+const formJsonSchema: ViraJsonSchemaObject = (() => {
+    const properties: Record<string, ViraJsonSchema> = {
+        ...(configJsonSchema.properties as Record<string, ViraJsonSchema>),
+    };
+    backendManagedKeys.forEach((key) => {
+        delete properties[key];
+    });
+    return {
+        ...configJsonSchema,
+        properties,
+        required: configJsonSchema.required.filter(
+            (key) => !(backendManagedKeys as ReadonlyArray<string>).includes(key),
+        ),
+    };
+})();
 
 function toJsonValue(config: Readonly<Config>): JsonValue {
-    return JSON.parse(JSON.stringify(config)) as JsonValue;
+    const visible = {
+        ...config,
+    } as Record<string, unknown>;
+    backendManagedKeys.forEach((key) => {
+        delete visible[key];
+    });
+    return JSON.parse(JSON.stringify(visible)) as JsonValue;
 }
 
-function fromJsonValue(value: JsonValue): Config {
-    return {
+function fromJsonValue(value: JsonValue, current: Readonly<Config>): Config {
+    /**
+     * Preserve the current backend-managed fields when merging the user-edited form back into a
+     * full Config. Without this, the form's output (which only knows about user-editable fields)
+     * would lack those keys and they'd revert to defaults on save.
+     */
+    const merged: Config = {
         ...defaultConfig,
         ...(value as Partial<Config>),
     };
+    backendManagedKeys.forEach((key) => {
+        merged[key] = current[key];
+    });
+    return merged;
 }
 
 export const VirSettingsModal = defineElement<{
@@ -103,6 +78,12 @@ export const VirSettingsModal = defineElement<{
     state() {
         return {
             pending: undefined as JsonValue | undefined,
+            /**
+             * Snapshot of the Config we loaded from the backend. Needed at save() time so we can
+             * preserve the backend-managed fields (stripped from the user-facing form) when merging
+             * the form's output back into a full Config.
+             */
+            loaded: undefined as Config | undefined,
             /**
              * The useWebgl value at load time, captured so save() can detect a flip and trigger a
              * page reload — existing terminals only read the config at construction.
@@ -149,6 +130,7 @@ export const VirSettingsModal = defineElement<{
         const reset = () => {
             updateState({
                 pending: undefined,
+                loaded: undefined,
                 useWebgl: undefined,
                 loadError: undefined,
                 saveError: undefined,
@@ -188,8 +170,9 @@ export const VirSettingsModal = defineElement<{
                 const config = await getConfig();
                 updateState({
                     pending: toJsonValue(config),
+                    loaded: config,
                     // optionalShape default is true; coerce undefined → true for comparison.
-                    useWebgl: config.useWebgl !== false,
+                    useWebgl: config.useWebgl,
                     loadError: undefined,
                 });
             } catch (error: unknown) {
@@ -208,9 +191,9 @@ export const VirSettingsModal = defineElement<{
                 saveError: undefined,
             });
             try {
-                const next = fromJsonValue(state.pending);
+                const next = fromJsonValue(state.pending, state.loaded ?? defaultConfig);
                 await putConfig(next);
-                const nextUseWebgl = next.useWebgl !== false;
+                const nextUseWebgl = next.useWebgl;
                 const webglChanged =
                     state.useWebgl !== undefined && state.useWebgl !== nextUseWebgl;
                 reset();
@@ -267,7 +250,7 @@ export const VirSettingsModal = defineElement<{
                                   ? html`
                                         <${ViraJsonForm.assign({
                                             value: state.pending,
-                                            schema: configJsonSchema,
+                                            schema: formJsonSchema,
                                             isDisabled: state.saving,
                                         })}
                                             ${listen(ViraJsonForm.events.valueChange, (event) => {

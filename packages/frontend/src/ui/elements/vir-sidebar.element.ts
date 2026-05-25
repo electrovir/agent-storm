@@ -1,4 +1,4 @@
-import {type FolderInfo, PaneKind, PaneStatus} from '@agent-storm/common';
+import {type FolderInfo, PaneKind, PaneStatus, SidebarGrouping} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {log} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
@@ -44,7 +44,13 @@ const buttonIconSize = 16;
 const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
 const settingsIcon = createSizedIcon(lucideIcons.Settings, buttonIconSize);
 const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
+const filterIcon = createSizedIcon(lucideIcons.ListFilter, buttonIconSize);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
+
+const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
+    [SidebarGrouping.Repo]: 'Group by repo',
+    [SidebarGrouping.Status]: 'Group by status',
+};
 
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
@@ -58,6 +64,12 @@ type SidebarState = {
     pollHandle: ReturnType<typeof setInterval> | undefined;
     loadError: string | undefined;
     openMenuKey: string | undefined;
+    /**
+     * Mirrors `config.sidebarGrouping`. Fetched lazily on first refresh tick so the filter menu can
+     * show which grouping is currently active (and so flipping it via the menu has a fresh value to
+     * write back into config). `undefined` while we haven't loaded config yet.
+     */
+    sidebarGrouping: SidebarGrouping | undefined;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -91,6 +103,7 @@ export const VirSidebar = defineElement<{
             pollHandle: undefined,
             loadError: undefined,
             openMenuKey: undefined,
+            sidebarGrouping: undefined,
         };
     },
     styles: css`
@@ -304,16 +317,38 @@ export const VirSidebar = defineElement<{
                 </span>
                 <span class="header-actions">
                     <${ViraButton.assign({
-                        text: 'Add',
                         icon: plusIcon,
                         buttonSize: ViraSize.Small,
-                        color: ViraColorVariant.Brand,
+                        color: ViraColorVariant.Positive,
                     })}
+                        title="Add new repository."
                         ${listen(
                             'click',
                             () => void promptAddRepo(updateState, emitFolderActivated),
                         )}
                     ></${ViraButton}>
+                    <${ViraMenuTrigger.assign({
+                        horizontalAnchor: HorizontalAnchor.Right,
+                    })}
+                        ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                            updateState({
+                                openMenuKey: event.detail ? 'sidebar-grouping' : undefined,
+                            });
+                        })}
+                    >
+                        <${ViraButton.assign({
+                            icon: filterIcon,
+                            buttonSize: ViraSize.Small,
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                        })}
+                            slot=${ViraMenuTrigger.slotNames.trigger}
+                            title="Group sidebar by…"
+                        ></${ViraButton}>
+                        ${renderMenuItemEntries(
+                            buildGroupingMenuEntries(state.sidebarGrouping, updateState),
+                        )}
+                    </${ViraMenuTrigger}>
                     <${ViraButton.assign({
                         icon: settingsIcon,
                         buttonSize: ViraSize.Small,
@@ -558,6 +593,30 @@ function isValidPrUrl(url: string | null | undefined): boolean {
     }
 }
 
+function buildGroupingMenuEntries(
+    current: SidebarGrouping | undefined,
+    updateState: SidebarUpdate,
+): ReadonlyArray<ViraMenuItemEntry> {
+    return [
+        SidebarGrouping.Repo,
+        SidebarGrouping.Status,
+    ].map((grouping) => ({
+        content: sidebarGroupingLabels[grouping],
+        /**
+         * Mark the active grouping with a check; non-active entries get no icon. `iconOverride` is
+         * the menu's per-item icon slot — leaving it undefined leaves blank space, which keeps the
+         * labels visually aligned across rows.
+         */
+        iconOverride: current === grouping ? lucideIcons.Check : undefined,
+        onClick: () => {
+            if (current === grouping) {
+                return;
+            }
+            void setSidebarGrouping(grouping, updateState);
+        },
+    }));
+}
+
 function buildRowMenuEntries(
     folder: FolderInfo,
     updateState: SidebarUpdate,
@@ -642,17 +701,46 @@ const pendingWorktreeDeletions = new Set<string>();
 
 async function refresh(state: SidebarState, updateState: SidebarUpdate): Promise<void> {
     try {
-        const folders = await getFolders();
+        /**
+         * Fetch folders + config in parallel. Config tells us the current `sidebarGrouping` so the
+         * filter menu can mark the active choice; folders feeds the list.
+         */
+        const [
+            folders,
+            config,
+        ] = await Promise.all([
+            getFolders(),
+            getConfig(),
+        ]);
         updateState({
             folders: pendingWorktreeDeletions.size
                 ? folders.filter((folder) => !pendingWorktreeDeletions.has(folder.path))
                 : folders,
             loadError: undefined,
+            sidebarGrouping: config.sidebarGrouping,
         });
     } catch (error: unknown) {
         updateState({
             loadError: error instanceof Error ? error.message : String(error),
         });
+    }
+}
+
+async function setSidebarGrouping(
+    grouping: SidebarGrouping,
+    updateState: SidebarUpdate,
+): Promise<void> {
+    try {
+        const config = await getConfig();
+        await putConfig({
+            ...config,
+            sidebarGrouping: grouping,
+        });
+        updateState({
+            sidebarGrouping: grouping,
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
     }
 }
 
@@ -737,6 +825,7 @@ async function confirmRemoveRepo(
                 pollHandle: undefined,
                 loadError: undefined,
                 openMenuKey: undefined,
+                sidebarGrouping: undefined,
             },
             updateState,
         );
@@ -811,6 +900,7 @@ async function confirmDeleteWorktree(
                 pollHandle: undefined,
                 loadError: undefined,
                 openMenuKey: undefined,
+                sidebarGrouping: undefined,
             },
             updateState,
         );
@@ -836,6 +926,7 @@ async function toggleAiHidden(folderPath: string, updateState: SidebarUpdate): P
                 pollHandle: undefined,
                 loadError: undefined,
                 openMenuKey: undefined,
+                sidebarGrouping: undefined,
             },
             updateState,
         );

@@ -1,13 +1,7 @@
 import {AnyOrigin, defineService, HttpMethod} from '@rest-vir/define-service';
-import {
-    defineShape,
-    enumShape,
-    nullableShape,
-    optionalShape,
-    tupleShape,
-    unionShape,
-} from 'object-shape-tester';
-import {PaneKind, PaneStatus} from './enums.js';
+import {defineShape, enumShape, nullableShape, tupleShape, unionShape} from 'object-shape-tester';
+import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-vir';
+import {PaneKind, PaneStatus, SidebarGrouping} from './enums.js';
 
 const port = 41_880;
 
@@ -40,42 +34,137 @@ const ptySearchParamsShape = defineShape({
  */
 const ptyProtocolsShape = defineShape(tupleShape(''));
 
-const repoConfigShape = defineShape({
-    path: '',
-    postWorktreeCmd: nullableShape(''),
-});
+/**
+ * Single source of truth for the user-editable config. Defined as a JSON Schema so:
+ *
+ * 1. The runtime shape (`configShape`) and the TypeScript `Config` type are derived from it via
+ *    `schema-vir` instead of being hand-written separately and drifting.
+ * 2. The settings modal can import this same schema directly into `ViraJsonForm` — no parallel
+ *    definition in the frontend.
+ *
+ * Schema-vir's `mapSchemaToShape` interprets union-type orderings (`['string', 'null']` vs
+ * `['null', 'string']`) for default selection — the first arm's default wins. We keep `null` last
+ * for fields whose default value is the non-null variant (matching the prior
+ * `nullableShape(defaultValue)` behavior), and put `null` first only for `githubPollingAutoDisable`
+ * where the absence of an auto-disable is the natural default.
+ */
+export const configJsonSchema = {
+    type: 'object',
+    additionalProperties: false,
+    title: 'agent-storm config',
+    properties: {
+        aiCmd: {
+            type: 'string',
+            default: 'claude',
+            title: 'AI command',
+            description: 'Command launched in the AI pane (e.g. `claude`).',
+        },
+        postWorktreeCmd: {
+            type: [
+                'string',
+                'null',
+            ],
+            default: '',
+            title: 'Default post-worktree command',
+            description:
+                'Shell command run after a new worktree is created (per-repo overrides win).',
+        },
+        repos: {
+            type: 'array',
+            default: [],
+            title: 'Repos',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                title: 'Repo',
+                properties: {
+                    path: {
+                        type: 'string',
+                        title: 'Path',
+                    },
+                    postWorktreeCmd: {
+                        type: [
+                            'string',
+                            'null',
+                        ],
+                        title: 'Post-worktree command (overrides global)',
+                    },
+                },
+                required: [
+                    'path',
+                    'postWorktreeCmd',
+                ],
+            },
+        },
+        hiddenAiPane: {
+            type: 'array',
+            default: [],
+            title: 'Folders with AI pane hidden',
+            items: {
+                type: 'string',
+            },
+        },
+        disabledGitHubPolling: {
+            type: 'boolean',
+            default: false,
+            title: 'Disable GitHub polling',
+            description:
+                'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
+        },
+        githubPollingAutoDisable: {
+            type: [
+                'null',
+                'object',
+            ],
+            default: null,
+            title: 'GitHub polling auto-disable',
+            description:
+                "Runtime-set auto-disable state for GitHub polling, persisted across server restarts. Backend-managed; users shouldn't need to edit this.",
+            properties: {
+                reason: {
+                    type: 'string',
+                },
+                disabledUntilMs: {
+                    type: 'number',
+                },
+            },
+            required: [
+                'reason',
+                'disabledUntilMs',
+            ],
+        },
+        useWebgl: {
+            type: 'boolean',
+            default: true,
+            title: 'Use WebGL terminal renderer',
+            description:
+                "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.",
+        },
+        sidebarGrouping: {
+            type: 'string',
+            enum: [
+                SidebarGrouping.Repo,
+                SidebarGrouping.Status,
+            ],
+            default: SidebarGrouping.Repo,
+            title: 'Sidebar grouping',
+            description:
+                'How the sidebar arranges folders. "repo" keeps the existing layout (worktrees nested under their repo root); "status" regroups folders by their AI pane status. Selectable from the filter icon next to the Add button in the sidebar as well.',
+        },
+    },
+    required: [
+        'aiCmd',
+        'postWorktreeCmd',
+        'repos',
+        'hiddenAiPane',
+        'disabledGitHubPolling',
+        'githubPollingAutoDisable',
+        'useWebgl',
+        'sidebarGrouping',
+    ],
+} as const satisfies JSONSchema;
 
-const configShape = defineShape({
-    aiCmd: 'claude',
-    postWorktreeCmd: nullableShape(''),
-    repos: [repoConfigShape],
-    hiddenAiPane: [''],
-    /**
-     * Opt-out flag for the background `gh pr view` calls the refresh loop makes on each non-root
-     * folder. Optional and falsy by default so GitHub polling is on out of the box; set to true to
-     * skip the `gh` shell-outs entirely when GitHub starts rate-limiting the account (the API
-     * starts returning 403s and the sidebar's PR badges go stale anyway, so the calls become pure
-     * overhead until the limit resets).
-     */
-    disabledGitHubPolling: optionalShape(false),
-    /**
-     * Runtime-set auto-disable state for GitHub polling, persisted across server restarts so `tsx
-     * --watch` reloads during dev don't immediately re-poll GitHub after a rate-limit / auth
-     * failure. Set by the backend when a GraphQL call surfaces such an error; cleared once
-     * `disabledUntilMs` elapses or the user explicitly toggles polling off-and-on. Distinct from
-     * `disabledGitHubPolling` above, which is the manual user kill-switch.
-     */
-    githubPollingAutoDisable: nullableShape({
-        reason: '',
-        disabledUntilMs: 0,
-    }),
-    /**
-     * Whether the in-app terminal should use the xterm WebGL renderer. Optional and defaulted to
-     * true; users on machines without WebGL2 (or with flaky GPU drivers) can switch this off to
-     * fall back to xterm's DOM renderer.
-     */
-    useWebgl: optionalShape(true),
-});
+const configShape = mapSchemaToShape(configJsonSchema);
 
 export const folderInfoShape = defineShape({
     path: '',
@@ -206,6 +295,10 @@ export const agentStormService = defineService({
 
 export const defaultConfig = configShape.default;
 
-export type Config = typeof configShape.runtimeType;
-export type RepoConfig = typeof repoConfigShape.runtimeType;
+/**
+ * Derived directly from {@link configJsonSchema} via `json-schema-to-ts` so the runtime shape, the
+ * settings modal's form schema, and this TypeScript type are all driven from the same definition.
+ */
+export type Config = SchemaShapeToType<typeof configJsonSchema, NonNullable<unknown>>;
+export type RepoConfig = Config['repos'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;

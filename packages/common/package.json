@@ -33,7 +33,8 @@
     "dependencies": {
         "@augment-vir/assert": "^31.69.0",
         "@rest-vir/define-service": "^1.7.2",
-        "object-shape-tester": "^6.12.1"
+        "object-shape-tester": "^6.12.1",
+        "schema-vir": "^0.7.1"
     },
     "devDependencies": {
         "@augment-vir/test": "^31.69.0",
