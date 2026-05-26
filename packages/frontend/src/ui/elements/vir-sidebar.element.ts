@@ -662,9 +662,25 @@ function buildRowMenuEntries(
             content: 'Kill folder panes',
             iconOverride: lucideIcons.PowerOff,
             onClick: () => {
-                void killFolderPanes({
-                    folder: folder.path,
-                }).catch((error: unknown) => showError(updateState, error));
+                void (async () => {
+                    try {
+                        await killFolderPanes({folder: folder.path});
+                        /**
+                         * After a successful kill, treat the folder as no-longer-opened: drop it
+                         * from `vir-app`'s `openedFolders` (which unmounts its pane group and
+                         * disposes the terminals) and clear the route if it was the active one.
+                         * Reusing the `foldersRemoved` event is intentional — vir-app's handler
+                         * does exactly the openedFolders + route teardown we want, without
+                         * touching the sidebar's own folders list (the row stays visible). Next
+                         * click on the same row re-adds it to `openedFolders`, which remounts
+                         * `VirPaneGroup` / `VirTerminal` and triggers a fresh `/pty` attach so
+                         * the backend spawns new PTYs.
+                         */
+                        emitFoldersRemoved([folder.path]);
+                    } catch (error: unknown) {
+                        showError(updateState, error);
+                    }
+                })();
             },
         },
         folder.parentRepoPath
