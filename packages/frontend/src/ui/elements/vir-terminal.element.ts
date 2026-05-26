@@ -304,6 +304,15 @@ export const VirTerminal = defineElement<{
                         cursorStyle: 'bar',
                         cursorWidth: 3,
                         theme: terminalAppTheme,
+                        /**
+                         * Characters that break a word for double-click selection. xterm's default
+                         * (' ()[]{}\',:;`) only includes whitespace + a handful of punctuation, so
+                         * something like `src/foo.element.test.ts` selects as one big "word". Add
+                         * the structural delimiters that any dev would expect to break on (paths,
+                         * file extensions, comparison ops, backticks) so double-click grabs a
+                         * single path segment / filename stem rather than the whole token.
+                         */
+                        wordSeparator: ' \t\n()[]{}\'",:;./\\<>`=',
                     });
                     const fitAddon = new FitAddon();
                     terminal.loadAddon(fitAddon);
