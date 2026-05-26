@@ -312,7 +312,7 @@ export const VirTerminal = defineElement<{
                          * file extensions, comparison ops, backticks) so double-click grabs a
                          * single path segment / filename stem rather than the whole token.
                          */
-                        wordSeparator: ' \t\n()[]{}\'",:;./\\<>`=',
+                        wordSeparator: ' \t\n()[]{}\'",:;./\\<>`=-_',
                     });
                     const fitAddon = new FitAddon();
                     terminal.loadAddon(fitAddon);
