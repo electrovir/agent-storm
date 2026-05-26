@@ -107,15 +107,24 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
 }
 
 /**
- * Build the env we hand to a freshly spawned shell. Critically, we DROP `PATH` so the spawned
- * login+interactive shell rebuilds it from /etc/paths and the user's rc files — exactly the way
- * Terminal.app does. Inheriting `PATH` from the daemon process pollutes the start with npm-injected
- * `node_modules/.bin` entries (because `npm start` was the daemon's grandparent), which push the
- * user's `.zprofile` PATH prepends into late positions and can mask the preferred copy of `claude`
- * (or any other binary they expect to find first).
+ * Build the env we hand to a freshly spawned shell. Strips:
+ *
+ * - `PATH` so the spawned login+interactive shell rebuilds it from /etc/paths and the user's rc
+ *   files — exactly the way Terminal.app does. Inheriting `PATH` from the daemon process pollutes
+ *   the start with npm-injected `node_modules/.bin` entries (because `npm start` was the daemon's
+ *   grandparent), which push the user's `.zprofile` PATH prepends into late positions and can mask
+ *   the preferred copy of `claude` (or any other binary they expect to find first).
+ * - `BACKEND_PORT` / `FRONTEND_PORT` because those are internal agent-storm orchestration env vars
+ *   set in `packages/scripts/src/start.script.ts`. They have no business leaking into the user's
+ *   shell — a `claude` session that inspects `env` would otherwise see them and could be tricked
+ *   into talking to the backend, and any subshell the user starts would inherit them too.
  */
 function spawnEnv(): NodeJS.ProcessEnv {
-    return omitObjectKeys(process.env, ['PATH']);
+    return omitObjectKeys(process.env, [
+        'PATH',
+        'BACKEND_PORT',
+        'FRONTEND_PORT',
+    ]);
 }
 
 /**
