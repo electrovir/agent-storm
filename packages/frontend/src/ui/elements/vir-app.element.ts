@@ -1,5 +1,5 @@
 import {type FolderInfo} from '@agent-storm/common';
-import {css, defineElement, html, listen} from 'element-vir';
+import {css, defineElement, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
@@ -456,35 +456,49 @@ export const VirApp = defineElement()({
                           <div class="stage-empty">Select a repo to open its panes.</div>
                       `
                     : ''}
-                ${state.openedFolders.map((folder) => {
-                    const info = state.folderInfo.get(folder);
-                    const active = folder === activeFolder;
-                    return html`
-                        <div class="pane-slot" ?data-active=${active}>
-                            <${VirPaneGroup.assign({
-                                folder,
-                                aiHidden: !!info?.aiHidden,
-                                active,
-                                codeTabActive: !!state.route.search?.code,
-                            })}
-                                ${listen(VirPaneGroup.events.cliTabRequested, () => {
-                                    router.setRoute({
-                                        paths: state.route.paths,
-                                        search: undefined,
-                                    });
+                ${repeat(
+                    state.openedFolders,
+                    /**
+                     * Key the pane slots by absolute folder path so lit-html identifies elements
+                     * by folder rather than by array index. Without this, removing a folder from
+                     * `openedFolders` (e.g. via "Kill folder panes") and then opening a *different*
+                     * folder at the same array position causes lit to reuse the existing
+                     * `VirPaneGroup` / `VirTerminal` elements. Their `init` hooks — which open the
+                     * `/pty` WebSocket with the original folder baked into search params — don't
+                     * re-run when inputs change, so the reused terminal stays attached to the
+                     * previous folder's PTY while the UI claims to be showing the new one.
+                     */
+                    (folder) => folder,
+                    (folder) => {
+                        const info = state.folderInfo.get(folder);
+                        const active = folder === activeFolder;
+                        return html`
+                            <div class="pane-slot" ?data-active=${active}>
+                                <${VirPaneGroup.assign({
+                                    folder,
+                                    aiHidden: !!info?.aiHidden,
+                                    active,
+                                    codeTabActive: !!state.route.search?.code,
                                 })}
-                                ${listen(VirPaneGroup.events.codeTabRequested, () => {
-                                    router.setRoute({
-                                        paths: state.route.paths,
-                                        search: {
-                                            code: [],
-                                        },
-                                    });
-                                })}
-                            ></${VirPaneGroup}>
-                        </div>
-                    `;
-                })}
+                                    ${listen(VirPaneGroup.events.cliTabRequested, () => {
+                                        router.setRoute({
+                                            paths: state.route.paths,
+                                            search: undefined,
+                                        });
+                                    })}
+                                    ${listen(VirPaneGroup.events.codeTabRequested, () => {
+                                        router.setRoute({
+                                            paths: state.route.paths,
+                                            search: {
+                                                code: [],
+                                            },
+                                        });
+                                    })}
+                                ></${VirPaneGroup}>
+                            </div>
+                        `;
+                    },
+                )}
             </div>
             <${VirSettingsModal.assign({
                 open: state.settingsOpen,
