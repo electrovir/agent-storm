@@ -5,6 +5,8 @@ import {css, defineElement, defineElementEvent, html, listen} from 'element-vir'
 import {viraThemeByKeys} from 'vira';
 import {ensureVscode, killVscode} from '../../util/api-client.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
+import {type FrontendTab} from '../../util/router.js';
+import {ScreenSize} from '../../util/screen-size.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 function clampSplit(value: number): number {
@@ -25,24 +27,24 @@ export const VirPaneGroup = defineElement<{
      */
     active: boolean;
     /**
-     * Which tab the parent says is showing. `false` → CLI (terminal panes). `true` → Code (empty
-     * placeholder for now). Driven by the `?code` search param up at the app level so the URL is
-     * the source of truth.
+     * Currently-active tab — `'ai' | 'shell' | 'code'`. Driven by the `?tab=...` search param up
+     * at the app level so the URL is the source of truth. On desktop, both `ai` and `shell` render
+     * the CLI layout (split panes); on mobile each value shows exactly one pane.
      */
-    codeTabActive: boolean;
+    activeTab: FrontendTab;
+    /**
+     * Coarse viewport bucket from `vir-app`'s state. Controls the tab layout (2 tabs vs 3) and the
+     * pane-visibility rules. Updates as the user resizes the window.
+     */
+    screenSize: ScreenSize;
 }>()({
     tagName: 'vir-pane-group',
     events: {
         /**
-         * Emitted when the user clicks the CLI tab. Parent should remove the `?code` search param
-         * from the URL (the actual route paths stay the same).
+         * Emitted when the user clicks one of the tab buttons. Parent should update the `?tab=...`
+         * URL param to the requested value (the actual route paths stay the same).
          */
-        cliTabRequested: defineElementEvent<void>(),
-        /**
-         * Emitted when the user clicks the Code tab. Parent should add the `?code` search param to
-         * the URL.
-         */
-        codeTabRequested: defineElementEvent<void>(),
+        tabRequested: defineElementEvent<FrontendTab>(),
     },
     state() {
         return {
@@ -90,6 +92,16 @@ export const VirPaneGroup = defineElement<{
                 ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             font-family: ui-sans-serif, system-ui, sans-serif;
             font-size: 12px;
+        }
+
+        /*
+         * On mobile, the hamburger button that opens the sidebar modal lives in the top-left of
+         * the stage (vir-app owns it). It's absolutely positioned and sits ON TOP of this tab
+         * strip, which would otherwise cover the leftmost tab. Reserve enough left padding for
+         * the button + its margin so the first tab starts to its right.
+         */
+        .tab-bar[data-mobile] {
+            padding-left: 44px;
         }
 
         .tab {
@@ -257,6 +269,20 @@ export const VirPaneGroup = defineElement<{
         .divider.dragging {
             background: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
+
+        /*
+         * Mobile layout overrides: hide the inactive pane and the resize divider so the active
+         * pane fills the available area. Driven by a data-mobile attribute on .cli-panes (toggled
+         * from the render based on the screenSize input).
+         */
+        .cli-panes[data-mobile] .divider,
+        .cli-panes[data-mobile] .pane[data-hidden] {
+            display: none;
+        }
+
+        .cli-panes[data-mobile] .pane:not([data-hidden]) {
+            flex-grow: 1;
+        }
     `,
     render({inputs, state, updateState, host, dispatch, events}) {
         const split = clampSplit(state.split);
@@ -338,13 +364,27 @@ export const VirPaneGroup = defineElement<{
         const aiFocused = focusedKind === PaneKind.Ai;
         const shellFocused = focusedKind === PaneKind.Shell;
 
+        const isCodeTab = inputs.activeTab === 'code';
+        const isMobile = inputs.screenSize === ScreenSize.Mobile;
+        /**
+         * Pane visibility decision matrix:
+         *
+         * - Desktop, tab=ai|shell → both AI + Shell visible (the existing split layout).
+         * - Desktop, tab=code → VS Code iframe visible (panes hidden).
+         * - Mobile, tab=ai → only AI pane visible (Shell + divider + iframe hidden).
+         * - Mobile, tab=shell → only Shell pane visible.
+         * - Mobile, tab=code → only iframe visible.
+         */
+        const showAiPane = !isCodeTab && (!isMobile || inputs.activeTab === 'ai');
+        const showShellPane = !isCodeTab && (!isMobile || inputs.activeTab === 'shell');
+
         /**
          * Lazy: kick off the VS Code spawn the first time the user activates the Code tab. Deferred
          * via microtask so we don't mutate state during render. Once `vscodeUrl` is set the iframe
          * stays mounted across CLI ↔ Code toggles.
          */
         if (
-            inputs.codeTabActive &&
+            isCodeTab &&
             !state.vscodeUrl &&
             !state.vscodeLoading &&
             !state.vscodeError &&
@@ -386,47 +426,60 @@ export const VirPaneGroup = defineElement<{
             }).catch(() => {
                 /* server-side cleanup is best-effort; the iframe is already gone */
             });
-            /** If the user closes VS Code while looking at the Code tab, snap back to CLI. */
-            if (inputs.codeTabActive) {
-                dispatch(new events.cliTabRequested());
+            /** If the user closes VS Code while looking at the Code tab, snap back to the AI tab. */
+            if (isCodeTab) {
+                dispatch(new events.tabRequested('ai'));
             }
         };
 
+        /**
+         * Tab bar layout differs by screen size:
+         *
+         * - Desktop: 2 tabs (CLI, Code). The CLI tab is the active one when `activeTab` is `ai` or
+         *   `shell` — the user can't tell them apart on desktop (both panes are visible) so we
+         *   collapse them into one button. Clicking CLI sets `tab=ai` as a stable default.
+         * - Mobile: 3 tabs (AI, Shell, Code), each mapping directly to the URL param.
+         */
+        const tabButtons: ReadonlyArray<{label: string; tab: FrontendTab; isActive: boolean}> =
+            isMobile
+                ? [
+                      {label: 'AI', tab: 'ai', isActive: inputs.activeTab === 'ai'},
+                      {label: 'Shell', tab: 'shell', isActive: inputs.activeTab === 'shell'},
+                      {label: 'Code', tab: 'code', isActive: isCodeTab},
+                  ]
+                : [
+                      {label: 'CLI', tab: 'ai', isActive: !isCodeTab},
+                      {label: 'Code', tab: 'code', isActive: isCodeTab},
+                  ];
+
+        const requestTab = (tab: FrontendTab) => {
+            /**
+             * Reset the user-closed flag on any Code-tab activation so the auto-ensure block fires
+             * fresh — without this, after closing VS Code the user would have to click Code, then
+             * click somewhere else, then click Code again to actually respawn it.
+             */
+            if (tab === 'code' && state.vscodeUserClosed) {
+                updateState({vscodeUserClosed: false});
+            }
+            dispatch(new events.tabRequested(tab));
+        };
+
         return html`
-            <div class="tab-bar" role="tablist">
-                <button
-                    type="button"
-                    class="tab"
-                    role="tab"
-                    ?data-selected=${!inputs.codeTabActive}
-                    aria-selected=${!inputs.codeTabActive}
-                    ${listen('click', () => dispatch(new events.cliTabRequested()))}
-                >
-                    CLI
-                </button>
-                <button
-                    type="button"
-                    class="tab"
-                    role="tab"
-                    ?data-selected=${inputs.codeTabActive}
-                    aria-selected=${inputs.codeTabActive}
-                    ${listen('click', () => {
-                        /**
-                         * Reset the user-closed flag so the auto-ensure block fires on this Code
-                         * tab activation. Without this, after closing VS Code the user would have
-                         * to click Code, then click somewhere else, then click Code again to
-                         * actually respawn it.
-                         */
-                        if (state.vscodeUserClosed) {
-                            updateState({
-                                vscodeUserClosed: false,
-                            });
-                        }
-                        dispatch(new events.codeTabRequested());
-                    })}
-                >
-                    Code
-                </button>
+            <div class="tab-bar" role="tablist" ?data-mobile=${isMobile}>
+                ${tabButtons.map(
+                    ({label, tab, isActive}) => html`
+                        <button
+                            type="button"
+                            class="tab"
+                            role="tab"
+                            ?data-selected=${isActive}
+                            aria-selected=${isActive}
+                            ${listen('click', () => requestTab(tab))}
+                        >
+                            ${label}
+                        </button>
+                    `,
+                )}
                 ${state.vscodeUrl
                     ? html`
                           <button
@@ -443,7 +496,7 @@ export const VirPaneGroup = defineElement<{
             <div class="body">
                 ${state.vscodeUrl
                     ? html`
-                          <div class="code-pane" ?data-hidden=${!inputs.codeTabActive}>
+                          <div class="code-pane" ?data-hidden=${!isCodeTab}>
                               <iframe
                                   class="vscode-iframe"
                                   src=${state.vscodeUrl}
@@ -451,7 +504,7 @@ export const VirPaneGroup = defineElement<{
                               ></iframe>
                           </div>
                       `
-                    : inputs.codeTabActive
+                    : isCodeTab
                       ? html`
                             <div class="vscode-status">
                                 ${state.vscodeError
@@ -464,12 +517,13 @@ export const VirPaneGroup = defineElement<{
                             </div>
                         `
                       : ''}
-                <div class="cli-panes" ?data-hidden=${inputs.codeTabActive}>
+                <div class="cli-panes" ?data-hidden=${isCodeTab} ?data-mobile=${isMobile}>
                     ${inputs.aiHidden
                         ? ''
                         : html`
                               <div
                                   class="pane ai-pane"
+                                  ?data-hidden=${!showAiPane}
                                   data-pane-focused=${aiFocused ? 'true' : 'false'}
                                   ${listen('focusin', () =>
                                       updateState({
@@ -496,6 +550,7 @@ export const VirPaneGroup = defineElement<{
                           `}
                     <div
                         class="pane shell-pane"
+                        ?data-hidden=${!showShellPane}
                         data-pane-focused=${shellFocused ? 'true' : 'false'}
                         ${listen('focusin', () =>
                             updateState({

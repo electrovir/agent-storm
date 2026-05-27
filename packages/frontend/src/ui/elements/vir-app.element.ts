@@ -1,9 +1,24 @@
 import {type FolderInfo} from '@agent-storm/common';
 import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-vir';
-import {viraThemeByKeys} from 'vira';
+import {
+    createSizedIcon,
+    lucideIcons,
+    ViraButton,
+    ViraColorVariant,
+    ViraEmphasis,
+    ViraModal,
+    ViraSize,
+    viraThemeByKeys,
+} from 'vira';
 import {getFolders} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
-import {router, type AppRoute, type FrontendPaths} from '../../util/router.js';
+import {
+    defaultFrontendTab,
+    router,
+    tabFromRoute,
+    type AppRoute,
+    type FrontendPaths,
+} from '../../util/router.js';
 import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
 import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
@@ -111,6 +126,8 @@ function pathsForFolder(
 
 const folderInfoPollMs = 2000;
 
+const hamburgerIcon = createSizedIcon(lucideIcons.Menu, 16);
+
 function clampSidebarWidth(value: number): number {
     if (!Number.isFinite(value)) {
         return sidebarWidth.default;
@@ -134,13 +151,17 @@ type AppState = {
     sidebarDragging: boolean;
     /**
      * Coarse current-viewport bucket (Desktop vs Mobile). Initialized once we have a host element
-     * to measure (in `init`) and updated by the resize observer attached there. Nothing reads it
-     * yet — wired up ahead of any responsive-layout work so consumers can branch on
-     * `state.screenSize === ScreenSize.Mobile` without reaching for media queries from JS.
+     * to measure (in `init`) and updated by the resize observer attached there. Drives the docked-
+     * vs-modal sidebar layout and the 2-vs-3 tab presentation in `VirPaneGroup`.
      */
     screenSize: ScreenSize;
     /** Disposer for the resize observer attached in `init`; called from `cleanup`. */
     disconnectScreenSizeObserver: (() => void) | undefined;
+    /**
+     * Mobile-only: whether the popup sidebar modal is open. Ignored on desktop (sidebar is docked
+     * there). Resets to false when the user selects a folder or the modal emits its close event.
+     */
+    mobileSidebarOpen: boolean;
 };
 
 type AppUpdate = (newState: Partial<AppState>) => void;
@@ -164,6 +185,7 @@ export const VirApp = defineElement()({
              */
             screenSize: ScreenSize.Desktop,
             disconnectScreenSizeObserver: undefined,
+            mobileSidebarOpen: false,
         };
     },
     styles: css`
@@ -236,6 +258,49 @@ export const VirApp = defineElement()({
         .pane-slot[data-active] {
             display: block;
         }
+
+        /*
+         * Mobile layout overrides. Driven by a data-mobile attribute on :host which the render
+         * adds when screenSize is Mobile. The docked sidebar + its drag handle disappear, the
+         * stage stretches edge-to-edge, and a hamburger button floats top-left to open the
+         * sidebar in a ViraModal popup.
+         */
+        :host([data-mobile]) vir-sidebar,
+        :host([data-mobile]) .sidebar-divider {
+            display: none;
+        }
+
+        .mobile-sidebar-trigger {
+            display: none;
+        }
+
+        :host([data-mobile]) .mobile-sidebar-trigger {
+            display: inline-flex;
+            position: absolute;
+            top: 6px;
+            left: 6px;
+            z-index: 2;
+        }
+
+        /*
+         * Wrapper around the sidebar inside the modal. ViraModal's body slot is content-sized
+         * (no defined height), so we hand it explicit dimensions here. Width clamps to a phone-
+         * friendly ~320px; height clamps to a viewport-fraction so the sidebar's flex children
+         * (header + scrollable list) have something to grow into instead of collapsing to 0.
+         */
+        .mobile-sidebar-modal-content {
+            width: 320px;
+            height: 70vh;
+            max-width: 100%;
+            max-height: 600px;
+            display: flex;
+        }
+
+        .mobile-sidebar-modal-content vir-sidebar {
+            flex: 1 1 auto;
+            min-width: 0;
+            min-height: 0;
+        }
     `,
     init({updateState, host}) {
         void refreshFolderInfo(updateState);
@@ -297,6 +362,19 @@ export const VirApp = defineElement()({
 
         const currentSidebarWidth = clampSidebarWidth(state.sidebarWidth);
         host.style.setProperty('--sidebar-width', `${currentSidebarWidth}px`);
+
+        /**
+         * Drive the `data-mobile` attribute on the host element from the current screen size so
+         * the mobile-specific CSS rules (hidden sidebar, visible hamburger trigger, etc.) kick in
+         * without per-element conditionals in the markup below. Reads like a presence flag in CSS:
+         * `:host([data-mobile]) ...`.
+         */
+        const isMobile = state.screenSize === ScreenSize.Mobile;
+        if (isMobile) {
+            host.setAttribute('data-mobile', '');
+        } else {
+            host.removeAttribute('data-mobile');
+        }
 
         /**
          * Single derivation of "the currently active folder" from URL + live folder info. Used to
@@ -401,12 +479,12 @@ export const VirApp = defineElement()({
             localStorageClient.sidebarWidth.write(sidebarWidth.default);
         };
 
-        return html`
-            <${VirSidebar.assign({
-                activeFolder,
-            })}
-                ${listen(VirSidebar.events.folderActivated, (event) => {
-                    const folderPath = event.detail;
+        /**
+         * Sidebar event handlers extracted so both the docked sidebar (desktop) and the modal
+         * sidebar (mobile) can share them. `folderActivated` also closes the mobile sidebar modal
+         * — a no-op on desktop because the modal isn't open there anyway.
+         */
+        const handleFolderActivated = (folderPath: string) => {
                     /**
                      * Synchronous activation path: the folder is already in vir-app's `folderInfo`
                      * cache, so we can set the route immediately. Most clicks hit this branch.
@@ -425,10 +503,10 @@ export const VirApp = defineElement()({
                         folderInfo: ReadonlyMap<string, FolderInfo>,
                     ): void => {
                         /**
-                         * Wipe `search` on a sidebar click so the new repo starts on the CLI tab.
-                         * Without this, the `?code` flag from the previous repo carries over and
-                         * the user lands on the Code tab of the freshly-selected one, which is
-                         * usually surprising.
+                         * Wipe `search` on a sidebar click so the new repo starts on the default
+                         * tab (AI). Without this, the `?tab=...` value from the previous repo
+                         * carries over and the user can land on, say, the Code tab of the freshly-
+                         * selected repo, which is usually surprising.
                          */
                         router.setRoute({
                             paths: pathsForFolder(folder, folderInfo),
@@ -464,28 +542,47 @@ export const VirApp = defineElement()({
                             ],
                         });
                     }
-                })}
-                ${listen(VirSidebar.events.foldersRemoved, (event) => {
-                    const removed = new Set(event.detail);
-                    /**
-                     * If the URL pointed at one of the gone folders, bounce to root so we don't sit
-                     * on a broken route. The render-time `redirectToRoot` would catch it on the
-                     * next sweep, but doing it eagerly avoids a flicker.
-                     */
-                    if (activeFolder && removed.has(activeFolder)) {
-                        router.setRoute({
-                            paths: [],
-                        });
+                    if (state.mobileSidebarOpen) {
+                        updateState({mobileSidebarOpen: false});
                     }
-                    updateState({
-                        openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
-                    });
-                })}
-                ${listen(VirSidebar.events.openSettingsRequested, () => {
-                    updateState({
-                        settingsOpen: true,
-                    });
-                })}
+                };
+
+        const handleFoldersRemoved = (paths: ReadonlyArray<string>) => {
+            const removed = new Set(paths);
+            /**
+             * If the URL pointed at one of the gone folders, bounce to root so we don't sit on a
+             * broken route. The render-time `redirectToRoot` would catch it on the next sweep, but
+             * doing it eagerly avoids a flicker.
+             */
+            if (activeFolder && removed.has(activeFolder)) {
+                router.setRoute({
+                    paths: [],
+                });
+            }
+            updateState({
+                openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
+            });
+        };
+
+        const handleOpenSettingsRequested = () => {
+            updateState({
+                settingsOpen: true,
+            });
+        };
+
+        return html`
+            <${VirSidebar.assign({
+                activeFolder,
+            })}
+                ${listen(VirSidebar.events.folderActivated, (event) =>
+                    handleFolderActivated(event.detail),
+                )}
+                ${listen(VirSidebar.events.foldersRemoved, (event) =>
+                    handleFoldersRemoved(event.detail),
+                )}
+                ${listen(VirSidebar.events.openSettingsRequested, () =>
+                    handleOpenSettingsRequested(),
+                )}
             ></${VirSidebar}>
             <div
                 class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
@@ -496,6 +593,16 @@ export const VirApp = defineElement()({
                 ${listen('dblclick', onDividerDoubleClick)}
             ></div>
             <div class="stage">
+                <${ViraButton.assign({
+                    icon: hamburgerIcon,
+                    buttonSize: ViraSize.Small,
+                    buttonEmphasis: ViraEmphasis.Subtle,
+                    color: ViraColorVariant.Neutral,
+                })}
+                    class="mobile-sidebar-trigger"
+                    title="Open repo list"
+                    ${listen('click', () => updateState({mobileSidebarOpen: true}))}
+                ></${ViraButton}>
                 ${state.openedFolders.length === 0
                     ? html`
                           <div class="stage-empty">Select a repo to open its panes.</div>
@@ -523,20 +630,22 @@ export const VirApp = defineElement()({
                                     folder,
                                     aiHidden: !!info?.aiHidden,
                                     active,
-                                    codeTabActive: !!state.route.search?.code,
+                                    activeTab: tabFromRoute(state.route),
+                                    screenSize: state.screenSize,
                                 })}
-                                    ${listen(VirPaneGroup.events.cliTabRequested, () => {
+                                    ${listen(VirPaneGroup.events.tabRequested, (event) => {
+                                        const requestedTab = event.detail;
                                         router.setRoute({
                                             paths: state.route.paths,
-                                            search: undefined,
-                                        });
-                                    })}
-                                    ${listen(VirPaneGroup.events.codeTabRequested, () => {
-                                        router.setRoute({
-                                            paths: state.route.paths,
-                                            search: {
-                                                code: [],
-                                            },
+                                            /**
+                                             * Omit `?tab` from the URL when the requested tab is
+                                             * the default — keeps URLs short and matches what
+                                             * `tabFromRoute` falls back to anyway.
+                                             */
+                                            search:
+                                                requestedTab === defaultFrontendTab
+                                                    ? undefined
+                                                    : {tab: [requestedTab]},
                                         });
                                     })}
                                 ></${VirPaneGroup}>
@@ -554,6 +663,30 @@ export const VirApp = defineElement()({
                     });
                 })}
             ></${VirSettingsModal}>
+            <${ViraModal.assign({
+                open: isMobile && state.mobileSidebarOpen,
+                modalTitle: 'Repos',
+            })}
+                ${listen(ViraModal.events.modalClose, () =>
+                    updateState({mobileSidebarOpen: false}),
+                )}
+            >
+                <div class="mobile-sidebar-modal-content">
+                    <${VirSidebar.assign({
+                        activeFolder,
+                    })}
+                        ${listen(VirSidebar.events.folderActivated, (event) =>
+                            handleFolderActivated(event.detail),
+                        )}
+                        ${listen(VirSidebar.events.foldersRemoved, (event) =>
+                            handleFoldersRemoved(event.detail),
+                        )}
+                        ${listen(VirSidebar.events.openSettingsRequested, () =>
+                            handleOpenSettingsRequested(),
+                        )}
+                    ></${VirSidebar}>
+                </div>
+            </${ViraModal}>
             <${VirAuthModal}></${VirAuthModal}>
         `;
     },
