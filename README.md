@@ -2,9 +2,9 @@
 
 Web-based multi-folder development environment for running AI coding sessions (Claude, by default) alongside a shell — one pair of panes per git repo / git worktree — plus an embedded VS Code editor per folder. Everything runs locally over your LAN.
 
-### Migrating from an older version
+## Migrating from an older version
 
-To carry over your repo list and preferences from the old CLI version of agent-storm, convert the old TOML file (`~/.config/agent-storm.toml`) to JSON (`~/.config/agent-storm.json`) before you run `npm start`.
+To carry over your repo list and preferences from the old CLI version of agent-storm, convert the old TOML file (`~/.config/agent-storm.toml`) to JSON (`~/.config/agent-storm.json`) following the schema (`configJsonSchema`) defined in `packages/common/src/api.ts`.
 
 ## Get started
 
