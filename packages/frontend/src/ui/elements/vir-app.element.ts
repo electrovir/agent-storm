@@ -1,9 +1,10 @@
 import {type FolderInfo} from '@agent-storm/common';
-import {css, defineElement, html, listen, repeat} from 'element-vir';
+import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getFolders} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {router, type AppRoute, type FrontendPaths} from '../../util/router.js';
+import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
 import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
@@ -131,6 +132,15 @@ type AppState = {
     removeRouteListener: (() => void) | undefined;
     sidebarWidth: number;
     sidebarDragging: boolean;
+    /**
+     * Coarse current-viewport bucket (Desktop vs Mobile). Initialized once we have a host element
+     * to measure (in `init`) and updated by the resize observer attached there. Nothing reads it
+     * yet — wired up ahead of any responsive-layout work so consumers can branch on
+     * `state.screenSize === ScreenSize.Mobile` without reaching for media queries from JS.
+     */
+    screenSize: ScreenSize;
+    /** Disposer for the resize observer attached in `init`; called from `cleanup`. */
+    disconnectScreenSizeObserver: (() => void) | undefined;
 };
 
 type AppUpdate = (newState: Partial<AppState>) => void;
@@ -147,6 +157,13 @@ export const VirApp = defineElement()({
             removeRouteListener: undefined,
             sidebarWidth: localStorageClient.sidebarWidth.read(),
             sidebarDragging: false,
+            /**
+             * Defaults to Desktop and gets corrected by the resize observer in `init` once we
+             * actually have a host element to measure. Avoids a flash-of-mobile-on-desktop while
+             * the observer fires its first measurement.
+             */
+            screenSize: ScreenSize.Desktop,
+            disconnectScreenSizeObserver: undefined,
         };
     },
     styles: css`
@@ -220,7 +237,7 @@ export const VirApp = defineElement()({
             display: block;
         }
     `,
-    init({updateState}) {
+    init({updateState, host}) {
         void refreshFolderInfo(updateState);
         const pollHandle = setInterval(() => {
             void refreshFolderInfo(updateState);
@@ -230,9 +247,36 @@ export const VirApp = defineElement()({
                 route,
             });
         });
+        /**
+         * Compute the initial screen size from the host element's current width so the first
+         * paint already reflects the right bucket, then attach a ResizeObserver so subsequent
+         * viewport changes (window resize, devtools open, iPad rotation, etc.) keep
+         * `state.screenSize` in sync.
+         */
+        let trackedScreenSize = determineScreenSize({
+            currentScreenSize: undefined,
+            elementWidth: host.clientWidth,
+        });
+        const {resizeObserver} = attachOnResize(host, ({contentRect}) => {
+            /**
+             * Track the most-recent screenSize in a closure variable rather than reading from
+             * `state` — element-vir's `updateState` takes a Partial<State>, not an updater
+             * function, so there's no in-band way to see the freshest value from the listener.
+             */
+            const nextScreenSize = determineScreenSize({
+                currentScreenSize: trackedScreenSize,
+                elementWidth: contentRect.width,
+            });
+            if (nextScreenSize !== trackedScreenSize) {
+                trackedScreenSize = nextScreenSize;
+                updateState({screenSize: nextScreenSize});
+            }
+        });
         updateState({
             pollHandle,
             removeRouteListener,
+            screenSize: trackedScreenSize,
+            disconnectScreenSizeObserver: () => resizeObserver.disconnect(),
         });
     },
     cleanup({state}) {
@@ -240,6 +284,7 @@ export const VirApp = defineElement()({
             clearInterval(state.pollHandle);
         }
         state.removeRouteListener?.();
+        state.disconnectScreenSizeObserver?.();
     },
     render({state, updateState, host}) {
         if (state.route.paths[0] === 'book') {
