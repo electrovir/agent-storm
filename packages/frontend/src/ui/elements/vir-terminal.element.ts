@@ -350,6 +350,29 @@ export const VirTerminal = defineElement<{
 
                     fitAddon.fit();
 
+                    /**
+                     * Silently swallow color/palette queries (OSC 10 / 11 / 12 / 4 with `?` arg).
+                     * Some tools — starship, neovim, claude's status renderer, etc. — ask the
+                     * terminal for its current fg / bg / cursor color so they can color-match.
+                     * The terminal's response is supposed to be consumed by the asker, but if the
+                     * asker exits before reading stdin (or never bothers), the response leaks into
+                     * the shell at the next prompt as visible gibberish like
+                     * `11;rgb:ffff/ffff/fff6`. agent-storm's theme is fully controlled here, so
+                     * the shell never actually needs these responses. Return `true` from the OSC
+                     * handler to mark the query as consumed; xterm skips its default response.
+                     * `set` forms (no `?`) still fall through to the default handler so apps that
+                     * legitimately want to change palette colors can.
+                     */
+                    const swallowColorQuery = (data: string): boolean => data.startsWith('?');
+                    [
+                        10,
+                        11,
+                        12,
+                        4,
+                    ].forEach((code) => {
+                        terminal.parser.registerOscHandler(code, swallowColorQuery);
+                    });
+
                     const secret = await ensureSecret();
                     const socket = await connectWebSocket(agentStormService.webSockets['/pty'], {
                         searchParams: {
