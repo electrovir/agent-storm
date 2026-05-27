@@ -206,11 +206,13 @@ export const VirTerminal = defineElement<{
 
         ${defaultXtermStyles}
 
-        /* xterm.css sets cursor: default on the viewport, which sits on top of the canvas.
-           We want the classic terminal i-beam everywhere the user can click. */
+        /* xterm.css sets cursor: default on the viewport, which sits on top of the canvas, AND
+           the WebGL renderer addon adds extra canvas / link layers with their own cursor styles
+           — so as the pointer hits different child elements in the same pixel area, the cursor
+           flickers between i-beam and default every frame. Force i-beam everywhere inside the
+           terminal via a descendant rule so no inner layer can override it. */
         .xterm,
-        .xterm .xterm-viewport,
-        .xterm .xterm-screen {
+        .xterm * {
             cursor: text;
         }
 
