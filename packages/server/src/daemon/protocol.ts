@@ -77,6 +77,13 @@ export type AttachHandshake = {
     action: DaemonAction.Attach;
     folder: string;
     kind: PaneKind;
+    /**
+     * Command to invoke for `PaneKind.Ai` when the daemon spawns the PTY for the first time. Sent
+     * on every attach because the daemon doesn't read agent-storm's config file — the backend does,
+     * and forwards the current value so config edits to `aiCmd` take effect on the next pane spawn
+     * (existing live PTYs keep their old command until restarted).
+     */
+    aiCmd?: string | undefined;
 };
 
 export type StatusHandshake = {
@@ -87,6 +94,10 @@ export type RestartHandshake = {
     action: DaemonAction.Restart;
     folder: string;
     kind: PaneKind;
+    /** See {@link AttachHandshake.aiCmd} — same plumbing, applied to the restart spawn. */
+    aiCmd?: string | undefined;
+    /** Spawn a regular shell in this pane instead of the AI command. */
+    forceShell?: boolean | undefined;
 };
 
 export type KillHandshake = {

@@ -123,6 +123,17 @@ export async function restartPane(
     );
 }
 
+export async function exitAiPaneToShell(params: Readonly<{folder: string}>): Promise<void> {
+    const options = await authOptions();
+    await callApi(
+        'POST /panes/exit-ai',
+        fetchEndpoint(agentStormService.endpoints['/panes/exit-ai'], {
+            ...options,
+            requestData: params,
+        }),
+    );
+}
+
 export async function killFolderPanes(params: Readonly<{folder: string}>): Promise<void> {
     const options = await authOptions();
     await callApi(

@@ -1,7 +1,7 @@
 /**
  * Coarse screen-size buckets the rest of the frontend can branch on. Modeled after
- * `@flax-ai/common-frontend`'s `screen-size.ts` but trimmed to two buckets — `Desktop` and
- * `Mobile` — since agent-storm doesn't currently have a tablet-specific layout.
+ * `@flax-ai/common-frontend`'s `screen-size.ts` but trimmed to two buckets — `Desktop` and `Mobile`
+ * — since agent-storm doesn't currently have a tablet-specific layout.
  *
  * Wired into `vir-app`'s state via {@link determineScreenSize} + an `attachOnResize` observer.
  * Nothing reads it yet; the plumbing is here so future responsive UI work can flip on
@@ -32,7 +32,7 @@ const stickyThresholdPx = 30;
 function widthMatchesSize(width: number, size: ScreenSize, thresholdPx: number): boolean {
     /**
      * Inclusive on the floor, exclusive on the ceiling: a width exactly equal to a smaller size's
-     * max counts as the *larger* size. With only two sizes this collapses to "below max → Mobile;
+     * max counts as the _larger_ size. With only two sizes this collapses to "below max → Mobile;
      * otherwise → Desktop", with the threshold widening the range of the currently-active size.
      */
     const max = screenSizeWidthMax[size];
@@ -53,13 +53,8 @@ export function determineScreenSize({
     elementWidth: number;
 }>): ScreenSize {
     const width = Math.abs(elementWidth);
-    if (
-        currentScreenSize &&
-        widthMatchesSize(width, currentScreenSize, stickyThresholdPx)
-    ) {
+    if (currentScreenSize && widthMatchesSize(width, currentScreenSize, stickyThresholdPx)) {
         return currentScreenSize;
     }
-    return widthMatchesSize(width, ScreenSize.Mobile, 0)
-        ? ScreenSize.Mobile
-        : ScreenSize.Desktop;
+    return widthMatchesSize(width, ScreenSize.Mobile, 0) ? ScreenSize.Mobile : ScreenSize.Desktop;
 }

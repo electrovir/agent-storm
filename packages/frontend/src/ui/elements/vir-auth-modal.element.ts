@@ -29,8 +29,9 @@ export const VirAuthModal = defineElement()({
             display: flex;
             flex-direction: column;
             gap: 12px;
-            min-width: 380px;
-            max-width: 520px;
+            width: min(520px, calc(100vw - 48px));
+            max-width: 100%;
+            box-sizing: border-box;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
@@ -43,6 +44,25 @@ export const VirAuthModal = defineElement()({
             display: flex;
             justify-content: flex-end;
             gap: 8px;
+        }
+
+        ${ViraInput} {
+            min-width: 0;
+            width: 100%;
+        }
+
+        @media (max-width: 420px) {
+            .body {
+                width: calc(100vw - 32px);
+            }
+
+            .footer {
+                justify-content: stretch;
+            }
+
+            ${ViraButton} {
+                width: 100%;
+            }
         }
     `,
     init({updateState}) {

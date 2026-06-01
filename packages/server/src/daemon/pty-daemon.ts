@@ -43,7 +43,13 @@ if (existsSync(daemonSocketPath)) {
     }
 }
 
-function handleAttach(socket: Socket, decoder: FrameDecoder, folder: string, kind: PaneKind): void {
+function handleAttach(
+    socket: Socket,
+    decoder: FrameDecoder,
+    folder: string,
+    kind: PaneKind,
+    aiCmd: string | undefined,
+): void {
     const onData = (data: string) => {
         socket.write(encodeDataFrame(data));
     };
@@ -57,6 +63,7 @@ function handleAttach(socket: Socket, decoder: FrameDecoder, folder: string, kin
     const {isNew, scrollback, setSize, detach} = attachPane({
         folder,
         kind,
+        aiCmd,
         onData,
         onExit,
     });
@@ -112,7 +119,7 @@ const server = createServer((socket) => {
         const handshake = JSON.parse(controlFrame.payload.toString('utf-8')) as ClientHandshake;
 
         if (handshake.action === DaemonAction.Attach) {
-            handleAttach(socket, decoder, handshake.folder, handshake.kind);
+            handleAttach(socket, decoder, handshake.folder, handshake.kind, handshake.aiCmd);
         } else if (handshake.action === DaemonAction.Status) {
             const response: StatusResponse = {
                 ok: true,
@@ -124,6 +131,8 @@ const server = createServer((socket) => {
             restartPane({
                 folder: handshake.folder,
                 kind: handshake.kind,
+                aiCmd: handshake.aiCmd,
+                forceShell: handshake.forceShell,
             });
             const response: SimpleResponse = {
                 ok: true,

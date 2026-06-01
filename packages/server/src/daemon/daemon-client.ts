@@ -63,12 +63,19 @@ export async function fetchPaneStatuses(): Promise<StatusEntry[]> {
 }
 
 export async function restartPane(
-    params: Readonly<{folder: string; kind: PaneKind}>,
+    params: Readonly<{
+        folder: string;
+        kind: PaneKind;
+        aiCmd?: string | undefined;
+        forceShell?: boolean | undefined;
+    }>,
 ): Promise<void> {
     await singleShot<SimpleResponse>({
         action: DaemonAction.Restart,
         folder: params.folder,
         kind: params.kind,
+        aiCmd: params.aiCmd,
+        forceShell: params.forceShell,
     });
 }
 
@@ -120,11 +127,18 @@ export type PaneAttachment = {
 export async function attachPane({
     folder,
     kind,
+    aiCmd,
     onData,
     onExit,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    /**
+     * Current `aiCmd` from agent-storm config — forwarded to the daemon's attach handshake so a
+     * fresh AI PTY honors the user's configured command rather than whatever was in env when the
+     * daemon started.
+     */
+    aiCmd?: string | undefined;
     onData: (data: string) => void;
     onExit: (exitCode: number | undefined) => void;
 }>): Promise<PaneAttachment> {
@@ -136,6 +150,7 @@ export async function attachPane({
             action: DaemonAction.Attach,
             folder,
             kind,
+            aiCmd,
         }),
     );
 

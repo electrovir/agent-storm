@@ -11,6 +11,7 @@ import {ensureSecret} from '../../util/auth.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
+const terminalScrollbackLines = 20_000;
 
 function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -298,6 +299,7 @@ export const VirTerminal = defineElement<{
                     ]);
                     // optionalShape default is true; treat undefined as on.
                     const useWebgl = config?.useWebgl !== false;
+                    const clickableLinks = config?.terminalClickableLinks !== false;
 
                     const terminal = new Terminal({
                         fontFamily: '"MesloLGS NF", Menlo, monospace',
@@ -305,20 +307,28 @@ export const VirTerminal = defineElement<{
                         cursorBlink: true,
                         cursorStyle: 'bar',
                         cursorWidth: 3,
+                        scrollback: terminalScrollbackLines,
                         theme: terminalAppTheme,
                         /**
                          * Characters that break a word for double-click selection. xterm's default
-                         * (' ()[]{}\',:;`) only includes whitespace + a handful of punctuation, so
+                         * (' ()[]{}',:;`) only includes whitespace + a handful of punctuation, so
                          * something like `src/foo.element.test.ts` selects as one big "word". Add
-                         * the structural delimiters that any dev would expect to break on (paths,
-                         * file extensions, comparison ops, backticks) so double-click grabs a
-                         * single path segment / filename stem rather than the whole token.
+                         * structural delimiters like path separators, comparison ops, backticks,
+                         * and hashes, while keeping dotted filenames together.
                          */
-                        wordSeparator: ' \t\n()[]{}\'",:;./\\<>`=-_',
+                        wordSeparator: ' \t\n()[]{}\'",:;/\\<>`=-#',
                     });
                     const fitAddon = new FitAddon();
                     terminal.loadAddon(fitAddon);
-                    terminal.loadAddon(new WebLinksAddon());
+                    /**
+                     * `WebLinksAddon` is what makes URLs in terminal output ctrl-clickable /
+                     * tappable and opens them in a new tab. Gated behind `terminalClickableLinks`
+                     * so users on touch devices (where accidental taps fire links) or those who
+                     * never want auto- opening can disable it via the settings modal.
+                     */
+                    if (clickableLinks) {
+                        terminal.loadAddon(new WebLinksAddon());
+                    }
                     terminal.open(element);
 
                     /**
@@ -353,15 +363,15 @@ export const VirTerminal = defineElement<{
                     /**
                      * Silently swallow color/palette queries (OSC 10 / 11 / 12 / 4 with `?` arg).
                      * Some tools — starship, neovim, claude's status renderer, etc. — ask the
-                     * terminal for its current fg / bg / cursor color so they can color-match.
-                     * The terminal's response is supposed to be consumed by the asker, but if the
-                     * asker exits before reading stdin (or never bothers), the response leaks into
-                     * the shell at the next prompt as visible gibberish like
-                     * `11;rgb:ffff/ffff/fff6`. agent-storm's theme is fully controlled here, so
-                     * the shell never actually needs these responses. Return `true` from the OSC
-                     * handler to mark the query as consumed; xterm skips its default response.
-                     * `set` forms (no `?`) still fall through to the default handler so apps that
-                     * legitimately want to change palette colors can.
+                     * terminal for its current fg / bg / cursor color so they can color-match. The
+                     * terminal's response is supposed to be consumed by the asker, but if the asker
+                     * exits before reading stdin (or never bothers), the response leaks into the
+                     * shell at the next prompt as visible gibberish like `11;rgb:ffff/ffff/fff6`.
+                     * agent-storm's theme is fully controlled here, so the shell never actually
+                     * needs these responses. Return `true` from the OSC handler to mark the query
+                     * as consumed; xterm skips its default response. `set` forms (no `?`) still
+                     * fall through to the default handler so apps that legitimately want to change
+                     * palette colors can.
                      */
                     const swallowColorQuery = (data: string): boolean => data.startsWith('?');
                     [
