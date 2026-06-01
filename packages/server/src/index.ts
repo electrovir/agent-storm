@@ -248,7 +248,29 @@ const implementation = implementService({
             };
         },
         async '/panes/restart'({requestData}) {
-            await restartPane(requestData);
+            /**
+             * Forward the current `aiCmd` so a "Restart AI" picks up any recent config edits to the
+             * AI command (the daemon caches nothing about config — every fresh spawn uses whatever
+             * the backend hands it).
+             */
+            const config = await loadConfig().catch(() => undefined);
+            await restartPane({
+                ...requestData,
+                aiCmd: config?.aiCmd,
+            });
+            return {
+                statusCode: HttpStatus.Ok,
+                responseData: {
+                    ok: true,
+                },
+            };
+        },
+        async '/panes/exit-ai'({requestData}) {
+            await restartPane({
+                folder: requestData.folder,
+                kind: PaneKind.Ai,
+                forceShell: true,
+            });
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
@@ -315,7 +337,9 @@ const implementation = implementService({
              * path to create".
              */
             const resolvedPath = normalizePath(requestData.path);
-            await mkdir(resolvedPath, {recursive: true});
+            await mkdir(resolvedPath, {
+                recursive: true,
+            });
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {
@@ -329,14 +353,24 @@ const implementation = implementService({
             async open({webSocket, searchParams}) {
                 const folder = searchParams.folder[0];
                 const kind = searchParams.kind[0];
+                /**
+                 * Look up the current AI command from agent-storm's config on every attach so the
+                 * daemon's spawned PTY (when this is the first attach for the folder + kind pair)
+                 * uses whatever the user has set. Failure is non-fatal — the daemon falls back to
+                 * its built-in default (`claude`).
+                 */
+                const config = await loadConfig().catch(() => undefined);
                 const attachment = await attachPane({
                     folder,
                     kind,
+                    aiCmd: config?.aiCmd,
                     onData(data) {
                         webSocket.send(data);
                     },
-                    async onExit() {
-                        await webSocket.close();
+                    async onExit(exitCode) {
+                        if (exitCode == undefined) {
+                            await webSocket.close();
+                        }
                     },
                 });
                 attachmentsByWebSocket.set(webSocket, {

@@ -1,7 +1,7 @@
 // cspell:words titlebar
 
 import {agentStormService, PaneKind} from '@agent-storm/common';
-import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
+import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {ensureVscode, killVscode} from '../../util/api-client.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
@@ -27,9 +27,9 @@ export const VirPaneGroup = defineElement<{
      */
     active: boolean;
     /**
-     * Currently-active tab — `'ai' | 'shell' | 'code'`. Driven by the `?tab=...` search param up
-     * at the app level so the URL is the source of truth. On desktop, both `ai` and `shell` render
-     * the CLI layout (split panes); on mobile each value shows exactly one pane.
+     * Currently-active tab — `'ai' | 'shell' | 'code'`. Driven by the `?tab=...` search param up at
+     * the app level so the URL is the source of truth. On desktop, both `ai` and `shell` render the
+     * CLI layout (split panes); on mobile each value shows exactly one pane.
      */
     activeTab: FrontendTab;
     /**
@@ -37,6 +37,7 @@ export const VirPaneGroup = defineElement<{
      * pane-visibility rules. Updates as the user resizes the window.
      */
     screenSize: ScreenSize;
+    aiRestartKey: number;
 }>()({
     tagName: 'vir-pane-group',
     events: {
@@ -443,13 +444,33 @@ export const VirPaneGroup = defineElement<{
         const tabButtons: ReadonlyArray<{label: string; tab: FrontendTab; isActive: boolean}> =
             isMobile
                 ? [
-                      {label: 'AI', tab: 'ai', isActive: inputs.activeTab === 'ai'},
-                      {label: 'Shell', tab: 'shell', isActive: inputs.activeTab === 'shell'},
-                      {label: 'Code', tab: 'code', isActive: isCodeTab},
+                      {
+                          label: 'AI',
+                          tab: 'ai',
+                          isActive: inputs.activeTab === 'ai',
+                      },
+                      {
+                          label: 'Shell',
+                          tab: 'shell',
+                          isActive: inputs.activeTab === 'shell',
+                      },
+                      {
+                          label: 'Code',
+                          tab: 'code',
+                          isActive: isCodeTab,
+                      },
                   ]
                 : [
-                      {label: 'CLI', tab: 'ai', isActive: !isCodeTab},
-                      {label: 'Code', tab: 'code', isActive: isCodeTab},
+                      {
+                          label: 'CLI',
+                          tab: 'ai',
+                          isActive: !isCodeTab,
+                      },
+                      {
+                          label: 'Code',
+                          tab: 'code',
+                          isActive: isCodeTab,
+                      },
                   ];
 
         const requestTab = (tab: FrontendTab) => {
@@ -459,7 +480,9 @@ export const VirPaneGroup = defineElement<{
              * click somewhere else, then click Code again to actually respawn it.
              */
             if (tab === 'code' && state.vscodeUserClosed) {
-                updateState({vscodeUserClosed: false});
+                updateState({
+                    vscodeUserClosed: false,
+                });
             }
             dispatch(new events.tabRequested(tab));
         };
@@ -532,11 +555,17 @@ export const VirPaneGroup = defineElement<{
                                   )}
                               >
                                   <div class="pane-body">
-                                      <${VirTerminal.assign({
-                                          folder: inputs.folder,
-                                          kind: PaneKind.Ai,
-                                          active: inputs.active,
-                                      })}></${VirTerminal}>
+                                      ${repeat(
+                                          [inputs.aiRestartKey],
+                                          (restartKeyValue) => String(restartKeyValue),
+                                          () => html`
+                                              <${VirTerminal.assign({
+                                                  folder: inputs.folder,
+                                                  kind: PaneKind.Ai,
+                                                  active: inputs.active,
+                                              })}></${VirTerminal}>
+                                          `,
+                                      )}
                                   </div>
                               </div>
                               <div

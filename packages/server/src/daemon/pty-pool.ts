@@ -7,30 +7,36 @@ import type {StatusEntry} from './protocol.js';
 
 const idleThresholdMs = 2000;
 
-const aiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
+/**
+ * Fallback AI command when the backend doesn't supply one via the attach handshake. The
+ * `AGENT_STORM_AI_CMD` env var is still honored as a last resort for direct daemon-protocol callers
+ * that don't go through the backend (mostly debugging / tests). Production calls always carry the
+ * current config's `aiCmd` and so override this.
+ */
+const fallbackAiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
 
 /**
- * AI pane runs through a login + interactive shell so `.zprofile` / `.zshrc` get sourced (those are
- * where managed-Claude installers usually inject their PATH lines). When the AI command exits (user
- * typed `/exit`, ran a one-shot, crashed, etc.) the wrapper shell terminates with it — the pane
- * lands in `Exited` state so the user can read whatever Claude printed (especially its
- * end-of-session summary) without it being clobbered by a new shell prompt. Restart via the row's
- * menu when ready to start a fresh session.
+ * Build the argv for a fresh PTY. AI pane runs through a login + interactive shell so `.zprofile` /
+ * `.zshrc` get sourced (those are where managed-Claude installers usually inject their PATH lines).
+ * When the AI command exits the wrapper shell terminates with it — the pane lands in `Exited` state
+ * so the user can read whatever Claude printed (especially its end-of-session summary) without it
+ * being clobbered by a new shell prompt. Restart via the row's menu when ready to start a fresh
+ * session.
  */
-const paneCommands: Record<PaneKind, () => string[]> = {
-    [PaneKind.Ai]: () => {
-        const shell = process.env.SHELL || '/bin/bash';
+function buildPaneCommand(kind: PaneKind, aiCmd: string, commandMode: PaneCommandMode): string[] {
+    const shell = process.env.SHELL || '/bin/bash';
+    if (kind === PaneKind.Ai && commandMode === 'ai') {
         return [
             shell,
             '-lic',
-            aiCommand,
+            aiCmd,
         ];
-    },
-    [PaneKind.Shell]: () => [
-        process.env.SHELL || '/bin/bash',
+    }
+    return [
+        shell,
         '-l',
-    ],
-};
+    ];
+}
 
 type PaneSize = {
     cols: number;
@@ -47,8 +53,12 @@ type Subscriber = {
     size: PaneSize | undefined;
 };
 
+type PaneCommandMode = 'ai' | 'shell';
+
 type PaneEntry = {
     pty: IPty | undefined;
+    spawnGeneration: number;
+    commandMode: PaneCommandMode;
     lastOutputAt: number;
     exitCode: number | undefined;
     subscribers: Set<Subscriber>;
@@ -57,8 +67,8 @@ type PaneEntry = {
     scrollbackBytes: number;
 };
 
-/** Roughly 1 MB of scrollback per pane, which is several thousand lines of typical output. */
-const maxScrollbackBytes = 1_000_000;
+/** Bounded replay buffer per pane for newly attached browser terminals. */
+const maxScrollbackBytes = 10_000_000;
 
 function appendScrollback(entry: PaneEntry, data: string): void {
     entry.scrollbackChunks.push(data);
@@ -96,6 +106,8 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
     }
     const entry: PaneEntry = {
         pty: undefined,
+        spawnGeneration: 0,
+        commandMode: kind === PaneKind.Ai ? 'ai' : 'shell',
         lastOutputAt: 0,
         exitCode: undefined,
         subscribers: new Set(),
@@ -109,9 +121,9 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
 /**
  * Build the env we hand to a freshly spawned shell. Strips:
  *
- * - `PATH` so the spawned login+interactive shell rebuilds it from /etc/paths and the user's rc
- *   files — exactly the way Terminal.app does. Inheriting `PATH` from the daemon process pollutes
- *   the start with npm-injected `node_modules/.bin` entries (because `npm start` was the daemon's
+ * - `PATH` so the spawned login+interactive shell rebuilds it from /etc/paths and the user's rc files
+ *   — exactly the way Terminal.app does. Inheriting `PATH` from the daemon process pollutes the
+ *   start with npm-injected `node_modules/.bin` entries (because `npm start` was the daemon's
  *   grandparent), which push the user's `.zprofile` PATH prepends into late positions and can mask
  *   the preferred copy of `claude` (or any other binary they expect to find first).
  * - `BACKEND_PORT` / `FRONTEND_PORT` because those are internal agent-storm orchestration env vars
@@ -151,11 +163,13 @@ function applyMinSize(entry: PaneEntry): void {
     }
 }
 
-function startPty(folder: string, kind: PaneKind, entry: PaneEntry): void {
+function startPty(folder: string, kind: PaneKind, entry: PaneEntry, aiCmd: string): void {
+    entry.spawnGeneration += 1;
+    const spawnGeneration = entry.spawnGeneration;
     const [
         command,
         ...args
-    ] = paneCommands[kind]();
+    ] = buildPaneCommand(kind, aiCmd, entry.commandMode);
     if (!command) {
         return;
     }
@@ -179,6 +193,9 @@ function startPty(folder: string, kind: PaneKind, entry: PaneEntry): void {
             });
         });
         pty.onExit(({exitCode}) => {
+            if (entry.spawnGeneration !== spawnGeneration) {
+                return;
+            }
             entry.exitCode = exitCode;
             entry.pty = undefined;
             const message = `[pty ${kind} for ${folder} exited with code ${exitCode}]\r\n`;
@@ -208,11 +225,18 @@ function startPty(folder: string, kind: PaneKind, entry: PaneEntry): void {
 export function attachPane({
     folder,
     kind,
+    aiCmd,
     onData,
     onExit,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    /**
+     * Current `aiCmd` from agent-storm config. Used only when spawning a fresh AI PTY here —
+     * existing live PTYs continue running whatever command they were launched with until the user
+     * explicitly restarts the pane. Falls back to {@link fallbackAiCommand} when omitted.
+     */
+    aiCmd?: string | undefined;
     onData: (data: string) => void;
     onExit: (exitCode: number | undefined) => void;
 }>): {
@@ -224,7 +248,7 @@ export function attachPane({
     const entry = ensureEntry(folder, kind);
     const isNew = !entry.pty;
     if (!entry.pty) {
-        startPty(folder, kind, entry);
+        startPty(folder, kind, entry, aiCmd || fallbackAiCommand);
     }
     const subscriber: Subscriber = {
         onData,
@@ -270,13 +294,24 @@ export function writeToPane({
     entry?.pty?.write(data);
 }
 
-export function restartPane({folder, kind}: Readonly<{folder: string; kind: PaneKind}>): void {
+export function restartPane({
+    folder,
+    kind,
+    aiCmd,
+    forceShell,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    aiCmd?: string | undefined;
+    forceShell?: boolean | undefined;
+}>): void {
     const entry = ensureEntry(folder, kind);
     entry.pty?.kill();
+    entry.commandMode = kind === PaneKind.Ai && !forceShell ? 'ai' : 'shell';
     entry.pty = undefined;
     entry.exitCode = undefined;
     clearScrollback(entry);
-    startPty(folder, kind, entry);
+    startPty(folder, kind, entry, aiCmd || fallbackAiCommand);
 }
 
 export function killFolderPanes({folder}: Readonly<{folder: string}>): void {

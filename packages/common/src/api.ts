@@ -140,6 +140,13 @@ export const configJsonSchema = {
             description:
                 "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.",
         },
+        terminalClickableLinks: {
+            type: 'boolean',
+            default: true,
+            title: 'Clickable terminal links',
+            description:
+                "When on, URLs that appear in terminal output are auto-detected and clicking them opens the link in a new browser tab. Turn off if accidental link clicks (e.g. from terminal selections or stray taps) are opening pages you didn't intend.",
+        },
         sidebarGrouping: {
             type: 'string',
             enum: [
@@ -160,6 +167,7 @@ export const configJsonSchema = {
         'disabledGitHubPolling',
         'githubPollingAutoDisable',
         'useWebgl',
+        'terminalClickableLinks',
         'sidebarGrouping',
     ],
 } as const satisfies JSONSchema;
@@ -275,6 +283,13 @@ export const agentStormService = defineService({
                 [HttpMethod.Post]: true,
             },
             requestDataShape: paneActionRequestShape,
+            responseDataShape: okResponseShape,
+        },
+        '/panes/exit-ai': {
+            methods: {
+                [HttpMethod.Post]: true,
+            },
+            requestDataShape: folderActionRequestShape,
             responseDataShape: okResponseShape,
         },
         '/panes/kill': {

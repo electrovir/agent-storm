@@ -33,8 +33,8 @@ export type FrontendPaths = typeof frontendPathTree.PathsType;
 
 /**
  * Which pane the user is focused on. On desktop, `ai` and `shell` both render the "CLI" tab with
- * both panes visible side-by-side (their difference doesn't affect the layout); `code` shows the
- * VS Code iframe. On mobile, each value shows exactly one pane.
+ * both panes visible side-by-side (their difference doesn't affect the layout); `code` shows the VS
+ * Code iframe. On mobile, each value shows exactly one pane.
  */
 export type FrontendTab = 'ai' | 'shell' | 'code';
 

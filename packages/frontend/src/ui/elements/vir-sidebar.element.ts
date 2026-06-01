@@ -25,6 +25,7 @@ import {
     createPath,
     createWorktree,
     deleteWorktree,
+    exitAiPaneToShell,
     getConfig,
     getFolders,
     killFolderPanes,
@@ -76,8 +77,15 @@ type SidebarState = {
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
 
+type PaneRestartedEvent = {
+    folder: string;
+    kind: PaneKind;
+};
+
 export const VirSidebar = defineElement<{
     activeFolder: string | undefined;
+    hideBorder?: boolean | undefined;
+    mobileModal?: boolean | undefined;
 }>()({
     tagName: 'vir-sidebar',
     events: {
@@ -96,6 +104,8 @@ export const VirSidebar = defineElement<{
          * right-hand pane unmounts immediately instead of waiting for the next folder-info poll.
          */
         foldersRemoved: defineElementEvent<ReadonlyArray<string>>(),
+        /** Emitted after a pane restart succeeds so the mounted terminal can reconnect. */
+        paneRestarted: defineElementEvent<PaneRestartedEvent>(),
         /** Emitted when the user clicks the gear button. Parent owns the modal open state. */
         openSettingsRequested: defineElementEvent<void>(),
     },
@@ -117,6 +127,15 @@ export const VirSidebar = defineElement<{
             font-size: 12px;
             border-right: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             overflow: hidden;
+        }
+
+        :host([data-hide-border]) {
+            border-right: none;
+        }
+
+        :host([data-mobile-modal]) {
+            width: 100%;
+            font-size: 15px;
         }
 
         .header {
@@ -264,6 +283,41 @@ export const VirSidebar = defineElement<{
             color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
             text-align: center;
         }
+
+        :host([data-mobile-modal]) .header {
+            padding: 12px 16px;
+        }
+
+        :host([data-mobile-modal]) .title {
+            font-size: 16px;
+        }
+
+        :host([data-mobile-modal]) .list {
+            font-size: 16px;
+        }
+
+        :host([data-mobile-modal]) .repo-header {
+            padding: 10px 16px 4px;
+        }
+
+        :host([data-mobile-modal]) .row {
+            gap: 6px;
+            min-height: 34px;
+            padding: 4px 16px;
+        }
+
+        :host([data-mobile-modal]) .row[data-indented] {
+            padding-left: 30px;
+        }
+
+        :host([data-mobile-modal]) .name {
+            padding: 4px 0;
+        }
+
+        :host([data-mobile-modal]) .chip {
+            width: 16px;
+            height: 16px;
+        }
     `,
     init({state, updateState}) {
         void refresh(state, updateState);
@@ -279,7 +333,18 @@ export const VirSidebar = defineElement<{
             clearInterval(state.pollHandle);
         }
     },
-    render({inputs, state, updateState, dispatch, events}) {
+    render({inputs, state, updateState, host, dispatch, events}) {
+        if (inputs.hideBorder) {
+            host.setAttribute('data-hide-border', '');
+        } else {
+            host.removeAttribute('data-hide-border');
+        }
+        if (inputs.mobileModal) {
+            host.setAttribute('data-mobile-modal', '');
+        } else {
+            host.removeAttribute('data-mobile-modal');
+        }
+
         const standaloneFolders = state.folders
             .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
             .toSorted((a, b) =>
@@ -307,6 +372,9 @@ export const VirSidebar = defineElement<{
         };
         const emitFolderActivated = (path: string) => {
             dispatch(new events.folderActivated(path));
+        };
+        const emitPaneRestarted = (detail: PaneRestartedEvent) => {
+            dispatch(new events.paneRestarted(detail));
         };
 
         return html`
@@ -381,6 +449,7 @@ export const VirSidebar = defineElement<{
                         onActivate: emitFolderActivated,
                         removeFolderLocally,
                         emitFoldersRemoved,
+                        emitPaneRestarted,
                         updateState,
                     }),
                 )}
@@ -455,6 +524,7 @@ export const VirSidebar = defineElement<{
                                 onActivate: emitFolderActivated,
                                 removeFolderLocally,
                                 emitFoldersRemoved,
+                                emitPaneRestarted,
                                 updateState,
                             }),
                         )}
@@ -498,6 +568,7 @@ function renderRow({
     onActivate,
     removeFolderLocally,
     emitFoldersRemoved,
+    emitPaneRestarted,
     updateState,
 }: Readonly<{
     folder: FolderInfo;
@@ -507,6 +578,7 @@ function renderRow({
     onActivate: (folder: string) => void;
     removeFolderLocally: (path: string) => void;
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
     updateState: SidebarUpdate;
 }>) {
     const nameWithMarkers = [
@@ -568,6 +640,7 @@ function renderRow({
                             updateState,
                             removeFolderLocally,
                             emitFoldersRemoved,
+                            emitPaneRestarted,
                         ),
                     )}
                 </${ViraMenuTrigger}>
@@ -624,6 +697,7 @@ function buildRowMenuEntries(
     updateState: SidebarUpdate,
     removeFolderLocally: (path: string) => void,
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void,
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void,
 ): ReadonlyArray<ViraMenuItemEntry> {
     return [
         folder.prUrl &&
@@ -652,10 +726,39 @@ function buildRowMenuEntries(
             content: 'Restart AI',
             iconOverride: lucideIcons.RotateCw,
             onClick: () => {
-                void restartPane({
-                    folder: folder.path,
-                    kind: PaneKind.Ai,
-                }).catch((error: unknown) => showError(updateState, error));
+                void (async () => {
+                    try {
+                        await restartPane({
+                            folder: folder.path,
+                            kind: PaneKind.Ai,
+                        });
+                        emitPaneRestarted({
+                            folder: folder.path,
+                            kind: PaneKind.Ai,
+                        });
+                    } catch (error: unknown) {
+                        showError(updateState, error);
+                    }
+                })();
+            },
+        },
+        {
+            content: 'Exit AI to shell',
+            iconOverride: lucideIcons.Terminal,
+            onClick: () => {
+                void (async () => {
+                    try {
+                        await exitAiPaneToShell({
+                            folder: folder.path,
+                        });
+                        emitPaneRestarted({
+                            folder: folder.path,
+                            kind: PaneKind.Ai,
+                        });
+                    } catch (error: unknown) {
+                        showError(updateState, error);
+                    }
+                })();
             },
         },
         {
@@ -664,17 +767,19 @@ function buildRowMenuEntries(
             onClick: () => {
                 void (async () => {
                     try {
-                        await killFolderPanes({folder: folder.path});
+                        await killFolderPanes({
+                            folder: folder.path,
+                        });
                         /**
                          * After a successful kill, treat the folder as no-longer-opened: drop it
                          * from `vir-app`'s `openedFolders` (which unmounts its pane group and
                          * disposes the terminals) and clear the route if it was the active one.
                          * Reusing the `foldersRemoved` event is intentional — vir-app's handler
-                         * does exactly the openedFolders + route teardown we want, without
-                         * touching the sidebar's own folders list (the row stays visible). Next
-                         * click on the same row re-adds it to `openedFolders`, which remounts
-                         * `VirPaneGroup` / `VirTerminal` and triggers a fresh `/pty` attach so
-                         * the backend spawns new PTYs.
+                         * does exactly the openedFolders + route teardown we want, without touching
+                         * the sidebar's own folders list (the row stays visible). Next click on the
+                         * same row re-adds it to `openedFolders`, which remounts `VirPaneGroup` /
+                         * `VirTerminal` and triggers a fresh `/pty` attach so the backend spawns
+                         * new PTYs.
                          */
                         emitFoldersRemoved([folder.path]);
                     } catch (error: unknown) {
@@ -778,12 +883,14 @@ async function promptAddRepo(
     }
     try {
         /**
-         * Resolve the user's input on the server (handles `~` expansion + `path.resolve`) so we
-         * can branch on existence using a stable, absolute path. The same `resolvedPath` is
-         * compared against the user's retype on the create-missing path so they can re-enter the
-         * path in any equivalent form (`~/foo` vs the absolute version).
+         * Resolve the user's input on the server (handles `~` expansion + `path.resolve`) so we can
+         * branch on existence using a stable, absolute path. The same `resolvedPath` is compared
+         * against the user's retype on the create-missing path so they can re-enter the path in any
+         * equivalent form (`~/foo` vs the absolute version).
          */
-        const initial = await checkPath({path: input});
+        const initial = await checkPath({
+            path: input,
+        });
         const path = initial.resolvedPath;
         if (!initial.exists) {
             const retypeInput = window.prompt(
@@ -792,7 +899,9 @@ async function promptAddRepo(
             if (!retypeInput) {
                 return;
             }
-            const retype = await checkPath({path: retypeInput});
+            const retype = await checkPath({
+                path: retypeInput,
+            });
             if (retype.resolvedPath !== path) {
                 showError(
                     updateState,
@@ -800,7 +909,9 @@ async function promptAddRepo(
                 );
                 return;
             }
-            await createPath({path});
+            await createPath({
+                path,
+            });
         }
         const config = await getConfig();
         if (config.repos.some((repo) => repo.path === path)) {
@@ -847,10 +958,7 @@ async function promptAddRepo(
  * we pick the first worktree child as the activation target instead. Falls back to the root if no
  * children exist yet (shouldn't happen — a worktree-root by definition has at least one child).
  */
-function activationTargetFor(
-    folder: FolderInfo,
-    folders: ReadonlyArray<FolderInfo>,
-): FolderInfo {
+function activationTargetFor(folder: FolderInfo, folders: ReadonlyArray<FolderInfo>): FolderInfo {
     if (!folder.isWorktreeRoot) {
         return folder;
     }
