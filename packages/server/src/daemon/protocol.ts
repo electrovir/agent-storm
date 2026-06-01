@@ -96,8 +96,6 @@ export type RestartHandshake = {
     kind: PaneKind;
     /** See {@link AttachHandshake.aiCmd} — same plumbing, applied to the restart spawn. */
     aiCmd?: string | undefined;
-    /** Spawn a regular shell in this pane instead of the AI command. */
-    forceShell?: boolean | undefined;
 };
 
 export type KillHandshake = {

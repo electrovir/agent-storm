@@ -14,9 +14,11 @@ import {
     ViraColorVariant,
     ViraEmphasis,
     ViraIcon,
+    ViraInput,
     ViraLink,
     type ViraMenuItemEntry,
     ViraMenuTrigger,
+    ViraModal,
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
@@ -25,7 +27,6 @@ import {
     createPath,
     createWorktree,
     deleteWorktree,
-    exitAiPaneToShell,
     getConfig,
     getFolders,
     killFolderPanes,
@@ -67,6 +68,16 @@ type SidebarState = {
     pollHandle: ReturnType<typeof setInterval> | undefined;
     loadError: string | undefined;
     openMenuKey: string | undefined;
+    repoModalOpen: boolean;
+    repoPath: string;
+    repoAiCmd: string;
+    repoGlobalAiCmd: string;
+    repoSubmitting: boolean;
+    worktreeModalRepoPath: string | undefined;
+    worktreeName: string;
+    worktreeAiCmd: string;
+    worktreeGlobalAiCmd: string;
+    worktreeSubmitting: boolean;
     /**
      * Mirrors `config.sidebarGrouping`. Fetched lazily on first refresh tick so the filter menu can
      * show which grouping is currently active (and so flipping it via the menu has a fresh value to
@@ -115,6 +126,16 @@ export const VirSidebar = defineElement<{
             pollHandle: undefined,
             loadError: undefined,
             openMenuKey: undefined,
+            repoModalOpen: false,
+            repoPath: '',
+            repoAiCmd: '',
+            repoGlobalAiCmd: '',
+            repoSubmitting: false,
+            worktreeModalRepoPath: undefined,
+            worktreeName: '',
+            worktreeAiCmd: '',
+            worktreeGlobalAiCmd: '',
+            worktreeSubmitting: false,
             sidebarGrouping: undefined,
         };
     },
@@ -284,6 +305,28 @@ export const VirSidebar = defineElement<{
             text-align: center;
         }
 
+        .repo-modal-body,
+        .worktree-modal-body {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: min(520px, calc(100dvw - 48px));
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+
+        .repo-modal-footer,
+        .worktree-modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        .repo-modal-body ${ViraInput}, .worktree-modal-body ${ViraInput} {
+            min-width: 0;
+            width: 100%;
+        }
+
         :host([data-mobile-modal]) .header {
             padding: 12px 16px;
         }
@@ -318,11 +361,27 @@ export const VirSidebar = defineElement<{
             width: 16px;
             height: 16px;
         }
+
+        @media (max-width: 420px) {
+            .repo-modal-body,
+            .worktree-modal-body {
+                width: calc(100dvw - 32px);
+            }
+
+            .repo-modal-footer,
+            .worktree-modal-footer {
+                justify-content: stretch;
+            }
+
+            .repo-modal-footer ${ViraButton}, .worktree-modal-footer ${ViraButton} {
+                width: 100%;
+            }
+        }
     `,
-    init({state, updateState}) {
-        void refresh(state, updateState);
+    init({updateState}) {
+        void refresh(updateState);
         const pollHandle = setInterval(() => {
-            void refresh(state, updateState);
+            void refresh(updateState);
         }, pollIntervalMs);
         updateState({
             pollHandle,
@@ -376,6 +435,38 @@ export const VirSidebar = defineElement<{
         const emitPaneRestarted = (detail: PaneRestartedEvent) => {
             dispatch(new events.paneRestarted(detail));
         };
+        const closeRepoModal = () => {
+            updateState({
+                repoModalOpen: false,
+                repoPath: '',
+                repoAiCmd: '',
+                repoGlobalAiCmd: '',
+                repoSubmitting: false,
+            });
+        };
+        const submitRepo = () => {
+            void submitAddRepo({
+                state,
+                updateState,
+                notifyActivated: emitFolderActivated,
+            });
+        };
+        const closeWorktreeModal = () => {
+            updateState({
+                worktreeModalRepoPath: undefined,
+                worktreeName: '',
+                worktreeAiCmd: '',
+                worktreeGlobalAiCmd: '',
+                worktreeSubmitting: false,
+            });
+        };
+        const submitWorktree = () => {
+            void submitAddWorktree({
+                state,
+                updateState,
+                onActivate: emitFolderActivated,
+            });
+        };
 
         return html`
             <div class="header">
@@ -392,10 +483,7 @@ export const VirSidebar = defineElement<{
                         color: ViraColorVariant.Positive,
                     })}
                         title="Add new repository."
-                        ${listen(
-                            'click',
-                            () => void promptAddRepo(updateState, emitFolderActivated),
-                        )}
+                        ${listen('click', () => void openAddRepoModal(updateState))}
                     ></${ViraButton}>
                     <${ViraMenuTrigger.assign({
                         horizontalAnchor: HorizontalAnchor.Right,
@@ -492,11 +580,7 @@ export const VirSidebar = defineElement<{
                                             content: 'Add worktree',
                                             iconOverride: lucideIcons.GitBranchPlus,
                                             onClick: () => {
-                                                void promptAddWorktree(
-                                                    root.path,
-                                                    updateState,
-                                                    emitFolderActivated,
-                                                );
+                                                void openAddWorktreeModal(root.path, updateState);
                                             },
                                         },
                                         {
@@ -531,6 +615,130 @@ export const VirSidebar = defineElement<{
                     `;
                 })}
             </div>
+            <${ViraModal.assign({
+                open: state.repoModalOpen,
+                modalTitle: 'New repo',
+            })}
+                ${listen(ViraModal.events.modalClose, closeRepoModal)}
+            >
+                <div class="repo-modal-body">
+                    <${ViraInput.assign({
+                        label: 'Repo path',
+                        value: state.repoPath,
+                        placeholder: '~/src/project',
+                        showClearButton: true,
+                        disabled: state.repoSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                repoPath: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitRepo();
+                            }
+                        })}
+                    ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'AI command override',
+                        value: state.repoAiCmd,
+                        placeholder: state.repoGlobalAiCmd || 'claude',
+                        showClearButton: true,
+                        disabled: state.repoSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                repoAiCmd: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitRepo();
+                            }
+                        })}
+                    ></${ViraInput}>
+                    <div class="repo-modal-footer">
+                        <${ViraButton.assign({
+                            text: 'Cancel',
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                            isDisabled: state.repoSubmitting,
+                        })}
+                            ${listen('click', closeRepoModal)}
+                        ></${ViraButton}>
+                        <${ViraButton.assign({
+                            text: 'Add',
+                            color: ViraColorVariant.Brand,
+                            isDisabled: !state.repoPath.trim() || state.repoSubmitting,
+                        })}
+                            ${listen('click', submitRepo)}
+                        ></${ViraButton}>
+                    </div>
+                </div>
+            </${ViraModal}>
+            <${ViraModal.assign({
+                open: !!state.worktreeModalRepoPath,
+                modalTitle: 'New worktree',
+            })}
+                ${listen(ViraModal.events.modalClose, closeWorktreeModal)}
+            >
+                <div class="worktree-modal-body">
+                    <${ViraInput.assign({
+                        label: 'Worktree name',
+                        value: state.worktreeName,
+                        placeholder: 'branch-name',
+                        showClearButton: true,
+                        disabled: state.worktreeSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                worktreeName: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitWorktree();
+                            }
+                        })}
+                    ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'AI command override',
+                        value: state.worktreeAiCmd,
+                        placeholder: state.worktreeGlobalAiCmd || 'claude',
+                        showClearButton: true,
+                        disabled: state.worktreeSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                worktreeAiCmd: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitWorktree();
+                            }
+                        })}
+                    ></${ViraInput}>
+                    <div class="worktree-modal-footer">
+                        <${ViraButton.assign({
+                            text: 'Cancel',
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                            isDisabled: state.worktreeSubmitting,
+                        })}
+                            ${listen('click', closeWorktreeModal)}
+                        ></${ViraButton}>
+                        <${ViraButton.assign({
+                            text: 'Create',
+                            color: ViraColorVariant.Brand,
+                            isDisabled: !state.worktreeName.trim() || state.worktreeSubmitting,
+                        })}
+                            ${listen('click', submitWorktree)}
+                        ></${ViraButton}>
+                    </div>
+                </div>
+            </${ViraModal}>
         `;
     },
 });
@@ -743,22 +951,14 @@ function buildRowMenuEntries(
             },
         },
         {
-            content: 'Exit AI to shell',
+            content: 'Replace AI command',
             iconOverride: lucideIcons.Terminal,
             onClick: () => {
-                void (async () => {
-                    try {
-                        await exitAiPaneToShell({
-                            folder: folder.path,
-                        });
-                        emitPaneRestarted({
-                            folder: folder.path,
-                            kind: PaneKind.Ai,
-                        });
-                    } catch (error: unknown) {
-                        showError(updateState, error);
-                    }
-                })();
+                void promptReplaceAiCommand({
+                    folder,
+                    updateState,
+                    emitPaneRestarted,
+                });
             },
         },
         {
@@ -822,7 +1022,7 @@ function buildRowMenuEntries(
  */
 const pendingWorktreeDeletions = new Set<string>();
 
-async function refresh(state: SidebarState, updateState: SidebarUpdate): Promise<void> {
+async function refresh(updateState: SidebarUpdate): Promise<void> {
     try {
         /**
          * Fetch folders + config in parallel. Config tells us the current `sidebarGrouping` so the
@@ -867,46 +1067,106 @@ async function setSidebarGrouping(
     }
 }
 
+async function promptReplaceAiCommand({
+    folder,
+    updateState,
+    emitPaneRestarted,
+}: Readonly<{
+    folder: FolderInfo;
+    updateState: SidebarUpdate;
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
+}>): Promise<void> {
+    try {
+        const config = await getConfig();
+        const input = window.prompt(`AI command for ${folder.path}:`, folder.aiCmd || config.aiCmd);
+        if (input == undefined) {
+            return;
+        }
+        const aiCmd = input.trim();
+        if (!aiCmd) {
+            showError(updateState, 'AI command cannot be empty.');
+            return;
+        }
+        await putConfig({
+            ...config,
+            folderAiCmds:
+                aiCmd === config.aiCmd
+                    ? config.folderAiCmds.filter((entry) => entry.folder !== folder.path)
+                    : [
+                          ...config.folderAiCmds.filter((entry) => entry.folder !== folder.path),
+                          {
+                              folder: folder.path,
+                              aiCmd,
+                          },
+                      ],
+        });
+        await restartPane({
+            folder: folder.path,
+            kind: PaneKind.Ai,
+        });
+        emitPaneRestarted({
+            folder: folder.path,
+            kind: PaneKind.Ai,
+        });
+        await refresh(updateState);
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
 function showError(updateState: SidebarUpdate, error: unknown): void {
     updateState({
         loadError: error instanceof Error ? error.message : String(error),
     });
 }
 
-async function promptAddRepo(
-    updateState: SidebarUpdate,
-    notifyActivated: (path: string) => void,
-): Promise<void> {
-    const input = window.prompt('Absolute path of the repo to add:');
+async function openAddRepoModal(updateState: SidebarUpdate): Promise<void> {
+    try {
+        const config = await getConfig();
+        updateState({
+            repoModalOpen: true,
+            repoPath: '',
+            repoAiCmd: '',
+            repoGlobalAiCmd: config.aiCmd,
+            repoSubmitting: false,
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+async function submitAddRepo({
+    state,
+    updateState,
+    notifyActivated,
+}: Readonly<{
+    state: SidebarState;
+    updateState: SidebarUpdate;
+    notifyActivated: (path: string) => void;
+}>): Promise<void> {
+    const input = state.repoPath.trim();
     if (!input) {
         return;
     }
     try {
+        updateState({
+            repoSubmitting: true,
+        });
         /**
          * Resolve the user's input on the server (handles `~` expansion + `path.resolve`) so we can
-         * branch on existence using a stable, absolute path. The same `resolvedPath` is compared
-         * against the user's retype on the create-missing path so they can re-enter the path in any
-         * equivalent form (`~/foo` vs the absolute version).
+         * branch on existence using a stable, absolute path. Missing paths still require explicit
+         * confirmation before creation so a typo in this modal does not create directories
+         * silently.
          */
         const initial = await checkPath({
             path: input,
         });
         const path = initial.resolvedPath;
         if (!initial.exists) {
-            const retypeInput = window.prompt(
-                `Path does not exist:\n\n${path}\n\nWould you like to create it? Re-type the path to confirm:`,
-            );
-            if (!retypeInput) {
-                return;
-            }
-            const retype = await checkPath({
-                path: retypeInput,
-            });
-            if (retype.resolvedPath !== path) {
-                showError(
-                    updateState,
-                    `Retyped path resolved to ${retype.resolvedPath}, expected ${path}. Cancelled.`,
-                );
+            if (!window.confirm(`Path does not exist:\n\n${path}\n\nCreate it?`)) {
+                updateState({
+                    repoSubmitting: false,
+                });
                 return;
             }
             await createPath({
@@ -916,9 +1176,17 @@ async function promptAddRepo(
         const config = await getConfig();
         if (config.repos.some((repo) => repo.path === path)) {
             /** Repo already configured — activate the existing entry instead of no-oping. */
+            updateState({
+                repoModalOpen: false,
+                repoPath: '',
+                repoAiCmd: '',
+                repoGlobalAiCmd: '',
+                repoSubmitting: false,
+            });
             notifyActivated(path);
             return;
         }
+        const aiCmd = state.repoAiCmd.trim();
         await putConfig({
             ...config,
             repos: [
@@ -928,6 +1196,16 @@ async function promptAddRepo(
                     postWorktreeCmd: null,
                 },
             ],
+            folderAiCmds:
+                aiCmd && aiCmd !== config.aiCmd
+                    ? [
+                          ...config.folderAiCmds.filter((entry) => entry.folder !== path),
+                          {
+                              folder: path,
+                              aiCmd,
+                          },
+                      ]
+                    : config.folderAiCmds.filter((entry) => entry.folder !== path),
         });
         /**
          * Fetch the new folder list directly so we can find the repo's resolved path (may include a
@@ -941,12 +1219,20 @@ async function promptAddRepo(
                 ? folders.filter((folder) => !pendingWorktreeDeletions.has(folder.path))
                 : folders,
             loadError: undefined,
+            repoModalOpen: false,
+            repoPath: '',
+            repoAiCmd: '',
+            repoGlobalAiCmd: '',
+            repoSubmitting: false,
         });
         const newFolder = folders.find((folder) => folder.path === path);
         if (newFolder) {
             notifyActivated(activationTargetFor(newFolder, folders).path);
         }
     } catch (error: unknown) {
+        updateState({
+            repoSubmitting: false,
+        });
         showError(updateState, error);
     }
 }
@@ -987,40 +1273,60 @@ async function confirmRemoveRepo(
             repos: config.repos.filter((repo) => repo.path !== repoPath),
             hiddenAiPane: config.hiddenAiPane.filter((path) => path !== repoPath),
         });
-        await refresh(
-            {
-                folders: [],
-                pollHandle: undefined,
-                loadError: undefined,
-                openMenuKey: undefined,
-                sidebarGrouping: undefined,
-            },
-            updateState,
-        );
+        await refresh(updateState);
     } catch (error: unknown) {
         showError(updateState, error);
     }
 }
 
-async function promptAddWorktree(
-    repoPath: string,
-    updateState: SidebarUpdate,
-    onActivate: (folder: string) => void,
-): Promise<void> {
-    const name = window.prompt(`Name for new worktree under ${repoPath}:`);
-    if (!name) {
+async function openAddWorktreeModal(repoPath: string, updateState: SidebarUpdate): Promise<void> {
+    try {
+        const config = await getConfig();
+        updateState({
+            worktreeModalRepoPath: repoPath,
+            worktreeName: '',
+            worktreeAiCmd: '',
+            worktreeGlobalAiCmd: config.aiCmd,
+            worktreeSubmitting: false,
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+async function submitAddWorktree({
+    state,
+    updateState,
+    onActivate,
+}: Readonly<{
+    state: SidebarState;
+    updateState: SidebarUpdate;
+    onActivate: (folder: string) => void;
+}>): Promise<void> {
+    const repoPath = state.worktreeModalRepoPath;
+    const trimmedName = state.worktreeName.trim();
+    if (!repoPath || !trimmedName || state.worktreeSubmitting) {
         return;
     }
-    const trimmedName = name.trim();
+    const aiCmd = state.worktreeAiCmd.trim();
     try {
+        updateState({
+            worktreeSubmitting: true,
+        });
         await createWorktree({
             repoPath,
             name: trimmedName,
+            aiCmd: aiCmd && aiCmd !== state.worktreeGlobalAiCmd ? aiCmd : undefined,
         });
         const folders = await getFolders();
         updateState({
             folders,
             loadError: undefined,
+            worktreeModalRepoPath: undefined,
+            worktreeName: '',
+            worktreeAiCmd: '',
+            worktreeGlobalAiCmd: '',
+            worktreeSubmitting: false,
         });
         const newWorktree = folders.find(
             (folder) => folder.parentRepoPath === repoPath && folder.name === trimmedName,
@@ -1029,6 +1335,9 @@ async function promptAddWorktree(
             onActivate(newWorktree.path);
         }
     } catch (error: unknown) {
+        updateState({
+            worktreeSubmitting: false,
+        });
         showError(updateState, error);
     }
 }
@@ -1062,16 +1371,7 @@ async function confirmDeleteWorktree(
         showError(updateState, error);
     } finally {
         pendingWorktreeDeletions.delete(worktreePath);
-        await refresh(
-            {
-                folders: [],
-                pollHandle: undefined,
-                loadError: undefined,
-                openMenuKey: undefined,
-                sidebarGrouping: undefined,
-            },
-            updateState,
-        );
+        await refresh(updateState);
     }
 }
 
@@ -1088,16 +1388,7 @@ async function toggleAiHidden(folderPath: string, updateState: SidebarUpdate): P
                       folderPath,
                   ],
         });
-        await refresh(
-            {
-                folders: [],
-                pollHandle: undefined,
-                loadError: undefined,
-                openMenuKey: undefined,
-                sidebarGrouping: undefined,
-            },
-            updateState,
-        );
+        await refresh(updateState);
     } catch (error: unknown) {
         showError(updateState, error);
     }

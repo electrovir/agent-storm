@@ -67,7 +67,6 @@ export async function restartPane(
         folder: string;
         kind: PaneKind;
         aiCmd?: string | undefined;
-        forceShell?: boolean | undefined;
     }>,
 ): Promise<void> {
     await singleShot<SimpleResponse>({
@@ -75,7 +74,6 @@ export async function restartPane(
         folder: params.folder,
         kind: params.kind,
         aiCmd: params.aiCmd,
-        forceShell: params.forceShell,
     });
 }
 

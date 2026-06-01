@@ -87,7 +87,11 @@ export async function getFolders(): Promise<FolderInfo[]> {
 }
 
 export async function createWorktree(
-    params: Readonly<{repoPath: string; name: string}>,
+    params: Readonly<{
+        repoPath: string;
+        name: string;
+        aiCmd?: string | undefined;
+    }>,
 ): Promise<void> {
     const options = await authOptions();
     await callApi(
@@ -117,17 +121,6 @@ export async function restartPane(
     await callApi(
         'POST /panes/restart',
         fetchEndpoint(agentStormService.endpoints['/panes/restart'], {
-            ...options,
-            requestData: params,
-        }),
-    );
-}
-
-export async function exitAiPaneToShell(params: Readonly<{folder: string}>): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /panes/exit-ai',
-        fetchEndpoint(agentStormService.endpoints['/panes/exit-ai'], {
             ...options,
             requestData: params,
         }),

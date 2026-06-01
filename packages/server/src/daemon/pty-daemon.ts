@@ -132,7 +132,6 @@ const server = createServer((socket) => {
                 folder: handshake.folder,
                 kind: handshake.kind,
                 aiCmd: handshake.aiCmd,
-                forceShell: handshake.forceShell,
             });
             const response: SimpleResponse = {
                 ok: true,

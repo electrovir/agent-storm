@@ -1,4 +1,5 @@
 import {type Config, defaultConfig} from '@agent-storm/common';
+import {type ArrayElement} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {configPath} from './file-paths.js';
@@ -11,8 +12,66 @@ function normalizeConfig(config: Readonly<Config>): Config {
             ...repo,
             path: normalizePath(repo.path),
         })),
+        folderAiCmds: config.folderAiCmds
+            .filter((entry) => entry.aiCmd.trim())
+            .map((entry) => ({
+                folder: normalizePath(entry.folder),
+                aiCmd: entry.aiCmd.trim(),
+            })),
         hiddenAiPane: config.hiddenAiPane.map((path) => normalizePath(path)),
     };
+}
+
+export function getFolderAiCmd({
+    config,
+    folder,
+    fallbackFolders = [],
+}: Readonly<{
+    config: Config;
+    folder: string;
+    fallbackFolders?: ReadonlyArray<string> | undefined;
+}>): string {
+    const folderCandidates = [
+        normalizePath(folder),
+        ...fallbackFolders.map((fallbackFolder) => normalizePath(fallbackFolder)),
+    ];
+    const matchingOverride = folderCandidates.reduce<
+        ArrayElement<typeof config.folderAiCmds> | undefined
+    >(
+        (found, candidate) =>
+            found || config.folderAiCmds.find((entry) => entry.folder === candidate),
+        undefined,
+    );
+    return matchingOverride?.aiCmd || config.aiCmd;
+}
+
+export function setFolderAiCmd({
+    config,
+    folder,
+    aiCmd,
+}: Readonly<{
+    config: Config;
+    folder: string;
+    aiCmd: string;
+}>): Config {
+    const normalizedFolder = normalizePath(folder);
+    const trimmedAiCmd = aiCmd.trim();
+    const otherFolderAiCmds = config.folderAiCmds.filter(
+        (entry) => entry.folder !== normalizedFolder,
+    );
+    return normalizeConfig({
+        ...config,
+        folderAiCmds:
+            trimmedAiCmd && trimmedAiCmd !== config.aiCmd
+                ? [
+                      ...otherFolderAiCmds,
+                      {
+                          folder: normalizedFolder,
+                          aiCmd: trimmedAiCmd,
+                      },
+                  ]
+                : otherFolderAiCmds,
+    });
 }
 
 export async function loadConfig(): Promise<Config> {
@@ -26,6 +85,7 @@ export async function loadConfig(): Promise<Config> {
         ...defaultConfig,
         ...parsed,
         repos: parsed.repos || defaultConfig.repos,
+        folderAiCmds: parsed.folderAiCmds || defaultConfig.folderAiCmds,
         hiddenAiPane: parsed.hiddenAiPane || defaultConfig.hiddenAiPane,
     };
     return normalizeConfig(merged);
