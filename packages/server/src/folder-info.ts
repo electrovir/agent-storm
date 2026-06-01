@@ -9,7 +9,7 @@ import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
-import {loadConfig, saveConfig} from './config.js';
+import {getFolderAiCmd, loadConfig, saveConfig} from './config.js';
 import {folderInfoCachePath, githubCachePath, notCommittedDir} from './file-paths.js';
 import {
     fetchRepoPrs,
@@ -185,7 +185,7 @@ function isUserPollingDisabled(): boolean {
 }
 
 function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
-    return !!config.disabledGitHubPolling || isAutoDisabled();
+    return config.disabledGitHubPolling || isAutoDisabled();
 }
 
 async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
@@ -270,6 +270,7 @@ type RefreshTarget = {
     parentRepoPath: string | null;
     isWorktreeRoot: boolean;
     aiHidden: boolean;
+    aiCmd: string;
 };
 
 async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget[]> {
@@ -283,6 +284,10 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         parentRepoPath: null,
                         isWorktreeRoot: false,
                         aiHidden: config.hiddenAiPane.includes(repo.path),
+                        aiCmd: getFolderAiCmd({
+                            config,
+                            folder: repo.path,
+                        }),
                     },
                 ];
             }
@@ -293,6 +298,10 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                     parentRepoPath: null,
                     isWorktreeRoot: true,
                     aiHidden: false,
+                    aiCmd: getFolderAiCmd({
+                        config,
+                        folder: repo.path,
+                    }),
                 },
                 ...children.map(
                     (child): RefreshTarget => ({
@@ -300,6 +309,11 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         parentRepoPath: repo.path,
                         isWorktreeRoot: false,
                         aiHidden: config.hiddenAiPane.includes(child),
+                        aiCmd: getFolderAiCmd({
+                            config,
+                            folder: child,
+                            fallbackFolders: [repo.path],
+                        }),
                     }),
                 ),
             ];
@@ -330,6 +344,7 @@ async function buildFolderInfo({
         parentRepoPath: target.parentRepoPath,
         isWorktreeRoot: target.isWorktreeRoot,
         aiHidden: target.aiHidden,
+        aiCmd: target.aiCmd,
         branch: git.branch,
         git: {
             dirty: git.dirty,
@@ -379,6 +394,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         parentRepoPath: target.parentRepoPath,
         isWorktreeRoot: target.isWorktreeRoot,
         aiHidden: target.aiHidden,
+        aiCmd: target.aiCmd,
         branch: null,
         git: {
             dirty: false,
@@ -461,7 +477,10 @@ async function loadPersistedCache(): Promise<void> {
     try {
         const parsed = JSON.parse(contents) as PersistedCache;
         if (Array.isArray(parsed.targets) && Array.isArray(parsed.entries)) {
-            refreshState.targets = parsed.targets;
+            refreshState.targets = parsed.targets.map((target) => ({
+                ...target,
+                aiCmd: typeof target.aiCmd === 'string' ? target.aiCmd : '',
+            }));
             /**
              * Validate each entry against the current shape so a schema change (renamed/added
              * field) doesn't poison the `/folders` response with stale objects. Invalid entries are

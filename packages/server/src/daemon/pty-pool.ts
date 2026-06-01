@@ -19,13 +19,12 @@ const fallbackAiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
  * Build the argv for a fresh PTY. AI pane runs through a login + interactive shell so `.zprofile` /
  * `.zshrc` get sourced (those are where managed-Claude installers usually inject their PATH lines).
  * When the AI command exits the wrapper shell terminates with it — the pane lands in `Exited` state
- * so the user can read whatever Claude printed (especially its end-of-session summary) without it
- * being clobbered by a new shell prompt. Restart via the row's menu when ready to start a fresh
- * session.
+ * so the user can read whatever the AI command printed without it being clobbered by a new shell
+ * prompt. Restart via the row's menu when ready to start a fresh session.
  */
-function buildPaneCommand(kind: PaneKind, aiCmd: string, commandMode: PaneCommandMode): string[] {
+function buildPaneCommand(kind: PaneKind, aiCmd: string): string[] {
     const shell = process.env.SHELL || '/bin/bash';
-    if (kind === PaneKind.Ai && commandMode === 'ai') {
+    if (kind === PaneKind.Ai) {
         return [
             shell,
             '-lic',
@@ -53,12 +52,9 @@ type Subscriber = {
     size: PaneSize | undefined;
 };
 
-type PaneCommandMode = 'ai' | 'shell';
-
 type PaneEntry = {
     pty: IPty | undefined;
     spawnGeneration: number;
-    commandMode: PaneCommandMode;
     lastOutputAt: number;
     exitCode: number | undefined;
     subscribers: Set<Subscriber>;
@@ -107,7 +103,6 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
     const entry: PaneEntry = {
         pty: undefined,
         spawnGeneration: 0,
-        commandMode: kind === PaneKind.Ai ? 'ai' : 'shell',
         lastOutputAt: 0,
         exitCode: undefined,
         subscribers: new Set(),
@@ -169,7 +164,7 @@ function startPty(folder: string, kind: PaneKind, entry: PaneEntry, aiCmd: strin
     const [
         command,
         ...args
-    ] = buildPaneCommand(kind, aiCmd, entry.commandMode);
+    ] = buildPaneCommand(kind, aiCmd);
     if (!command) {
         return;
     }
@@ -298,16 +293,13 @@ export function restartPane({
     folder,
     kind,
     aiCmd,
-    forceShell,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     aiCmd?: string | undefined;
-    forceShell?: boolean | undefined;
 }>): void {
     const entry = ensureEntry(folder, kind);
     entry.pty?.kill();
-    entry.commandMode = kind === PaneKind.Ai && !forceShell ? 'ai' : 'shell';
     entry.pty = undefined;
     entry.exitCode = undefined;
     clearScrollback(entry);

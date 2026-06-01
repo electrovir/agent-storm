@@ -96,6 +96,30 @@ export const configJsonSchema = {
                 ],
             },
         },
+        folderAiCmds: {
+            type: 'array',
+            default: [],
+            title: 'Folder AI command overrides',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                title: 'Folder AI command override',
+                properties: {
+                    folder: {
+                        type: 'string',
+                        title: 'Folder',
+                    },
+                    aiCmd: {
+                        type: 'string',
+                        title: 'AI command',
+                    },
+                },
+                required: [
+                    'folder',
+                    'aiCmd',
+                ],
+            },
+        },
         hiddenAiPane: {
             type: 'array',
             default: [],
@@ -163,6 +187,7 @@ export const configJsonSchema = {
         'aiCmd',
         'postWorktreeCmd',
         'repos',
+        'folderAiCmds',
         'hiddenAiPane',
         'disabledGitHubPolling',
         'githubPollingAutoDisable',
@@ -180,6 +205,7 @@ export const folderInfoShape = defineShape({
     parentRepoPath: nullableShape(''),
     isWorktreeRoot: false,
     aiHidden: false,
+    aiCmd: '',
     branch: nullableShape(''),
     git: {
         dirty: false,
@@ -209,6 +235,7 @@ const paneActionRequestShape = defineShape({
 const createWorktreeRequestShape = defineShape({
     repoPath: '',
     name: '',
+    aiCmd: nullableShape(''),
 });
 
 const deleteWorktreeRequestShape = defineShape({
@@ -283,13 +310,6 @@ export const agentStormService = defineService({
                 [HttpMethod.Post]: true,
             },
             requestDataShape: paneActionRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        '/panes/exit-ai': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: folderActionRequestShape,
             responseDataShape: okResponseShape,
         },
         '/panes/kill': {

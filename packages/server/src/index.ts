@@ -1,4 +1,5 @@
 import {agentStormService, PaneKind} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {HttpMethod, log} from '@augment-vir/common';
 import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/implement-service';
 import {attachService} from '@rest-vir/run-service';
@@ -7,7 +8,7 @@ import {appendFileSync, writeFileSync} from 'node:fs';
 import {mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
-import {loadConfig, saveConfig} from './config.js';
+import {getFolderAiCmd, loadConfig, saveConfig, setFolderAiCmd} from './config.js';
 import {
     attachPane,
     killFolderPanes,
@@ -19,7 +20,7 @@ import {
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
-import {addWorktree, removeWorktree} from './git.js';
+import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
 import {normalizePath} from './paths.js';
 import {saveUpload} from './uploads.js';
 import {attachVscodeProxy} from './vscode-proxy.js';
@@ -148,6 +149,24 @@ async function runPostWorktreeCmd({
     attachment.close();
 }
 
+async function resolveAiCmdForFolder(folder: string): Promise<string | undefined> {
+    const config = await loadConfig().catch(() => undefined);
+    if (!config) {
+        return undefined;
+    }
+    const parentRepoMatches = await Promise.all(
+        config.repos.map(async (repo) => {
+            const children = await listWorktreeChildren(repo.path);
+            return children.includes(folder) ? repo.path : undefined;
+        }),
+    );
+    return getFolderAiCmd({
+        config,
+        folder,
+        fallbackFolders: parentRepoMatches.filter(check.isTruthy),
+    });
+}
+
 const implementation = implementService({
     service: agentStormService,
     customHeaders: ['Authorization'],
@@ -217,6 +236,17 @@ const implementation = implementService({
         },
         async '/worktrees/create'({requestData}) {
             const {worktreePath} = await addWorktree(requestData);
+            const aiCmd = requestData.aiCmd?.trim();
+            if (aiCmd) {
+                const config = await loadConfig();
+                await saveConfig(
+                    setFolderAiCmd({
+                        config,
+                        folder: worktreePath,
+                        aiCmd,
+                    }),
+                );
+            }
             await refreshFolderInfoNow();
             await runPostWorktreeCmd({
                 repoPath: requestData.repoPath,
@@ -253,23 +283,9 @@ const implementation = implementService({
              * AI command (the daemon caches nothing about config — every fresh spawn uses whatever
              * the backend hands it).
              */
-            const config = await loadConfig().catch(() => undefined);
             await restartPane({
                 ...requestData,
-                aiCmd: config?.aiCmd,
-            });
-            return {
-                statusCode: HttpStatus.Ok,
-                responseData: {
-                    ok: true,
-                },
-            };
-        },
-        async '/panes/exit-ai'({requestData}) {
-            await restartPane({
-                folder: requestData.folder,
-                kind: PaneKind.Ai,
-                forceShell: true,
+                aiCmd: await resolveAiCmdForFolder(requestData.folder),
             });
             return {
                 statusCode: HttpStatus.Ok,
@@ -359,11 +375,10 @@ const implementation = implementService({
                  * uses whatever the user has set. Failure is non-fatal — the daemon falls back to
                  * its built-in default (`claude`).
                  */
-                const config = await loadConfig().catch(() => undefined);
                 const attachment = await attachPane({
                     folder,
                     kind,
-                    aiCmd: config?.aiCmd,
+                    aiCmd: await resolveAiCmdForFolder(folder),
                     onData(data) {
                         webSocket.send(data);
                     },

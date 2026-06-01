@@ -5,7 +5,7 @@ import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {attachPane, killFolderPanes, restartPane, writeToPane} from './pty-pool.js';
+import {attachPane, killFolderPanes, restartPane} from './pty-pool.js';
 
 function persistentAiCommand(label: string): string {
     return String.raw`printf '${label}\n'; while true; do sleep 1; done`;
@@ -121,102 +121,6 @@ describe(restartPane.name, () => {
                         seconds: 3,
                     },
                 });
-            } finally {
-                attachment.detach();
-                killFolderPanes({
-                    folder,
-                });
-            }
-        } finally {
-            await rm(folder, {
-                recursive: true,
-                force: true,
-            });
-        }
-    });
-
-    it('can restart the AI pane as a regular shell', async () => {
-        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
-        try {
-            const output: string[] = [];
-            const attachment = attachPane({
-                folder,
-                kind: PaneKind.Ai,
-                aiCmd: persistentAiCommand('before-shell'),
-                onData(data) {
-                    output.push(data);
-                },
-                onExit() {},
-            });
-
-            try {
-                await waitUntil(() => output.join('').includes('before-shell'), {
-                    interval: {
-                        milliseconds: 20,
-                    },
-                    timeout: {
-                        seconds: 3,
-                    },
-                });
-
-                restartPane({
-                    folder,
-                    kind: PaneKind.Ai,
-                    forceShell: true,
-                });
-                writeToPane({
-                    folder,
-                    kind: PaneKind.Ai,
-                    data: "printf 'shell-ready\\n'\n",
-                });
-
-                await waitUntil(() => output.join('').includes('shell-ready'), {
-                    interval: {
-                        milliseconds: 20,
-                    },
-                    timeout: {
-                        seconds: 3,
-                    },
-                });
-
-                writeToPane({
-                    folder,
-                    kind: PaneKind.Ai,
-                    data: 'exit\n',
-                });
-                await wait({
-                    milliseconds: 200,
-                });
-
-                const secondAttachment = attachPane({
-                    folder,
-                    kind: PaneKind.Ai,
-                    aiCmd: persistentAiCommand('should-not-start'),
-                    onData(data) {
-                        output.push(data);
-                    },
-                    onExit() {},
-                });
-
-                try {
-                    writeToPane({
-                        folder,
-                        kind: PaneKind.Ai,
-                        data: "printf 'shell-ready-again\\n'\n",
-                    });
-
-                    await waitUntil(() => output.join('').includes('shell-ready-again'), {
-                        interval: {
-                            milliseconds: 20,
-                        },
-                        timeout: {
-                            seconds: 3,
-                        },
-                    });
-                    assert.isFalse(output.join('').includes('should-not-start'));
-                } finally {
-                    secondAttachment.detach();
-                }
             } finally {
                 attachment.detach();
                 killFolderPanes({
