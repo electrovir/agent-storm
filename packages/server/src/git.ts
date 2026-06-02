@@ -1,6 +1,6 @@
-import {log} from '@augment-vir/common';
+import {log, wait} from '@augment-vir/common';
 import {execFile} from 'node:child_process';
-import {lstat, readdir, stat} from 'node:fs/promises';
+import {lstat, readdir, rm, stat} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
 import {promisify} from 'node:util';
 
@@ -157,24 +157,82 @@ export async function addWorktree({
 export async function removeWorktree({
     worktreePath,
 }: Readonly<{worktreePath: string}>): Promise<void> {
-    const parent = join(worktreePath, '..');
+    const parent = dirname(worktreePath);
     const children = await listWorktreeChildren(parent);
     const sibling = children.find((path) => path !== worktreePath);
     if (!sibling) {
         throw new Error(`Refusing to remove last worktree at ${worktreePath}.`);
     }
+    await runRemoveWorktree({
+        cwd: sibling,
+        worktreePath,
+    });
+    await rm(worktreePath, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 250,
+    });
     await exec(
         'git',
         [
             'worktree',
-            'remove',
-            worktreePath,
-            '--force',
+            'prune',
         ],
         {
             cwd: sibling,
         },
-    );
+    ).catch(() => undefined);
+}
+
+async function runRemoveWorktree({
+    cwd,
+    worktreePath,
+}: Readonly<{
+    cwd: string;
+    worktreePath: string;
+}>): Promise<void> {
+    const firstError = await exec(
+        'git',
+        [
+            'worktree',
+            'remove',
+            '--force',
+            worktreePath,
+        ],
+        {
+            cwd,
+        },
+    )
+        .then(() => undefined)
+        .catch((error: unknown) => error);
+
+    if (!firstError) {
+        return;
+    }
+    await wait({
+        milliseconds: 250,
+    });
+
+    const secondError = await exec(
+        'git',
+        [
+            'worktree',
+            'remove',
+            '--force',
+            '--force',
+            worktreePath,
+        ],
+        {
+            cwd,
+        },
+    )
+        .then(() => undefined)
+        .catch((error: unknown) => error);
+
+    if (!secondError) {
+        return;
+    }
 }
 
 let cachedGhAvailable: boolean | undefined;
