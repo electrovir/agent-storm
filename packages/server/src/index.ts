@@ -1,6 +1,6 @@
 import {agentStormService, PaneKind} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {HttpMethod, log} from '@augment-vir/common';
+import {HttpMethod, log, wait} from '@augment-vir/common';
 import {HttpStatus, implementService, silentServiceLogger} from '@rest-vir/implement-service';
 import {attachService} from '@rest-vir/run-service';
 import fastify from 'fastify';
@@ -262,11 +262,16 @@ const implementation = implementService({
         async '/worktrees/delete'({requestData}) {
             await killFolderPanes({
                 folder: requestData.worktreePath,
+            }).catch(() => {
+                /* if the daemon has no live panes for this folder, continue with deletion */
             });
             await killVscode({
                 folder: requestData.worktreePath,
             }).catch(() => {
                 /* if no vscode was running for this folder, killVscode is a no-op */
+            });
+            await wait({
+                milliseconds: 250,
             });
             await removeWorktree(requestData);
             await refreshFolderInfoNow();
