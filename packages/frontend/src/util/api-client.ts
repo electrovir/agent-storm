@@ -114,6 +114,17 @@ export async function deleteWorktree(params: Readonly<{worktreePath: string}>): 
     );
 }
 
+export async function touchRepo(params: Readonly<{folder: string}>): Promise<void> {
+    const options = await authOptions();
+    await callApi(
+        'POST /repos/touch',
+        fetchEndpoint(agentStormService.endpoints['/repos/touch'], {
+            ...options,
+            requestData: params,
+        }),
+    );
+}
+
 export async function restartPane(
     params: Readonly<{folder: string; kind: PaneKind}>,
 ): Promise<void> {

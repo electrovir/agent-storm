@@ -89,6 +89,19 @@ export const configJsonSchema = {
                         ],
                         title: 'Post-worktree command (overrides global)',
                     },
+                    /**
+                     * Milliseconds since epoch when the user last activated this repo (or any of
+                     * its worktrees). Optional — older configs without it just won't appear in any
+                     * "recently used" sort until the first activation writes the timestamp. Not in
+                     * `required` for forward/backward compat: dropping the field never invalidates
+                     * an existing config.
+                     */
+                    lastInteractedAtMs: {
+                        type: 'number',
+                        title: 'Last interaction (ms since epoch)',
+                        description:
+                            'Auto-updated when the user activates this repo or one of its worktrees in the sidebar.',
+                    },
                 },
                 required: [
                     'path',
@@ -271,6 +284,15 @@ const pathCreateResponseShape = defineShape({
     resolvedPath: '',
 });
 
+const repoTouchRequestShape = defineShape({
+    /**
+     * Path of the activated folder. Can be a top-level repo path OR a worktree path — the backend
+     * resolves to the owning repo before stamping its `lastInteractedAtMs`. Folders not present in
+     * config (e.g. stale paths, freshly-deleted worktrees) are silently no-op'd.
+     */
+    folder: '',
+});
+
 export const agentStormService = defineService({
     serviceName: 'agent-storm',
     serviceOrigin: `http://localhost:${port}`,
@@ -324,6 +346,13 @@ export const agentStormService = defineService({
                 [HttpMethod.Post]: true,
             },
             requestDataShape: undefined,
+            responseDataShape: okResponseShape,
+        },
+        '/repos/touch': {
+            methods: {
+                [HttpMethod.Post]: true,
+            },
+            requestDataShape: repoTouchRequestShape,
             responseDataShape: okResponseShape,
         },
         '/paths/check': {

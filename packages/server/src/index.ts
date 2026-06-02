@@ -368,6 +368,41 @@ const implementation = implementService({
                 },
             };
         },
+        async '/repos/touch'({requestData}) {
+            /**
+             * Stamp `lastInteractedAtMs` on the owning repo's config entry. The given path may be
+             * a top-level repo OR a worktree under one; we look up the folder in the cache and use
+             * its `parentRepoPath` to resolve the repo. Unknown folders (stale paths, freshly-
+             * deleted worktrees, race against folder-info refresh) are no-ops — never error, this
+             * is best-effort metadata.
+             */
+            const target = normalizePath(requestData.folder);
+            const cached = await getCachedFolders();
+            const folder = cached.find((entry) => entry.path === target);
+            const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
+            const config = await loadConfig();
+            const repoIndex = config.repos.findIndex((repo) => repo.path === repoPath);
+            if (repoIndex !== -1) {
+                const updatedRepos = config.repos.map((repo, index) =>
+                    index === repoIndex
+                        ? {
+                              ...repo,
+                              lastInteractedAtMs: Date.now(),
+                          }
+                        : repo,
+                );
+                await saveConfig({
+                    ...config,
+                    repos: updatedRepos,
+                });
+            }
+            return {
+                statusCode: HttpStatus.Ok,
+                responseData: {
+                    ok: true,
+                },
+            };
+        },
     },
     webSockets: {
         '/pty': {

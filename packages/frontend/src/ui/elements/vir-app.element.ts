@@ -10,7 +10,7 @@ import {
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
-import {getFolders} from '../../util/api-client.js';
+import {getFolders, touchRepo} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {
     defaultFrontendTab,
@@ -546,6 +546,15 @@ export const VirApp = defineElement()({
                     ],
                 });
             }
+            /**
+             * Stamp the activated folder's owning repo with a fresh `lastInteractedAtMs` for
+             * future "recently used" sorts. Best-effort: backend resolves worktrees to their
+             * parent repo, and silently no-ops if the path isn't in config (e.g. stale folder).
+             * Fire-and-forget — never block route navigation on this.
+             */
+            void touchRepo({folder: folderPath}).catch(() => {
+                /* metadata write only — surface errors elsewhere if at all */
+            });
             if (state.mobileSidebarOpen) {
                 updateState({
                     mobileSidebarOpen: false,
