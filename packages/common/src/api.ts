@@ -195,6 +195,21 @@ export const configJsonSchema = {
             description:
                 'How the sidebar arranges folders. "repo" keeps the existing layout (worktrees nested under their repo root); "status" regroups folders by their AI pane status. Selectable from the filter icon next to the Add button in the sidebar as well.',
         },
+        /**
+         * When on, the sidebar hides standalone repos that haven't been activated within the last 7
+         * days (and have no running panes). Worktree-roots and their children are always shown
+         * regardless of recency. Toggled from the filter icon's dropdown in the sidebar.
+         *
+         * Intentionally absent from `required` so older configs without the field load fine — a
+         * missing value reads as `undefined` which is falsy, matching the `false` default.
+         */
+        onlyShowRecent: {
+            type: 'boolean',
+            default: false,
+            title: 'Hide inactive repos',
+            description:
+                'When on, hide standalone repos with no activity in the last 7 days (and no running panes). Worktrees are always shown.',
+        },
     },
     required: [
         'aiCmd',

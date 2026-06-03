@@ -316,7 +316,7 @@ export const VirTerminal = defineElement<{
                          * structural delimiters like path separators, comparison ops, backticks,
                          * and hashes, while keeping dotted filenames together.
                          */
-                        wordSeparator: ' \t\n()[]{}\'",:;/\\<>`=-#',
+                        wordSeparator: ' \t\n()[]{}\'",:;/\\<>`=-#*',
                     });
                     const fitAddon = new FitAddon();
                     terminal.loadAddon(fitAddon);

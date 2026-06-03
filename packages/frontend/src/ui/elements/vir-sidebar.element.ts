@@ -1,7 +1,20 @@
-import {type FolderInfo, PaneKind, PaneStatus, SidebarGrouping} from '@agent-storm/common';
+import {
+    type FolderInfo,
+    PaneKind,
+    PaneStatus,
+    type RepoConfig,
+    SidebarGrouping,
+} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {log} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
+import {
+    type AnyDuration,
+    calculateRelativeDate,
+    createUtcFullDate,
+    getNowInUtcTimezone,
+    isDateAfter,
+} from 'date-vir';
 import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
 import {parseUrl} from 'url-vir';
 import {
@@ -84,6 +97,18 @@ type SidebarState = {
      * write back into config). `undefined` while we haven't loaded config yet.
      */
     sidebarGrouping: SidebarGrouping | undefined;
+    /**
+     * Mirrors `config.onlyShowRecent`. When true the sidebar hides standalone repos that lack
+     * recent activity AND have no running panes; worktree-roots and their children are always
+     * shown. `undefined` while config hasn't loaded yet, which renders the same as `false`.
+     */
+    onlyShowRecent: boolean | undefined;
+    /**
+     * Mirrors `config.repos`. Needed for the hide-inactive filter so we can look up each repo's
+     * `lastInteractedAtMs` against the 7-day cutoff. Kept in lockstep with the folders list via
+     * `refresh()`.
+     */
+    repos: ReadonlyArray<RepoConfig>;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -137,6 +162,8 @@ export const VirSidebar = defineElement<{
             worktreeGlobalAiCmd: '',
             worktreeSubmitting: false,
             sidebarGrouping: undefined,
+            onlyShowRecent: undefined,
+            repos: [],
         };
     },
     styles: css`
@@ -404,14 +431,22 @@ export const VirSidebar = defineElement<{
             host.removeAttribute('data-mobile-modal');
         }
 
-        const standaloneFolders = state.folders
+        /**
+         * Apply the hide-inactive filter once up front. Both the standalone list and the worktree
+         * roots iterate the same pre-filtered array so a hidden repo's children disappear with it,
+         * and the empty-state message below uses the filtered count to stay accurate.
+         */
+        const visibleFolders = state.onlyShowRecent
+            ? filterByRecency(state.folders, state.repos)
+            : state.folders;
+        const standaloneFolders = visibleFolders
             .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
             .toSorted((a, b) =>
                 a.name.localeCompare(b.name, undefined, {
                     sensitivity: 'base',
                 }),
             );
-        const worktreeRoots = state.folders.filter((folder) => folder.isWorktreeRoot);
+        const worktreeRoots = visibleFolders.filter((folder) => folder.isWorktreeRoot);
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
          * filter against the freshest snapshot without having to ask for a re-read.
@@ -501,10 +536,14 @@ export const VirSidebar = defineElement<{
                             color: ViraColorVariant.Neutral,
                         })}
                             slot=${ViraMenuTrigger.slotNames.trigger}
-                            title="Group sidebar by…"
+                            title="Filter & group sidebar"
                         ></${ViraButton}>
                         ${renderMenuItemEntries(
-                            buildGroupingMenuEntries(state.sidebarGrouping, updateState),
+                            buildFilterMenuEntries({
+                                sidebarGrouping: state.sidebarGrouping,
+                                onlyShowRecent: state.onlyShowRecent,
+                                updateState,
+                            }),
                         )}
                     </${ViraMenuTrigger}>
                     <${ViraButton.assign({
@@ -523,9 +562,13 @@ export const VirSidebar = defineElement<{
                   `
                 : ''}
             <div class="list">
-                ${state.folders.length === 0 && !state.loadError
+                ${visibleFolders.length === 0 && !state.loadError
                     ? html`
-                          <div class="empty">No repos configured. Click + to add one.</div>
+                          <div class="empty">
+                              ${state.folders.length === 0
+                                  ? 'No repos configured. Click + to add one.'
+                                  : 'No recently active repos. Toggle Hide Inactive to show all.'}
+                          </div>
                       `
                     : ''}
                 ${standaloneFolders.map((folder) =>
@@ -876,11 +919,16 @@ function isValidPrUrl(url: string | null | undefined): boolean {
     }
 }
 
-function buildGroupingMenuEntries(
-    current: SidebarGrouping | undefined,
-    updateState: SidebarUpdate,
-): ReadonlyArray<ViraMenuItemEntry> {
-    return [
+function buildFilterMenuEntries({
+    sidebarGrouping,
+    onlyShowRecent,
+    updateState,
+}: Readonly<{
+    sidebarGrouping: SidebarGrouping | undefined;
+    onlyShowRecent: boolean | undefined;
+    updateState: SidebarUpdate;
+}>): ReadonlyArray<ViraMenuItemEntry> {
+    const groupingEntries: ReadonlyArray<ViraMenuItemEntry> = [
         SidebarGrouping.Repo,
         SidebarGrouping.Status,
     ].map((grouping) => ({
@@ -890,14 +938,28 @@ function buildGroupingMenuEntries(
          * the menu's per-item icon slot — leaving it undefined leaves blank space, which keeps the
          * labels visually aligned across rows.
          */
-        iconOverride: current === grouping ? lucideIcons.Check : undefined,
+        iconOverride: sidebarGrouping === grouping ? lucideIcons.Check : undefined,
         onClick: () => {
-            if (current === grouping) {
+            if (sidebarGrouping === grouping) {
                 return;
             }
             void setSidebarGrouping(grouping, updateState);
         },
     }));
+    return [
+        ...groupingEntries,
+        {
+            content: 'Hide Inactive',
+            /**
+             * Click toggles the persisted `onlyShowRecent` flag. A check icon shows the current
+             * state — the user can flip it off the same way they turned it on.
+             */
+            iconOverride: onlyShowRecent ? lucideIcons.Check : undefined,
+            onClick: () => {
+                void toggleHideInactive(!onlyShowRecent, updateState);
+            },
+        },
+    ];
 }
 
 function buildRowMenuEntries(
@@ -1041,6 +1103,8 @@ async function refresh(updateState: SidebarUpdate): Promise<void> {
                 : folders,
             loadError: undefined,
             sidebarGrouping: config.sidebarGrouping,
+            onlyShowRecent: config.onlyShowRecent,
+            repos: config.repos,
         });
     } catch (error: unknown) {
         updateState({
@@ -1065,6 +1129,70 @@ async function setSidebarGrouping(
     } catch (error: unknown) {
         showError(updateState, error);
     }
+}
+
+async function toggleHideInactive(nextValue: boolean, updateState: SidebarUpdate): Promise<void> {
+    try {
+        const config = await getConfig();
+        await putConfig({
+            ...config,
+            onlyShowRecent: nextValue,
+        });
+        updateState({
+            onlyShowRecent: nextValue,
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+/**
+ * Window for "recent" activity used by the hide-inactive filter. Anything older than this (or
+ * missing a timestamp entirely) counts as inactive when `onlyShowRecent` is on. Standalone repos
+ * with no recent timestamp can still appear if they have a running AI/shell pane.
+ */
+const recencyWindow: AnyDuration = {
+    days: -7,
+};
+
+function isPaneRunning(status: PaneStatus): boolean {
+    return status === PaneStatus.Busy || status === PaneStatus.Idle;
+}
+
+/**
+ * Filters folders according to the "Hide Inactive" rule:
+ *
+ * - Worktree-roots and their children are always shown (per the user's request — worktrees aren't
+ *   gated by recency).
+ * - Standalone repos are shown only if their `lastInteractedAtMs` is within the last 7 days OR they
+ *   currently have a running pane (Busy/Idle on AI or shell), so an actively-running but
+ *   never-touched repo still appears.
+ */
+function filterByRecency(
+    folders: ReadonlyArray<FolderInfo>,
+    repos: ReadonlyArray<RepoConfig>,
+): FolderInfo[] {
+    const cutoff = calculateRelativeDate(getNowInUtcTimezone(), recencyWindow);
+    const recentRepoPaths = new Set(
+        repos
+            .filter(
+                (repo) =>
+                    repo.lastInteractedAtMs != undefined &&
+                    isDateAfter({
+                        fullDate: createUtcFullDate(repo.lastInteractedAtMs),
+                        relativeTo: cutoff,
+                    }),
+            )
+            .map((repo) => repo.path),
+    );
+    return folders.filter(
+        (folder) =>
+            folder.isWorktreeRoot ||
+            !!folder.parentRepoPath ||
+            recentRepoPaths.has(folder.path) ||
+            isPaneRunning(folder.panes.ai) ||
+            isPaneRunning(folder.panes.shell),
+    );
 }
 
 async function promptReplaceAiCommand({

@@ -370,8 +370,8 @@ const implementation = implementService({
         },
         async '/repos/touch'({requestData}) {
             /**
-             * Stamp `lastInteractedAtMs` on the owning repo's config entry. The given path may be
-             * a top-level repo OR a worktree under one; we look up the folder in the cache and use
+             * Stamp `lastInteractedAtMs` on the owning repo's config entry. The given path may be a
+             * top-level repo OR a worktree under one; we look up the folder in the cache and use
              * its `parentRepoPath` to resolve the repo. Unknown folders (stale paths, freshly-
              * deleted worktrees, race against folder-info refresh) are no-ops — never error, this
              * is best-effort metadata.
