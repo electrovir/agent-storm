@@ -8,6 +8,7 @@ import {appendFileSync, writeFileSync} from 'node:fs';
 import {mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
+import {startConfigBackupLoop} from './config-backup.js';
 import {getFolderAiCmd, loadConfig, saveConfig, setFolderAiCmd} from './config.js';
 import {
     attachPane,
@@ -22,6 +23,7 @@ import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
 import {normalizePath} from './paths.js';
+import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
 import {attachVscodeProxy} from './vscode-proxy.js';
 
@@ -112,6 +114,8 @@ await ensureDaemon();
 
 await startFolderInfoRefreshLoop();
 
+startConfigBackupLoop();
+
 await initAuth();
 
 function extractBearerToken(header: string | string[] | undefined): string | undefined {
@@ -133,7 +137,17 @@ async function runPostWorktreeCmd({
     repoPath: string;
     worktreePath: string;
 }>): Promise<void> {
-    const config = await loadConfig();
+    /**
+     * Read-only use of config — `.catch(() => undefined)` so a transient load failure (file mid-
+     * write, etc.) skips the post-worktree cmd instead of throwing through the create endpoint.
+     * `loadConfig` now throws on read/parse failure rather than silently returning defaults, which
+     * means bare `await loadConfig()` would surface those errors here; the post-worktree cmd is
+     * optional, so swallowing is appropriate.
+     */
+    const config = await loadConfig().catch(() => undefined);
+    if (!config) {
+        return;
+    }
     const repoConfig = config.repos.find((repo) => repo.path === repoPath);
     const cmd = repoConfig?.postWorktreeCmd || config.postWorktreeCmd;
     if (!cmd) {
@@ -234,18 +248,33 @@ const implementation = implementService({
                 },
             };
         },
+        async '/update-check'() {
+            return {
+                statusCode: HttpStatus.Ok,
+                responseData: await getUpdateStatus(),
+            };
+        },
         async '/worktrees/create'({requestData}) {
             const {worktreePath} = await addWorktree(requestData);
             const aiCmd = requestData.aiCmd?.trim();
             if (aiCmd) {
-                const config = await loadConfig();
-                await saveConfig(
-                    setFolderAiCmd({
-                        config,
-                        folder: worktreePath,
-                        aiCmd,
-                    }),
-                );
+                /**
+                 * Best-effort AI-cmd override write: if `loadConfig` can't read the current file
+                 * (transient race, corruption, etc.), skip the save instead of falling back to a
+                 * defaults-merge that would erase the user's other settings. The worktree itself
+                 * has already been created above, so the user just loses the override — they can
+                 * set it from the row menu after the fact.
+                 */
+                const config = await loadConfig().catch(() => undefined);
+                if (config) {
+                    await saveConfig(
+                        setFolderAiCmd({
+                            config,
+                            folder: worktreePath,
+                            aiCmd,
+                        }),
+                    );
+                }
             }
             await refreshFolderInfoNow();
             await runPostWorktreeCmd({
@@ -375,14 +404,20 @@ const implementation = implementService({
              * its `parentRepoPath` to resolve the repo. Unknown folders (stale paths, freshly-
              * deleted worktrees, race against folder-info refresh) are no-ops — never error, this
              * is best-effort metadata.
+             *
+             * `loadConfig` now throws on read failure rather than returning defaults, so the
+             * `.catch` here is what prevents a transient load error from triggering a
+             * `saveConfig({...defaultConfig, repos: [...]})` reset of the user's other settings.
+             * Touching is fire-and-forget metadata; silently skipping a single stamp is the right
+             * trade.
              */
             const target = normalizePath(requestData.folder);
             const cached = await getCachedFolders();
             const folder = cached.find((entry) => entry.path === target);
             const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
-            const config = await loadConfig();
-            const repoIndex = config.repos.findIndex((repo) => repo.path === repoPath);
-            if (repoIndex !== -1) {
+            const config = await loadConfig().catch(() => undefined);
+            const repoIndex = config?.repos.findIndex((repo) => repo.path === repoPath) ?? -1;
+            if (config && repoIndex !== -1) {
                 const updatedRepos = config.repos.map((repo, index) =>
                     index === repoIndex
                         ? {

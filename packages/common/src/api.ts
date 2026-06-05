@@ -210,6 +210,20 @@ export const configJsonSchema = {
             description:
                 'When on, hide standalone repos with no activity in the last 7 days (and no running panes). Worktrees are always shown.',
         },
+        /**
+         * When on, the backend skips the periodic comparison between the local agent-storm checkout
+         * and its upstream `dev` branch, and the sidebar never surfaces the "pull to update"
+         * banner. Intentionally absent from `required` so older configs without the field still
+         * load — a missing value reads as `undefined`, matching the `false` default (checks
+         * enabled).
+         */
+        disableUpdateCheck: {
+            type: 'boolean',
+            default: false,
+            title: 'Disable update checks',
+            description:
+                "When on, agent-storm stops checking GitHub for new commits on the dev branch and hides the sidebar's update banner.",
+        },
     },
     required: [
         'aiCmd',
@@ -299,6 +313,18 @@ const pathCreateResponseShape = defineShape({
     resolvedPath: '',
 });
 
+/**
+ * Result of the backend's "is this checkout behind upstream `dev`?" probe. All three fields are
+ * nullable: when the backend can't determine status (not a git checkout, `git ls-remote` failed,
+ * the user disabled the check, etc.) every field is `null` and the sidebar suppresses its update
+ * banner. `isUpToDate === false` is the only signal that triggers the banner.
+ */
+const updateStatusResponseShape = defineShape({
+    isUpToDate: nullableShape(false),
+    currentSha: nullableShape(''),
+    latestSha: nullableShape(''),
+});
+
 const repoTouchRequestShape = defineShape({
     /**
      * Path of the activated folder. Can be a top-level repo path OR a worktree path — the backend
@@ -327,6 +353,13 @@ export const agentStormService = defineService({
             },
             requestDataShape: undefined,
             responseDataShape: foldersResponseShape,
+        },
+        '/update-check': {
+            methods: {
+                [HttpMethod.Get]: true,
+            },
+            requestDataShape: undefined,
+            responseDataShape: updateStatusResponseShape,
         },
         '/worktrees/create': {
             methods: {
@@ -411,3 +444,4 @@ export const defaultConfig = configShape.default;
 export type Config = SchemaShapeToType<typeof configJsonSchema, NonNullable<unknown>>;
 export type RepoConfig = Config['repos'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
+export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;

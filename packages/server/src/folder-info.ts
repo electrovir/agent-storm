@@ -114,7 +114,17 @@ async function persistAutoDisableToConfig(): Promise<void> {
             /* prior write failed; carry on so the next one still has a chance */
         })
         .then(async () => {
-            const config = await loadConfig();
+            /**
+             * Skip the write if `loadConfig` can't read the current file. Previously a transient
+             * read failure here would return `defaultConfig` and the subsequent `saveConfig` would
+             * clobber every user setting (repos list, AI cmd overrides, etc.) just to record an
+             * auto-disable flag. Now we bail; the auto-disable still lives in memory for the rest
+             * of the process and the next attempt after the file is readable will persist it.
+             */
+            const config = await loadConfig().catch(() => undefined);
+            if (!config) {
+                return;
+            }
             await saveConfig({
                 ...config,
                 githubPollingAutoDisable:

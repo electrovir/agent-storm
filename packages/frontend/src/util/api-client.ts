@@ -1,4 +1,10 @@
-import {agentStormService, type Config, type FolderInfo, type PaneKind} from '@agent-storm/common';
+import {
+    agentStormService,
+    type Config,
+    type FolderInfo,
+    type PaneKind,
+    type UpdateStatus,
+} from '@agent-storm/common';
 import {HttpMethod} from '@augment-vir/common';
 import {fetchEndpoint} from '@rest-vir/define-service';
 import {clearStoredSecret, ensureSecret} from './auth.js';
@@ -84,6 +90,14 @@ export async function getFolders(): Promise<FolderInfo[]> {
         fetchEndpoint(agentStormService.endpoints['/folders'], options),
     );
     return data.folders;
+}
+
+export async function getUpdateStatus(): Promise<UpdateStatus> {
+    const options = await authOptions();
+    return await callApi(
+        'GET /update-check',
+        fetchEndpoint(agentStormService.endpoints['/update-check'], options),
+    );
 }
 
 export async function createWorktree(

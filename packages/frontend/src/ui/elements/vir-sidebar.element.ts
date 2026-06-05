@@ -4,6 +4,7 @@ import {
     PaneStatus,
     type RepoConfig,
     SidebarGrouping,
+    type UpdateStatus,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {log} from '@augment-vir/common';
@@ -42,6 +43,7 @@ import {
     deleteWorktree,
     getConfig,
     getFolders,
+    getUpdateStatus,
     killFolderPanes,
     putConfig,
     restartPane,
@@ -109,6 +111,13 @@ type SidebarState = {
      * `refresh()`.
      */
     repos: ReadonlyArray<RepoConfig>;
+    /**
+     * Result of the backend's "agent-storm checkout vs upstream `dev`" probe. The banner at the
+     * bottom of the sidebar appears only when `isUpToDate === false`; every other value (including
+     * the `null`s the backend returns when it can't determine status, or when the user has disabled
+     * the check) keeps the banner hidden. `undefined` while the first poll is still in flight.
+     */
+    updateStatus: UpdateStatus | undefined;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -164,6 +173,7 @@ export const VirSidebar = defineElement<{
             sidebarGrouping: undefined,
             onlyShowRecent: undefined,
             repos: [],
+            updateStatus: undefined,
         };
     },
     styles: css`
@@ -324,6 +334,25 @@ export const VirSidebar = defineElement<{
             ${colorCss(viraThemeByKeys.red['behind-bg'].body)};
             border-bottom: 1px solid ${viraThemeByKeys.red['behind-bg'].decoration.background.value};
             white-space: pre-wrap;
+        }
+
+        .update-banner {
+            flex-shrink: 0;
+            padding: 6px 10px;
+            font-size: 11px;
+            text-align: center;
+            /**
+             * The vira palette has no "orange" key — yellow is the warning slot and reads as
+             * orange-adjacent in both light and dark modes, which matches the user's intent
+             * (attention-grabbing but not error-red).
+             */
+            ${colorCss(viraThemeByKeys.yellow['behind-bg'].body)};
+            border-top: 1px solid ${viraThemeByKeys.yellow['behind-bg'].decoration.background.value};
+        }
+
+        :host([data-mobile-modal]) .update-banner {
+            font-size: 13px;
+            padding: 10px 16px;
         }
 
         .empty {
@@ -658,6 +687,16 @@ export const VirSidebar = defineElement<{
                     `;
                 })}
             </div>
+            ${state.updateStatus?.isUpToDate === false
+                ? html`
+                      <div
+                          class="update-banner"
+                          title="Run \`git pull\` in your agent-storm checkout."
+                      >
+                          pull from github to update
+                      </div>
+                  `
+                : ''}
             <${ViraModal.assign({
                 open: state.repoModalOpen,
                 modalTitle: 'New repo',
@@ -1087,15 +1126,20 @@ const pendingWorktreeDeletions = new Set<string>();
 async function refresh(updateState: SidebarUpdate): Promise<void> {
     try {
         /**
-         * Fetch folders + config in parallel. Config tells us the current `sidebarGrouping` so the
-         * filter menu can mark the active choice; folders feeds the list.
+         * Fetch folders + config + update-status in parallel. Config tells us the current
+         * `sidebarGrouping` so the filter menu can mark the active choice; folders feeds the list;
+         * update-status drives the "pull from github" banner. The backend caches update-status for
+         * ~10 minutes, so calling it on every 2s poll is fine — almost every call returns instantly
+         * from the cache without hitting the GitHub remote.
          */
         const [
             folders,
             config,
+            updateStatus,
         ] = await Promise.all([
             getFolders(),
             getConfig(),
+            getUpdateStatus().catch(() => undefined),
         ]);
         updateState({
             folders: pendingWorktreeDeletions.size
@@ -1105,6 +1149,7 @@ async function refresh(updateState: SidebarUpdate): Promise<void> {
             sidebarGrouping: config.sidebarGrouping,
             onlyShowRecent: config.onlyShowRecent,
             repos: config.repos,
+            updateStatus,
         });
     } catch (error: unknown) {
         updateState({
