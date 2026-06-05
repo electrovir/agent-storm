@@ -51,5 +51,12 @@ export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daem
 /** User-level config file, managed via the settings modal. */
 export const configPath = resolve(homedir(), '.config', 'agent-storm.json');
 
+/**
+ * Where daily snapshots of {@link configPath} are written. Lives alongside the config (not in
+ * `.not-committed/`, which is per-checkout) so backups survive a server reinstall as long as the
+ * user's home directory is intact.
+ */
+export const configBackupDir = resolve(homedir(), '.config', 'agent-storm-backups');
+
 /** Directory where dragged-in screenshot uploads land before being attached to a pane. */
 export const uploadsDir = resolve(tmpdir(), 'agent-storm-uploads');

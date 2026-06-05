@@ -1,4 +1,4 @@
-import {log, wait} from '@augment-vir/common';
+import {wait} from '@augment-vir/common';
 import {execFile} from 'node:child_process';
 import {lstat, readdir, rm, stat} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
@@ -388,13 +388,6 @@ const fetchRepoPrsBatchSize = 20;
 
 const repoPrsGraphqlQuery = [
     'query($owner: String!, $name: String!) {',
-    /** Free info: lets the caller log how many points the response cost and how many remain. */
-    '  rateLimit {',
-    '    cost',
-    '    remaining',
-    '    limit',
-    '    resetAt',
-    '  }',
     '  repository(owner: $owner, name: $name) {',
     `    pullRequests(states: [OPEN, CLOSED, MERGED], first: ${fetchRepoPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
     '      nodes {',
@@ -484,12 +477,6 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
     }
     const parsed = JSON.parse(result.stdout) as {
         data?: {
-            rateLimit?: {
-                cost?: number;
-                remaining?: number;
-                limit?: number;
-                resetAt?: string;
-            };
             repository?: {
                 pullRequests?: {
                     nodes?: ReadonlyArray<RawPrNode>;
@@ -497,12 +484,6 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
             };
         };
     };
-    const rateLimit = parsed.data?.rateLimit;
-    if (rateLimit) {
-        log.info(
-            `GitHub GraphQL ${slug.owner}/${slug.name}: cost=${rateLimit.cost}, remaining=${rateLimit.remaining}/${rateLimit.limit}, resetAt=${rateLimit.resetAt}`,
-        );
-    }
     const nodes = parsed.data?.repository?.pullRequests?.nodes || [];
     const cutoff = Date.now() - sevenDaysMs;
     const map = new Map<string, PrInfo>();

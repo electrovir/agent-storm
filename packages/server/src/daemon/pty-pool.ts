@@ -1,5 +1,5 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
-import {omitObjectKeys} from '@augment-vir/common';
+import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
@@ -125,12 +125,23 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
  *   set in `packages/scripts/src/start.script.ts`. They have no business leaking into the user's
  *   shell — a `claude` session that inspects `env` would otherwise see them and could be tricked
  *   into talking to the backend, and any subshell the user starts would inherit them too.
+ * - Every `npm_*` var (`npm_config_*`, `npm_lifecycle_*`, `npm_package_*`, `npm_execpath`, …). npm
+ *   exports its entire resolved config to child processes, so because the daemon was launched via
+ *   `npm exec` / `npx`, those vars are frozen into the daemon's environment — including
+ *   `npm_config_prefix`, which pins the global-install location to whichever node version was active
+ *   at daemon start. Inheriting them makes `npm i -g` inside a spawned shell write to that frozen
+ *   prefix regardless of the shell's current `nvm`-selected node, so `npm -v` never reflects the
+ *   install. A real terminal started from the OS has none of these, so neither should ours.
  */
 function spawnEnv(): NodeJS.ProcessEnv {
+    const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) =>
+        String(key).toLowerCase().startsWith('npm_'),
+    );
     return omitObjectKeys(process.env, [
         'PATH',
         'BACKEND_PORT',
         'FRONTEND_PORT',
+        ...npmInjectedKeys,
     ]);
 }
 
