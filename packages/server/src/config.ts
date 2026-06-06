@@ -12,12 +12,25 @@ function normalizeConfig(config: Readonly<Config>): Config {
             ...repo,
             path: normalizePath(repo.path),
         })),
+        /**
+         * Keep an entry if it contributes at least one override — either an AI command or a
+         * reset-AI-session command. Entries with both empty are dead weight and would otherwise
+         * accumulate as users toggle settings on and off.
+         */
         folderAiCmds: config.folderAiCmds
-            .filter((entry) => entry.aiCmd.trim())
-            .map((entry) => ({
-                folder: normalizePath(entry.folder),
-                aiCmd: entry.aiCmd.trim(),
-            })),
+            .filter((entry) => entry.aiCmd.trim() || entry.resetAiSessionCmd?.trim())
+            .map((entry) => {
+                const resetCmd = entry.resetAiSessionCmd?.trim() || undefined;
+                return {
+                    folder: normalizePath(entry.folder),
+                    aiCmd: entry.aiCmd.trim(),
+                    ...(resetCmd
+                        ? {
+                              resetAiSessionCmd: resetCmd,
+                          }
+                        : {}),
+                };
+            }),
         hiddenAiPane: config.hiddenAiPane.map((path) => normalizePath(path)),
     };
 }
@@ -56,18 +69,102 @@ export function setFolderAiCmd({
 }>): Config {
     const normalizedFolder = normalizePath(folder);
     const trimmedAiCmd = aiCmd.trim();
+    const existing = config.folderAiCmds.find((entry) => entry.folder === normalizedFolder);
     const otherFolderAiCmds = config.folderAiCmds.filter(
         (entry) => entry.folder !== normalizedFolder,
     );
+    /**
+     * Preserve any existing reset-AI-session override on this folder when only the AI command is
+     * being edited — clearing the AI cmd shouldn't silently drop a sibling reset-cmd override.
+     */
+    const preservedReset = existing?.resetAiSessionCmd?.trim();
+    const aiCmdIsOverride = trimmedAiCmd && trimmedAiCmd !== config.aiCmd;
     return normalizeConfig({
         ...config,
         folderAiCmds:
-            trimmedAiCmd && trimmedAiCmd !== config.aiCmd
+            aiCmdIsOverride || preservedReset
                 ? [
                       ...otherFolderAiCmds,
                       {
                           folder: normalizedFolder,
-                          aiCmd: trimmedAiCmd,
+                          aiCmd: aiCmdIsOverride ? trimmedAiCmd : '',
+                          ...(preservedReset
+                              ? {
+                                    resetAiSessionCmd: preservedReset,
+                                }
+                              : {}),
+                      },
+                  ]
+                : otherFolderAiCmds,
+    });
+}
+
+/**
+ * Compute the folder-effective "Restart AI session" command, walking the same per-folder →
+ * fallback-folder → global default chain {@link getFolderAiCmd} uses. Returns an empty string when
+ * neither the folder nor any fallback nor the global default has a non-empty value; callers
+ * (sidebar UI, `/panes/reset-ai-session` endpoint) treat empty as "command not configured" and skip
+ * the action / hide the menu item.
+ */
+export function getFolderResetAiSessionCmd({
+    config,
+    folder,
+    fallbackFolders = [],
+}: Readonly<{
+    config: Config;
+    folder: string;
+    fallbackFolders?: ReadonlyArray<string> | undefined;
+}>): string {
+    const folderCandidates = [
+        normalizePath(folder),
+        ...fallbackFolders.map((fallbackFolder) => normalizePath(fallbackFolder)),
+    ];
+    const matchingOverride = folderCandidates.reduce<
+        ArrayElement<typeof config.folderAiCmds> | undefined
+    >(
+        (found, candidate) =>
+            found || config.folderAiCmds.find((entry) => entry.folder === candidate),
+        undefined,
+    );
+    return matchingOverride?.resetAiSessionCmd?.trim() || config.resetAiSessionCmd || '';
+}
+
+/**
+ * Per-folder setter for the reset-AI-session command. Mirrors {@link setFolderAiCmd}: a trimmed,
+ * different-from-global value writes/upserts the override entry; matching the global (or empty)
+ * removes the override field and prunes the entry if no other override remains on the same folder.
+ */
+export function setFolderResetAiSessionCmd({
+    config,
+    folder,
+    resetAiSessionCmd,
+}: Readonly<{
+    config: Config;
+    folder: string;
+    resetAiSessionCmd: string;
+}>): Config {
+    const normalizedFolder = normalizePath(folder);
+    const trimmedReset = resetAiSessionCmd.trim();
+    const existing = config.folderAiCmds.find((entry) => entry.folder === normalizedFolder);
+    const otherFolderAiCmds = config.folderAiCmds.filter(
+        (entry) => entry.folder !== normalizedFolder,
+    );
+    const preservedAiCmd = existing?.aiCmd.trim();
+    const resetIsOverride = trimmedReset && trimmedReset !== config.resetAiSessionCmd;
+    return normalizeConfig({
+        ...config,
+        folderAiCmds:
+            resetIsOverride || preservedAiCmd
+                ? [
+                      ...otherFolderAiCmds,
+                      {
+                          folder: normalizedFolder,
+                          aiCmd: preservedAiCmd || '',
+                          ...(resetIsOverride
+                              ? {
+                                    resetAiSessionCmd: trimmedReset,
+                                }
+                              : {}),
                       },
                   ]
                 : otherFolderAiCmds,

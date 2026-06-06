@@ -116,11 +116,16 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
 /**
  * Build the env we hand to a freshly spawned shell. Strips:
  *
- * - `PATH` so the spawned login+interactive shell rebuilds it from /etc/paths and the user's rc files
- *   — exactly the way Terminal.app does. Inheriting `PATH` from the daemon process pollutes the
- *   start with npm-injected `node_modules/.bin` entries (because `npm start` was the daemon's
- *   grandparent), which push the user's `.zprofile` PATH prepends into late positions and can mask
- *   the preferred copy of `claude` (or any other binary they expect to find first).
+ * - From `PATH`, only the npm-injected `node_modules/.bin` entries (because `npm start` was the
+ *   daemon's grandparent and npm prepends every ancestor `node_modules/.bin` to PATH). The rest of
+ *   PATH is preserved verbatim. Previously we dropped PATH entirely and relied on `/etc/zprofile`'s
+ *   `path_helper` to rebuild it during shell startup, but that rebuild only produces the
+ *   `/etc/paths` + `/etc/paths.d/*` defaults — it loses every PATH entry the user inherited from
+ *   launchd / their terminal app (e.g. `~/.claude/local`, Homebrew on Apple silicon,
+ *   manually-managed bin dirs). Aliases like `claude=~/.claude/local/claude` still worked because
+ *   the alias supplies a full path, but `command claude` (which bypasses aliases and goes through
+ *   `PATH` lookup) couldn't find the binary, so "Restart AI session" silently no-op'd even though
+ *   the user's raw terminal could run the exact same string.
  * - `BACKEND_PORT` / `FRONTEND_PORT` because those are internal agent-storm orchestration env vars
  *   set in `packages/scripts/src/start.script.ts`. They have no business leaking into the user's
  *   shell — a `claude` session that inspects `env` would otherwise see them and could be tricked
@@ -128,21 +133,34 @@ function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
  * - Every `npm_*` var (`npm_config_*`, `npm_lifecycle_*`, `npm_package_*`, `npm_execpath`, …). npm
  *   exports its entire resolved config to child processes, so because the daemon was launched via
  *   `npm exec` / `npx`, those vars are frozen into the daemon's environment — including
- *   `npm_config_prefix`, which pins the global-install location to whichever node version was active
- *   at daemon start. Inheriting them makes `npm i -g` inside a spawned shell write to that frozen
- *   prefix regardless of the shell's current `nvm`-selected node, so `npm -v` never reflects the
- *   install. A real terminal started from the OS has none of these, so neither should ours.
+ *   `npm_config_prefix`, which pins the global-install location to whichever node version was
+ *   active at daemon start. Inheriting them makes `npm i -g` inside a spawned shell write to that
+ *   frozen prefix regardless of the shell's current `nvm`-selected node, so `npm -v` never reflects
+ *   the install. A real terminal started from the OS has none of these, so neither should ours.
  */
 function spawnEnv(): NodeJS.ProcessEnv {
     const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) =>
         String(key).toLowerCase().startsWith('npm_'),
     );
-    return omitObjectKeys(process.env, [
-        'PATH',
+    const base = omitObjectKeys(process.env, [
         'BACKEND_PORT',
         'FRONTEND_PORT',
         ...npmInjectedKeys,
     ]);
+    /**
+     * Drop entries the npm CLI prepends when running a script (every ancestor `<repo>/node_modules/
+     * .bin`). Keep everything else so user-customized PATH additions inherited from launchd /
+     * Terminal.app survive into the spawned shell.
+     */
+    const cleanedPath = process.env.PATH?.split(':')
+        .filter((entry) => !entry.endsWith('/node_modules/.bin'))
+        .join(':');
+    return cleanedPath
+        ? {
+              ...base,
+              PATH: cleanedPath,
+          }
+        : base;
 }
 
 /**

@@ -9,7 +9,14 @@ import {mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
 import {startConfigBackupLoop} from './config-backup.js';
-import {getFolderAiCmd, loadConfig, saveConfig, setFolderAiCmd} from './config.js';
+import {
+    getFolderAiCmd,
+    getFolderResetAiSessionCmd,
+    loadConfig,
+    saveConfig,
+    setFolderAiCmd,
+    setFolderResetAiSessionCmd,
+} from './config.js';
 import {
     attachPane,
     killFolderPanes,
@@ -257,23 +264,32 @@ const implementation = implementService({
         async '/worktrees/create'({requestData}) {
             const {worktreePath} = await addWorktree(requestData);
             const aiCmd = requestData.aiCmd?.trim();
-            if (aiCmd) {
+            const resetCmd = requestData.resetAiSessionCmd?.trim();
+            if (aiCmd || resetCmd) {
                 /**
-                 * Best-effort AI-cmd override write: if `loadConfig` can't read the current file
-                 * (transient race, corruption, etc.), skip the save instead of falling back to a
-                 * defaults-merge that would erase the user's other settings. The worktree itself
-                 * has already been created above, so the user just loses the override — they can
-                 * set it from the row menu after the fact.
+                 * Best-effort overrides write. `loadConfig` throws on read failure rather than
+                 * returning defaults, so `.catch(() => undefined)` here is what prevents a
+                 * transient race from kicking us into a "defaults + this override" save that would
+                 * wipe the user's other settings. Apply both setters in sequence so the second sees
+                 * the result of the first.
                  */
-                const config = await loadConfig().catch(() => undefined);
-                if (config) {
-                    await saveConfig(
-                        setFolderAiCmd({
-                            config,
-                            folder: worktreePath,
-                            aiCmd,
-                        }),
-                    );
+                const initial = await loadConfig().catch(() => undefined);
+                if (initial) {
+                    const withAiCmd = aiCmd
+                        ? setFolderAiCmd({
+                              config: initial,
+                              folder: worktreePath,
+                              aiCmd,
+                          })
+                        : initial;
+                    const withReset = resetCmd
+                        ? setFolderResetAiSessionCmd({
+                              config: withAiCmd,
+                              folder: worktreePath,
+                              resetAiSessionCmd: resetCmd,
+                          })
+                        : withAiCmd;
+                    await saveConfig(withReset);
                 }
             }
             await refreshFolderInfoNow();
@@ -338,6 +354,55 @@ const implementation = implementService({
             await killVscode({
                 folder: requestData.folder,
             }).catch(() => {});
+            return {
+                statusCode: HttpStatus.Ok,
+                responseData: {
+                    ok: true,
+                },
+            };
+        },
+        async '/panes/reset-ai-session'({requestData}) {
+            /**
+             * "Restart AI session" is the same daemon-side action as the regular "Restart AI" (kill
+             * the pty + spawn a fresh one in the same folder) — the only difference is the command
+             * we hand to the daemon: the resolved reset-AI-session string instead of the folder's
+             * normal `aiCmd`. Re-resolve from config on every call so a stale frontend that still
+             * has the menu rendered after the user cleared the setting just no-ops instead of
+             * running whatever it last saw.
+             */
+            const folder = normalizePath(requestData.folder);
+            const config = await loadConfig().catch(() => undefined);
+            if (!config) {
+                return {
+                    statusCode: HttpStatus.Ok,
+                    responseData: {
+                        ok: true,
+                    },
+                };
+            }
+            const cached = await getCachedFolders();
+            const cachedFolder = cached.find((entry) => entry.path === folder);
+            const fallbackFolders = cachedFolder?.parentRepoPath
+                ? [cachedFolder.parentRepoPath]
+                : [];
+            const cmd = getFolderResetAiSessionCmd({
+                config,
+                folder,
+                fallbackFolders,
+            });
+            if (!cmd) {
+                return {
+                    statusCode: HttpStatus.Ok,
+                    responseData: {
+                        ok: true,
+                    },
+                };
+            }
+            await restartPane({
+                folder,
+                kind: PaneKind.Ai,
+                aiCmd: cmd,
+            });
             return {
                 statusCode: HttpStatus.Ok,
                 responseData: {

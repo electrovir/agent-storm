@@ -46,6 +46,7 @@ import {
     getUpdateStatus,
     killFolderPanes,
     putConfig,
+    resetAiSession,
     restartPane,
 } from '../../util/api-client.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
@@ -87,12 +88,29 @@ type SidebarState = {
     repoPath: string;
     repoAiCmd: string;
     repoGlobalAiCmd: string;
+    /** New input on the "Add repo" modal — leaves the global default in place when blank. */
+    repoResetAiSessionCmd: string;
+    repoGlobalResetAiSessionCmd: string;
     repoSubmitting: boolean;
     worktreeModalRepoPath: string | undefined;
     worktreeName: string;
     worktreeAiCmd: string;
     worktreeGlobalAiCmd: string;
+    /** New input on the "Add worktree" modal — same semantics as the repo version. */
+    worktreeResetAiSessionCmd: string;
+    worktreeGlobalResetAiSessionCmd: string;
     worktreeSubmitting: boolean;
+    /**
+     * Identity of the folder currently being edited in the "Edit folder commands" modal (the one
+     * that replaces the previous `window.prompt`-based AI-cmd flow). `undefined` when the modal is
+     * closed; the path lets us upsert the override into `folderAiCmds` on save.
+     */
+    editFolderPath: string | undefined;
+    editFolderAiCmd: string;
+    editFolderResetAiSessionCmd: string;
+    editFolderGlobalAiCmd: string;
+    editFolderGlobalResetAiSessionCmd: string;
+    editFolderSubmitting: boolean;
     /**
      * Mirrors `config.sidebarGrouping`. Fetched lazily on first refresh tick so the filter menu can
      * show which grouping is currently active (and so flipping it via the menu has a fresh value to
@@ -164,12 +182,22 @@ export const VirSidebar = defineElement<{
             repoPath: '',
             repoAiCmd: '',
             repoGlobalAiCmd: '',
+            repoResetAiSessionCmd: '',
+            repoGlobalResetAiSessionCmd: '',
             repoSubmitting: false,
             worktreeModalRepoPath: undefined,
             worktreeName: '',
             worktreeAiCmd: '',
             worktreeGlobalAiCmd: '',
+            worktreeResetAiSessionCmd: '',
+            worktreeGlobalResetAiSessionCmd: '',
             worktreeSubmitting: false,
+            editFolderPath: undefined,
+            editFolderAiCmd: '',
+            editFolderResetAiSessionCmd: '',
+            editFolderGlobalAiCmd: '',
+            editFolderGlobalResetAiSessionCmd: '',
+            editFolderSubmitting: false,
             sidebarGrouping: undefined,
             onlyShowRecent: undefined,
             repos: [],
@@ -505,6 +533,8 @@ export const VirSidebar = defineElement<{
                 repoPath: '',
                 repoAiCmd: '',
                 repoGlobalAiCmd: '',
+                repoResetAiSessionCmd: '',
+                repoGlobalResetAiSessionCmd: '',
                 repoSubmitting: false,
             });
         };
@@ -521,6 +551,8 @@ export const VirSidebar = defineElement<{
                 worktreeName: '',
                 worktreeAiCmd: '',
                 worktreeGlobalAiCmd: '',
+                worktreeResetAiSessionCmd: '',
+                worktreeGlobalResetAiSessionCmd: '',
                 worktreeSubmitting: false,
             });
         };
@@ -529,6 +561,23 @@ export const VirSidebar = defineElement<{
                 state,
                 updateState,
                 onActivate: emitFolderActivated,
+            });
+        };
+        const closeEditFolderModal = () => {
+            updateState({
+                editFolderPath: undefined,
+                editFolderAiCmd: '',
+                editFolderResetAiSessionCmd: '',
+                editFolderGlobalAiCmd: '',
+                editFolderGlobalResetAiSessionCmd: '',
+                editFolderSubmitting: false,
+            });
+        };
+        const submitEditFolderModal = () => {
+            void submitEditFolder({
+                state,
+                updateState,
+                emitPaneRestarted,
             });
         };
 
@@ -740,6 +789,24 @@ export const VirSidebar = defineElement<{
                             }
                         })}
                     ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'Reset AI session command override',
+                        value: state.repoResetAiSessionCmd,
+                        placeholder: state.repoGlobalResetAiSessionCmd || '/clear',
+                        showClearButton: true,
+                        disabled: state.repoSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                repoResetAiSessionCmd: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitRepo();
+                            }
+                        })}
+                    ></${ViraInput}>
                     <div class="repo-modal-footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -802,6 +869,24 @@ export const VirSidebar = defineElement<{
                             }
                         })}
                     ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'Reset AI session command override',
+                        value: state.worktreeResetAiSessionCmd,
+                        placeholder: state.worktreeGlobalResetAiSessionCmd || '/clear',
+                        showClearButton: true,
+                        disabled: state.worktreeSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                worktreeResetAiSessionCmd: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitWorktree();
+                            }
+                        })}
+                    ></${ViraInput}>
                     <div class="worktree-modal-footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -817,6 +902,68 @@ export const VirSidebar = defineElement<{
                             isDisabled: !state.worktreeName.trim() || state.worktreeSubmitting,
                         })}
                             ${listen('click', submitWorktree)}
+                        ></${ViraButton}>
+                    </div>
+                </div>
+            </${ViraModal}>
+            <${ViraModal.assign({
+                open: !!state.editFolderPath,
+                modalTitle: 'Edit folder commands',
+            })}
+                ${listen(ViraModal.events.modalClose, closeEditFolderModal)}
+            >
+                <div class="repo-modal-body">
+                    <${ViraInput.assign({
+                        label: 'AI command override',
+                        value: state.editFolderAiCmd,
+                        placeholder: state.editFolderGlobalAiCmd || 'claude',
+                        showClearButton: true,
+                        disabled: state.editFolderSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                editFolderAiCmd: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitEditFolderModal();
+                            }
+                        })}
+                    ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'Reset AI session command override',
+                        value: state.editFolderResetAiSessionCmd,
+                        placeholder: state.editFolderGlobalResetAiSessionCmd || '/clear',
+                        showClearButton: true,
+                        disabled: state.editFolderSubmitting,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            updateState({
+                                editFolderResetAiSessionCmd: event.detail,
+                            });
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
+                                submitEditFolderModal();
+                            }
+                        })}
+                    ></${ViraInput}>
+                    <div class="repo-modal-footer">
+                        <${ViraButton.assign({
+                            text: 'Cancel',
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                            isDisabled: state.editFolderSubmitting,
+                        })}
+                            ${listen('click', closeEditFolderModal)}
+                        ></${ViraButton}>
+                        <${ViraButton.assign({
+                            text: 'Save',
+                            color: ViraColorVariant.Brand,
+                            isDisabled: state.editFolderSubmitting,
+                        })}
+                            ${listen('click', submitEditFolderModal)}
                         ></${ViraButton}>
                     </div>
                 </div>
@@ -1051,15 +1198,39 @@ function buildRowMenuEntries(
                 })();
             },
         },
+        /**
+         * Surface the "Restart AI session" item only when a command is actually configured (per-
+         * folder override → global default — backend has already resolved that and put the result
+         * into `folder.resetAiSessionCmd`). Acts exactly like "Restart AI" — kills the AI pty and
+         * spawns a fresh one — but launches the reset-session command instead of the folder's
+         * normal `aiCmd`. Emits `paneRestarted` the same way so the mounted terminal reconnects.
+         */
+        folder.resetAiSessionCmd
+            ? {
+                  content: 'Restart AI session',
+                  iconOverride: lucideIcons.RefreshCcw,
+                  onClick: () => {
+                      void (async () => {
+                          try {
+                              await resetAiSession({
+                                  folder: folder.path,
+                              });
+                              emitPaneRestarted({
+                                  folder: folder.path,
+                                  kind: PaneKind.Ai,
+                              });
+                          } catch (error: unknown) {
+                              showError(updateState, error);
+                          }
+                      })();
+                  },
+              }
+            : undefined,
         {
-            content: 'Replace AI command',
+            content: 'Edit folder commands',
             iconOverride: lucideIcons.Terminal,
             onClick: () => {
-                void promptReplaceAiCommand({
-                    folder,
-                    updateState,
-                    emitPaneRestarted,
-                });
+                void openEditFolderModal(folder, updateState);
             },
         },
         {
@@ -1240,49 +1411,99 @@ function filterByRecency(
     );
 }
 
-async function promptReplaceAiCommand({
-    folder,
+/**
+ * Open the "Edit folder commands" modal, seeded with this folder's current overrides (or the global
+ * defaults if no override is set). Replaces the previous `window.prompt`-based flow so users can
+ * edit the AI command and the reset-AI-session command in a single dialog.
+ */
+async function openEditFolderModal(folder: FolderInfo, updateState: SidebarUpdate): Promise<void> {
+    try {
+        const config = await getConfig();
+        const override = config.folderAiCmds.find((entry) => entry.folder === folder.path);
+        updateState({
+            editFolderPath: folder.path,
+            editFolderAiCmd: override?.aiCmd || '',
+            editFolderResetAiSessionCmd: override?.resetAiSessionCmd || '',
+            editFolderGlobalAiCmd: config.aiCmd,
+            editFolderGlobalResetAiSessionCmd: config.resetAiSessionCmd || '',
+            editFolderSubmitting: false,
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+/**
+ * Persist the modal's two fields into `folderAiCmds`. If both inputs match the corresponding
+ * globals, the override entry is dropped entirely; otherwise it's upserted with whichever of the
+ * two values differ from the global. Restart the AI pane on save so the new `aiCmd` takes effect
+ * (the reset-cmd doesn't need a restart — it's only invoked on demand).
+ */
+async function submitEditFolder({
+    state,
     updateState,
     emitPaneRestarted,
 }: Readonly<{
-    folder: FolderInfo;
+    state: SidebarState;
     updateState: SidebarUpdate;
     emitPaneRestarted: (detail: PaneRestartedEvent) => void;
 }>): Promise<void> {
+    const folderPath = state.editFolderPath;
+    if (!folderPath || state.editFolderSubmitting) {
+        return;
+    }
+    const aiCmd = state.editFolderAiCmd.trim();
+    const resetCmd = state.editFolderResetAiSessionCmd.trim();
     try {
+        updateState({
+            editFolderSubmitting: true,
+        });
         const config = await getConfig();
-        const input = window.prompt(`AI command for ${folder.path}:`, folder.aiCmd || config.aiCmd);
-        if (input == undefined) {
-            return;
-        }
-        const aiCmd = input.trim();
-        if (!aiCmd) {
-            showError(updateState, 'AI command cannot be empty.');
-            return;
-        }
+        const aiCmdIsOverride = !!aiCmd && aiCmd !== config.aiCmd;
+        const resetIsOverride = !!resetCmd && resetCmd !== (config.resetAiSessionCmd || '');
+        const otherEntries = config.folderAiCmds.filter((entry) => entry.folder !== folderPath);
+        const nextEntries =
+            aiCmdIsOverride || resetIsOverride
+                ? [
+                      ...otherEntries,
+                      {
+                          folder: folderPath,
+                          aiCmd: aiCmdIsOverride ? aiCmd : '',
+                          ...(resetIsOverride
+                              ? {
+                                    resetAiSessionCmd: resetCmd,
+                                }
+                              : {}),
+                      },
+                  ]
+                : otherEntries;
         await putConfig({
             ...config,
-            folderAiCmds:
-                aiCmd === config.aiCmd
-                    ? config.folderAiCmds.filter((entry) => entry.folder !== folder.path)
-                    : [
-                          ...config.folderAiCmds.filter((entry) => entry.folder !== folder.path),
-                          {
-                              folder: folder.path,
-                              aiCmd,
-                          },
-                      ],
+            folderAiCmds: nextEntries,
         });
-        await restartPane({
-            folder: folder.path,
-            kind: PaneKind.Ai,
-        });
-        emitPaneRestarted({
-            folder: folder.path,
-            kind: PaneKind.Ai,
+        if (aiCmdIsOverride || aiCmd) {
+            await restartPane({
+                folder: folderPath,
+                kind: PaneKind.Ai,
+            });
+            emitPaneRestarted({
+                folder: folderPath,
+                kind: PaneKind.Ai,
+            });
+        }
+        updateState({
+            editFolderPath: undefined,
+            editFolderAiCmd: '',
+            editFolderResetAiSessionCmd: '',
+            editFolderGlobalAiCmd: '',
+            editFolderGlobalResetAiSessionCmd: '',
+            editFolderSubmitting: false,
         });
         await refresh(updateState);
     } catch (error: unknown) {
+        updateState({
+            editFolderSubmitting: false,
+        });
         showError(updateState, error);
     }
 }
@@ -1301,6 +1522,8 @@ async function openAddRepoModal(updateState: SidebarUpdate): Promise<void> {
             repoPath: '',
             repoAiCmd: '',
             repoGlobalAiCmd: config.aiCmd,
+            repoResetAiSessionCmd: '',
+            repoGlobalResetAiSessionCmd: config.resetAiSessionCmd || '',
             repoSubmitting: false,
         });
     } catch (error: unknown) {
@@ -1354,12 +1577,33 @@ async function submitAddRepo({
                 repoPath: '',
                 repoAiCmd: '',
                 repoGlobalAiCmd: '',
+                repoResetAiSessionCmd: '',
+                repoGlobalResetAiSessionCmd: '',
                 repoSubmitting: false,
             });
             notifyActivated(path);
             return;
         }
         const aiCmd = state.repoAiCmd.trim();
+        const resetCmd = state.repoResetAiSessionCmd.trim();
+        const aiCmdIsOverride = !!aiCmd && aiCmd !== config.aiCmd;
+        const resetIsOverride = !!resetCmd && resetCmd !== (config.resetAiSessionCmd || '');
+        const otherEntries = config.folderAiCmds.filter((entry) => entry.folder !== path);
+        const folderAiCmds =
+            aiCmdIsOverride || resetIsOverride
+                ? [
+                      ...otherEntries,
+                      {
+                          folder: path,
+                          aiCmd: aiCmdIsOverride ? aiCmd : '',
+                          ...(resetIsOverride
+                              ? {
+                                    resetAiSessionCmd: resetCmd,
+                                }
+                              : {}),
+                      },
+                  ]
+                : otherEntries;
         await putConfig({
             ...config,
             repos: [
@@ -1369,16 +1613,7 @@ async function submitAddRepo({
                     postWorktreeCmd: null,
                 },
             ],
-            folderAiCmds:
-                aiCmd && aiCmd !== config.aiCmd
-                    ? [
-                          ...config.folderAiCmds.filter((entry) => entry.folder !== path),
-                          {
-                              folder: path,
-                              aiCmd,
-                          },
-                      ]
-                    : config.folderAiCmds.filter((entry) => entry.folder !== path),
+            folderAiCmds,
         });
         /**
          * Fetch the new folder list directly so we can find the repo's resolved path (may include a
@@ -1396,6 +1631,8 @@ async function submitAddRepo({
             repoPath: '',
             repoAiCmd: '',
             repoGlobalAiCmd: '',
+            repoResetAiSessionCmd: '',
+            repoGlobalResetAiSessionCmd: '',
             repoSubmitting: false,
         });
         const newFolder = folders.find((folder) => folder.path === path);
@@ -1460,6 +1697,8 @@ async function openAddWorktreeModal(repoPath: string, updateState: SidebarUpdate
             worktreeName: '',
             worktreeAiCmd: '',
             worktreeGlobalAiCmd: config.aiCmd,
+            worktreeResetAiSessionCmd: '',
+            worktreeGlobalResetAiSessionCmd: config.resetAiSessionCmd || '',
             worktreeSubmitting: false,
         });
     } catch (error: unknown) {
@@ -1482,6 +1721,7 @@ async function submitAddWorktree({
         return;
     }
     const aiCmd = state.worktreeAiCmd.trim();
+    const resetCmd = state.worktreeResetAiSessionCmd.trim();
     try {
         updateState({
             worktreeSubmitting: true,
@@ -1490,6 +1730,10 @@ async function submitAddWorktree({
             repoPath,
             name: trimmedName,
             aiCmd: aiCmd && aiCmd !== state.worktreeGlobalAiCmd ? aiCmd : undefined,
+            resetAiSessionCmd:
+                resetCmd && resetCmd !== state.worktreeGlobalResetAiSessionCmd
+                    ? resetCmd
+                    : undefined,
         });
         const folders = await getFolders();
         updateState({
@@ -1499,6 +1743,8 @@ async function submitAddWorktree({
             worktreeName: '',
             worktreeAiCmd: '',
             worktreeGlobalAiCmd: '',
+            worktreeResetAiSessionCmd: '',
+            worktreeGlobalResetAiSessionCmd: '',
             worktreeSubmitting: false,
         });
         const newWorktree = folders.find(

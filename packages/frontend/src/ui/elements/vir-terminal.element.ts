@@ -310,6 +310,17 @@ export const VirTerminal = defineElement<{
                         scrollback: terminalScrollbackLines,
                         theme: terminalAppTheme,
                         /**
+                         * Seed xterm with the daemon's spawn-default dims (see `pty-pool.ts`'s
+                         * `spawn({cols: 120, rows: 32})`). Until `fitAndResend` runs successfully —
+                         * which it can't do while this pane is mounted `display: none` for a
+                         * not-yet-active folder — xterm renders any scrollback the daemon replays
+                         * at these dims. Matching the pty default means lines wrap consistently;
+                         * the alternative (xterm's own 80×24 default) would mis-wrap the replay
+                         * against a pty that's running at 120 cols.
+                         */
+                        cols: 120,
+                        rows: 32,
+                        /**
                          * Characters that break a word for double-click selection. xterm's default
                          * (' ()[]{}',:;`) only includes whitespace + a handful of punctuation, so
                          * something like `src/foo.element.test.ts` selects as one big "word". Add
@@ -358,7 +369,18 @@ export const VirTerminal = defineElement<{
                         }
                     }
 
-                    fitAddon.fit();
+                    /**
+                     * Intentionally skip the eager `fitAddon.fit()` here. If this terminal is
+                     * mounting inside a `display: none` pane-slot (a folder the user added to
+                     * `openedFolders` but hasn't activated), the host's content rect is 0×0 and
+                     * `fit()` would shrink xterm to its minimum (cols ≈ 1–2). The subsequent
+                     * `sendResize` would then push those tiny dims to the daemon, the pty would
+                     * resize to match, and any pty output produced before the pane became visible
+                     * would be wrapped — and any TUI redrawn — at a degenerate width that ends up
+                     * permanently in the scrollback. `fitAndResend()` (called below once it's
+                     * defined, and bound to the ResizeObserver + onActivate path) carries the `<
+                     * 10px` guard that suppresses exactly this case.
+                     */
 
                     /**
                      * Silently swallow color/palette queries (OSC 10 / 11 / 12 / 4 with `?` arg).
@@ -382,6 +404,25 @@ export const VirTerminal = defineElement<{
                     ].forEach((code) => {
                         terminal.parser.registerOscHandler(code, swallowColorQuery);
                     });
+
+                    /**
+                     * Same leak shape as the OSC color queries above, but for Device Status Report
+                     * (`CSI Ps n`). zsh's interactive startup, prompt plugins (starship, p10k), and
+                     * various TUIs query the cursor position with `CSI 6 n` and expect xterm to
+                     * reply via `terminal.onData` with `CSI <row>;<col> R`. That reply is forwarded
+                     * to the pty as if the user typed it, and any chunk of it the asker doesn't
+                     * drain before the next process starts reading stdin shows up as visible
+                     * gibberish like `9;1R` (the CSI prefix gets eaten by the shell's keymap and
+                     * the row/col/R suffix prints verbatim). The pane has well-defined dimensions
+                     * already, so no app actually needs this answer to be routed through the pty.
+                     * Returning `true` consumes the query and suppresses xterm's default reply.
+                     */
+                    terminal.parser.registerCsiHandler(
+                        {
+                            final: 'n',
+                        },
+                        () => true,
+                    );
 
                     const secret = await ensureSecret();
                     const socket = await connectWebSocket(agentStormService.webSockets['/pty'], {
@@ -408,8 +449,6 @@ export const VirTerminal = defineElement<{
                             },
                         });
                     };
-
-                    sendResize();
 
                     terminal.onData((data) => {
                         socket.send(data);
@@ -623,6 +662,16 @@ export const VirTerminal = defineElement<{
                         fitAddon.fit();
                         sendResize();
                     };
+
+                    /**
+                     * One-shot initial fit replacing the previous unconditional pair. If the host
+                     * is visible, this fits to the real layout and pushes those dims to the pty
+                     * exactly as before. If it's hidden (mounting inside a not-yet-active
+                     * pane-slot), the guard inside `fitAndResend` makes this a no-op and the
+                     * ResizeObserver + `onActivate` path below picks it up the moment the slot
+                     * gains a real layout.
+                     */
+                    fitAndResend();
 
                     const resizeObserver = new ResizeObserver(fitAndResend);
                     resizeObserver.observe(element);
