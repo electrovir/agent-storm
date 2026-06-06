@@ -59,6 +59,19 @@ export const configJsonSchema = {
             title: 'AI command',
             description: 'Command launched in the AI pane (e.g. `claude`).',
         },
+        /**
+         * Optional global default for the "Restart AI session" menu item. When non-empty (or when a
+         * per-folder override is set in `folderAiCmds`), the sidebar row menu shows the item and
+         * clicking it writes this string + newline into the folder's AI pane. Intentionally absent
+         * from `required` so older configs without it still load — missing → "" → no menu item.
+         */
+        resetAiSessionCmd: {
+            type: 'string',
+            default: '',
+            title: 'Reset AI session command',
+            description:
+                'Optional. Command (e.g. `/clear`) sent into the AI pane when the user picks "Restart AI session" from a folder\'s row menu. Per-folder overrides live alongside the AI command override.',
+        },
         postWorktreeCmd: {
             type: [
                 'string',
@@ -125,6 +138,17 @@ export const configJsonSchema = {
                     aiCmd: {
                         type: 'string',
                         title: 'AI command',
+                    },
+                    /**
+                     * Optional per-folder override of the global `resetAiSessionCmd`. When the user
+                     * picks "Restart AI session" from a row menu, this wins over the global default
+                     * (and we fall back through worktree-root → global the same way `aiCmd`
+                     * resolution does). Absent from `required` so an entry can exist for the
+                     * `aiCmd` override alone, the reset-cmd override alone, or both.
+                     */
+                    resetAiSessionCmd: {
+                        type: 'string',
+                        title: 'Reset AI session command override',
                     },
                 },
                 required: [
@@ -248,6 +272,13 @@ export const folderInfoShape = defineShape({
     isWorktreeRoot: false,
     aiHidden: false,
     aiCmd: '',
+    /**
+     * Resolved reset-AI-session command for this folder — backend already walked the per-folder
+     * override → global default lookup. Empty string when no command is configured; the sidebar
+     * uses that as the "don't render the menu item" signal so the frontend never has to recreate
+     * the resolution logic.
+     */
+    resetAiSessionCmd: '',
     branch: nullableShape(''),
     git: {
         dirty: false,
@@ -278,6 +309,12 @@ const createWorktreeRequestShape = defineShape({
     repoPath: '',
     name: '',
     aiCmd: nullableShape(''),
+    /**
+     * Optional per-worktree override of the global reset-AI-session command, collected by the "Add
+     * worktree" modal alongside `aiCmd`. Null/undefined → don't write an override entry; the
+     * worktree inherits the global / repo-level default.
+     */
+    resetAiSessionCmd: nullableShape(''),
 });
 
 const deleteWorktreeRequestShape = defineShape({
@@ -383,6 +420,20 @@ export const agentStormService = defineService({
             responseDataShape: okResponseShape,
         },
         '/panes/kill': {
+            methods: {
+                [HttpMethod.Post]: true,
+            },
+            requestDataShape: folderActionRequestShape,
+            responseDataShape: okResponseShape,
+        },
+        /**
+         * Sends the configured "reset AI session" string into a folder's AI pane (per-folder
+         * override → global default). Triggered by the row-menu "Restart AI session" item, which
+         * only appears when the resolved command is non-empty. Returns 404-ish behavior (no-op 200)
+         * when no command is configured so a stale frontend doesn't surface errors after the user
+         * clears the setting.
+         */
+        '/panes/reset-ai-session': {
             methods: {
                 [HttpMethod.Post]: true,
             },

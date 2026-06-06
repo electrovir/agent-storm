@@ -59,6 +59,43 @@ async function getCurrentSha(): Promise<string | undefined> {
     return sha && /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
 }
 
+/**
+ * Resolve "is HEAD already at-or-ahead of the upstream tip?" via `git merge-base --is-ancestor`,
+ * which exits 0 when the first arg is reachable from the second. That's exactly the relation we
+ * want: HEAD is up-to-date iff every remote-`dev` commit is in HEAD's history (equal case →
+ * trivially an ancestor; ahead case → HEAD has extra commits but still contains the remote tip).
+ *
+ * A non-zero exit means either "not an ancestor" (behind / diverged → banner is correct) OR the
+ * object isn't in the local DB yet (user hasn't fetched since the most recent push). We can't tell
+ * the two apart without a fetch, and fetching has side effects we don't want from a background
+ * probe — so we conservatively treat both as "not up to date" and let the user `git fetch` if they
+ * want the banner to update.
+ */
+async function isRemoteShaAncestorOfHead(remoteSha: string): Promise<boolean> {
+    try {
+        await exec(
+            'git',
+            [
+                'merge-base',
+                '--is-ancestor',
+                remoteSha,
+                'HEAD',
+            ],
+            {
+                cwd: monorepoRoot,
+                env: {
+                    ...process.env,
+                    GIT_TERMINAL_PROMPT: '0',
+                    GIT_ASKPASS: 'true',
+                },
+            },
+        );
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 async function fetchRemoteSha(): Promise<string | undefined> {
     const output = await runGitInMonorepo([
         'ls-remote',
@@ -133,7 +170,11 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
         };
     }
     return {
-        isUpToDate: currentSha === remoteSha,
+        /**
+         * Ancestor check instead of plain equality so a local branch that has merged + committed
+         * past the remote tip ("ahead") still reads as up-to-date and the banner stays hidden.
+         */
+        isUpToDate: await isRemoteShaAncestorOfHead(remoteSha),
         currentSha,
         latestSha: remoteSha,
     };

@@ -9,7 +9,7 @@ import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
-import {getFolderAiCmd, loadConfig, saveConfig} from './config.js';
+import {getFolderAiCmd, getFolderResetAiSessionCmd, loadConfig, saveConfig} from './config.js';
 import {folderInfoCachePath, githubCachePath, notCommittedDir} from './file-paths.js';
 import {
     fetchRepoPrs,
@@ -281,6 +281,7 @@ type RefreshTarget = {
     isWorktreeRoot: boolean;
     aiHidden: boolean;
     aiCmd: string;
+    resetAiSessionCmd: string;
 };
 
 async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget[]> {
@@ -298,6 +299,10 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                             config,
                             folder: repo.path,
                         }),
+                        resetAiSessionCmd: getFolderResetAiSessionCmd({
+                            config,
+                            folder: repo.path,
+                        }),
                     },
                 ];
             }
@@ -312,6 +317,10 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         config,
                         folder: repo.path,
                     }),
+                    resetAiSessionCmd: getFolderResetAiSessionCmd({
+                        config,
+                        folder: repo.path,
+                    }),
                 },
                 ...children.map(
                     (child): RefreshTarget => ({
@@ -320,6 +329,11 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         isWorktreeRoot: false,
                         aiHidden: config.hiddenAiPane.includes(child),
                         aiCmd: getFolderAiCmd({
+                            config,
+                            folder: child,
+                            fallbackFolders: [repo.path],
+                        }),
+                        resetAiSessionCmd: getFolderResetAiSessionCmd({
                             config,
                             folder: child,
                             fallbackFolders: [repo.path],
@@ -355,6 +369,7 @@ async function buildFolderInfo({
         isWorktreeRoot: target.isWorktreeRoot,
         aiHidden: target.aiHidden,
         aiCmd: target.aiCmd,
+        resetAiSessionCmd: target.resetAiSessionCmd,
         branch: git.branch,
         git: {
             dirty: git.dirty,
@@ -405,6 +420,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         isWorktreeRoot: target.isWorktreeRoot,
         aiHidden: target.aiHidden,
         aiCmd: target.aiCmd,
+        resetAiSessionCmd: target.resetAiSessionCmd,
         branch: null,
         git: {
             dirty: false,

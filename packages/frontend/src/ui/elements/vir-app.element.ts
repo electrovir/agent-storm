@@ -158,6 +158,12 @@ type AppState = {
     /** Disposer for the resize observer attached in `init`; called from `cleanup`. */
     disconnectScreenSizeObserver: (() => void) | undefined;
     /**
+     * Disposer for the `window.visualViewport` listeners attached in `init`, which pipe the
+     * keyboard-aware viewport height into a `--app-viewport-height` CSS variable on the host.
+     * Undefined when the browser doesn't expose `visualViewport` (no listeners attached).
+     */
+    disconnectVisualViewport: (() => void) | undefined;
+    /**
      * Mobile-only: whether the popup sidebar modal is open. Ignored on desktop (sidebar is docked
      * there). Resets to false when the user selects a folder or the modal emits its close event.
      */
@@ -186,6 +192,7 @@ export const VirApp = defineElement()({
              */
             screenSize: ScreenSize.Desktop,
             disconnectScreenSizeObserver: undefined,
+            disconnectVisualViewport: undefined,
             mobileSidebarOpen: false,
             paneRestartKeys: {},
         };
@@ -195,12 +202,26 @@ export const VirApp = defineElement()({
             display: flex;
             flex-direction: row;
             width: 100%;
-            /* 100dvh tracks the dynamic viewport height — on iPadOS Safari (paired with the
-               viewport meta's interactive-widget=resizes-content option in index.html) this
-               shrinks when the on-screen keyboard appears so the terminals aren't hidden behind
-               it. The 100% above it is the fallback for browsers without dvh support. */
-            height: 100dvh;
+            /*
+             * Track the visual viewport (keyboard-aware) height when JS has measured it. iOS
+             * Safari's support for the interactive-widget=resizes-content viewport hint is
+             * incomplete — 100dvh does NOT consistently shrink when the on-screen keyboard
+             * appears, so the textarea xterm focuses ends up under the keyboard and the browser
+             * scrolls the tab bar out of view to compensate. The init hook below subscribes to
+             * window.visualViewport.resize and writes --app-viewport-height in pixels so the
+             * whole app shrinks to the keyboard-free area; the 100dvh fallback covers the brief
+             * pre-measure window on first paint, and browsers without the API entirely.
+             */
+            height: var(--app-viewport-height, 100dvh);
             font-family: sans-serif;
+            /*
+             * Belt-and-braces against the browser's "scroll the focused input into view"
+             * behavior: if the layout ever overflows the visible viewport (e.g. during the
+             * keyboard's open animation, before we measure the new height), keep the overflow
+             * clipped at the app boundary instead of letting the document scroll the tab bar
+             * off-screen.
+             */
+            overflow: hidden;
         }
 
         vir-sidebar {
@@ -342,11 +363,51 @@ export const VirApp = defineElement()({
                 });
             }
         });
+        /**
+         * Pipe the visual-viewport height (keyboard-aware) into a CSS custom property on the host.
+         * The `:host { height: var(--app-viewport-height, 100dvh) }` rule above reads it, so as
+         * soon as the keyboard slides in, the whole app contracts to the keyboard-free area instead
+         * of relying on iOS Safari to honor `dvh` updates — which it doesn't do reliably. Listening
+         * to both `resize` and `scroll` covers iOS's quirk of firing only the scroll event on some
+         * keyboard transitions. The Visual Viewport API is missing on older browsers; skipping the
+         * wiring there is safe (the `100dvh` fallback still applies).
+         */
+        const viewport =
+            typeof window === 'undefined' ? undefined : (window.visualViewport ?? undefined);
+        const updateViewportHeight = () => {
+            const measured = viewport?.height;
+            if (typeof measured !== 'number' || measured <= 0) {
+                return;
+            }
+            const value = `${measured}px`;
+            /**
+             * Write the measured pixel height to both the host (where `:host { height: var(...) }`
+             * picks it up) and the document element so the global `html, body` rule in `index.css`
+             * can read it too. The body needs to match — if it stayed at `100dvh` (full screen,
+             * including the keyboard area), iOS could still pan its visual viewport inside the body
+             * and push our tab bar above the fold even though `overflow: hidden` clips document
+             * scrolling.
+             */
+            host.style.setProperty('--app-viewport-height', value);
+            document.documentElement.style.setProperty('--app-viewport-height', value);
+        };
+        if (viewport) {
+            updateViewportHeight();
+            viewport.addEventListener('resize', updateViewportHeight);
+            viewport.addEventListener('scroll', updateViewportHeight);
+        }
+        const disconnectVisualViewport = viewport
+            ? () => {
+                  viewport.removeEventListener('resize', updateViewportHeight);
+                  viewport.removeEventListener('scroll', updateViewportHeight);
+              }
+            : undefined;
         updateState({
             pollHandle,
             removeRouteListener,
             screenSize: trackedScreenSize,
             disconnectScreenSizeObserver: () => resizeObserver.disconnect(),
+            disconnectVisualViewport,
         });
     },
     cleanup({state}) {
@@ -355,6 +416,7 @@ export const VirApp = defineElement()({
         }
         state.removeRouteListener?.();
         state.disconnectScreenSizeObserver?.();
+        state.disconnectVisualViewport?.();
     },
     render({state, updateState, host}) {
         if (state.route.paths[0] === 'book') {

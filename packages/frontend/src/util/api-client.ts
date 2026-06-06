@@ -105,6 +105,7 @@ export async function createWorktree(
         repoPath: string;
         name: string;
         aiCmd?: string | undefined;
+        resetAiSessionCmd?: string | undefined;
     }>,
 ): Promise<void> {
     const options = await authOptions();
@@ -157,6 +158,17 @@ export async function killFolderPanes(params: Readonly<{folder: string}>): Promi
     await callApi(
         'POST /panes/kill',
         fetchEndpoint(agentStormService.endpoints['/panes/kill'], {
+            ...options,
+            requestData: params,
+        }),
+    );
+}
+
+export async function resetAiSession(params: Readonly<{folder: string}>): Promise<void> {
+    const options = await authOptions();
+    await callApi(
+        'POST /panes/reset-ai-session',
+        fetchEndpoint(agentStormService.endpoints['/panes/reset-ai-session'], {
             ...options,
             requestData: params,
         }),
