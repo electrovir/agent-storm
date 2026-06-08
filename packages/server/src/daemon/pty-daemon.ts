@@ -20,6 +20,7 @@ import {
 } from './protocol.js';
 import {
     attachPane,
+    killAllPanes,
     killFolderPanes,
     listAllPaneStatuses,
     restartPane,
@@ -208,6 +209,7 @@ server.listen(daemonSocketPath, () => {
 
 function shutdown(signal: string): void {
     log(`${signal} received, shutting down`);
+    killAllPanes();
     killAllVscode();
     server.close(() => {
         if (existsSync(daemonSocketPath)) {
@@ -223,6 +225,7 @@ function shutdown(signal: string): void {
 
 function forceShutdown(reason: string): void {
     log(`force shutdown: ${reason}`);
+    killAllPanes();
     killAllVscode();
     if (existsSync(daemonSocketPath)) {
         try {

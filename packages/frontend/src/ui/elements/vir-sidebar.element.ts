@@ -67,6 +67,16 @@ const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
 const filterIcon = createSizedIcon(lucideIcons.ListFilter, buttonIconSize);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
+/**
+ * Larger icon variants for the mobile sidebar modal's header buttons. Paired with `ViraSize.Large`
+ * so the tap targets land near Apple's HIG-recommended 44px, which the previous `ViraSize.Small` +
+ * 16px-icon combo (24px tall) was well short of.
+ */
+const mobileButtonIconSize = 24;
+const mobilePlusIcon = createSizedIcon(lucideIcons.Plus, mobileButtonIconSize);
+const mobileSettingsIcon = createSizedIcon(lucideIcons.Settings, mobileButtonIconSize);
+const mobileFilterIcon = createSizedIcon(lucideIcons.ListFilter, mobileButtonIconSize);
+
 const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
     [SidebarGrouping.Repo]: 'Group by repo',
     [SidebarGrouping.Status]: 'Group by status',
@@ -415,6 +425,15 @@ export const VirSidebar = defineElement<{
             padding: 12px 16px;
         }
 
+        /*
+         * Loosen up spacing between the header action buttons on mobile — the buttons themselves
+         * are bigger (ViraSize.Large, ~40px) and packed too tightly at the desktop gap would still
+         * create thumb-spanning mis-taps between adjacent targets.
+         */
+        :host([data-mobile-modal]) .header-actions {
+            gap: 10px;
+        }
+
         :host([data-mobile-modal]) .title {
             font-size: 16px;
         }
@@ -591,8 +610,14 @@ export const VirSidebar = defineElement<{
                 </span>
                 <span class="header-actions">
                     <${ViraButton.assign({
-                        icon: plusIcon,
-                        buttonSize: ViraSize.Small,
+                        /**
+                         * Mobile (where the sidebar lives inside `ViraModal` on small screens) uses
+                         * the 40px-tall `Large` button + 24px icon so the tap target sits closer to
+                         * Apple HIG's 44px guideline. The desktop docked sidebar keeps the compact
+                         * 24px `Small` version where mouse precision makes that fine.
+                         */
+                        icon: inputs.mobileModal ? mobilePlusIcon : plusIcon,
+                        buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                         color: ViraColorVariant.Positive,
                     })}
                         title="Add new repository."
@@ -608,8 +633,8 @@ export const VirSidebar = defineElement<{
                         })}
                     >
                         <${ViraButton.assign({
-                            icon: filterIcon,
-                            buttonSize: ViraSize.Small,
+                            icon: inputs.mobileModal ? mobileFilterIcon : filterIcon,
+                            buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Neutral,
                         })}
@@ -625,8 +650,8 @@ export const VirSidebar = defineElement<{
                         )}
                     </${ViraMenuTrigger}>
                     <${ViraButton.assign({
-                        icon: settingsIcon,
-                        buttonSize: ViraSize.Small,
+                        icon: inputs.mobileModal ? mobileSettingsIcon : settingsIcon,
+                        buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                         buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
                     })}
