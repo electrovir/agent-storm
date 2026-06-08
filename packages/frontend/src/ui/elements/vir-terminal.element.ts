@@ -4,7 +4,7 @@ import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal, type ITheme} from '@xterm/xterm';
-import {css, defineElement, html, onDomCreated, unsafeCSS} from 'element-vir';
+import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
@@ -154,6 +154,57 @@ const terminalAppTheme: ITheme = {
     brightWhite: '#bababa',
 };
 
+/**
+ * Convert a typed character to the control byte a physical Ctrl+<key> would emit: the terminal
+ * convention is `byte & 0x1f`, so Ctrl+C → `\x03`, Ctrl+D → `\x04`, Ctrl+L → `\x0c`, etc. Used by
+ * the mobile accessory bar's sticky Ctrl, where there's no hardware Ctrl key to hold.
+ */
+export function toControlByte(input: string): string {
+    return String.fromCodePoint((input.toUpperCase().codePointAt(0) ?? 0) & 0x1f);
+}
+
+/**
+ * Mobile accessory keys that fire a single sequence per tap (no sticky toggle). The bytes are the
+ * exact escape sequences xterm would send for the corresponding physical key, so the pty / TUI
+ * can't tell the difference between these and a hardware keyboard.
+ */
+const accessoryKeys: ReadonlyArray<{
+    label: string;
+    title: string;
+    bytes: string;
+}> = [
+    {
+        label: 'esc',
+        title: 'Escape',
+        bytes: '\x1b',
+    },
+    {
+        label: '←',
+        title: 'Left arrow',
+        bytes: '\x1b[D',
+    },
+    {
+        label: '↑',
+        title: 'Up arrow',
+        bytes: '\x1b[A',
+    },
+    {
+        label: '↓',
+        title: 'Down arrow',
+        bytes: '\x1b[B',
+    },
+    {
+        label: '→',
+        title: 'Right arrow',
+        bytes: '\x1b[C',
+    },
+    {
+        label: 'tab',
+        title: 'Tab',
+        bytes: '\t',
+    },
+];
+
 export const VirTerminal = defineElement<{
     folder: string;
     kind: PaneKind;
@@ -164,6 +215,12 @@ export const VirTerminal = defineElement<{
      * may be stale by the time the user clicks back in.
      */
     active: boolean;
+    /**
+     * Render the touch accessory key bar (Ctrl / Esc / arrows / Tab) pinned above the soft
+     * keyboard. Passed `true` only on mobile, where there's no hardware keyboard to produce those
+     * keys.
+     */
+    showAccessoryKeys: boolean;
 }>()({
     tagName: 'vir-terminal',
     state() {
@@ -180,22 +237,38 @@ export const VirTerminal = defineElement<{
             wasActive: false,
             uploadError: undefined as string | undefined,
             uploadErrorTimeout: undefined as ReturnType<typeof setTimeout> | undefined,
+            /**
+             * Whether the sticky Ctrl modifier is currently armed (drives the button's active
+             * style).
+             */
+            ctrlArmed: false,
+            /**
+             * Send raw bytes to the pty. Set once the socket connects; undefined drives a disabled
+             * bar.
+             */
+            sendBytes: undefined as ((bytes: string) => void) | undefined,
+            /** Toggle the sticky Ctrl modifier on/off. Set once the socket connects. */
+            toggleCtrl: undefined as (() => void) | undefined,
         };
     },
     styles: css`
         :host {
-            display: block;
+            display: flex;
+            flex-direction: column;
             position: relative;
             width: 100%;
             height: 100%;
             box-sizing: border-box;
-            padding: 2px;
             background: ${unsafeCSS(terminalAppTheme.background || 'transparent')};
         }
 
         .terminal-host {
             width: 100%;
-            height: 100%;
+            /* Fill the column above the accessory bar. min-height: 0 lets the flex item shrink below
+               its content height so xterm can fit to whatever space is left. */
+            flex-grow: 1;
+            flex-shrink: 1;
+            min-height: 0;
             /* We translate touch drags into terminal.scrollLines ourselves, so tell iOS to keep
                its hands off the gesture entirely. pan-y would still let the browser try a
                vertical pan — when xterm has nothing more to scroll, that pan chains up to the page
@@ -232,6 +305,51 @@ export const VirTerminal = defineElement<{
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             pointer-events: none;
             white-space: pre-wrap;
+        }
+
+        /* Touch accessory key bar. In normal flow as the last flex-column child so it can't overlap
+           the terminal. vir-app already shrinks the whole app to the keyboard-free area (its
+           --app-viewport-height tracks window.visualViewport), so this just sits at the bottom of
+           the visible pane — above the keyboard — with no positioning math of its own. Colors follow
+           this element's hardcoded Terminal.app vir-light palette. */
+        .accessory-bar {
+            flex-grow: 0;
+            flex-shrink: 0;
+            display: flex;
+            gap: 6px;
+            padding: 6px;
+            box-sizing: border-box;
+            background: #e9e9ef;
+            border-top: 1px solid #c8c8d2;
+            /* Sit inside the iPhone home-indicator safe area when the keyboard is closed. */
+            padding-bottom: max(6px, env(safe-area-inset-bottom));
+
+            .accessory-key {
+                flex-grow: 1;
+                flex-shrink: 1;
+                min-width: 0;
+                min-height: 40px;
+                padding: 0 4px;
+                border: 1px solid #c8c8d2;
+                border-radius: 6px;
+                font-family: ui-sans-serif, system-ui, sans-serif;
+                font-size: 16px;
+                color: #0220b3;
+                background: #ffffff;
+                cursor: pointer;
+                touch-action: manipulation;
+                user-select: none;
+
+                &:active {
+                    background: #d7d7e0;
+                }
+
+                &[data-armed] {
+                    color: #ffffff;
+                    background: #0038ee;
+                    border-color: #0038ee;
+                }
+            }
         }
     `,
     cleanup({state}) {
@@ -450,7 +568,31 @@ export const VirTerminal = defineElement<{
                         });
                     };
 
+                    /**
+                     * Sticky Ctrl state for the mobile accessory bar. Kept as a closure object
+                     * (mirrored into element state for the button's active style) so the `onData`
+                     * handler below always reads the live value rather than a render-time snapshot
+                     * — same pattern as `touchScrollState`.
+                     */
+                    const ctrlModifier = {
+                        armed: false,
+                    };
+
                     terminal.onData((data) => {
+                        /**
+                         * When Ctrl is armed, the next typed character is rewritten to its control
+                         * byte and Ctrl disarms — exactly one keypress is modified, matching how a
+                         * sticky modifier behaves. Multi-byte input (paste, IME composition) sends
+                         * verbatim and still clears the modifier so it can't get stuck on.
+                         */
+                        if (ctrlModifier.armed) {
+                            ctrlModifier.armed = false;
+                            updateState({
+                                ctrlArmed: false,
+                            });
+                            socket.send(data.length === 1 ? toControlByte(data) : data);
+                            return;
+                        }
                         socket.send(data);
                     });
 
@@ -691,12 +833,54 @@ export const VirTerminal = defineElement<{
                         terminal,
                         resizeObserver,
                         onActivate,
+                        sendBytes: (bytes) => socket.send(bytes),
+                        toggleCtrl: () => {
+                            ctrlModifier.armed = !ctrlModifier.armed;
+                            updateState({
+                                ctrlArmed: ctrlModifier.armed,
+                            });
+                        },
                         disconnect: () => {
                             void socket.close();
                         },
                     });
                 })}
             ></div>
+            ${inputs.showAccessoryKeys && state.sendBytes && state.toggleCtrl
+                ? html`
+                      <div class="accessory-bar" role="toolbar" aria-label="Terminal keys">
+                          <button
+                              type="button"
+                              class="accessory-key ctrl-key"
+                              title="Ctrl — applies to the next key you press"
+                              ?data-armed=${state.ctrlArmed}
+                              ${listen('pointerdown', (event) => {
+                                  // Keep the soft keyboard up: don't let the tap steal focus from
+                                  // xterm's hidden textarea.
+                                  event.preventDefault();
+                                  state.toggleCtrl?.();
+                              })}
+                          >
+                              ctrl
+                          </button>
+                          ${accessoryKeys.map(
+                              (key) => html`
+                                  <button
+                                      type="button"
+                                      class="accessory-key"
+                                      title=${key.title}
+                                      ${listen('pointerdown', (event) => {
+                                          event.preventDefault();
+                                          state.sendBytes?.(key.bytes);
+                                      })}
+                                  >
+                                      ${key.label}
+                                  </button>
+                              `,
+                          )}
+                      </div>
+                  `
+                : ''}
         `;
     },
 });

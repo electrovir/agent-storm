@@ -3,6 +3,7 @@ import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {killProcessTree} from './kill-process-tree.js';
 import type {StatusEntry} from './protocol.js';
 
 const idleThresholdMs = 2000;
@@ -328,7 +329,9 @@ export function restartPane({
     aiCmd?: string | undefined;
 }>): void {
     const entry = ensureEntry(folder, kind);
-    entry.pty?.kill();
+    if (entry.pty) {
+        killProcessTree(entry.pty.pid);
+    }
     entry.pty = undefined;
     entry.exitCode = undefined;
     clearScrollback(entry);
@@ -340,11 +343,28 @@ export function killFolderPanes({folder}: Readonly<{folder: string}>): void {
         const key = paneKey(folder, kind);
         const entry = panes.get(key);
         if (entry?.pty) {
-            entry.pty.kill();
+            killProcessTree(entry.pty.pid);
             entry.pty = undefined;
         }
         panes.delete(key);
     });
+}
+
+/**
+ * Synchronously tear down every pane's process tree. Used on daemon shutdown, where the event loop
+ * is about to stop and the deferred SIGKILL backstop in {@link killProcessTree} would never fire, so
+ * the kill must be immediate.
+ */
+export function killAllPanes(): void {
+    panes.forEach((entry) => {
+        if (entry.pty) {
+            killProcessTree(entry.pty.pid, {
+                immediate: true,
+            });
+            entry.pty = undefined;
+        }
+    });
+    panes.clear();
 }
 
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {
