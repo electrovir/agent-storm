@@ -5,7 +5,7 @@ import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal, type ITheme} from '@xterm/xterm';
 import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element-vir';
-import {viraThemeByKeys} from 'vira';
+import {createSizedIcon, lucideIcons, ViraIcon, viraThemeByKeys} from 'vira';
 import {getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 import {defaultXtermStyles} from './xterm-styles.js';
@@ -161,6 +161,45 @@ const terminalAppTheme: ITheme = {
  */
 export function toControlByte(input: string): string {
     return String.fromCodePoint((input.toUpperCase().codePointAt(0) ?? 0) & 0x1f);
+}
+
+const clipboardIcon = createSizedIcon(lucideIcons.Clipboard, 18);
+
+/** Prompt-based paste fallback. The native prompt field is editable, so the OS paste menu works. */
+function promptPaste(terminal: Terminal): void {
+    const text = window.prompt('Paste into terminal:');
+    if (text) {
+        terminal.paste(text);
+    }
+}
+
+/**
+ * Paste clipboard contents into the terminal — needed on mobile, where there's no Ctrl/Cmd+V and no
+ * editable element for the OS paste menu to target. Routes through `terminal.paste` so bracketed
+ * paste mode is honored. The async Clipboard API only exists in a secure context (HTTPS/localhost);
+ * agent-storm's dev server is plain HTTP over LAN, so when it's unavailable (or denied) we fall
+ * back to a native `prompt`, which the user can paste into via the OS menu on any context.
+ */
+export function pasteIntoTerminal(terminal: Terminal): void {
+    /**
+     * `navigator.clipboard` only exists in a secure context; the DOM types don't model that, so
+     * gate on `isSecureContext` rather than a (lint-flagged) truthiness check on the clipboard
+     * object.
+     */
+    if (!window.isSecureContext) {
+        promptPaste(terminal);
+        return;
+    }
+    void navigator.clipboard
+        .readText()
+        .then((text) => {
+            if (text) {
+                terminal.paste(text);
+            } else {
+                promptPaste(terminal);
+            }
+        })
+        .catch(() => promptPaste(terminal));
 }
 
 /**
@@ -325,6 +364,9 @@ export const VirTerminal = defineElement<{
             padding-bottom: max(6px, env(safe-area-inset-bottom));
 
             .accessory-key {
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 flex-grow: 1;
                 flex-shrink: 1;
                 min-width: 0;
@@ -849,6 +891,21 @@ export const VirTerminal = defineElement<{
             ${inputs.showAccessoryKeys && state.sendBytes && state.toggleCtrl
                 ? html`
                       <div class="accessory-bar" role="toolbar" aria-label="Terminal keys">
+                          <button
+                              type="button"
+                              class="accessory-key"
+                              title="Paste from clipboard"
+                              ${listen('pointerdown', (event) => {
+                                  event.preventDefault();
+                                  if (state.terminal) {
+                                      pasteIntoTerminal(state.terminal);
+                                  }
+                              })}
+                          >
+                              <${ViraIcon.assign({
+                                  icon: clipboardIcon,
+                              })}></${ViraIcon}>
+                          </button>
                           <button
                               type="button"
                               class="accessory-key ctrl-key"

@@ -7,7 +7,7 @@ import {
     type UpdateStatus,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {log} from '@augment-vir/common';
+import {filterMap, log} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {
     type AnyDuration,
@@ -27,12 +27,15 @@ import {
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
+    viraFormCssVars,
     ViraIcon,
     ViraInput,
     ViraLink,
     type ViraMenuItemEntry,
     ViraMenuTrigger,
     ViraModal,
+    ViraPopUpTrigger,
+    viraShadows,
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
@@ -48,6 +51,7 @@ import {
     putConfig,
     resetAiSession,
     restartPane,
+    touchRepo,
 } from '../../util/api-client.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
 
@@ -61,6 +65,7 @@ const exitedIcon = createSizedIcon(lucideIcons.X, 12);
 const mergedCheckIcon = createSizedIcon(lucideIcons.Check, 14);
 
 const buttonIconSize = 16;
+const searchIcon = createSizedIcon(lucideIcons.Search, buttonIconSize);
 const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
 const settingsIcon = createSizedIcon(lucideIcons.Settings, buttonIconSize);
 const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
@@ -73,6 +78,7 @@ const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
  * 16px-icon combo (24px tall) was well short of.
  */
 const mobileButtonIconSize = 24;
+const mobileSearchIcon = createSizedIcon(lucideIcons.Search, mobileButtonIconSize);
 const mobilePlusIcon = createSizedIcon(lucideIcons.Plus, mobileButtonIconSize);
 const mobileSettingsIcon = createSizedIcon(lucideIcons.Settings, mobileButtonIconSize);
 const mobileFilterIcon = createSizedIcon(lucideIcons.ListFilter, mobileButtonIconSize);
@@ -133,6 +139,12 @@ type SidebarState = {
      * shown. `undefined` while config hasn't loaded yet, which renders the same as `false`.
      */
     onlyShowRecent: boolean | undefined;
+    /**
+     * Live text from the header search pop-up. While non-empty it temporarily overrides the
+     * hide-inactive filter and shows only repos/worktrees whose names match (searching active and
+     * inactive repos alike). Cleared when the search pop-up closes.
+     */
+    searchQuery: string;
     /**
      * Mirrors `config.repos`. Needed for the hide-inactive filter so we can look up each repo's
      * `lastInteractedAtMs` against the 7-day cutoff. Kept in lockstep with the folders list via
@@ -210,6 +222,7 @@ export const VirSidebar = defineElement<{
             editFolderSubmitting: false,
             sidebarGrouping: undefined,
             onlyShowRecent: undefined,
+            searchQuery: '',
             repos: [],
             updateStatus: undefined,
         };
@@ -222,7 +235,10 @@ export const VirSidebar = defineElement<{
             font-family: ui-sans-serif, system-ui, sans-serif;
             font-size: 12px;
             border-right: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            overflow: hidden;
+            /* No overflow clipping here on purpose: the header search pop-up grows past the
+               sidebar's right edge, and an overflow container at this level would clip it (the
+               pop-up manager constrains pop-ups to the nearest overflow ancestor). Scrolling lives
+               on the list instead, so the only thing that needs clipping still gets it. */
         }
 
         :host([data-hide-border]) {
@@ -260,9 +276,27 @@ export const VirSidebar = defineElement<{
             align-items: center;
         }
 
+        /* Card behind the search input so the pop-up reads as a panel, not a bare floating input.
+           Mirrors vira's own menu pop-up surface (background/border/radius/shadow). */
+        .search-popup {
+            padding: 10px;
+            min-width: 220px;
+            box-sizing: border-box;
+            background-color: ${viraFormCssVars['vira-form-background-color'].value};
+            color: ${viraFormCssVars['vira-form-foreground-color'].value};
+            border: 1px solid ${viraFormCssVars['vira-form-border-color'].value};
+            border-radius: ${viraFormCssVars['vira-form-radius'].value};
+            ${viraShadows.menuShadow}
+        }
+
         .list {
             flex-grow: 1;
+            /* min-height: 0 lets this flex child shrink below its content height so it scrolls
+               within the column instead of pushing the host taller (now that the host no longer
+               clips). overflow-x: hidden keeps long folder names clipped to the sidebar width. */
+            min-height: 0;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 4px 0 32px;
             /* Atkinson Hyperlegible Next — proportional sans designed for legibility (especially
                for low-vision readers). The rest of the sidebar (logo title, error banner, etc.)
@@ -508,13 +542,17 @@ export const VirSidebar = defineElement<{
         }
 
         /**
-         * Apply the hide-inactive filter once up front. Both the standalone list and the worktree
-         * roots iterate the same pre-filtered array so a hidden repo's children disappear with it,
-         * and the empty-state message below uses the filtered count to stay accurate.
+         * Apply the active filter once up front. The standalone list, the worktree roots, and each
+         * root's children all iterate this same pre-filtered array so hidden entries disappear
+         * consistently and the empty-state message below stays accurate. An active search query
+         * wins over the hide-inactive filter (search spans active and inactive repos alike).
          */
-        const visibleFolders = state.onlyShowRecent
-            ? filterByRecency(state.folders, state.repos)
-            : state.folders;
+        const trimmedSearchQuery = state.searchQuery.trim();
+        const visibleFolders = trimmedSearchQuery
+            ? filterBySearch(state.folders, trimmedSearchQuery)
+            : state.onlyShowRecent
+              ? filterByRecency(state.folders, state.repos)
+              : state.folders;
         const standaloneFolders = visibleFolders
             .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
             .toSorted((a, b) =>
@@ -606,9 +644,48 @@ export const VirSidebar = defineElement<{
                     <${ViraIcon.assign({
                         icon: brandMarkIcon,
                     })}></${ViraIcon}>
-                    agent-storm
                 </span>
                 <span class="header-actions">
+                    <${ViraPopUpTrigger.assign({
+                        horizontalAnchor: HorizontalAnchor.Left,
+                        keepOpenAfterInteraction: true,
+                    })}
+                        ${listen(ViraPopUpTrigger.events.openChange, (event) => {
+                            /**
+                             * Clear the query when the pop-up closes so the sidebar returns to its
+                             * normal (hide-inactive) view — the search filter is meant to be
+                             * temporary, only while the pop-up is open.
+                             */
+                            if (!event.detail) {
+                                updateState({
+                                    searchQuery: '',
+                                });
+                            }
+                        })}
+                    >
+                        <${ViraButton.assign({
+                            icon: inputs.mobileModal ? mobileSearchIcon : searchIcon,
+                            buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                        })}
+                            slot=${ViraPopUpTrigger.slotNames.trigger}
+                            title="Search repos & worktrees"
+                        ></${ViraButton}>
+                        <div class="search-popup" slot=${ViraPopUpTrigger.slotNames.popUp}>
+                            <${ViraInput.assign({
+                                value: state.searchQuery,
+                                placeholder: 'Search repos & worktrees',
+                                showClearButton: true,
+                            })}
+                                ${listen(ViraInput.events.valueChange, (event) => {
+                                    updateState({
+                                        searchQuery: event.detail,
+                                    });
+                                })}
+                            ></${ViraInput}>
+                        </div>
+                    </${ViraPopUpTrigger}>
                     <${ViraButton.assign({
                         /**
                          * Mobile (where the sidebar lives inside `ViraModal` on small screens) uses
@@ -688,7 +765,7 @@ export const VirSidebar = defineElement<{
                     }),
                 )}
                 ${worktreeRoots.map((root) => {
-                    const children = state.folders
+                    const children = visibleFolders
                         .filter((folder) => folder.parentRepoPath === root.path)
                         .toSorted((a, b) =>
                             a.name.localeCompare(b.name, undefined, {
@@ -1437,6 +1514,44 @@ function filterByRecency(
 }
 
 /**
+ * Filters folders by the header search query (case-insensitive substring on folder names),
+ * searching active and inactive repos alike (recency is ignored while searching):
+ *
+ * - A standalone repo shows when its own name matches.
+ * - A worktree child shows when its own name matches OR its parent worktree-root's name matches (so
+ *   matching a repo surfaces all of its worktrees to pick from).
+ * - A worktree-root shows when its own name matches OR at least one of its children matches.
+ *   Therefore a worktree-root with no matching child and a non-matching name is hidden entirely.
+ */
+function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): FolderInfo[] {
+    const needle = query.trim().toLowerCase();
+    const nameMatches = (folder: FolderInfo): boolean => folder.name.toLowerCase().includes(needle);
+    const matchingRootPaths = new Set(
+        folders
+            .filter((folder) => folder.isWorktreeRoot && nameMatches(folder))
+            .map((folder) => folder.path),
+    );
+    const rootPathsWithMatchingChild = new Set(
+        filterMap(
+            folders,
+            (folder) => folder.parentRepoPath,
+            (parentRepoPath, folder): parentRepoPath is string =>
+                !!parentRepoPath && nameMatches(folder),
+        ),
+    );
+    return folders.filter((folder) => {
+        if (folder.isWorktreeRoot) {
+            return (
+                matchingRootPaths.has(folder.path) || rootPathsWithMatchingChild.has(folder.path)
+            );
+        } else if (folder.parentRepoPath) {
+            return nameMatches(folder) || matchingRootPaths.has(folder.parentRepoPath);
+        }
+        return nameMatches(folder);
+    });
+}
+
+/**
  * Open the "Edit folder commands" modal, seeded with this folder's current overrides (or the global
  * defaults if no override is set). Replaces the previous `window.prompt`-based flow so users can
  * edit the AI command and the reset-AI-session command in a single dialog.
@@ -1596,8 +1711,19 @@ async function submitAddRepo({
         }
         const config = await getConfig();
         if (config.repos.some((repo) => repo.path === path)) {
-            /** Repo already configured — activate the existing entry instead of no-oping. */
+            /**
+             * Repo already configured — don't add a duplicate. Stamp its `lastInteractedAtMs` to
+             * now (the touch endpoint resolves the owning repo and writes `Date.now()`) so the
+             * hide-inactive filter stops hiding it, then pull the refreshed config so the local
+             * `repos` mirror that filter reads reflects the new timestamp immediately instead of
+             * waiting for the next poll. Finally activate the existing entry.
+             */
+            await touchRepo({
+                folder: path,
+            });
+            const refreshedConfig = await getConfig();
             updateState({
+                repos: refreshedConfig.repos,
                 repoModalOpen: false,
                 repoPath: '',
                 repoAiCmd: '',
