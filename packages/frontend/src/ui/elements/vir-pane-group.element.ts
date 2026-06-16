@@ -1,12 +1,13 @@
 // cspell:words titlebar
 
-import {agentStormService, PaneKind} from '@agent-storm/common';
+import {PaneKind} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {ensureVscode, killVscode} from '../../util/api-client.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
+import {getBackendBaseUrl} from '../../util/service-origin.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 function clampSplit(value: number): number {
@@ -421,7 +422,7 @@ export const VirPaneGroup = defineElement<{
                 folder,
             })
                 .then(({basePath}) => {
-                    const url = `${agentStormService.serviceOrigin}${basePath}/?folder=${encodeURIComponent(folder)}`;
+                    const url = `${getBackendBaseUrl()}${basePath}/?folder=${encodeURIComponent(folder)}`;
                     updateState({
                         vscodeUrl: url,
                         vscodeLoading: false,

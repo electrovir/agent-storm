@@ -669,10 +669,13 @@ export const VirSidebar = defineElement<{
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Neutral,
                         })}
-                            slot=${ViraPopUpTrigger.slotNames.trigger}
+                            slot=${ViraPopUpTrigger.slotNames['vira-pop-up-trigger-trigger']}
                             title="Search repos & worktrees"
                         ></${ViraButton}>
-                        <div class="search-popup" slot=${ViraPopUpTrigger.slotNames.popUp}>
+                        <div
+                            class="search-popup"
+                            slot=${ViraPopUpTrigger.slotNames['vira-pop-up-trigger-pop-up']}
+                        >
                             <${ViraInput.assign({
                                 value: state.searchQuery,
                                 placeholder: 'Search repos & worktrees',
@@ -715,7 +718,7 @@ export const VirSidebar = defineElement<{
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Neutral,
                         })}
-                            slot=${ViraMenuTrigger.slotNames.trigger}
+                            slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
                             title="Filter & group sidebar"
                         ></${ViraButton}>
                         ${renderMenuItemEntries(
@@ -795,7 +798,9 @@ export const VirSidebar = defineElement<{
                                         buttonEmphasis: ViraEmphasis.Subtle,
                                         color: ViraColorVariant.Neutral,
                                     })}
-                                        slot=${ViraMenuTrigger.slotNames.trigger}
+                                        slot=${ViraMenuTrigger.slotNames[
+                                            'vira-menu-trigger-trigger'
+                                        ]}
                                         title="Repo actions"
                                     ></${ViraButton}>
                                     ${renderMenuItemEntries([
@@ -1170,7 +1175,7 @@ function renderRow({
                         buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
                     })}
-                        slot=${ViraMenuTrigger.slotNames.trigger}
+                        slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
                         title="Folder actions"
                     ></${ViraButton}>
                     ${renderMenuItemEntries(

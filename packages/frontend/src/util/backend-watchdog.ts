@@ -1,4 +1,4 @@
-import {agentStormService} from '@agent-storm/common';
+import {getBackendBaseUrl} from './service-origin.js';
 
 /**
  * How many consecutive transport-level failures count as "the backend really went away" instead of
@@ -88,7 +88,7 @@ async function probeAndReload(): Promise<void> {
  */
 async function isBackendReachable(): Promise<boolean> {
     try {
-        const response = await fetch(`${agentStormService.serviceOrigin}/folders`, {
+        const response = await fetch(`${getBackendBaseUrl()}/folders`, {
             method: 'GET',
             cache: 'no-store',
         });

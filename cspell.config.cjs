@@ -7,14 +7,5 @@ module.exports = {
     ],
     words: [
         ...baseConfig.words,
-        'grabbable',
-        'hyperlegible',
-        'menlo',
-        'meslo',
-        'pid',
-        'pids',
-        'prebuilds',
-        'toggleable',
-        'webgl',
     ],
 };

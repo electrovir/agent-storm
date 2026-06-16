@@ -572,7 +572,7 @@ export function attachVscodeProxy(server: FastifyInstance): void {
      * We work around this by replacing the listener chain with a single dispatcher: our paths go to
      * `pipeWebSocket`, everything else (notably `/pty` from the rest-vir service) is forwarded to
      * the original `@fastify/websocket` listeners. This relies on `attachVscodeProxy` running after
-     * `attachService` so the existing listeners are already in place.
+     * `attachApi` so the existing listeners are already in place.
      */
     const existingUpgradeListeners = server.server.listeners('upgrade');
     server.server.removeAllListeners('upgrade');

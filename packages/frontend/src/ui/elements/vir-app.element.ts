@@ -20,7 +20,6 @@ import {
     type FrontendPaths,
 } from '../../util/router.js';
 import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
-import '../../util/service-origin.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';

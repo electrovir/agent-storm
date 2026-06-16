@@ -1,9 +1,7 @@
-import {AnyOrigin, defineService, HttpMethod} from '@rest-vir/define-service';
-import {defineShape, enumShape, nullableShape, tupleShape, unionShape} from 'object-shape-tester';
+import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from '@rest-vir/api';
+import {defineShape, enumShape, nullableShape, unionShape} from 'object-shape-tester';
 import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-vir';
 import {PaneKind, PaneStatus, SidebarGrouping} from './enums.js';
-
-const port = 41_880;
 
 const stringMessageShape = defineShape('');
 
@@ -21,18 +19,6 @@ const ptyClientMessageShape = defineShape(
         },
     }),
 );
-
-const ptySearchParamsShape = defineShape({
-    folder: tupleShape(''),
-    kind: tupleShape(enumShape(PaneKind)),
-});
-
-/**
- * The WebSocket upgrade can't carry an `Authorization` header from a browser, but it _can_ carry
- * subprotocols. The auth bearer rides in `Sec-WebSocket-Protocol`; the server validates it and
- * sends back this same value to complete the upgrade handshake.
- */
-const ptyProtocolsShape = defineShape(tupleShape(''));
 
 /**
  * Single source of truth for the user-editable config. Defined as a JSON Schema so:
@@ -371,119 +357,226 @@ const repoTouchRequestShape = defineShape({
     folder: '',
 });
 
-export const agentStormService = defineService({
-    serviceName: 'agent-storm',
-    serviceOrigin: `http://localhost:${port}`,
-    requiredClientOrigin: AnyOrigin,
-    endpoints: {
-        '/config': {
-            methods: {
-                [HttpMethod.Get]: true,
-                [HttpMethod.Put]: true,
+export const configEndpoint = defineEndpoint({
+    path: '/config',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: configShape,
+                },
             },
-            requestDataShape: nullableShape(configShape),
-            responseDataShape: configShape,
         },
-        '/folders': {
-            methods: {
-                [HttpMethod.Get]: true,
+        [HttpMethod.Put]: {
+            requestData: configShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: configShape,
+                },
             },
-            requestDataShape: undefined,
-            responseDataShape: foldersResponseShape,
-        },
-        '/update-check': {
-            methods: {
-                [HttpMethod.Get]: true,
-            },
-            requestDataShape: undefined,
-            responseDataShape: updateStatusResponseShape,
-        },
-        '/worktrees/create': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: createWorktreeRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        '/worktrees/delete': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: deleteWorktreeRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        '/panes/restart': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: paneActionRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        '/panes/kill': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: folderActionRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        /**
-         * Sends the configured "reset AI session" string into a folder's AI pane (per-folder
-         * override → global default). Triggered by the row-menu "Restart AI session" item, which
-         * only appears when the resolved command is non-empty. Returns 404-ish behavior (no-op 200)
-         * when no command is configured so a stale frontend doesn't surface errors after the user
-         * clears the setting.
-         */
-        '/panes/reset-ai-session': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: folderActionRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        '/daemon/restart': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: undefined,
-            responseDataShape: okResponseShape,
-        },
-        '/repos/touch': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: repoTouchRequestShape,
-            responseDataShape: okResponseShape,
-        },
-        '/paths/check': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: pathRequestShape,
-            responseDataShape: pathCheckResponseShape,
-        },
-        '/paths/create': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: pathRequestShape,
-            responseDataShape: pathCreateResponseShape,
-        },
-        '/uploads/create': {
-            methods: {
-                [HttpMethod.Post]: true,
-            },
-            requestDataShape: uploadRequestShape,
-            responseDataShape: uploadResponseShape,
         },
     },
-    webSockets: {
-        '/pty': {
-            messageFromClientShape: ptyClientMessageShape,
-            messageFromHostShape: stringMessageShape,
-            searchParamsShape: ptySearchParamsShape,
-            protocolsShape: ptyProtocolsShape,
+});
+
+export const foldersEndpoint = defineEndpoint({
+    path: '/folders',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: foldersResponseShape,
+                },
+            },
         },
     },
+});
+
+export const updateCheckEndpoint = defineEndpoint({
+    path: '/update-check',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: updateStatusResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const createWorktreeEndpoint = defineEndpoint({
+    path: '/worktrees/create',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: createWorktreeRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const deleteWorktreeEndpoint = defineEndpoint({
+    path: '/worktrees/delete',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: deleteWorktreeRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const restartPaneEndpoint = defineEndpoint({
+    path: '/panes/restart',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: paneActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const killPanesEndpoint = defineEndpoint({
+    path: '/panes/kill',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: folderActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Sends the configured "reset AI session" string into a folder's AI pane (per-folder override →
+ * global default). Triggered by the row-menu "Restart AI session" item, which only appears when the
+ * resolved command is non-empty. Returns a no-op 200 when no command is configured so a stale
+ * frontend doesn't surface errors after the user clears the setting.
+ */
+export const resetAiSessionEndpoint = defineEndpoint({
+    path: '/panes/reset-ai-session',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: folderActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const restartDaemonEndpoint = defineEndpoint({
+    path: '/daemon/restart',
+    requests: {
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const touchRepoEndpoint = defineEndpoint({
+    path: '/repos/touch',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: repoTouchRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const checkPathEndpoint = defineEndpoint({
+    path: '/paths/check',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: pathRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: pathCheckResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const createPathEndpoint = defineEndpoint({
+    path: '/paths/create',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: pathRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: pathCreateResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const uploadEndpoint = defineEndpoint({
+    path: '/uploads/create',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: uploadRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: uploadResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const ptyWebSocket = defineWebSocket({
+    path: '/pty',
+    clientMessage: ptyClientMessageShape,
+    hostMessage: stringMessageShape,
+    searchParams: {
+        folder: defineShape(''),
+        kind: enumShape(PaneKind),
+    },
+});
+
+export const agentStormService = defineApi({
+    apiName: 'agent-storm',
+    endpoints: [
+        configEndpoint,
+        foldersEndpoint,
+        updateCheckEndpoint,
+        createWorktreeEndpoint,
+        deleteWorktreeEndpoint,
+        restartPaneEndpoint,
+        killPanesEndpoint,
+        resetAiSessionEndpoint,
+        restartDaemonEndpoint,
+        touchRepoEndpoint,
+        checkPathEndpoint,
+        createPathEndpoint,
+        uploadEndpoint,
+    ],
+    webSockets: [ptyWebSocket],
 });
 
 export const defaultConfig = configShape.default;

@@ -1,12 +1,11 @@
-import {agentStormService, PaneKind} from '@agent-storm/common';
-import {connectWebSocket} from '@rest-vir/define-service';
+import {PaneKind, ptyWebSocket} from '@agent-storm/common';
 import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal, type ITheme} from '@xterm/xterm';
 import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element-vir';
 import {createSizedIcon, lucideIcons, ViraIcon, viraThemeByKeys} from 'vira';
-import {getConfig, uploadFile} from '../../util/api-client.js';
+import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
@@ -585,10 +584,10 @@ export const VirTerminal = defineElement<{
                     );
 
                     const secret = await ensureSecret();
-                    const socket = await connectWebSocket(agentStormService.webSockets['/pty'], {
+                    const socket = await client.connectWebSocket(ptyWebSocket, {
                         searchParams: {
-                            folder: [inputs.folder],
-                            kind: [inputs.kind],
+                            folder: inputs.folder,
+                            kind: inputs.kind,
                         },
                         protocols: [secret],
                         listeners: {

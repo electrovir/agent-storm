@@ -1,103 +1,100 @@
 import {
     agentStormService,
+    checkPathEndpoint,
+    configEndpoint,
+    createPathEndpoint,
+    createWorktreeEndpoint,
+    deleteWorktreeEndpoint,
+    foldersEndpoint,
+    killPanesEndpoint,
+    resetAiSessionEndpoint,
+    restartDaemonEndpoint,
+    restartPaneEndpoint,
+    touchRepoEndpoint,
+    updateCheckEndpoint,
+    uploadEndpoint,
     type Config,
     type FolderInfo,
     type PaneKind,
     type UpdateStatus,
 } from '@agent-storm/common';
-import {HttpMethod} from '@augment-vir/common';
-import {fetchEndpoint} from '@rest-vir/define-service';
+import {HttpStatus} from '@augment-vir/common';
+import {RestVirClient, type ClientFetch, type EndpointFetchOutput} from '@rest-vir/api';
 import {clearStoredSecret, ensureSecret} from './auth.js';
 import {notifyBackendFailure, notifyBackendSuccess} from './backend-watchdog.js';
+import {getBackendBaseUrl} from './service-origin.js';
 
-async function authOptions(): Promise<{options: {headers: Record<string, string>}}> {
-    return {
-        options: {
-            headers: {
-                Authorization: `Bearer ${await ensureSecret()}`,
-            },
-        },
-    };
-}
+/**
+ * Inject the bearer secret on every request. The browser can't read a static header into the
+ * rest-vir client, so we wrap `fetch`: each call resolves the current secret and sets the
+ * `Authorization` header before delegating to the real `fetch`.
+ */
+const authFetch: ClientFetch = async (url, requestInit) => {
+    const headers = new Headers(requestInit.headers);
+    headers.set('Authorization', `Bearer ${await ensureSecret()}`);
+    return await fetch(url, {
+        ...requestInit,
+        headers,
+    });
+};
 
-async function callApi<Data>(
+/**
+ * Shared rest-vir client. `baseUrl` is the page-derived backend origin; `authFetch` adds the bearer
+ * header to every request. Exposed so the terminal element can open the `/pty` WebSocket through
+ * the same client (and thus the same base URL derivation).
+ */
+export const client = new RestVirClient(agentStormService, getBackendBaseUrl(), authFetch);
+
+/**
+ * Run a client fetch, fold the rest-vir status-keyed result into a "return data or throw" shape,
+ * and keep the backend watchdog informed:
+ *
+ * - A thrown error means the fetch itself rejected (DNS / connection refused / abort — the backend
+ *   process is gone). Count it toward the watchdog's recovery threshold and rethrow.
+ * - An `Ok` result returns its `responseData`.
+ * - Anything else means the server answered with an error (every endpoint declares only `Ok`, so a
+ *   non-200 surfaces as `unexpectedError`): the backend is alive (notify success), a `401` clears
+ *   the stored secret, and we throw a labeled error.
+ */
+async function requestApi<Result extends Readonly<EndpointFetchOutput>>(
     label: string,
-    request: Promise<
-        | {ok: true; data: Data}
-        | {ok: false; data: unknown; response?: {status?: number} | undefined}
-    >,
-): Promise<Data> {
-    /**
-     * `fetchEndpoint` re-throws when the underlying `fetch` itself rejects (DNS / connect refused /
-     * aborted — i.e. the backend process is gone). The result branch below only covers HTTP-level
-     * failures where the server actually answered. Catch the throw here so the watchdog can count
-     * it toward the recovery threshold; without this, a dead backend just produces silent polling
-     * rejections and the page never reloads when the server comes back.
-     */
-    const result = await request.catch((error: unknown) => {
+    runFetch: () => Promise<Result>,
+): Promise<NonNullable<Result['Ok']>['responseData']> {
+    const result = await runFetch().catch((error: unknown) => {
         notifyBackendFailure();
         throw error;
     });
-    if (!result.ok) {
-        if (result.response?.status === 401) {
-            clearStoredSecret();
-        }
-        /**
-         * Distinguish a transport failure (no `response.status` — fetch itself threw, backend is
-         * unreachable) from an application-level error (any HTTP status, including 401/500). Only
-         * the former should bump the watchdog toward a recovery reload; everything else means the
-         * backend is alive and replying, even if the reply is an error.
-         */
-        if (result.response?.status == undefined) {
-            notifyBackendFailure();
-        } else {
-            notifyBackendSuccess();
-        }
-        throw new Error(`${label} failed: ${String(result.data)}`);
+    if (result.Ok) {
+        notifyBackendSuccess();
+        return result.Ok.responseData;
     }
     notifyBackendSuccess();
-    return result.data;
+    const errorOutput = result.unexpectedError;
+    if (errorOutput?.status === HttpStatus.Unauthorized) {
+        clearStoredSecret();
+    }
+    throw new Error(`${label} failed: ${String(errorOutput?.responseData)}`);
 }
 
 export async function getConfig(): Promise<Config> {
-    const options = await authOptions();
-    return await callApi(
-        'GET /config',
-        fetchEndpoint(agentStormService.endpoints['/config'], {
-            ...options,
-            method: HttpMethod.Get,
-            requestData: undefined,
-        }),
-    );
+    return await requestApi('GET /config', () => client.fetch(configEndpoint).GET());
 }
 
 export async function putConfig(config: Readonly<Config>): Promise<Config> {
-    const options = await authOptions();
-    return await callApi(
-        'PUT /config',
-        fetchEndpoint(agentStormService.endpoints['/config'], {
-            ...options,
-            method: HttpMethod.Put,
+    return await requestApi('PUT /config', () =>
+        client.fetch(configEndpoint).PUT({
             requestData: config,
         }),
     );
 }
 
 export async function getFolders(): Promise<FolderInfo[]> {
-    const options = await authOptions();
-    const data = await callApi(
-        'GET /folders',
-        fetchEndpoint(agentStormService.endpoints['/folders'], options),
-    );
+    const data = await requestApi('GET /folders', () => client.fetch(foldersEndpoint).GET());
     return data.folders;
 }
 
 export async function getUpdateStatus(): Promise<UpdateStatus> {
-    const options = await authOptions();
-    return await callApi(
-        'GET /update-check',
-        fetchEndpoint(agentStormService.endpoints['/update-check'], options),
-    );
+    return await requestApi('GET /update-check', () => client.fetch(updateCheckEndpoint).GET());
 }
 
 export async function createWorktree(
@@ -108,33 +105,24 @@ export async function createWorktree(
         resetAiSessionCmd?: string | undefined;
     }>,
 ): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /worktrees/create',
-        fetchEndpoint(agentStormService.endpoints['/worktrees/create'], {
-            ...options,
+    await requestApi('POST /worktrees/create', () =>
+        client.fetch(createWorktreeEndpoint).POST({
             requestData: params,
         }),
     );
 }
 
 export async function deleteWorktree(params: Readonly<{worktreePath: string}>): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /worktrees/delete',
-        fetchEndpoint(agentStormService.endpoints['/worktrees/delete'], {
-            ...options,
+    await requestApi('POST /worktrees/delete', () =>
+        client.fetch(deleteWorktreeEndpoint).POST({
             requestData: params,
         }),
     );
 }
 
 export async function touchRepo(params: Readonly<{folder: string}>): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /repos/touch',
-        fetchEndpoint(agentStormService.endpoints['/repos/touch'], {
-            ...options,
+    await requestApi('POST /repos/touch', () =>
+        client.fetch(touchRepoEndpoint).POST({
             requestData: params,
         }),
     );
@@ -143,44 +131,31 @@ export async function touchRepo(params: Readonly<{folder: string}>): Promise<voi
 export async function restartPane(
     params: Readonly<{folder: string; kind: PaneKind}>,
 ): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /panes/restart',
-        fetchEndpoint(agentStormService.endpoints['/panes/restart'], {
-            ...options,
+    await requestApi('POST /panes/restart', () =>
+        client.fetch(restartPaneEndpoint).POST({
             requestData: params,
         }),
     );
 }
 
 export async function killFolderPanes(params: Readonly<{folder: string}>): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /panes/kill',
-        fetchEndpoint(agentStormService.endpoints['/panes/kill'], {
-            ...options,
+    await requestApi('POST /panes/kill', () =>
+        client.fetch(killPanesEndpoint).POST({
             requestData: params,
         }),
     );
 }
 
 export async function resetAiSession(params: Readonly<{folder: string}>): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /panes/reset-ai-session',
-        fetchEndpoint(agentStormService.endpoints['/panes/reset-ai-session'], {
-            ...options,
+    await requestApi('POST /panes/reset-ai-session', () =>
+        client.fetch(resetAiSessionEndpoint).POST({
             requestData: params,
         }),
     );
 }
 
 export async function restartDaemon(): Promise<void> {
-    const options = await authOptions();
-    await callApi(
-        'POST /daemon/restart',
-        fetchEndpoint(agentStormService.endpoints['/daemon/restart'], options),
-    );
+    await requestApi('POST /daemon/restart', () => client.fetch(restartDaemonEndpoint).POST());
 }
 
 /**
@@ -188,16 +163,15 @@ export async function restartDaemon(): Promise<void> {
  * Returns the path prefix the iframe should use (e.g. `/vscode-proxy/<encoded folder>`); the
  * frontend builds the full iframe `src` by concatenating with the backend origin.
  *
- * Bypasses `fetchEndpoint` / `agentStormService` because the proxy endpoints aren't part of the
- * rest-vir service definition — they need raw cookie + WebSocket handling that rest-vir doesn't
- * expose. Uses the same bearer header and credentials policy so the cookie is accepted by the
- * browser.
+ * Bypasses the rest-vir client because the proxy endpoints aren't part of the api definition — they
+ * need raw cookie + WebSocket handling that rest-vir doesn't expose. Uses the same bearer header
+ * and credentials policy so the cookie is accepted by the browser.
  */
 export async function ensureVscode(params: Readonly<{folder: string}>): Promise<{
     basePath: string;
 }> {
     const bearer = await ensureSecret();
-    const response = await fetch(`${agentStormService.serviceOrigin}/vscode/ensure`, {
+    const response = await fetch(`${getBackendBaseUrl()}/vscode/ensure`, {
         method: 'POST',
         headers: {
             Authorization: `Bearer ${bearer}`,
@@ -215,7 +189,7 @@ export async function ensureVscode(params: Readonly<{folder: string}>): Promise<
 
 export async function killVscode(params: Readonly<{folder: string}>): Promise<void> {
     const bearer = await ensureSecret();
-    const response = await fetch(`${agentStormService.serviceOrigin}/vscode/kill`, {
+    const response = await fetch(`${getBackendBaseUrl()}/vscode/kill`, {
         method: 'POST',
         headers: {
             Authorization: `Bearer ${bearer}`,
@@ -233,11 +207,8 @@ export async function killVscode(params: Readonly<{folder: string}>): Promise<vo
 export async function uploadFile(
     params: Readonly<{filename: string; dataBase64: string}>,
 ): Promise<string> {
-    const options = await authOptions();
-    const data = await callApi(
-        'POST /uploads/create',
-        fetchEndpoint(agentStormService.endpoints['/uploads/create'], {
-            ...options,
+    const data = await requestApi('POST /uploads/create', () =>
+        client.fetch(uploadEndpoint).POST({
             requestData: params,
         }),
     );
@@ -247,11 +218,8 @@ export async function uploadFile(
 export async function checkPath(
     params: Readonly<{path: string}>,
 ): Promise<{resolvedPath: string; exists: boolean}> {
-    const options = await authOptions();
-    return await callApi(
-        'POST /paths/check',
-        fetchEndpoint(agentStormService.endpoints['/paths/check'], {
-            ...options,
+    return await requestApi('POST /paths/check', () =>
+        client.fetch(checkPathEndpoint).POST({
             requestData: params,
         }),
     );
@@ -260,11 +228,8 @@ export async function checkPath(
 export async function createPath(
     params: Readonly<{path: string}>,
 ): Promise<{resolvedPath: string}> {
-    const options = await authOptions();
-    return await callApi(
-        'POST /paths/create',
-        fetchEndpoint(agentStormService.endpoints['/paths/create'], {
-            ...options,
+    return await requestApi('POST /paths/create', () =>
+        client.fetch(createPathEndpoint).POST({
             requestData: params,
         }),
     );
