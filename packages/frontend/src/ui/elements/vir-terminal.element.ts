@@ -1,4 +1,5 @@
 import {PaneKind, ptyWebSocket} from '@agent-storm/common';
+import {colorCss} from '@electrovir/color';
 import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
@@ -348,8 +349,8 @@ export const VirTerminal = defineElement<{
         /* Touch accessory key bar. In normal flow as the last flex-column child so it can't overlap
            the terminal. vir-app already shrinks the whole app to the keyboard-free area (its
            --app-viewport-height tracks window.visualViewport), so this just sits at the bottom of
-           the visible pane — above the keyboard — with no positioning math of its own. Colors follow
-           this element's hardcoded Terminal.app vir-light palette. */
+           the visible pane — above the keyboard — with no positioning math of its own. Colors come from
+           the Vira theme so the bar follows the app's light/dark selection. */
         .accessory-bar {
             flex-grow: 0;
             flex-shrink: 0;
@@ -357,8 +358,8 @@ export const VirTerminal = defineElement<{
             gap: 6px;
             padding: 6px;
             box-sizing: border-box;
-            background: #e9e9ef;
-            border-top: 1px solid #c8c8d2;
+            background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             /* Sit inside the iPhone home-indicator safe area when the keyboard is closed. */
             padding-bottom: max(6px, env(safe-area-inset-bottom));
 
@@ -371,24 +372,23 @@ export const VirTerminal = defineElement<{
                 min-width: 0;
                 min-height: 40px;
                 padding: 0 4px;
-                border: 1px solid #c8c8d2;
+                border: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
                 border-radius: 6px;
                 font-family: ui-sans-serif, system-ui, sans-serif;
                 font-size: 16px;
-                color: #0220b3;
-                background: #ffffff;
+                color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+                background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
                 cursor: pointer;
                 touch-action: manipulation;
                 user-select: none;
 
                 &:active {
-                    background: #d7d7e0;
+                    background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
                 }
 
                 &[data-armed] {
-                    color: #ffffff;
-                    background: #0038ee;
-                    border-color: #0038ee;
+                    ${colorCss(viraThemeByKeys.blue.foreground.body)};
+                    border-color: ${viraThemeByKeys.blue.foreground.body.background.value};
                 }
             }
         }

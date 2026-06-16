@@ -12,6 +12,12 @@ body {
     height: 100dvh;
     height: var(--app-viewport-height, 100dvh);
     width: 100%;
+    /* Themed base surface so the page — and the brief pre-mount flash before vir-app renders —
+       follows the Vira theme client's light/dark CSS variables (set on :root) instead of the
+       browser-default white. These are the default-theme vars vir-app's host applies, referenced
+       directly here so html/body stay in sync. */
+    background-color: var(--vira-default-bg, white);
+    color: var(--vira-default-fg, black);
     /* Stop iOS from rubber-banding the whole page when a touch gesture inside the app reaches
        the edge of its container. `overscroll-behavior: none` short-circuits the scroll chain; the
        `overflow: hidden` belt-and-braces blocks the document itself from accepting touch scrolls
