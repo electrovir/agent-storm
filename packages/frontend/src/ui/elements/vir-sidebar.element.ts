@@ -38,6 +38,8 @@ import {
     viraShadows,
     ViraSize,
     viraThemeByKeys,
+    type ViraThemeClient,
+    ViraThemeSwitcher,
 } from 'vira';
 import {
     checkPath,
@@ -67,7 +69,6 @@ const mergedCheckIcon = createSizedIcon(lucideIcons.Check, 14);
 const buttonIconSize = 16;
 const searchIcon = createSizedIcon(lucideIcons.Search, buttonIconSize);
 const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
-const settingsIcon = createSizedIcon(lucideIcons.Settings, buttonIconSize);
 const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
 const filterIcon = createSizedIcon(lucideIcons.ListFilter, buttonIconSize);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
@@ -80,7 +81,7 @@ const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 const mobileButtonIconSize = 24;
 const mobileSearchIcon = createSizedIcon(lucideIcons.Search, mobileButtonIconSize);
 const mobilePlusIcon = createSizedIcon(lucideIcons.Plus, mobileButtonIconSize);
-const mobileSettingsIcon = createSizedIcon(lucideIcons.Settings, mobileButtonIconSize);
+const mobileEllipsisIcon = createSizedIcon(lucideIcons.Ellipsis, mobileButtonIconSize);
 const mobileFilterIcon = createSizedIcon(lucideIcons.ListFilter, mobileButtonIconSize);
 
 const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
@@ -171,6 +172,8 @@ export const VirSidebar = defineElement<{
     activeFolder: string | undefined;
     hideBorder?: boolean | undefined;
     mobileModal?: boolean | undefined;
+    /** App-owned Vira theme client, used by the options menu's theme switcher. */
+    themeClient: Readonly<ViraThemeClient>;
 }>()({
     tagName: 'vir-sidebar',
     events: {
@@ -274,6 +277,14 @@ export const VirSidebar = defineElement<{
             display: flex;
             gap: 6px;
             align-items: center;
+        }
+
+        /* The theme switcher sits inside the options menu above the Settings item; give it breathing
+           room so it doesn't crowd the menu edges or the item below it. */
+        .theme-switcher-menu-row {
+            display: flex;
+            justify-content: center;
+            padding: 8px 10px;
         }
 
         /* Card behind the search input so the pop-up reads as a panel, not a bare floating input.
@@ -729,14 +740,38 @@ export const VirSidebar = defineElement<{
                             }),
                         )}
                     </${ViraMenuTrigger}>
-                    <${ViraButton.assign({
-                        icon: inputs.mobileModal ? mobileSettingsIcon : settingsIcon,
-                        buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
+                    <${ViraMenuTrigger.assign({
+                        horizontalAnchor: HorizontalAnchor.Right,
                     })}
-                        ${listen('click', () => dispatch(new events.openSettingsRequested()))}
-                    ></${ViraButton}>
+                        ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                            updateState({
+                                openMenuKey: event.detail ? 'sidebar-settings' : undefined,
+                            });
+                        })}
+                    >
+                        <${ViraButton.assign({
+                            icon: inputs.mobileModal ? mobileEllipsisIcon : ellipsisIcon,
+                            buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                        })}
+                            slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                            title="More options"
+                        ></${ViraButton}>
+                        <div class="theme-switcher-menu-row">
+                            <${ViraThemeSwitcher.assign({
+                                themeClient: inputs.themeClient,
+                            })}></${ViraThemeSwitcher}>
+                        </div>
+                        ${renderMenuItemEntries([
+                            {
+                                content: 'Settings',
+                                onClick: () => {
+                                    dispatch(new events.openSettingsRequested());
+                                },
+                            },
+                        ])}
+                    </${ViraMenuTrigger}>
                 </span>
             </div>
             ${state.loadError

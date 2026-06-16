@@ -1,5 +1,7 @@
 import {PaneKind, type FolderInfo} from '@agent-storm/common';
+import {colorCss} from '@electrovir/color';
 import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-vir';
+import {themeDefaultKey} from 'theme-vir';
 import {
     createSizedIcon,
     lucideIcons,
@@ -8,7 +10,9 @@ import {
     ViraEmphasis,
     ViraModal,
     ViraSize,
+    viraTheme,
     viraThemeByKeys,
+    ViraThemeClient,
 } from 'vira';
 import {getFolders, touchRepo} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
@@ -168,6 +172,12 @@ type AppState = {
      */
     mobileSidebarOpen: boolean;
     paneRestartKeys: Record<string, number | undefined>;
+    /**
+     * App-wide Vira theme client. Constructed once here (applying the persisted theme + wiring
+     * LocalStorage persistence and system color-scheme listening) and passed down to the sidebars
+     * via inputs so the theme switcher in the options menu drives a single shared selection.
+     */
+    themeClient: ViraThemeClient;
 };
 
 type AppUpdate = (newState: Partial<AppState>) => void;
@@ -194,6 +204,7 @@ export const VirApp = defineElement()({
             disconnectVisualViewport: undefined,
             mobileSidebarOpen: false,
             paneRestartKeys: {},
+            themeClient: new ViraThemeClient(),
         };
     },
     styles: css`
@@ -213,6 +224,13 @@ export const VirApp = defineElement()({
              */
             height: var(--app-viewport-height, 100dvh);
             font-family: sans-serif;
+            /*
+             * Themed base surface for the whole app (text + background as a Vira color pair). The
+             * theme tokens compile to CSS-variable references, so the app, the sidebar (transparent
+             * over this), and other chrome recolor live when the theme client swaps the light/dark
+             * CSS variables, instead of sitting on the browser's default white.
+             */
+            ${colorCss(viraTheme.colors[themeDefaultKey])};
             /*
              * Belt-and-braces against the browser's "scroll the focused input into view"
              * behavior: if the layout ever overflows the visible viewport (e.g. during the
@@ -667,6 +685,7 @@ export const VirApp = defineElement()({
         return html`
             <${VirSidebar.assign({
                 activeFolder,
+                themeClient: state.themeClient,
             })}
                 ${listen(VirSidebar.events.folderActivated, (event) =>
                     handleFolderActivated(event.detail),
@@ -785,6 +804,7 @@ export const VirApp = defineElement()({
                         activeFolder,
                         hideBorder: true,
                         mobileModal: true,
+                        themeClient: state.themeClient,
                     })}
                         ${listen(VirSidebar.events.folderActivated, (event) =>
                             handleFolderActivated(event.detail),

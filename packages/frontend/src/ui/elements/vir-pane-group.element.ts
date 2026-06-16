@@ -218,7 +218,9 @@ export const VirPaneGroup = defineElement<{
             height: calc(100% + var(--vscode-titlebar-offset));
             margin-top: calc(-1 * var(--vscode-titlebar-offset));
             border: none;
-            background: white;
+            /* Load-time backdrop behind the VS Code iframe (VS Code paints its own theme over this
+               once it boots). Use a neutral theme surface so the flash matches the app's theme. */
+            background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
         }
 
         .vscode-status {
