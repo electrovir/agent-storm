@@ -31,13 +31,13 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@augment-vir/assert": "^31.69.0",
-        "@rest-vir/define-service": "^1.7.2",
-        "object-shape-tester": "^6.12.1",
+        "@augment-vir/assert": "^31.73.0",
+        "@rest-vir/api": "^2.2.0",
+        "object-shape-tester": "^6.14.0",
         "schema-vir": "^0.7.1"
     },
     "devDependencies": {
-        "@augment-vir/test": "^31.69.0",
+        "@augment-vir/test": "^31.73.0",
         "@web/dev-server-esbuild": "^1.0.5",
         "@web/test-runner": "^0.20.2",
         "@web/test-runner-playwright": "^0.11.1",

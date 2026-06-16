@@ -32,32 +32,32 @@
     },
     "dependencies": {
         "@agent-storm/common": "*",
-        "@augment-vir/assert": "^31.69.0",
-        "@augment-vir/common": "^31.70.0",
-        "@electrovir/color": "^1.7.9",
-        "@rest-vir/define-service": "^1.7.2",
+        "@augment-vir/assert": "^31.73.0",
+        "@augment-vir/common": "^31.73.0",
+        "@electrovir/color": "^1.7.10",
+        "@rest-vir/api": "^2.2.0",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-web-links": "^0.12.0",
         "@xterm/addon-webgl": "^0.19.0",
         "@xterm/xterm": "^6.0.0",
-        "date-vir": "^8.3.2",
+        "date-vir": "^8.5.0",
         "element-book": "^26.17.3",
-        "element-vir": "^26.16.0",
-        "object-shape-tester": "^6.12.1",
+        "element-vir": "^26.17.0",
+        "object-shape-tester": "^6.14.0",
         "spa-router-vir": "^6.6.0",
         "theme-vir": "^28.25.0",
-        "type-fest": "^5.6.0",
+        "type-fest": "^5.7.0",
         "url-vir": "^2.1.9",
-        "vira": "^31.18.2"
+        "vira": "^31.24.0"
     },
     "devDependencies": {
-        "@augment-vir/test": "^31.69.0",
+        "@augment-vir/test": "^31.73.0",
         "@web/dev-server-esbuild": "^1.0.5",
         "@web/test-runner": "^0.20.2",
         "@web/test-runner-playwright": "^0.11.1",
         "istanbul-smart-text-reporter": "^1.1.5",
-        "typescript": "^5.9.3",
-        "vite": "^8.0.13"
+        "typescript": "^6.0.3",
+        "vite": "^8.0.16"
     },
     "engines": {
         "node": ">=22"

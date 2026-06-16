@@ -1,4 +1,3 @@
-import {agentStormService} from '@agent-storm/common';
 import {readInjectedGlobalData} from './global-data.js';
 
 /**
@@ -11,32 +10,17 @@ import {readInjectedGlobalData} from './global-data.js';
 const backendPort = readInjectedGlobalData().backendPort || 41_880;
 
 /**
- * Patch `serviceOrigin` at module load to point at whatever host the page itself is served from on
- * the chosen backend port.
- *
- * `defineService` doesn't store `serviceOrigin` only on the top-level service object — it also
- * copies it into a `minimalService` inner object that every endpoint + websocket references by
- * value (see `finalizeServiceDefinition` in @rest-vir/define-service). `fetchEndpoint` and
- * `connectWebSocket` read the URL from THAT inner copy, not the top-level field, so we need to
- * mutate both. All endpoints + websockets share the same `minimalService` instance, so mutating via
- * any one endpoint's `.service` reference propagates everywhere.
- *
- * Importing this module for its side effect (one line in `vir-app.element.ts`) is what wires it up
- * — there's no API surface.
+ * The origin the backend is reachable at: whatever host the page itself is served from, on the
+ * chosen backend port. `RestVirClient` (in `api-client.ts`) is constructed with this as its
+ * `baseUrl`, and the VS Code proxy helpers concatenate their paths onto it. The new rest-vir client
+ * takes the origin explicitly rather than reading it off the api definition (the old
+ * `serviceOrigin` field is gone), so this is a plain value rather than a load-time mutation of the
+ * definition.
  */
-function configureServiceOrigin(): void {
+export function getBackendBaseUrl(): string {
     if (typeof globalThis.location === 'undefined') {
-        return;
+        return `http://localhost:${backendPort}`;
     }
     const {protocol, hostname} = globalThis.location;
-    const nextOrigin = `${protocol}//${hostname}:${backendPort}`;
-    (agentStormService as {serviceOrigin: string}).serviceOrigin = nextOrigin;
-    const inner =
-        Object.values(agentStormService.endpoints)[0]?.service ??
-        Object.values(agentStormService.webSockets)[0]?.service;
-    if (inner) {
-        (inner as {serviceOrigin: string}).serviceOrigin = nextOrigin;
-    }
+    return `${protocol}//${hostname}:${backendPort}`;
 }
-
-configureServiceOrigin();

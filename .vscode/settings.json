@@ -38,7 +38,6 @@
     "[yaml]": {
         "editor.defaultFormatter": "esbenp.prettier-vscode"
     },
-    "chat.titleBar.signIn.enabled": false,
     "editor.formatOnSave": true,
     "editor.rulers": [
         100
@@ -47,6 +46,5 @@
     "files.associations": {
         "*.svg": "html"
     },
-    "js/ts.tsdk.path": "node_modules/typescript/lib",
-    "workbench.notifications.showInTitleBar": false
+    "js/ts.tsdk.path": "node_modules/typescript/lib"
 }

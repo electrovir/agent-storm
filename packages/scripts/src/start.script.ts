@@ -65,7 +65,7 @@ function killPriorInstances(): void {
     });
     const orphanPids = filterMap(
         psOutput.split('\n'),
-        (line) => {
+        (line: string) => {
             /**
              * Lines look like `<right-aligned pid><spaces><command>` (e.g. ` 606
              * /usr/libexec/logd`). Parse via index math rather than a regex with `\s+` quantifiers
