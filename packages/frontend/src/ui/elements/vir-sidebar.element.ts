@@ -15,6 +15,7 @@ import {
     createUtcFullDate,
     getNowInUtcTimezone,
     isDateAfter,
+    toTimestamp,
 } from 'date-vir';
 import {css, defineElement, defineElementEvent, html, listen} from 'element-vir';
 import {parseUrl} from 'url-vir';
@@ -143,7 +144,8 @@ type SidebarState = {
     /**
      * Live text from the header search pop-up. While non-empty it temporarily overrides the
      * hide-inactive filter and shows only repos/worktrees whose names match (searching active and
-     * inactive repos alike). Cleared when the search pop-up closes.
+     * inactive repos alike). Persists after the pop-up closes — clearing the input (or its clear
+     * button) is what ends the search.
      */
     searchQuery: string;
     /**
@@ -590,6 +592,33 @@ export const VirSidebar = defineElement<{
             dispatch(new events.foldersRemoved(paths));
         };
         const emitFolderActivated = (path: string) => {
+            /**
+             * Optimistically bump the owning repo's `lastInteractedAtMs` in the local repos mirror
+             * so the hide-inactive filter keeps the repo visible the instant the search query is
+             * cleared and the view reverts to the recency filter. The backend touch
+             * — fired from vir-app's `folderActivated` handler — persists this, but it's async and
+             * wouldn't land before the re-filter, so an inactive repo would otherwise vanish until
+             * the next poll. Resolve the owning repo the same way the backend does: a worktree's
+             * parent repo, else the folder itself.
+             */
+            const folder = state.folders.find((entry) => entry.path === path);
+            const owningRepoPath = folder?.parentRepoPath ?? folder?.path ?? path;
+            const now = toTimestamp(getNowInUtcTimezone());
+            updateState({
+                /**
+                 * Clear the active search once the user picks a folder — they've found what they
+                 * were looking for, so the sidebar reverts to its normal (hide-inactive) view.
+                 */
+                searchQuery: '',
+                repos: state.repos.map((repo) =>
+                    repo.path === owningRepoPath
+                        ? {
+                              ...repo,
+                              lastInteractedAtMs: now,
+                          }
+                        : repo,
+                ),
+            });
             dispatch(new events.folderActivated(path));
         };
         const emitPaneRestarted = (detail: PaneRestartedEvent) => {
@@ -660,25 +689,19 @@ export const VirSidebar = defineElement<{
                     <${ViraPopUpTrigger.assign({
                         horizontalAnchor: HorizontalAnchor.Left,
                         keepOpenAfterInteraction: true,
-                    })}
-                        ${listen(ViraPopUpTrigger.events.openChange, (event) => {
-                            /**
-                             * Clear the query when the pop-up closes so the sidebar returns to its
-                             * normal (hide-inactive) view — the search filter is meant to be
-                             * temporary, only while the pop-up is open.
-                             */
-                            if (!event.detail) {
-                                updateState({
-                                    searchQuery: '',
-                                });
-                            }
-                        })}
-                    >
+                    })}>
                         <${ViraButton.assign({
                             icon: inputs.mobileModal ? mobileSearchIcon : searchIcon,
                             buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
-                            buttonEmphasis: ViraEmphasis.Subtle,
-                            color: ViraColorVariant.Neutral,
+                            /**
+                             * Bump the search button to Standard emphasis while a search is active
+                             * so it stays visibly "on" after the pop-up closes — the query persists
+                             * past close, so the filter is still applied even with the pop-up shut.
+                             */
+                            buttonEmphasis: trimmedSearchQuery
+                                ? ViraEmphasis.Standard
+                                : ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Plain,
                         })}
                             slot=${ViraPopUpTrigger.slotNames['vira-pop-up-trigger-trigger']}
                             title="Search repos & worktrees"
