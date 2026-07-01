@@ -9,12 +9,6 @@ export enum PaneKind {
     Services = 'services',
 }
 
-export enum UserThemeSelection {
-    Auto = 'auto',
-    Light = 'light',
-    Dark = 'dark',
-}
-
 export enum RepoInspectionState {
     /** The folder is empty or does not exist. */
     Empty = 'empty',

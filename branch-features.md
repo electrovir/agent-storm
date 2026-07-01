@@ -19,12 +19,13 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Reviewer-approved step reads `gh pr view --json reviewDecision` so approvals auto-check on the PR.
 - Smarter pane busy detection and clean pty restart on failure.
 - WebSocket auto-reconnects and drops stale cache entries; live target fields overlay.
-- Theme selection moved client-side; Geist fonts self-hosted.
+- Theme consolidated onto vira's ViraThemeClient (sidebar switcher); brand vars applied via its callback.
 - Element-book component browser at `/book` with sub-path inputs.
 - "See element book" link added to settings modal.
 - Electron dev mode with auto-injected auth secret and Linux desktop identity/icon.
 - Electron ESM main uses `.then()` to avoid top-level `whenReady` deadlock.
 - Electron bumped to ^42.1.0 to patch high-severity advisories.
+- Electron disables the setuid sandbox on Linux to avoid chrome-sandbox FATAL.
 - Fixed-port frontend launch config plus `npm start` tees output to `.logs/dev.log`.
 - Daemon launch hardened under tsx 4.22; node-pty auto-rebuild on start.
 - Rate-limit handling added to backend requests.
@@ -39,3 +40,4 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Worktrees can be marked hidden; sidebar three-dot menu toggles show-hidden visibility.
 - PR cache preserves prior snapshot across stale-cache, inactive-pane, and backoff cases; never wipes badges on a skipped fetch.
 - Worktrees auto-hide (not delete) on observed open-to-merged PR transition; skips base and live panes.
+- Three-dot menu gains "Restart services" to respawn the killed `npm start` services pane in place.

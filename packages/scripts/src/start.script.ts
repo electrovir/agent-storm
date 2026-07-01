@@ -325,6 +325,14 @@ const childEnv: NodeJS.ProcessEnv = {
     VITE_BACKEND_PORT: String(backendPort),
     VITE_FRONTEND_PORT: String(frontendPort),
     ...(runtimeSecret ? {AGENT_STORM_RUNTIME_SECRET: runtimeSecret} : {}),
+    /**
+     * On Linux the bundled `chrome-sandbox` must be setuid root (mode 4755), which `npm install`
+     * can't set and electron's postinstall resets — so electron aborts at C++ init with a FATAL
+     * setuid-sandbox error before any JS (or `app.commandLine`) runs. This env var is read during
+     * that early init and skips the setuid sandbox. Fine for a localhost dev wrapper loading our
+     * own vite server.
+     */
+    ...(withElectron && process.platform === 'linux' ? {ELECTRON_DISABLE_SANDBOX: '1'} : {}),
 };
 
 console.log(`agent-storm ports: backend=${backendPort} frontend=${frontendPort}`);
