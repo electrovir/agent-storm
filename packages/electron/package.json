@@ -1,0 +1,30 @@
+{
+    "name": "@agent-storm/electron",
+    "version": "0.0.0",
+    "private": true,
+    "description": "Electron wrapper that loads the agent-storm vite dev server in a desktop window.",
+    "homepage": "https://github.com/electrovir/agent-storm",
+    "bugs": {
+        "url": "https://github.com/electrovir/agent-storm/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/electrovir/agent-storm.git"
+    },
+    "license": "(MIT or CC0 1.0)",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "type": "module",
+    "main": "src/main.mjs",
+    "scripts": {
+        "start": "electron src/main.mjs"
+    },
+    "dependencies": {
+        "electron": "^42.1.0"
+    },
+    "engines": {
+        "node": ">=22"
+    }
+}

@@ -26,7 +26,7 @@
         "compile": "virmator compile",
         "docs": "virmator docs",
         "start": "virmator frontend",
-        "test": "exit 0;",
+        "test": "virmator test node",
         "test:docs": "virmator docs check",
         "test:update": "npm test update"
     },

@@ -1,0 +1,41 @@
+# Branch features
+
+At-a-glance list of features on this branch. Append one 10–15 word bullet per change.
+
+- SPA router with `/add-repo`, `/add-worktree`, `/book` routes for empty/setup workspaces.
+- Native folder-picker endpoint backs the "add repo" flow from the frontend.
+- Worktrees persisted in `~/.config/agent-storm.json` instead of filesystem scan each refresh.
+- Sidebar groups worktrees into Working vs Needs-attention with status dots and footer.
+- Sidebar redesigned with brand mark, resizable width, and always-visible row actions.
+- Worktree create/delete updates the sidebar immediately via reconcile on config save.
+- Adding a worktree-child folder recognizes it as its parent repo automatically.
+- "Delete repository" action available in the settings modal danger zone.
+- Settings JSON form replaced with sectioned hand-written controls.
+- Design tokens + SaaS-style restyle applied across the app.
+- Dark-mode palette wired into the xterm terminal; renderer stays on DOM for stable copy/paste.
+- Terminal supports Ctrl+Shift+C/V and clickable web links via xterm addons.
+- Progress tracker driven by per-step `mergeStepsConfig` with all step state stored on the worktree config.
+- Self-review step now exposes Toggle + Open-in-IDE via a hover popover instead of one overloaded click.
+- Reviewer-approved step reads `gh pr view --json reviewDecision` so approvals auto-check on the PR.
+- Smarter pane busy detection and clean pty restart on failure.
+- WebSocket auto-reconnects and drops stale cache entries; live target fields overlay.
+- Theme selection moved client-side; Geist fonts self-hosted.
+- Element-book component browser at `/book` with sub-path inputs.
+- "See element book" link added to settings modal.
+- Electron dev mode with auto-injected auth secret and Linux desktop identity/icon.
+- Electron ESM main uses `.then()` to avoid top-level `whenReady` deadlock.
+- Electron bumped to ^42.1.0 to patch high-severity advisories.
+- Fixed-port frontend launch config plus `npm start` tees output to `.logs/dev.log`.
+- Daemon launch hardened under tsx 4.22; node-pty auto-rebuild on start.
+- Rate-limit handling added to backend requests.
+- Session-resume path encoding maps dots to dashes so worktrees like `app.flax.ai` resume cleanly.
+- Self-review (code) popover gains "Stage trivial hunks" entry; staging now skips any import-only hunk.
+- "Get approval" stops flagging red for outdated review threads — only live unresolved comments count.
+- "Get approval" flags red on requested changes or unresolved live comments; re-requested review reverts to loading.
+- "Get approval" also flags red when the PR has merge conflicts (`mergeable: CONFLICTING`) against its base.
+- Changes-requested resolved per-reviewer server-side (latestReviews vs reviewRequests), so re-requests don't stick red.
+- Merge-step logic extracted to merge-steps.ts; covered by merge-steps.test.ts + git.test.ts (hasActiveChangesRequested).
+- Merge steps support `dependsOn`; gated steps stay visible but render as plain unchecked until their deps land.
+- Worktrees can be marked hidden; sidebar three-dot menu toggles show-hidden visibility.
+- PR cache preserves prior snapshot across stale-cache, inactive-pane, and backoff cases; never wipes badges on a skipped fetch.
+- Worktrees auto-hide (not delete) on observed open-to-merged PR transition; skips base and live panes.

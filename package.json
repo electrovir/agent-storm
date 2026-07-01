@@ -23,10 +23,11 @@
     "scripts": {
         "compile": "virmator compile",
         "format": "virmator format",
-        "init": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper",
+        "init": "node scripts/ensure-deps-installed.mjs && node scripts/ensure-node-pty.mjs && chmod +x node_modules/node-pty/prebuilds/*/spawn-helper",
         "lint": "virmator lint fix",
         "publish": "virmator publish npm run test:all",
-        "start": "npm run init && tsx packages/scripts/src/start.script.ts",
+        "start": "npm run init && node scripts/run-with-log.mjs npx tsx packages/scripts/src/start.script.ts",
+        "dev:electron": "npm run init && node node_modules/electron/install.js && node scripts/run-with-log.mjs npx tsx packages/scripts/src/start.script.ts --electron",
         "test": "mono-vir for-each-async npm run test",
         "test:all": "npm run compile && runstorm --names tests,spelling,format,docs,deps,lint \"npm run test\" \"npm run test:spelling\" \"npm run test:format\" \"npm run test:docs\" \"npm run test:deps\" \"npm run test:lint\"",
         "test:deps": "virmator deps check",
