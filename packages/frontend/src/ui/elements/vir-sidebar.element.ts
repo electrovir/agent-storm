@@ -161,6 +161,12 @@ type SidebarState = {
      * the check) keeps the banner hidden. `undefined` while the first poll is still in flight.
      */
     updateStatus: UpdateStatus | undefined;
+    /**
+     * Mirrors `config.showHiddenWorktrees`. When false the sidebar hides worktree children flagged
+     * `isHidden` (e.g. auto-hidden after their PR merged); the filter menu's "Show/Hide hidden
+     * worktrees" entry flips it. `undefined` while config hasn't loaded yet (renders as false).
+     */
+    showHiddenWorktrees: boolean | undefined;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -230,6 +236,7 @@ export const VirSidebar = defineElement<{
             searchQuery: '',
             repos: [],
             updateStatus: undefined,
+            showHiddenWorktrees: undefined,
         };
     },
     styles: css`
@@ -574,6 +581,14 @@ export const VirSidebar = defineElement<{
                 }),
             );
         const worktreeRoots = visibleFolders.filter((folder) => folder.isWorktreeRoot);
+        const showHiddenWorktrees = !!state.showHiddenWorktrees;
+        /**
+         * Count of hidden (non-base-branch) worktree children across all roots, shown next to the
+         * "Show hidden worktrees" toggle so the user knows how many rows the toggle would reveal.
+         */
+        const hiddenWorktreeCount = visibleFolders.filter(
+            (folder) => !!folder.parentRepoPath && !folder.isBaseBranch && folder.isHidden,
+        ).length;
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
          * filter against the freshest snapshot without having to ask for a re-read.
@@ -759,6 +774,8 @@ export const VirSidebar = defineElement<{
                             buildFilterMenuEntries({
                                 sidebarGrouping: state.sidebarGrouping,
                                 onlyShowRecent: state.onlyShowRecent,
+                                showHiddenWorktrees,
+                                hiddenWorktreeCount,
                                 updateState,
                             }),
                         )}
@@ -827,7 +844,19 @@ export const VirSidebar = defineElement<{
                 )}
                 ${worktreeRoots.map((root) => {
                     const children = visibleFolders
-                        .filter((folder) => folder.parentRepoPath === root.path)
+                        .filter(
+                            (folder) =>
+                                folder.parentRepoPath === root.path &&
+                                /**
+                                 * Base-branch worktrees are the canonical home for shared
+                                 * local-only files (`.not-committed/`, secrets) seeded into new
+                                 * worktrees, so they never appear as their own row. Hidden
+                                 * worktrees (e.g. auto-hidden after their PR merged) only show when
+                                 * the "Show hidden worktrees" toggle is on.
+                                 */
+                                !folder.isBaseBranch &&
+                                (showHiddenWorktrees || !folder.isHidden),
+                        )
                         .toSorted((a, b) =>
                             a.name.localeCompare(b.name, undefined, {
                                 sensitivity: 'base',
@@ -1273,10 +1302,14 @@ function isValidPrUrl(url: string | null | undefined): boolean {
 function buildFilterMenuEntries({
     sidebarGrouping,
     onlyShowRecent,
+    showHiddenWorktrees,
+    hiddenWorktreeCount,
     updateState,
 }: Readonly<{
     sidebarGrouping: SidebarGrouping | undefined;
     onlyShowRecent: boolean | undefined;
+    showHiddenWorktrees: boolean;
+    hiddenWorktreeCount: number;
     updateState: SidebarUpdate;
 }>): ReadonlyArray<ViraMenuItemEntry> {
     const groupingEntries: ReadonlyArray<ViraMenuItemEntry> = [
@@ -1308,6 +1341,15 @@ function buildFilterMenuEntries({
             iconOverride: onlyShowRecent ? lucideIcons.Check : undefined,
             onClick: () => {
                 void toggleHideInactive(!onlyShowRecent, updateState);
+            },
+        },
+        {
+            content: showHiddenWorktrees
+                ? `Hide hidden worktrees${hiddenWorktreeCount ? ` (${hiddenWorktreeCount})` : ''}`
+                : `Show hidden worktrees${hiddenWorktreeCount ? ` (${hiddenWorktreeCount})` : ''}`,
+            iconOverride: showHiddenWorktrees ? lucideIcons.Check : undefined,
+            onClick: () => {
+                void toggleShowHidden(updateState);
             },
         },
     ];
@@ -1425,6 +1467,15 @@ function buildRowMenuEntries(
                 })();
             },
         },
+        folder.parentRepoPath && !folder.isBaseBranch
+            ? {
+                  content: folder.isHidden ? 'Mark visible' : 'Mark hidden',
+                  iconOverride: folder.isHidden ? lucideIcons.Eye : lucideIcons.EyeOff,
+                  onClick: () => {
+                      void toggleWorktreeHidden(folder.path, updateState);
+                  },
+              }
+            : undefined,
         folder.parentRepoPath
             ? {
                   content: 'Delete worktree',
@@ -1484,6 +1535,7 @@ async function refresh(updateState: SidebarUpdate): Promise<void> {
             loadError: undefined,
             sidebarGrouping: config.sidebarGrouping,
             onlyShowRecent: config.onlyShowRecent,
+            showHiddenWorktrees: config.showHiddenWorktrees,
             repos: config.repos,
             updateStatus,
         });
@@ -1825,6 +1877,8 @@ async function submitAddRepo({
                 {
                     path,
                     postWorktreeCmd: null,
+                    worktrees: [],
+                    isWorktreeLayout: false,
                 },
             ],
             folderAiCmds,
@@ -2020,6 +2074,41 @@ async function toggleAiHidden(folderPath: string, updateState: SidebarUpdate): P
                       ...config.hiddenAiPane,
                       folderPath,
                   ],
+        });
+        await refresh(updateState);
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+async function toggleWorktreeHidden(
+    worktreePath: string,
+    updateState: SidebarUpdate,
+): Promise<void> {
+    try {
+        const config = await getConfig();
+        const isHidden = config.hiddenWorktrees.includes(worktreePath);
+        await putConfig({
+            ...config,
+            hiddenWorktrees: isHidden
+                ? config.hiddenWorktrees.filter((path) => path !== worktreePath)
+                : [
+                      ...config.hiddenWorktrees,
+                      worktreePath,
+                  ],
+        });
+        await refresh(updateState);
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+async function toggleShowHidden(updateState: SidebarUpdate): Promise<void> {
+    try {
+        const config = await getConfig();
+        await putConfig({
+            ...config,
+            showHiddenWorktrees: !config.showHiddenWorktrees,
         });
         await refresh(updateState);
     } catch (error: unknown) {

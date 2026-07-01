@@ -1,0 +1,15 @@
+<svg
+    viewBox="0 0 64 64"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+>
+    <path
+        d="M4 34 L22 2 L30 22 L62 14 L42 32 L26 30 Z"
+        fill="#2BC0DC"
+    />
+    <path
+        d="M60 30 L42 62 L34 42 L2 50 L22 32 L38 34 Z"
+        fill="#1F4F70"
+    />
+</svg>

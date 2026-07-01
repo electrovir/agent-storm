@@ -8,6 +8,9 @@ import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element
 import {createSizedIcon, lucideIcons, ViraIcon, viraThemeByKeys} from 'vira';
 import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
+import {openHttpUrl} from '../../util/electron-bridge.js';
+import {reportClientError} from '../../util/error-reporter.js';
+import {themeClient} from '../../util/theme.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
@@ -91,11 +94,6 @@ function reportDropError(
     });
 }
 
-/**
- * Extracted from Terminal.app's `vir-light` profile via the bundled `extract-terminal-theme.swift`
- * helper. Slots that the plist omits (because they match Terminal.app's built-in defaults) are
- * filled in here so xterm renders the full 16-color palette.
- */
 function decodeFileUri(uri: string): string {
     const withoutScheme = uri.replace(/^file:\/\/(localhost)?/, '');
     return decodeURIComponent(withoutScheme);
@@ -125,16 +123,20 @@ function extractDroppedPaths(transfer: DataTransfer): string[] {
     return [];
 }
 
-const terminalAppTheme: ITheme = {
+/**
+ * Extracted from Terminal.app's `vir-light` profile via the bundled `extract-terminal-theme.swift`
+ * helper. Slots that the plist omits (because they match Terminal.app's built-in defaults) are
+ * filled in here so xterm renders the full 16-color palette.
+ *
+ * xterm pre-blends `selectionBackground` against the terminal-level background once at theme load
+ * and paints the result as an opaque rectangle over the cells; it does not invert or
+ * alpha-composite per cell at draw time (that's an xterm renderer limitation).
+ */
+const terminalAppLightTheme: ITheme = {
     background: '#ffffff',
     foreground: '#0220b3',
     cursor: '#ff2600',
     cursorAccent: '#ffffff',
-    /**
-     * Xterm pre-blends `selectionBackground` against the terminal-level background once at theme
-     * load and paints the result as an opaque rectangle over the cells; it does not invert or
-     * alpha-composite per cell at draw time (that's an xterm renderer limitation).
-     */
     selectionBackground: 'rgba(56, 213, 255, 0.18)',
     black: '#000000',
     red: '#990000',
@@ -244,6 +246,39 @@ const accessoryKeys: ReadonlyArray<{
     },
 ];
 
+/**
+ * Dark counterpart for users whose browser reports `prefers-color-scheme: dark`. Mirrors
+ * Terminal.app's "Pro"-style palette: near-black background, off-white foreground, and the
+ * classical 16-color ANSI palette tuned for legibility on dark surfaces.
+ */
+const terminalAppDarkTheme: ITheme = {
+    background: '#111111',
+    foreground: '#e6e6e6',
+    cursor: '#ff5f56',
+    cursorAccent: '#111111',
+    selectionBackground: 'rgba(120, 180, 255, 0.28)',
+    black: '#000000',
+    red: '#c44141',
+    green: '#52c452',
+    yellow: '#d4c441',
+    blue: '#5577ff',
+    magenta: '#d36fd3',
+    cyan: '#41c4c4',
+    white: '#bababa',
+    brightBlack: '#666666',
+    brightRed: '#ff6e67',
+    brightGreen: '#5ff967',
+    brightYellow: '#fefb67',
+    brightBlue: '#6871ff',
+    brightMagenta: '#ff77ff',
+    brightCyan: '#5ffdff',
+    brightWhite: '#ffffff',
+};
+
+function pickTerminalTheme(): ITheme {
+    return themeClient.getEffectiveTheme() === 'dark' ? terminalAppDarkTheme : terminalAppLightTheme;
+}
+
 export const VirTerminal = defineElement<{
     folder: string;
     kind: PaneKind;
@@ -288,6 +323,7 @@ export const VirTerminal = defineElement<{
             sendBytes: undefined as ((bytes: string) => void) | undefined,
             /** Toggle the sticky Ctrl modifier on/off. Set once the socket connects. */
             toggleCtrl: undefined as (() => void) | undefined,
+            unsubscribeTheme: undefined as (() => void) | undefined,
         };
     },
     styles: css`
@@ -298,7 +334,11 @@ export const VirTerminal = defineElement<{
             width: 100%;
             height: 100%;
             box-sizing: border-box;
-            background: ${unsafeCSS(terminalAppTheme.background || 'transparent')};
+            padding: 2px;
+            background: var(
+                --terminal-bg,
+                ${unsafeCSS(terminalAppDarkTheme.background || 'transparent')}
+            );
         }
 
         .terminal-host {
@@ -336,7 +376,7 @@ export const VirTerminal = defineElement<{
             max-width: 70%;
             padding: 6px 10px;
             border-radius: 6px;
-            font-family: ui-sans-serif, system-ui, sans-serif;
+            font-family: var(--font-body);
             font-size: 12px;
             color: ${viraThemeByKeys.red.foreground.body.foreground.value};
             background: ${viraThemeByKeys.red['behind-bg'].body.background.value};
@@ -397,6 +437,7 @@ export const VirTerminal = defineElement<{
         state.resizeObserver?.disconnect();
         state.disconnect?.();
         state.terminal?.dispose();
+        state.unsubscribeTheme?.();
         if (state.uploadErrorTimeout) {
             clearTimeout(state.uploadErrorTimeout);
         }
@@ -467,7 +508,7 @@ export const VirTerminal = defineElement<{
                         cursorStyle: 'bar',
                         cursorWidth: 3,
                         scrollback: terminalScrollbackLines,
-                        theme: terminalAppTheme,
+                        theme: pickTerminalTheme(),
                         /**
                          * Seed xterm with the daemon's spawn-default dims (see `pty-pool.ts`'s
                          * `spawn({cols: 120, rows: 32})`). Until `fitAndResend` runs successfully —
@@ -492,12 +533,24 @@ export const VirTerminal = defineElement<{
                     terminal.loadAddon(fitAddon);
                     /**
                      * `WebLinksAddon` is what makes URLs in terminal output ctrl-clickable /
-                     * tappable and opens them in a new tab. Gated behind `terminalClickableLinks`
-                     * so users on touch devices (where accidental taps fire links) or those who
-                     * never want auto- opening can disable it via the settings modal.
+                     * tappable. Gated behind `terminalClickableLinks` so users on touch devices
+                     * (where accidental taps fire links) or those who never want auto-opening can
+                     * disable it via the settings modal.
+                     *
+                     * Explicit handler instead of WebLinksAddon's default (`window.open(uri,
+                     * '_blank')`). The default fires a synthetic MouseEvent on a transient
+                     * element xterm builds inline, which the WebGL renderer's canvas overlay
+                     * sometimes swallows — the link gets underlined but clicks land on dead
+                     * air. Routing through `openHttpUrl` (which calls `window.open(url)` in
+                     * Electron and a real `_blank` in browser) avoids that path and gives the
+                     * user a predictable hand-off to their system browser.
                      */
                     if (clickableLinks) {
-                        terminal.loadAddon(new WebLinksAddon());
+                        terminal.loadAddon(
+                            new WebLinksAddon((_event, uri) => {
+                                openHttpUrl(uri);
+                            }),
+                        );
                     }
                     terminal.open(element);
 
@@ -583,25 +636,90 @@ export const VirTerminal = defineElement<{
                         () => true,
                     );
 
-                    const secret = await ensureSecret();
-                    const socket = await client.connectWebSocket(ptyWebSocket, {
-                        searchParams: {
-                            folder: inputs.folder,
-                            kind: inputs.kind,
-                        },
-                        protocols: [secret],
-                        listeners: {
-                            message({message}) {
-                                terminal.write(message);
-                            },
-                            close() {
-                                terminal.write('\r\n[connection closed]\r\n');
-                            },
-                        },
+                    const unsubscribeTheme = themeClient.subscribe(() => {
+                        terminal.options.theme = pickTerminalTheme();
                     });
 
+                    const secret = await ensureSecret();
+                    /**
+                     * Holder so every consumer (`terminal.onData`, key handler, drop/paste, resize)
+                     * reads the *current* socket each time it fires. Reconnect swaps the inner
+                     * `current`; without the holder, captured-by-value socket references would
+                     * keep writing to a closed socket.
+                     */
+                    const socketHolder: {
+                        current: Awaited<ReturnType<typeof client.connectWebSocket>> | undefined;
+                    } = {current: undefined};
+                    const lifecycle: {
+                        teardown: boolean;
+                        reconnectAttempt: number;
+                        reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
+                    } = {
+                        teardown: false,
+                        reconnectAttempt: 0,
+                        reconnectTimeout: undefined,
+                    };
+                    const baseReconnectDelayMs = 400;
+                    const maxReconnectDelayMs = 4_000;
+
+                    const connect = async (): Promise<void> => {
+                        if (lifecycle.teardown) {
+                            return;
+                        }
+                        const socket = await client.connectWebSocket(
+                            ptyWebSocket,
+                            {
+                                searchParams: {
+                                    folder: inputs.folder,
+                                    kind: inputs.kind,
+                                },
+                                protocols: [secret],
+                                listeners: {
+                                    message({message}) {
+                                        // Any inbound byte means the server is talking again;
+                                        // reset the backoff so the next disconnect retries fast.
+                                        lifecycle.reconnectAttempt = 0;
+                                        terminal.write(message);
+                                    },
+                                    close() {
+                                        if (lifecycle.teardown) {
+                                            return;
+                                        }
+                                        // Auto-reconnect: the server-side pty may have just been
+                                        // restarted (Restart AI) or briefly dropped. The next
+                                        // attach reuses any live pty and spawns a fresh one if
+                                        // none exists — so a reconnect is always safe to attempt.
+                                        terminal.write('\r\n[connection closed — reconnecting…]\r\n');
+                                        const delay = Math.min(
+                                            baseReconnectDelayMs *
+                                                2 ** lifecycle.reconnectAttempt,
+                                            maxReconnectDelayMs,
+                                        );
+                                        lifecycle.reconnectAttempt += 1;
+                                        lifecycle.reconnectTimeout = setTimeout(() => {
+                                            lifecycle.reconnectTimeout = undefined;
+                                            // ESC c clears xterm before the reattach's scrollback
+                                            // replay paints over the "[connection closed]" line.
+                                            terminal.write('\x1bc');
+                                            void connect()
+                                                .then(() => {
+                                                    sendResize();
+                                                })
+                                                .catch(() => {
+                                                    /* connect itself surfaces a close → another retry queues up */
+                                                });
+                                        }, delay);
+                                    },
+                                },
+                            },
+                        );
+                        socketHolder.current = socket;
+                    };
+
+                    await connect();
+
                     const sendResize = () => {
-                        socket.send({
+                        socketHolder.current?.send({
                             resize: {
                                 cols: terminal.cols,
                                 rows: terminal.rows,
@@ -631,10 +749,12 @@ export const VirTerminal = defineElement<{
                             updateState({
                                 ctrlArmed: false,
                             });
-                            socket.send(data.length === 1 ? toControlByte(data) : data);
+                            socketHolder.current?.send(
+                                data.length === 1 ? toControlByte(data) : data,
+                            );
                             return;
                         }
-                        socket.send(data);
+                        socketHolder.current?.send(data);
                     });
 
                     /**
@@ -669,10 +789,37 @@ export const VirTerminal = defineElement<{
                         if (event.type !== 'keydown') {
                             return true;
                         }
+                        // Ctrl+Shift+C / Ctrl+Shift+V are the standard Linux-terminal
+                        // copy/paste chords. Firefox otherwise eats Ctrl+Shift+C for its
+                        // element inspector, so we must preventDefault unconditionally.
+                        if (event.ctrlKey && event.shiftKey && event.code === 'KeyC') {
+                            const selection = terminal.getSelection();
+                            if (selection) {
+                                void navigator.clipboard.writeText(selection).catch(() => {
+                                    /* clipboard write can reject if the document lost focus */
+                                });
+                            }
+                            event.preventDefault();
+                            return false;
+                        }
+                        if (event.ctrlKey && event.shiftKey && event.code === 'KeyV') {
+                            void navigator.clipboard
+                                .readText()
+                                .then((text) => {
+                                    if (text) {
+                                        socketHolder.current?.send(text);
+                                    }
+                                })
+                                .catch(() => {
+                                    /* clipboard read can reject without permission */
+                                });
+                            event.preventDefault();
+                            return false;
+                        }
                         const modifier = event.metaKey ? 'meta' : event.altKey ? 'alt' : '';
                         const bytes = keyBindings[`${modifier}+${event.key}`];
                         if (bytes) {
-                            socket.send(bytes);
+                            socketHolder.current?.send(bytes);
                             event.preventDefault();
                             return false;
                         }
@@ -763,7 +910,7 @@ export const VirTerminal = defineElement<{
                         // `text/uri-list` gives us real on-disk paths from Finder; prefer it.
                         const paths = extractDroppedPaths(event.dataTransfer);
                         if (paths.length > 0) {
-                            socket.send(paths.map(shellQuote).join(' '));
+                            socketHolder.current?.send(paths.map(shellQuote).join(' '));
                             return;
                         }
                         // No URI list: this is an in-memory blob (screenshot, dragged image from
@@ -781,13 +928,14 @@ export const VirTerminal = defineElement<{
                         }
                         void uploadDroppedFiles(files)
                             .then((uploadedPaths) => {
-                                socket.send(uploadedPaths.map(shellQuote).join(' '));
+                                socketHolder.current?.send(uploadedPaths.map(shellQuote).join(' '));
                             })
                             .catch((error: unknown) => {
                                 const message =
                                     error instanceof Error ? error.message : String(error);
 
                                 console.error('agent-storm upload failed:', error);
+                                reportClientError(error, 'terminal-drop-upload');
                                 reportDropError(updateState, state, `Upload failed: ${message}`);
                             });
                     });
@@ -815,14 +963,19 @@ export const VirTerminal = defineElement<{
                             event.stopImmediatePropagation();
                             void uploadDroppedFiles(imageFiles)
                                 .then((uploadedPaths) => {
-                                    socket.send(uploadedPaths.map(shellQuote).join(' '));
+                                    socketHolder.current?.send(uploadedPaths.map(shellQuote).join(' '));
                                 })
                                 .catch((error: unknown) => {
                                     const message =
                                         error instanceof Error ? error.message : String(error);
 
                                     console.error('agent-storm paste upload failed:', error);
-                                    reportDropError(updateState, state, `Paste failed: ${message}`);
+                                    reportClientError(error, 'terminal-paste-upload');
+                                    reportDropError(
+                                        updateState,
+                                        state,
+                                        `Paste failed: ${message}`,
+                                    );
                                 });
                         },
                         true,
@@ -874,15 +1027,23 @@ export const VirTerminal = defineElement<{
                         terminal,
                         resizeObserver,
                         onActivate,
-                        sendBytes: (bytes) => socket.send(bytes),
+                        sendBytes: (bytes) => socketHolder.current?.send(bytes),
                         toggleCtrl: () => {
                             ctrlModifier.armed = !ctrlModifier.armed;
                             updateState({
                                 ctrlArmed: ctrlModifier.armed,
                             });
                         },
+                        unsubscribeTheme,
                         disconnect: () => {
-                            void socket.close();
+                            // Mark teardown so the close handler doesn't queue another reconnect
+                            // after we close the socket ourselves on element cleanup.
+                            lifecycle.teardown = true;
+                            if (lifecycle.reconnectTimeout) {
+                                clearTimeout(lifecycle.reconnectTimeout);
+                                lifecycle.reconnectTimeout = undefined;
+                            }
+                            socketHolder.current?.close();
                         },
                     });
                 })}

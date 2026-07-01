@@ -77,6 +77,12 @@ export const VirPaneGroup = defineElement<{
              * tab via the tab-bar button.
              */
             vscodeUserClosed: false,
+            /**
+             * Which shell-area tab is foregrounded inside the CLI view. Both PTYs stay mounted
+             * regardless so the background one keeps streaming (and `npm start` isn't restarted
+             * every flip); the inactive tab body just gets `display: none` while it waits its turn.
+             */
+            activeShellTab: 'shell' as 'shell' | 'services',
         };
     },
     styles: css`
@@ -239,6 +245,7 @@ export const VirPaneGroup = defineElement<{
 
         .pane {
             flex-basis: 0;
+            flex-shrink: 1;
             min-width: 0;
             min-height: 0;
             overflow: hidden;
@@ -251,7 +258,7 @@ export const VirPaneGroup = defineElement<{
 
         .shell-pane {
             flex-grow: var(--shell-grow, 0.5);
-            border-left: 1px solid ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            border-left: 1px solid var(--border);
         }
 
         /* Dim whichever pane isn't the last-focused one so it's obvious which one keystrokes
@@ -267,11 +274,64 @@ export const VirPaneGroup = defineElement<{
             height: 100%;
         }
 
+        .tab-bar {
+            display: flex;
+            align-items: stretch;
+            background: var(--bg-subtle);
+            border-bottom: 1px solid var(--border-subtle);
+            height: 28px;
+        }
+
+        .tab {
+            font-family: var(--font-body);
+            font-size: var(--font-size-2xs);
+            font-weight: var(--font-weight-medium);
+            color: var(--fg-muted);
+            padding: 0 12px;
+            background: transparent;
+            border: 0;
+            border-right: 1px solid var(--border-subtle);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            cursor: pointer;
+            transition:
+                color 120ms ease,
+                background-color 120ms ease;
+        }
+
+        .tab:hover {
+            color: var(--fg);
+        }
+
+        .tab[data-active] {
+            color: var(--fg-emphasized);
+            background: var(--bg);
+            /* Pull the active tab visually onto the body below it. */
+            box-shadow: inset 0 -1px 0 var(--bg);
+        }
+
+        .tab-body {
+            position: relative;
+            height: calc(100% - 28px);
+        }
+
+        .tab-pane {
+            position: absolute;
+            inset: 0;
+        }
+
+        .tab-pane:not([data-active]) {
+            /* Keep the PTY connection alive but hide the terminal so the active tab's xterm
+               gets the whole pane area. (visibility:hidden would still reserve sizing; we
+               want the active terminal to fit to the full body.) */
+            display: none;
+        }
+
         .divider {
             flex: 0 0 4px;
             position: relative;
             cursor: col-resize;
-            background: ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            background: var(--border);
             transition: background 120ms ease;
             /* Sit above the panes so the hit-area extension below catches the pointer
                instead of being eaten by terminal mousedown handlers. */
@@ -291,7 +351,7 @@ export const VirPaneGroup = defineElement<{
 
         .divider:hover,
         .divider.dragging {
-            background: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            background: var(--border-emphasized);
         }
 
         /*
@@ -620,13 +680,57 @@ export const VirPaneGroup = defineElement<{
                             }),
                         )}
                     >
-                        <div class="pane-body">
-                            <${VirTerminal.assign({
-                                folder: inputs.folder,
-                                kind: PaneKind.Shell,
-                                active: inputs.active,
-                                showAccessoryKeys: isMobile,
-                            })}></${VirTerminal}>
+                        <div class="tab-bar" role="tablist" aria-label="Shell area">
+                            <button
+                                type="button"
+                                class="tab"
+                                role="tab"
+                                ?data-active=${state.activeShellTab === 'shell'}
+                                aria-selected=${state.activeShellTab === 'shell' ? 'true' : 'false'}
+                                ${listen('click', () => updateState({activeShellTab: 'shell'}))}
+                            >
+                                Shell
+                            </button>
+                            <button
+                                type="button"
+                                class="tab"
+                                role="tab"
+                                ?data-active=${state.activeShellTab === 'services'}
+                                aria-selected=${state.activeShellTab === 'services' ? 'true' : 'false'}
+                                ${listen('click', () => updateState({activeShellTab: 'services'}))}
+                            >
+                                Services
+                            </button>
+                        </div>
+                        <div class="tab-body">
+                            <div
+                                class="tab-pane"
+                                role="tabpanel"
+                                ?data-active=${state.activeShellTab === 'shell'}
+                            >
+                                <${VirTerminal.assign({
+                                    folder: inputs.folder,
+                                    kind: PaneKind.Shell,
+                                    // Re-fit triggers only when the worktree is active AND this
+                                    // tab is the foregrounded one — flipping tabs re-runs fit on
+                                    // the newly visible terminal so the xterm canvas matches the
+                                    // body size after a display:none round-trip.
+                                    active: inputs.active && state.activeShellTab === 'shell',
+                                    showAccessoryKeys: isMobile,
+                                })}></${VirTerminal}>
+                            </div>
+                            <div
+                                class="tab-pane"
+                                role="tabpanel"
+                                ?data-active=${state.activeShellTab === 'services'}
+                            >
+                                <${VirTerminal.assign({
+                                    folder: inputs.folder,
+                                    kind: PaneKind.Services,
+                                    active: inputs.active && state.activeShellTab === 'services',
+                                    showAccessoryKeys: isMobile,
+                                })}></${VirTerminal}>
+                            </div>
                         </div>
                     </div>
                 </div>

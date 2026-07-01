@@ -2,26 +2,36 @@ import {
     agentStormService,
     checkPathEndpoint,
     configEndpoint,
+    convertRepoEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
+    deleteRepoEndpoint,
     deleteWorktreeEndpoint,
+    folderPickerEndpoint,
     foldersEndpoint,
     killPanesEndpoint,
+    markWorktreeReviewedEndpoint,
+    repoInspectEndpoint,
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    setMergeStepEndpoint,
+    stageTrivialHunksEndpoint,
+    startTestServerEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
     uploadEndpoint,
     type Config,
     type FolderInfo,
     type PaneKind,
+    type RepoInspection,
     type UpdateStatus,
 } from '@agent-storm/common';
 import {HttpStatus} from '@augment-vir/common';
 import {RestVirClient, type ClientFetch, type EndpointFetchOutput} from '@rest-vir/api';
 import {clearStoredSecret, ensureSecret} from './auth.js';
 import {notifyBackendFailure, notifyBackendSuccess} from './backend-watchdog.js';
+import {reportClientError} from './error-reporter.js';
 import {getBackendBaseUrl} from './service-origin.js';
 
 /**
@@ -73,7 +83,14 @@ async function requestApi<Result extends Readonly<EndpointFetchOutput>>(
     if (errorOutput?.status === HttpStatus.Unauthorized) {
         clearStoredSecret();
     }
-    throw new Error(`${label} failed: ${String(errorOutput?.responseData)}`);
+    const error = new Error(`${label} failed: ${String(errorOutput?.responseData)}`);
+    /**
+     * Report at the API boundary so backend failures land in `.logs/frontend-errors.log` even when
+     * callers catch the thrown error and surface it as inline UI (which would otherwise hide it
+     * from the global error reporter).
+     */
+    reportClientError(error, 'api-client');
+    throw error;
 }
 
 export async function getConfig(): Promise<Config> {
@@ -123,6 +140,46 @@ export async function deleteWorktree(params: Readonly<{worktreePath: string}>): 
 export async function touchRepo(params: Readonly<{folder: string}>): Promise<void> {
     await requestApi('POST /repos/touch', () =>
         client.fetch(touchRepoEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function markWorktreeReviewed(
+    params: Readonly<{worktreePath: string; sha: string | null}>,
+): Promise<void> {
+    await requestApi('POST /worktrees/mark-reviewed', () =>
+        client.fetch(markWorktreeReviewedEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function setWorktreeMergeStep(
+    params: Readonly<{worktreePath: string; name: string; value: boolean | null}>,
+): Promise<void> {
+    await requestApi('POST /worktrees/set-merge-step', () =>
+        client.fetch(setMergeStepEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function startWorktreeTestServer(
+    params: Readonly<{worktreePath: string}>,
+): Promise<{port: number; reused: boolean}> {
+    return await requestApi('POST /worktrees/test-server/start', () =>
+        client.fetch(startTestServerEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function stageTrivialHunks(
+    params: Readonly<{worktreePath: string}>,
+): Promise<{output: string}> {
+    return await requestApi('POST /worktrees/stage-trivial-hunks', () =>
+        client.fetch(stageTrivialHunksEndpoint).POST({
             requestData: params,
         }),
     );
@@ -202,6 +259,37 @@ export async function killVscode(params: Readonly<{folder: string}>): Promise<vo
         const message = await response.text().catch(() => '');
         throw new Error(`POST /vscode/kill failed: ${response.status} ${message}`);
     }
+}
+
+export async function inspectRepo(path: string): Promise<RepoInspection> {
+    return await requestApi('POST /repos/inspect', () =>
+        client.fetch(repoInspectEndpoint).POST({
+            requestData: {path},
+        }),
+    );
+}
+
+export async function convertRepoToWorktree(repoPath: string): Promise<void> {
+    await requestApi('POST /repos/convert-to-worktree', () =>
+        client.fetch(convertRepoEndpoint).POST({
+            requestData: {repoPath},
+        }),
+    );
+}
+
+export async function deleteRepo(repoPath: string): Promise<void> {
+    await requestApi('POST /repos/delete', () =>
+        client.fetch(deleteRepoEndpoint).POST({
+            requestData: {repoPath},
+        }),
+    );
+}
+
+export async function pickFolder(): Promise<string | null> {
+    const data = await requestApi('POST /folder-picker', () =>
+        client.fetch(folderPickerEndpoint).POST(),
+    );
+    return data.path ?? null;
 }
 
 export async function uploadFile(

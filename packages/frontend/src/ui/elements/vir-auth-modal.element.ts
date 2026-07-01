@@ -1,13 +1,7 @@
 import {css, defineElement, html, listen} from 'element-vir';
-import {
-    ViraButton,
-    ViraColorVariant,
-    ViraInput,
-    ViraInputType,
-    ViraModal,
-    viraThemeByKeys,
-} from 'vira';
+import {ViraButton, ViraColorVariant, ViraInput, ViraInputType, ViraModal} from 'vira';
 import {getStoredSecret, setStoredSecret, subscribeSecret} from '../../util/auth.js';
+import {viraButtonOverrides} from '../button-overrides.styles.js';
 
 type AuthModalState = {
     open: boolean;
@@ -28,22 +22,42 @@ export const VirAuthModal = defineElement()({
         .body {
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 16px;
             width: min(520px, calc(100vw - 48px));
             max-width: 100%;
             box-sizing: border-box;
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            color: var(--fg);
+            font-family: var(--font-body);
         }
 
         .description {
-            font-size: 13px;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+            font-size: var(--font-size-sm);
+            line-height: var(--line-height-sm);
+            color: var(--fg-subtle);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .description p {
+            margin: 0;
+        }
+
+        .description code {
+            font-family: var(--font-mono);
+            font-size: var(--font-size-xs);
+            padding: 1px 6px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-subtle);
+            color: var(--fg-emphasized);
+            border: 1px solid var(--border-subtle);
         }
 
         .footer {
             display: flex;
             justify-content: flex-end;
-            gap: 8px;
+            gap: 12px;
+            padding-top: 4px;
         }
 
         ${ViraInput} {
@@ -64,6 +78,8 @@ export const VirAuthModal = defineElement()({
                 width: 100%;
             }
         }
+
+        ${viraButtonOverrides}
     `,
     init({updateState}) {
         const unsubscribe = subscribeSecret((secret) => {
@@ -98,9 +114,18 @@ export const VirAuthModal = defineElement()({
             })}>
                 <div class="body">
                     <div class="description">
-                        Paste the auth secret the server printed on startup. Delete
-                        <code>.not-committed/auth-secret</code>
-                        if you need to generate a new key.
+                        <p>
+                            agent-storm runs a local server that can spawn shells, run AI agents,
+                            and modify files in your repos. This shared secret prevents anything
+                            other than you from talking to it.
+                        </p>
+                        <p>
+                            Paste the secret printed in the server's startup log. It's stored in
+                            this browser's <code>localStorage</code> and sent with every request as
+                            a bearer token (and as the WebSocket subprotocol for terminals). Delete
+                            <code>.not-committed/auth-secret</code> if you need to generate a new
+                            key.
+                        </p>
                     </div>
                     <${ViraInput.assign({
                         value: state.pending,

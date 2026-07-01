@@ -2,16 +2,26 @@ import {
     agentStormService,
     checkPathEndpoint,
     configEndpoint,
+    convertRepoEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
+    defaultConfig,
+    deleteRepoEndpoint,
     deleteWorktreeEndpoint,
+    folderPickerEndpoint,
     foldersEndpoint,
     killPanesEndpoint,
+    clientErrorEndpoint,
+    markWorktreeReviewedEndpoint,
     PaneKind,
     ptyWebSocket,
+    repoInspectEndpoint,
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    setMergeStepEndpoint,
+    stageTrivialHunksEndpoint,
+    startTestServerEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
     uploadEndpoint,
@@ -19,7 +29,13 @@ import {
 import {check} from '@augment-vir/assert';
 import {HttpMethod, HttpStatus, log, wait} from '@augment-vir/common';
 import {type OriginRequirement} from '@rest-vir/api';
-import {attachApi, createApiImplementor, implementApi, silentServerLogger} from '@rest-vir/host';
+import {
+    attachApi,
+    createApiImplementor,
+    implementApi,
+    RejectRequestError,
+    silentServerLogger,
+} from '@rest-vir/host';
 import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
 import {mkdir, stat} from 'node:fs/promises';
@@ -34,6 +50,7 @@ import {
     setFolderAiCmd,
     setFolderResetAiSessionCmd,
 } from './config.js';
+import {addWorktreeToConfig, removeWorktreeFromConfig} from './worktree-reconcile.js';
 import {
     attachPane,
     killFolderPanes,
@@ -44,12 +61,44 @@ import {
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {serverLogPath} from './file-paths.js';
-import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
-import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
+import {appendClientError, resetClientErrorLog} from './client-errors.js';
+import {
+    getCachedFolders,
+    publishTargets,
+    publishTargetsFromConfig,
+    refreshFolderInfoNow,
+    startFolderInfoRefreshLoop,
+} from './folder-info.js';
+import {pickFolder} from './folder-picker.js';
+import {
+    addWorktree,
+    convertRepoToWorktreeLayout,
+    getGitInfo,
+    inspectRepoPath,
+    listWorktreeChildren,
+    removeWorktree,
+} from './git.js';
 import {normalizePath} from './paths.js';
 import {getUpdateStatus} from './update-check.js';
+import {dirname, join, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {spawnSync} from 'node:child_process';
 import {saveUpload} from './uploads.js';
+import {ensureTestServer, installShutdownHooks} from './test-server.js';
 import {attachVscodeProxy} from './vscode-proxy.js';
+
+// Resolve once at module load — `scripts/stage-trivial-hunks.mjs` lives at the agent-storm
+// repo root, three levels up from this file (`packages/server/src/index.ts`).
+const stageTrivialHunksScript = resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    '..',
+    'scripts',
+    'stage-trivial-hunks.mjs',
+);
+
+installShutdownHooks();
 
 /**
  * Mirror stdout/stderr to `serverLogPath` so the assistant can tail the backend output instead of
@@ -122,6 +171,7 @@ type SocketAttachment = {
 const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 
 await ensureDaemon();
+await resetClientErrorLog();
 
 await startFolderInfoRefreshLoop();
 
@@ -208,14 +258,15 @@ const configImplementation = implementor.implementEndpoint(configEndpoint, {
         /**
          * Re-enumerate folder targets now so a freshly-added repo (or removed one) shows up in
          * `/folders` immediately instead of waiting for the next background sweep cycle.
-         * `refreshFolderInfoNow` returns once `refreshState.targets` reflects the new layout, so by
-         * the time the frontend's follow-up `/folders` poll lands the new entry is already present
-         * (git/PR fields fill in over the next sweep).
+         * `publishTargetsFromConfig` reconciles the worktree list against disk and writes the
+         * reconciled config back; return that so the client sees the populated worktrees without an
+         * extra round trip.
          */
+        const reconciled = await publishTargetsFromConfig(requestData);
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
-                responseData: requestData,
+                responseData: reconciled,
             },
         };
     },
@@ -275,6 +326,19 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
                 await saveConfig(withReset);
             }
         }
+        // Fast path: we know exactly which worktree was added and where it lives, so record it
+        // in config directly rather than re-running a full reconcile (which would re-run
+        // getGitInfo for every existing worktree — the slow part on big repos). The next
+        // background sweep still catches anything created out-of-band by the CLI.
+        const newPath = normalizePath(join(requestData.repoPath, requestData.name));
+        const config = await loadConfig().catch(() => undefined);
+        if (config) {
+            const updated = addWorktreeToConfig(config, requestData.repoPath, newPath);
+            if (updated !== config) {
+                await saveConfig(updated);
+            }
+            publishTargets(updated);
+        }
         await refreshFolderInfoNow();
         await runPostWorktreeCmd({
             repoPath: requestData.repoPath,
@@ -292,6 +356,30 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
 
 const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktreeEndpoint, {
     async [HttpMethod.Post]({requestData}) {
+        const config = await loadConfig().catch(() => defaultConfig);
+        const parentRepoPath = dirname(requestData.worktreePath);
+        const parentRepo = config.repos.find((repo) => repo.path === parentRepoPath);
+        // Prefer the config's cached `isBase` flag — it's authoritative and avoids a git
+        // subprocess. Fall back to a live branch check if config hasn't seen this worktree
+        // yet (e.g. created outside agent-storm and not yet reconciled).
+        const knownWorktree = parentRepo?.worktrees.find(
+            (worktree) => worktree.path === requestData.worktreePath,
+        );
+        if (knownWorktree?.isBase && parentRepo?.baseBranch) {
+            throw new RejectRequestError(
+                HttpStatus.BadRequest,
+                `Refusing to remove ${requestData.worktreePath}: it tracks the "${parentRepo.baseBranch}" base branch for ${parentRepoPath}.`,
+            );
+        }
+        if (!knownWorktree && parentRepo?.baseBranch) {
+            const info = await getGitInfo(requestData.worktreePath);
+            if (info.branch === parentRepo.baseBranch) {
+                throw new RejectRequestError(
+                    HttpStatus.BadRequest,
+                    `Refusing to remove ${requestData.worktreePath}: it tracks the "${parentRepo.baseBranch}" base branch for ${parentRepoPath}.`,
+                );
+            }
+        }
         await killFolderPanes({
             folder: requestData.worktreePath,
         }).catch(() => {
@@ -306,6 +394,22 @@ const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktre
             milliseconds: 250,
         });
         await removeWorktree(requestData);
+        // Fast path: we know which worktree was removed; skip the full reconcile.
+        const reconciled = removeWorktreeFromConfig(config, requestData.worktreePath);
+        // Strip the deleted worktree from `hiddenWorktrees` too so the array doesn't
+        // accumulate dead paths after repeated create/delete cycles on the same name.
+        const postDeleteConfig = reconciled.hiddenWorktrees.includes(requestData.worktreePath)
+            ? {
+                  ...reconciled,
+                  hiddenWorktrees: reconciled.hiddenWorktrees.filter(
+                      (path) => path !== requestData.worktreePath,
+                  ),
+              }
+            : reconciled;
+        if (postDeleteConfig !== config) {
+            await saveConfig(postDeleteConfig);
+        }
+        publishTargets(postDeleteConfig);
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
@@ -524,6 +628,207 @@ const uploadImplementation = implementor.implementEndpoint(uploadEndpoint, {
     },
 });
 
+const markWorktreeReviewedImplementation = implementor.implementEndpoint(
+    markWorktreeReviewedEndpoint,
+    {
+        async [HttpMethod.Post]({requestData}) {
+            const config = await loadConfig();
+            const repos = config.repos.map((repo) => {
+                if (
+                    !repo.worktrees.some((worktree) => worktree.path === requestData.worktreePath)
+                ) {
+                    return repo;
+                }
+                return {
+                    ...repo,
+                    worktrees: repo.worktrees.map((worktree) =>
+                        worktree.path === requestData.worktreePath
+                            ? {...worktree, lastReviewedSha: requestData.sha ?? null}
+                            : worktree,
+                    ),
+                };
+            });
+            const updated = {...config, repos};
+            await saveConfig(updated);
+            // Republish targets right away so `/folders` reflects the new SHA on the next poll
+            // (no waiting for the ~25s sweep). The sweep's reconcile preserves `lastReviewedSha`
+            // per worktree path, so this write survives the next disk-scan.
+            publishTargets(updated);
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        ok: true,
+                    },
+                },
+            };
+        },
+    },
+);
+
+const setMergeStepImplementation = implementor.implementEndpoint(setMergeStepEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const config = await loadConfig();
+        const repos = config.repos.map((repo) => {
+            if (!repo.worktrees.some((worktree) => worktree.path === requestData.worktreePath)) {
+                return repo;
+            }
+            return {
+                ...repo,
+                worktrees: repo.worktrees.map((worktree) => {
+                    if (worktree.path !== requestData.worktreePath) {
+                        return worktree;
+                    }
+                    const nextValues = {...(worktree.mergeStepValues ?? {})};
+                    if (requestData.value == null) {
+                        // Null clears the step — same shape as the un-toggled / never-set
+                        // state, which keeps the config file from accumulating dead keys.
+                        delete nextValues[requestData.name];
+                    } else {
+                        nextValues[requestData.name] = requestData.value;
+                    }
+                    return {...worktree, mergeStepValues: nextValues};
+                }),
+            };
+        });
+        const updated = {...config, repos};
+        await saveConfig(updated);
+        publishTargets(updated);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const startTestServerImplementation = implementor.implementEndpoint(startTestServerEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const {port: detectedPort, reused} = await ensureTestServer(requestData.worktreePath);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    port: detectedPort,
+                    reused,
+                },
+            },
+        };
+    },
+});
+
+const stageTrivialHunksImplementation = implementor.implementEndpoint(stageTrivialHunksEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const result = spawnSync(process.execPath, [stageTrivialHunksScript], {
+            cwd: requestData.worktreePath,
+            encoding: 'utf8',
+            maxBuffer: 64 * 1024 * 1024,
+        });
+        const output = [result.stdout, result.stderr].filter(Boolean).join('');
+        if (result.status !== 0) {
+            throw new RejectRequestError(
+                HttpStatus.InternalServerError,
+                output || 'stage-trivial-hunks failed',
+            );
+        }
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {output},
+            },
+        };
+    },
+});
+
+const repoInspectImplementation = implementor.implementEndpoint(repoInspectEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const inspection = await inspectRepoPath(requestData.path);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: inspection,
+            },
+        };
+    },
+});
+
+const convertRepoImplementation = implementor.implementEndpoint(convertRepoEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await convertRepoToWorktreeLayout(requestData.repoPath);
+        // After conversion the repo path now hosts a worktree layout; reconcile so the
+        // config reflects the new on-disk shape before the frontend reads it back.
+        await publishTargetsFromConfig(await loadConfig());
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const deleteRepoImplementation = implementor.implementEndpoint(deleteRepoEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const config = await loadConfig().catch(() => defaultConfig);
+        if (!config.repos.some((repo) => repo.path === requestData.repoPath)) {
+            throw new RejectRequestError(
+                HttpStatus.NotFound,
+                `Repo ${requestData.repoPath} is not registered.`,
+            );
+        }
+        const nextConfig = {
+            ...config,
+            repos: config.repos.filter((repo) => repo.path !== requestData.repoPath),
+        };
+        await saveConfig(nextConfig);
+        await publishTargetsFromConfig(nextConfig);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const folderPickerImplementation = implementor.implementEndpoint(folderPickerEndpoint, {
+    async [HttpMethod.Post]() {
+        try {
+            const path = await pickFolder();
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        path,
+                    },
+                },
+            };
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            log.error(`folder-picker failed: ${message}`);
+            throw new RejectRequestError(HttpStatus.InternalServerError, message);
+        }
+    },
+});
+
+const clientErrorImplementation = implementor.implementEndpoint(clientErrorEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await appendClientError({
+            message: requestData.message,
+            stack: requestData.stack ?? null,
+            source: requestData.source,
+            url: requestData.url ?? null,
+            userAgent: requestData.userAgent ?? null,
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
     async open({webSocket, searchParams}) {
         const folder = searchParams.folder;
@@ -606,6 +911,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         updateCheckImplementation,
         createWorktreeImplementation,
         deleteWorktreeImplementation,
+        markWorktreeReviewedImplementation,
+        setMergeStepImplementation,
+        startTestServerImplementation,
+        stageTrivialHunksImplementation,
         restartPaneImplementation,
         killPanesImplementation,
         resetAiSessionImplementation,
@@ -614,6 +923,11 @@ const implementation = implementApi<undefined>()(agentStormService, {
         checkPathImplementation,
         createPathImplementation,
         uploadImplementation,
+        repoInspectImplementation,
+        convertRepoImplementation,
+        deleteRepoImplementation,
+        folderPickerImplementation,
+        clientErrorImplementation,
     ],
     webSockets: [ptyImplementation],
 });
@@ -636,14 +950,16 @@ await attachApi(server, implementation, {
  */
 attachVscodeProxy(server);
 /**
- * Bind to `0.0.0.0` so the dev server is reachable over LAN (testing the UI from a phone or another
- * laptop after running the vite frontend with `--host`). The auth-secret check in
- * `createHostContext` is what actually keeps a LAN attacker out — the bind alone is just a
- * reachability concern.
+ * Default to `127.0.0.1` so the dev server isn't reachable over LAN. The auth-secret on the
+ * wire would otherwise be a passive-sniffer hazard (no TLS in dev). LAN testing — the UI from
+ * a phone or another laptop — is still possible via `AGENT_STORM_BIND_HOST=0.0.0.0`, at which
+ * point the bearer-secret check becomes the only thing gating access (which is fine because
+ * the secret is 256 bits of unguessable randomness; see `packages/server/src/auth.ts`).
  */
+const bindHost = process.env.AGENT_STORM_BIND_HOST || '127.0.0.1';
 const listenAddress = await server.listen({
     port,
-    host: '0.0.0.0',
+    host: bindHost,
 });
 
 log.success(`agent-storm server listening on ${listenAddress}`);

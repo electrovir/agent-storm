@@ -104,4 +104,14 @@ export const localStorageClient = {
             clamp(Number.parseFloat(raw), paneSplit.min, paneSplit.max, paneSplit.default),
         serialize: (value) => String(value),
     }),
+    /**
+     * Whether the sidebar's "Working" group is collapsed. Defaults to expanded so first-time
+     * users see everything; persists per-browser so a closed list stays closed across reloads.
+     */
+    workingGroupCollapsed: defineSetting<boolean>({
+        key: 'agent-storm:sidebar-working-collapsed',
+        defaultValue: false,
+        parse: (raw) => raw === 'true',
+        serialize: (value) => String(value),
+    }),
 };

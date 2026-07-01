@@ -1,8 +1,12 @@
 .DS_Store
 .history/
+.logs/
 .not-committed/
 *.tgz
 /Icon?
+terminal-ui/target
+/target/
+
 all-files-for-code-coverage.test.ts
 coverage/
 dist-*/

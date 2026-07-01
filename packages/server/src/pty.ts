@@ -1,7 +1,11 @@
 import {PaneStatus, type PaneKind} from '@agent-storm/common';
 import {fetchPaneStatuses} from './daemon/daemon-client.js';
 
-const cacheTtlMs = 500;
+/**
+ * Short cache so a `/folders` aggregation doesn't fan out to one daemon round-trip per pane,
+ * but short enough that the sidebar (which polls every ~500ms) doesn't perceive stale status.
+ */
+const cacheTtlMs = 200;
 
 let cachedStatuses = new Map<string, PaneStatus>();
 let lastFetchAt = 0;
