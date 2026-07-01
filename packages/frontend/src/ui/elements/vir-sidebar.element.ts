@@ -56,9 +56,22 @@ import {
     restartPane,
     touchRepo,
 } from '../../util/api-client.js';
+import {localStorageClient} from '../../util/local-storage-client.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
+import {isAnyMergeStepLoading} from './merge-steps.js';
 
 const allowedLinkHostnames = ['github.com'];
+
+/**
+ * "Working" = at least one of the worktree's progress-tracker steps is currently rendering as
+ * loading (AI generating, CI in flight, get-approval spinning while waiting on a reviewer, …).
+ * The merge-steps config is the single source of truth, so the sidebar grouping never drifts from
+ * what the user sees on the step nodes. Everything else — failures, done, idle — falls through to
+ * "Needs attention". Used to split each repo's worktrees into the two sidebar sections.
+ */
+function isWorking(folder: FolderInfo): boolean {
+    return isAnyMergeStepLoading(folder);
+}
 
 const pollIntervalMs = 2000;
 
@@ -102,6 +115,12 @@ type SidebarState = {
     pollHandle: ReturnType<typeof setInterval> | undefined;
     loadError: string | undefined;
     openMenuKey: string | undefined;
+    /**
+     * Whether each repo's "Working" section is collapsed. A single shared flag (not per-repo) so it
+     * matches the pre-existing single {@link localStorageClient.workingGroupCollapsed} setting and
+     * the prior behavior — toggling any repo's "Working" header collapses them all.
+     */
+    workingCollapsed: boolean;
     repoModalOpen: boolean;
     repoPath: string;
     repoAiCmd: string;
@@ -211,6 +230,7 @@ export const VirSidebar = defineElement<{
             pollHandle: undefined,
             loadError: undefined,
             openMenuKey: undefined,
+            workingCollapsed: localStorageClient.workingGroupCollapsed.read(),
             repoModalOpen: false,
             repoPath: '',
             repoAiCmd: '',
@@ -399,6 +419,61 @@ export const VirSidebar = defineElement<{
             height: 14px;
             color: ${viraThemeByKeys.green.foreground.header.foreground.value};
             flex-shrink: 0;
+        }
+
+        .group-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 10px 4px;
+            font-size: 9px;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
+        }
+
+        .group-label .group-count {
+            font-feature-settings: 'tnum';
+        }
+
+        .group-label[data-variant='attention'] {
+            color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
+        }
+
+        .group-label[data-variant='working'] {
+            border-top: 1px solid
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            margin-top: 4px;
+        }
+
+        .group-label.collapsible {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .group-label .group-left {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .group-chevron {
+            display: inline-flex;
+            font-size: 10px;
+            line-height: 1;
+            transition: transform 120ms ease;
+        }
+
+        .group-label[data-collapsed] .group-chevron {
+            transform: rotate(-90deg);
+        }
+
+        /*
+         * Rows in the "Working" group are passive — the user isn't expected to act until something
+         * completes — so dim their name. The active row stays full strength via [data-active].
+         */
+        .row[data-working]:not([data-active]) .name {
+            opacity: 0.6;
         }
 
         .actions {
@@ -914,19 +989,17 @@ export const VirSidebar = defineElement<{
                                 </${ViraMenuTrigger}>
                             </span>
                         </div>
-                        ${children.map((child) =>
-                            renderRow({
-                                folder: child,
-                                indented: true,
-                                activeFolder: inputs.activeFolder,
-                                openMenuKey: state.openMenuKey,
-                                onActivate: emitFolderActivated,
-                                removeFolderLocally,
-                                emitFoldersRemoved,
-                                emitPaneRestarted,
-                                updateState,
-                            }),
-                        )}
+                        ${renderRepoChildren({
+                            children,
+                            workingCollapsed: state.workingCollapsed,
+                            activeFolder: inputs.activeFolder,
+                            openMenuKey: state.openMenuKey,
+                            onActivate: emitFolderActivated,
+                            removeFolderLocally,
+                            emitFoldersRemoved,
+                            emitPaneRestarted,
+                            updateState,
+                        })}
                     `;
                 })}
             </div>
@@ -1191,9 +1264,101 @@ function renderPaneChip(label: string, status: PaneStatus) {
     `;
 }
 
+/**
+ * Render a repo's worktree children split into two sections, matching the sidebar's prior behavior:
+ * "Needs attention" first, then a collapsible "Working" group (worktrees whose progress-tracker has
+ * a step actively loading — see {@link isWorking}). Each label is shown only when its group is
+ * non-empty. The "Working" collapse state is shared across repos (single persisted flag).
+ */
+function renderRepoChildren({
+    children,
+    workingCollapsed,
+    activeFolder,
+    openMenuKey,
+    onActivate,
+    removeFolderLocally,
+    emitFoldersRemoved,
+    emitPaneRestarted,
+    updateState,
+}: Readonly<{
+    children: ReadonlyArray<FolderInfo>;
+    workingCollapsed: boolean;
+    activeFolder: string | undefined;
+    openMenuKey: string | undefined;
+    onActivate: (folder: string) => void;
+    removeFolderLocally: (path: string) => void;
+    emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
+    updateState: SidebarUpdate;
+}>) {
+    const needsAttention = children.filter((child) => !isWorking(child));
+    const working = children.filter(isWorking);
+    const renderChild = (folder: FolderInfo, isWorkingRow: boolean) =>
+        renderRow({
+            folder,
+            indented: true,
+            working: isWorkingRow,
+            activeFolder,
+            openMenuKey,
+            onActivate,
+            removeFolderLocally,
+            emitFoldersRemoved,
+            emitPaneRestarted,
+            updateState,
+        });
+    const toggleWorking = () => {
+        const next = !workingCollapsed;
+        updateState({workingCollapsed: next});
+        localStorageClient.workingGroupCollapsed.write(next);
+    };
+    return html`
+        ${needsAttention.length
+            ? html`
+                  <div class="group-label" data-variant="attention">
+                      <span>Needs attention</span>
+                      <span class="group-count">
+                          ${needsAttention.length.toString().padStart(2, '0')}
+                      </span>
+                  </div>
+              `
+            : ''}
+        ${needsAttention.map((child) => renderChild(child, false))}
+        ${working.length
+            ? html`
+                  <div
+                      class="group-label collapsible"
+                      data-variant="working"
+                      ?data-collapsed=${workingCollapsed}
+                      role="button"
+                      tabindex="0"
+                      aria-expanded=${workingCollapsed ? 'false' : 'true'}
+                      ${listen('click', toggleWorking)}
+                      ${listen('keydown', (event: KeyboardEvent) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                              return;
+                          }
+                          event.preventDefault();
+                          toggleWorking();
+                      })}
+                  >
+                      <span class="group-left">
+                          <span class="group-chevron">▾</span>
+                          <span>Working</span>
+                      </span>
+                      <span class="group-count">
+                          ${working.length.toString().padStart(2, '0')}
+                      </span>
+                  </div>
+                  ${workingCollapsed ? '' : working.map((child) => renderChild(child, true))}
+              `
+            : ''}
+    `;
+}
+
 function renderRow({
     folder,
     indented,
+    working = false,
     activeFolder,
     openMenuKey,
     onActivate,
@@ -1204,6 +1369,7 @@ function renderRow({
 }: Readonly<{
     folder: FolderInfo;
     indented: boolean;
+    working?: boolean | undefined;
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
@@ -1223,6 +1389,7 @@ function renderRow({
             class="row"
             ?data-active=${activeFolder === folder.path}
             ?data-indented=${indented}
+            ?data-working=${working}
             ?data-menu-open=${openMenuKey === rowMenuKey}
             ${listen('click', () => onActivate(folder.path))}
         >
@@ -1433,6 +1600,26 @@ function buildRowMenuEntries(
                   },
               }
             : undefined,
+        {
+            content: 'Restart services',
+            iconOverride: lucideIcons.RefreshCw,
+            onClick: () => {
+                void (async () => {
+                    try {
+                        await restartPane({
+                            folder: folder.path,
+                            kind: PaneKind.Services,
+                        });
+                        emitPaneRestarted({
+                            folder: folder.path,
+                            kind: PaneKind.Services,
+                        });
+                    } catch (error: unknown) {
+                        showError(updateState, error);
+                    }
+                })();
+            },
+        },
         {
             content: 'Edit folder commands',
             iconOverride: lucideIcons.Terminal,

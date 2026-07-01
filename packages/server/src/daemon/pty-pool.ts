@@ -1,8 +1,10 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
+import {createHash} from 'node:crypto';
+import {existsSync} from 'node:fs';
 import {homedir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {basename, join, resolve} from 'node:path';
 import {killProcessTree} from './kill-process-tree.js';
 import type {StatusEntry} from './protocol.js';
 
@@ -44,19 +46,83 @@ const aiBusyMarkerChars: ReadonlyArray<string> = [
 const aiBusyHoldMs = 4_000;
 
 /**
+ * RFC 4122 DNS namespace UUID. Combined with the worktree's absolute path via UUIDv5, this gives
+ * us a stable session ID per worktree — the same path always hashes to the same UUID, so the AI
+ * pane can be relaunched with `--resume <uuid>` after an app restart and pick up exactly where it
+ * left off.
+ */
+const claudeSessionNamespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+
+function uuidv5(name: string, namespace: string): string {
+    const namespaceBytes = Buffer.from(namespace.replace(/-/g, ''), 'hex');
+    const hash = createHash('sha1').update(namespaceBytes).update(name).digest();
+    const bytes = Buffer.from(hash.subarray(0, 16));
+    bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50; // version 5 marker
+    bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80; // RFC 4122 variant
+    const hex = bytes.toString('hex');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Claude stores per-project sessions under `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`.
+ * Claude encodes project dirs by replacing both `/` AND `.` with `-` (e.g. `/home/x/app.foo`
+ * → `-home-x-app-foo`). Matching that exactly is what lets us decide `--resume` vs `--session-id`
+ * correctly for worktrees whose path contains a dot. Checking the file's existence is how we
+ * decide whether to `--resume <uuid>` (file already present from a prior run) or `--session-id
+ * <uuid>` (first time for this worktree — pin the UUID so the *next* launch can resume it).
+ */
+function claudeSessionFilePath(folder: string, sessionId: string): string {
+    const encoded = folder.replace(/[/.]/g, '-');
+    return join(homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+}
+
+function shellSingleQuote(value: string): string {
+    return `'${value.replace(/'/g, String.raw`'\''`)}'`;
+}
+
+/**
+ * Append Claude session-resume flags to the resolved AI command for a worktree so the pane
+ * automatically restores its last session across app restarts:
+ *   - Deterministic UUIDv5 from the worktree path is the session ID.
+ *   - `--resume <uuid>` when Claude's storage already has that session file, otherwise
+ *     `--session-id <uuid>` to pin the UUID for next time. This is what makes restart recovery
+ *     automatic.
+ *   - `--name <basename>` labels the session so the user sees a meaningful entry in Claude's
+ *     `/resume` picker (worktree name matches the branch name in this user's setup).
+ *
+ * Only applied when the command is a bare `claude` invocation — appending Claude flags to a
+ * custom or compound command (`printf …; while …; done`, a wrapper script, a different AI CLI)
+ * would either be a shell syntax error or pass flags the tool doesn't understand, so those run
+ * verbatim.
+ */
+function withClaudeSession(aiCmd: string, folder: string): string {
+    const firstToken = aiCmd.trim().split(/\s+/)[0] ?? '';
+    if (basename(firstToken) !== 'claude') {
+        return aiCmd;
+    }
+    const sessionId = uuidv5(folder, claudeSessionNamespace);
+    const sessionName = basename(folder);
+    const nameArg = `--name ${shellSingleQuote(sessionName)}`;
+    const sessionArg = existsSync(claudeSessionFilePath(folder, sessionId))
+        ? `--resume ${sessionId}`
+        : `--session-id ${sessionId}`;
+    return `${aiCmd} ${sessionArg} ${nameArg}`;
+}
+
+/**
  * Build the argv for a fresh PTY. AI pane runs through a login + interactive shell so `.zprofile` /
  * `.zshrc` get sourced (those are where managed-Claude installers usually inject their PATH lines).
  * When the AI command exits the wrapper shell terminates with it — the pane lands in `Exited` state
  * so the user can read whatever the AI command printed without it being clobbered by a new shell
  * prompt. Restart via the row's menu when ready to start a fresh session.
  */
-function buildPaneCommand(kind: PaneKind, aiCmd: string): string[] {
+function buildPaneCommand(kind: PaneKind, aiCmd: string, folder: string): string[] {
     const shell = process.env.SHELL || '/bin/bash';
     if (kind === PaneKind.Ai) {
         return [
             shell,
             '-lic',
-            aiCmd,
+            withClaudeSession(aiCmd, folder),
         ];
     }
     /**
@@ -287,7 +353,7 @@ function startPty(folder: string, kind: PaneKind, entry: PaneEntry, aiCmd: strin
     const [
         command,
         ...args
-    ] = buildPaneCommand(kind, aiCmd);
+    ] = buildPaneCommand(kind, aiCmd, folder);
     if (!command) {
         return;
     }

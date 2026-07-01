@@ -10,7 +10,7 @@ import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 import {openHttpUrl} from '../../util/electron-bridge.js';
 import {reportClientError} from '../../util/error-reporter.js';
-import {themeClient} from '../../util/theme.js';
+import {getEffectiveTheme, subscribeEffectiveTheme} from '../../util/effective-theme.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
@@ -276,7 +276,7 @@ const terminalAppDarkTheme: ITheme = {
 };
 
 function pickTerminalTheme(): ITheme {
-    return themeClient.getEffectiveTheme() === 'dark' ? terminalAppDarkTheme : terminalAppLightTheme;
+    return getEffectiveTheme() === 'dark' ? terminalAppDarkTheme : terminalAppLightTheme;
 }
 
 export const VirTerminal = defineElement<{
@@ -636,7 +636,7 @@ export const VirTerminal = defineElement<{
                         () => true,
                     );
 
-                    const unsubscribeTheme = themeClient.subscribe(() => {
+                    const unsubscribeTheme = subscribeEffectiveTheme(() => {
                         terminal.options.theme = pickTerminalTheme();
                     });
 

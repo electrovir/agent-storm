@@ -25,7 +25,8 @@ import {
 } from '../../util/router.js';
 import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
 import '../../util/service-origin.js';
-import '../../util/theme.js';
+import {setEffectiveTheme} from '../../util/effective-theme.js';
+import {applyAllCssVars} from '../../util/storm-vir-theme.js';
 import {VirAddRepo} from './vir-add-repo.element.js';
 import {VirAddWorktree} from './vir-add-worktree.element.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
@@ -219,7 +220,12 @@ export const VirApp = defineElement()({
             disconnectVisualViewport: undefined,
             mobileSidebarOpen: false,
             paneRestartKeys: {},
-            themeClient: new ViraThemeClient(),
+            themeClient: new ViraThemeClient({
+                applyTheme: ({useDarkTheme}) => {
+                    applyAllCssVars({useDark: useDarkTheme});
+                    setEffectiveTheme(useDarkTheme ? 'dark' : 'light');
+                },
+            }),
         };
     },
     styles: css`

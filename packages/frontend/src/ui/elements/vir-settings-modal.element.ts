@@ -1,9 +1,4 @@
-import {
-    defaultConfig,
-    type Config,
-    type RepoConfig,
-    type UserThemeSelection,
-} from '@agent-storm/common';
+import {defaultConfig, type Config, type RepoConfig} from '@agent-storm/common';
 import {css, defineElement, html, listen, onDomCreated} from 'element-vir';
 import {
     lucideIcons,
@@ -18,9 +13,7 @@ import {
 } from 'vira';
 import {deleteRepo, getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
 import {router} from '../../util/router.js';
-import {themeClient} from '../../util/theme.js';
 import {viraButtonOverrides} from '../button-overrides.styles.js';
-import {VirAppearanceSection} from './vir-appearance-section.element.js';
 
 type EditableConfig = Omit<Config, 'repos'>;
 
@@ -52,7 +45,6 @@ export const VirSettingsModal = defineElement<{
         return {
             pending: undefined as EditableConfig | undefined,
             repos: undefined as ReadonlyArray<RepoConfig> | undefined,
-            themeSelection: themeClient.getSelection(),
             /**
              * `useWebgl` at load time. Captured so save() can detect a flip and reload the page —
              * existing vir-terminal instances only read the renderer choice at construction, so
@@ -381,13 +373,6 @@ export const VirSettingsModal = defineElement<{
             });
         };
 
-        const onThemeChange = (next: UserThemeSelection) => {
-            themeClient.applyTheme(next);
-            updateState({
-                themeSelection: next,
-            });
-        };
-
         const removeHidden = (path: string) => {
             if (!state.pending) {
                 return;
@@ -418,13 +403,6 @@ export const VirSettingsModal = defineElement<{
                                   }
                               })}
                           >
-                              <${VirAppearanceSection.assign({
-                                  theme: state.themeSelection,
-                              })}
-                                  ${listen(VirAppearanceSection.events.themeChange, (event) => {
-                                      onThemeChange(event.detail);
-                                  })}
-                              ></${VirAppearanceSection}>
                               ${state.loadError
                                   ? html`
                                         <div class="error">
