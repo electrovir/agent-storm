@@ -6,6 +6,7 @@ import {
     createWorktreeEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
+    hideRepoEndpoint,
     killPanesEndpoint,
     PaneKind,
     ptyWebSocket,
@@ -17,7 +18,7 @@ import {
     uploadEndpoint,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {HttpMethod, HttpStatus, log, wait} from '@augment-vir/common';
+import {HttpMethod, HttpStatus, log, omitObjectKeys, wait} from '@augment-vir/common';
 import {type OriginRequirement} from '@rest-vir/api';
 import {attachApi, createApiImplementor, implementApi, silentServerLogger} from '@rest-vir/host';
 import fastify from 'fastify';
@@ -473,6 +474,40 @@ const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint,
     },
 });
 
+const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        /**
+         * Clear `lastInteractedAtMs` on the owning repo's config entry — the inverse of the touch
+         * endpoint. The sidebar's recency filter treats a repo with no timestamp as hidden. Resolve
+         * the owning repo exactly like `touchRepo` (a worktree resolves to its parent, else the
+         * folder itself) and no-op on unknown folders / transient load failures — best-effort,
+         * never error.
+         */
+        const target = normalizePath(requestData.folder);
+        const cached = await getCachedFolders();
+        const folder = cached.find((entry) => entry.path === target);
+        const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
+        const config = await loadConfig().catch(() => undefined);
+        const repoIndex = config?.repos.findIndex((repo) => repo.path === repoPath) ?? -1;
+        if (config && repoIndex !== -1) {
+            const updatedRepos = config.repos.map((repo, index) =>
+                index === repoIndex ? omitObjectKeys(repo, ['lastInteractedAtMs']) : repo,
+            );
+            await saveConfig({
+                ...config,
+                repos: updatedRepos,
+            });
+        }
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const checkPathImplementation = implementor.implementEndpoint(checkPathEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         const resolvedPath = normalizePath(requestData.path);
@@ -620,6 +655,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         resetAiSessionImplementation,
         restartDaemonImplementation,
         touchRepoImplementation,
+        hideRepoImplementation,
         checkPathImplementation,
         createPathImplementation,
         uploadImplementation,

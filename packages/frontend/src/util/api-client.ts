@@ -6,6 +6,7 @@ import {
     createWorktreeEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
+    hideRepoEndpoint,
     killPanesEndpoint,
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
@@ -123,6 +124,14 @@ export async function deleteWorktree(params: Readonly<{worktreePath: string}>): 
 export async function touchRepo(params: Readonly<{folder: string}>): Promise<void> {
     await requestApi('POST /repos/touch', () =>
         client.fetch(touchRepoEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function hideRepo(params: Readonly<{folder: string}>): Promise<void> {
+    await requestApi('POST /repos/hide', () =>
+        client.fetch(hideRepoEndpoint).POST({
             requestData: params,
         }),
     );

@@ -31,16 +31,16 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@augment-vir/assert": "^31.73.0",
+        "@augment-vir/assert": "^32.1.0",
         "@rest-vir/api": "^2.2.0",
         "object-shape-tester": "^6.14.0",
-        "schema-vir": "^0.7.1"
+        "schema-vir": "^0.8.0"
     },
     "devDependencies": {
-        "@augment-vir/test": "^31.73.0",
-        "@web/dev-server-esbuild": "^1.0.5",
-        "@web/test-runner": "^0.20.2",
-        "@web/test-runner-playwright": "^0.11.1",
+        "@augment-vir/test": "^32.1.0",
+        "@web/dev-server-esbuild": "^2.0.0",
+        "@web/test-runner": "^1.0.0",
+        "@web/test-runner-playwright": "^1.0.0",
         "istanbul-smart-text-reporter": "^1.1.5"
     },
     "engines": {

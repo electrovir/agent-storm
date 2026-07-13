@@ -507,6 +507,26 @@ export const touchRepoEndpoint = defineEndpoint({
     },
 });
 
+export const hideRepoEndpoint = defineEndpoint({
+    path: '/repos/hide',
+    requests: {
+        [HttpMethod.Post]: {
+            /**
+             * Reuses {@link repoTouchRequestShape} — same `{folder}` payload and same owning-repo
+             * resolution. Clears the repo's `lastInteractedAtMs` (the inverse of touch), which the
+             * sidebar treats as "hidden": dropped from the recency-filtered list while still
+             * showing in search and the unfiltered view.
+             */
+            requestData: repoTouchRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const checkPathEndpoint = defineEndpoint({
     path: '/paths/check',
     requests: {
@@ -580,6 +600,7 @@ export const agentStormService = defineApi({
         resetAiSessionEndpoint,
         restartDaemonEndpoint,
         touchRepoEndpoint,
+        hideRepoEndpoint,
         checkPathEndpoint,
         createPathEndpoint,
         uploadEndpoint,
