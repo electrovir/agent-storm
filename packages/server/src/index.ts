@@ -529,8 +529,8 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
         const folder = searchParams.folder;
         const kind = searchParams.kind;
         /**
-         * Client-requested scrollback line cap (see `ptyWebSocket` search params). Empty or
-         * invalid → undefined, which the daemon treats as "replay the full buffer".
+         * Client-requested scrollback line cap (see `ptyWebSocket` search params). Empty or invalid
+         * → undefined, which the daemon treats as "replay the full buffer".
          */
         const parsedScrollbackLimit = Number.parseInt(searchParams.scrollbackLimit, 10);
         const scrollbackLimit = Number.isFinite(parsedScrollbackLimit)
