@@ -84,6 +84,12 @@ export type AttachHandshake = {
      * (existing live PTYs keep their old command until restarted).
      */
     aiCmd?: string | undefined;
+    /**
+     * Max scrollback lines to replay to this client on attach. When set, the daemon truncates the
+     * pane's buffered scrollback to the last N lines before sending it. Omitted means replay the
+     * full buffered scrollback.
+     */
+    scrollbackLimit?: number | undefined;
 };
 
 export type StatusHandshake = {

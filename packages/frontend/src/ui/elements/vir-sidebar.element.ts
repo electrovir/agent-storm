@@ -595,11 +595,11 @@ export const VirSidebar = defineElement<{
             /**
              * Optimistically bump the owning repo's `lastInteractedAtMs` in the local repos mirror
              * so the hide-inactive filter keeps the repo visible the instant the search query is
-             * cleared and the view reverts to the recency filter. The backend touch
-             * — fired from vir-app's `folderActivated` handler — persists this, but it's async and
-             * wouldn't land before the re-filter, so an inactive repo would otherwise vanish until
-             * the next poll. Resolve the owning repo the same way the backend does: a worktree's
-             * parent repo, else the folder itself.
+             * cleared and the view reverts to the recency filter. The backend touch — fired from
+             * vir-app's `folderActivated` handler — persists this, but it's async and wouldn't land
+             * before the re-filter, so an inactive repo would otherwise vanish until the next poll.
+             * Resolve the owning repo the same way the backend does: a worktree's parent repo, else
+             * the folder itself.
              */
             const folder = state.folders.find((entry) => entry.path === path);
             const owningRepoPath = folder?.parentRepoPath ?? folder?.path ?? path;
@@ -689,14 +689,21 @@ export const VirSidebar = defineElement<{
                     <${ViraPopUpTrigger.assign({
                         horizontalAnchor: HorizontalAnchor.Left,
                         keepOpenAfterInteraction: true,
-                    })}>
+                    })}
+                        ${listen(ViraPopUpTrigger.events.openChange, (event) => {
+                            if (event.detail) {
+                                focusSearchInput(host);
+                            }
+                        })}
+                    >
                         <${ViraButton.assign({
                             icon: inputs.mobileModal ? mobileSearchIcon : searchIcon,
                             buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                             /**
                              * Bump the search button to Standard emphasis while a search is active
                              * so it stays visibly "on" after the pop-up closes — the query persists
-                             * past close, so the filter is still applied even with the pop-up shut.
+                             * past close, so the filter is still applied even with the pop-up
+                             * shut.
                              */
                             buttonEmphasis: trimmedSearchQuery
                                 ? ViraEmphasis.Standard
@@ -715,6 +722,7 @@ export const VirSidebar = defineElement<{
                                 placeholder: 'Search repos & worktrees',
                                 showClearButton: true,
                             })}
+                                class="search-input"
                                 ${listen(ViraInput.events.valueChange, (event) => {
                                     updateState({
                                         searchQuery: event.detail,
@@ -923,6 +931,7 @@ export const VirSidebar = defineElement<{
                         value: state.repoPath,
                         placeholder: '~/src/project',
                         showClearButton: true,
+                        disableBrowserHelps: true,
                         disabled: state.repoSubmitting,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
@@ -941,6 +950,7 @@ export const VirSidebar = defineElement<{
                         value: state.repoAiCmd,
                         placeholder: state.repoGlobalAiCmd || 'claude',
                         showClearButton: true,
+                        disableBrowserHelps: true,
                         disabled: state.repoSubmitting,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
@@ -959,6 +969,7 @@ export const VirSidebar = defineElement<{
                         value: state.repoResetAiSessionCmd,
                         placeholder: state.repoGlobalResetAiSessionCmd || '/clear',
                         showClearButton: true,
+                        disableBrowserHelps: true,
                         disabled: state.repoSubmitting,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
@@ -1003,6 +1014,7 @@ export const VirSidebar = defineElement<{
                         value: state.worktreeName,
                         placeholder: 'branch-name',
                         showClearButton: true,
+                        disableBrowserHelps: true,
                         disabled: state.worktreeSubmitting,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
@@ -1021,6 +1033,7 @@ export const VirSidebar = defineElement<{
                         value: state.worktreeAiCmd,
                         placeholder: state.worktreeGlobalAiCmd || 'claude',
                         showClearButton: true,
+                        disableBrowserHelps: true,
                         disabled: state.worktreeSubmitting,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
@@ -1039,6 +1052,7 @@ export const VirSidebar = defineElement<{
                         value: state.worktreeResetAiSessionCmd,
                         placeholder: state.worktreeGlobalResetAiSessionCmd || '/clear',
                         showClearButton: true,
+                        disableBrowserHelps: true,
                         disabled: state.worktreeSubmitting,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
@@ -1136,6 +1150,23 @@ export const VirSidebar = defineElement<{
         `;
     },
 });
+
+/**
+ * Focuses the native input inside the header search pop-up once it opens. The pop-up content is
+ * slotted into vir-sidebar's shadow root, and `ViraInput` keeps its real `<input>` in its own
+ * shadow root, so we reach through both. Deferred a frame because the pop-up manager
+ * mounts/positions the element after `openChange` fires — focusing synchronously would target a
+ * not-yet-visible node.
+ */
+function focusSearchInput(host: HTMLElement): void {
+    requestAnimationFrame(() => {
+        const searchInput = host.shadowRoot?.querySelector('.search-input');
+        const nativeInput = searchInput?.shadowRoot?.querySelector('input');
+        if (nativeInput instanceof HTMLInputElement) {
+            nativeInput.focus();
+        }
+    });
+}
 
 function renderPaneChip(label: string, status: PaneStatus) {
     if (status === PaneStatus.None) {
@@ -1372,7 +1403,7 @@ function buildRowMenuEntries(
          */
         folder.resetAiSessionCmd
             ? {
-                  content: 'Restart AI session',
+                  content: 'New AI session',
                   iconOverride: lucideIcons.RefreshCcw,
                   onClick: () => {
                       void (async () => {

@@ -247,10 +247,22 @@ function startPty(folder: string, kind: PaneKind, entry: PaneEntry, aiCmd: strin
     }
 }
 
+function limitScrollbackLines(scrollback: string, scrollbackLimit: number | undefined): string {
+    if (!scrollbackLimit || scrollbackLimit < 1) {
+        return scrollback;
+    }
+    const lines = scrollback.split('\n');
+    if (lines.length <= scrollbackLimit) {
+        return scrollback;
+    }
+    return lines.slice(-scrollbackLimit).join('\n');
+}
+
 export function attachPane({
     folder,
     kind,
     aiCmd,
+    scrollbackLimit,
     onData,
     onExit,
 }: Readonly<{
@@ -262,6 +274,12 @@ export function attachPane({
      * explicitly restarts the pane. Falls back to {@link fallbackAiCommand} when omitted.
      */
     aiCmd?: string | undefined;
+    /**
+     * Client-requested cap on replayed scrollback lines. Truncates the returned `scrollback` to the
+     * last N lines so a client with a small terminal buffer doesn't receive history it will
+     * discard. Omitted replays the full buffered scrollback.
+     */
+    scrollbackLimit?: number | undefined;
     onData: (data: string) => void;
     onExit: (exitCode: number | undefined) => void;
 }>): {
@@ -281,7 +299,7 @@ export function attachPane({
         size: undefined,
     };
     entry.subscribers.add(subscriber);
-    const scrollback = entry.scrollbackChunks.join('');
+    const scrollback = limitScrollbackLines(entry.scrollbackChunks.join(''), scrollbackLimit);
     return {
         isNew,
         scrollback,

@@ -405,6 +405,17 @@ export const VirPaneGroup = defineElement<{
         const showShellPane = !isCodeTab && (!isMobile || inputs.activeTab === 'shell');
 
         /**
+         * Whether to actually mount each terminal (vs. just hide it with CSS). On desktop both are
+         * always mounted so the split view is live and switching tabs is instant. On mobile only
+         * the visible pane's terminal is mounted, so an inactive folder never holds a socket and
+         * even the active folder holds at most one `/pty` WebSocket at a time — switching
+         * tabs/panes closes the old socket (the daemon keeps the PTY and replays scrollback on the
+         * next attach). This keeps phones from accumulating idle sockets.
+         */
+        const mountAiTerminal = !isMobile || showAiPane;
+        const mountShellTerminal = !isMobile || showShellPane;
+
+        /**
          * Lazy: kick off the VS Code spawn the first time the user activates the Code tab. Deferred
          * via microtask so we don't mutate state during render. Once `vscodeUrl` is set the iframe
          * stays mounted across CLI ↔ Code toggles.
@@ -587,18 +598,20 @@ export const VirPaneGroup = defineElement<{
                                   )}
                               >
                                   <div class="pane-body">
-                                      ${repeat(
-                                          [inputs.aiRestartKey],
-                                          (restartKeyValue) => String(restartKeyValue),
-                                          () => html`
-                                              <${VirTerminal.assign({
-                                                  folder: inputs.folder,
-                                                  kind: PaneKind.Ai,
-                                                  active: inputs.active,
-                                                  showAccessoryKeys: isMobile,
-                                              })}></${VirTerminal}>
-                                          `,
-                                      )}
+                                      ${mountAiTerminal
+                                          ? repeat(
+                                                [inputs.aiRestartKey],
+                                                (restartKeyValue) => String(restartKeyValue),
+                                                () => html`
+                                                    <${VirTerminal.assign({
+                                                        folder: inputs.folder,
+                                                        kind: PaneKind.Ai,
+                                                        active: inputs.active,
+                                                        showAccessoryKeys: isMobile,
+                                                    })}></${VirTerminal}>
+                                                `,
+                                            )
+                                          : ''}
                                   </div>
                               </div>
                               <div
@@ -621,12 +634,16 @@ export const VirPaneGroup = defineElement<{
                         )}
                     >
                         <div class="pane-body">
-                            <${VirTerminal.assign({
-                                folder: inputs.folder,
-                                kind: PaneKind.Shell,
-                                active: inputs.active,
-                                showAccessoryKeys: isMobile,
-                            })}></${VirTerminal}>
+                            ${mountShellTerminal
+                                ? html`
+                                      <${VirTerminal.assign({
+                                          folder: inputs.folder,
+                                          kind: PaneKind.Shell,
+                                          active: inputs.active,
+                                          showAccessoryKeys: isMobile,
+                                      })}></${VirTerminal}>
+                                  `
+                                : ''}
                         </div>
                     </div>
                 </div>

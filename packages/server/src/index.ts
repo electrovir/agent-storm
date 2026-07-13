@@ -529,6 +529,14 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
         const folder = searchParams.folder;
         const kind = searchParams.kind;
         /**
+         * Client-requested scrollback line cap (see `ptyWebSocket` search params). Empty or
+         * invalid → undefined, which the daemon treats as "replay the full buffer".
+         */
+        const parsedScrollbackLimit = Number.parseInt(searchParams.scrollbackLimit, 10);
+        const scrollbackLimit = Number.isFinite(parsedScrollbackLimit)
+            ? parsedScrollbackLimit
+            : undefined;
+        /**
          * Look up the current AI command from agent-storm's config on every attach so the daemon's
          * spawned PTY (when this is the first attach for the folder + kind pair) uses whatever the
          * user has set. Failure is non-fatal — the daemon falls back to its built-in default
@@ -538,6 +546,7 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             folder,
             kind,
             aiCmd: await resolveAiCmdForFolder(folder),
+            scrollbackLimit,
             onData(data) {
                 webSocket.send(data);
             },
