@@ -497,6 +497,18 @@ export const VirApp = defineElement()({
             ? `agent-storm • ${resolution.folder.name}`
             : 'agent-storm';
 
+        /**
+         * On mobile, only mount the currently-active folder's pane group. Every mounted pane group
+         * holds live `/pty` WebSocket(s), and keeping the whole `openedFolders` superset mounted
+         * (as we do on desktop, so switching folders is instant) means a phone can end up holding
+         * many open sockets at once — a real battery drain. Unmounting the inactive groups closes
+         * only the frontend's socket; the daemon keeps each pane's PTY alive and replays its
+         * scrollback when the user switches back. Desktop keeps the full superset mounted.
+         */
+        const renderedFolders = isMobile
+            ? state.openedFolders.filter((folder) => folder === activeFolder)
+            : state.openedFolders;
+
         const onDividerPointerDown = (event: PointerEvent) => {
             event.preventDefault();
             /**
@@ -723,13 +735,13 @@ export const VirApp = defineElement()({
                         }),
                     )}
                 ></${ViraButton}>
-                ${state.openedFolders.length === 0
+                ${renderedFolders.length === 0
                     ? html`
                           <div class="stage-empty">Select a repo to open its panes.</div>
                       `
                     : ''}
                 ${repeat(
-                    state.openedFolders,
+                    renderedFolders,
                     /**
                      * Key the pane slots by absolute folder path so lit-html identifies elements by
                      * folder rather than by array index. Without this, removing a folder from

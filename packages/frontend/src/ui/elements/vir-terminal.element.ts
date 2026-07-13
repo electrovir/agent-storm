@@ -8,10 +8,10 @@ import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element
 import {createSizedIcon, lucideIcons, ViraIcon, viraThemeByKeys} from 'vira';
 import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
+import {localStorageClient} from '../../util/local-storage-client.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
-const terminalScrollbackLines = 20_000;
 
 function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -460,13 +460,20 @@ export const VirTerminal = defineElement<{
                     const useWebgl = config?.useWebgl !== false;
                     const clickableLinks = config?.terminalClickableLinks !== false;
 
+                    /**
+                     * User-controlled cap on how many scrollback lines this pane retains. Read once
+                     * here (not persisted to the backend config) and reused below as the connect
+                     * search param so the daemon replays at most this many lines on attach.
+                     */
+                    const scrollbackLimit = localStorageClient.scrollbackLimit.read();
+
                     const terminal = new Terminal({
                         fontFamily: '"MesloLGS NF", Menlo, monospace',
                         fontSize: 13,
                         cursorBlink: true,
                         cursorStyle: 'bar',
                         cursorWidth: 3,
-                        scrollback: terminalScrollbackLines,
+                        scrollback: scrollbackLimit,
                         theme: terminalAppTheme,
                         /**
                          * Seed xterm with the daemon's spawn-default dims (see `pty-pool.ts`'s
@@ -588,6 +595,7 @@ export const VirTerminal = defineElement<{
                         searchParams: {
                             folder: inputs.folder,
                             kind: inputs.kind,
+                            scrollbackLimit: String(scrollbackLimit),
                         },
                         protocols: [secret],
                         listeners: {

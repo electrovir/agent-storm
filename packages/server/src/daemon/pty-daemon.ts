@@ -50,6 +50,7 @@ function handleAttach(
     folder: string,
     kind: PaneKind,
     aiCmd: string | undefined,
+    scrollbackLimit: number | undefined,
 ): void {
     const onData = (data: string) => {
         socket.write(encodeDataFrame(data));
@@ -65,6 +66,7 @@ function handleAttach(
         folder,
         kind,
         aiCmd,
+        scrollbackLimit,
         onData,
         onExit,
     });
@@ -120,7 +122,14 @@ const server = createServer((socket) => {
         const handshake = JSON.parse(controlFrame.payload.toString('utf-8')) as ClientHandshake;
 
         if (handshake.action === DaemonAction.Attach) {
-            handleAttach(socket, decoder, handshake.folder, handshake.kind, handshake.aiCmd);
+            handleAttach(
+                socket,
+                decoder,
+                handshake.folder,
+                handshake.kind,
+                handshake.aiCmd,
+                handshake.scrollbackLimit,
+            );
         } else if (handshake.action === DaemonAction.Status) {
             const response: StatusResponse = {
                 ok: true,

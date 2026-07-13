@@ -4,6 +4,8 @@ import {type JsonValue} from 'type-fest';
 import {
     ViraButton,
     ViraColorVariant,
+    ViraForm,
+    ViraFormFieldType,
     ViraJsonForm,
     ViraModal,
     viraThemeByKeys,
@@ -11,6 +13,7 @@ import {
     type ViraJsonSchemaObject,
 } from 'vira';
 import {getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
+import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
 
 /**
  * Config properties that round-trip through `/config` (so the backend can persist them across
@@ -77,6 +80,12 @@ export const VirSettingsModal = defineElement<{
     },
     state() {
         return {
+            /**
+             * Client-only terminal scrollback cap, backed by `localStorage` rather than the backend
+             * config (so it's deliberately not part of the `ViraJsonForm` below). Seeded from the
+             * persisted value and written straight back on every change.
+             */
+            scrollbackLimit: localStorageClient.scrollbackLimit.read(),
             pending: undefined as JsonValue | undefined,
             /**
              * Snapshot of the Config we loaded from the backend. Needed at save() time so we can
@@ -124,6 +133,13 @@ export const VirSettingsModal = defineElement<{
             padding: 24px;
             text-align: center;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+        }
+
+        .section-divider {
+            border: none;
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            margin: 0;
+            width: 100%;
         }
     `,
     render({inputs, state, updateState, dispatch, events}) {
@@ -231,6 +247,37 @@ export const VirSettingsModal = defineElement<{
                                   }
                               })}
                           >
+                              <${ViraForm.assign({
+                                  fields: {
+                                      scrollbackLimit: {
+                                          type: ViraFormFieldType.Number,
+                                          label: 'Terminal scrollback limit (lines)',
+                                          value: state.scrollbackLimit,
+                                          min: scrollbackLimit.min,
+                                          max: scrollbackLimit.max,
+                                          step: 1000,
+                                      },
+                                  },
+                              })}
+                                  ${listen(ViraForm.events.valueChange, (event) => {
+                                      const nextValue = event.detail.value;
+                                      if (
+                                          typeof nextValue !== 'number' ||
+                                          !Number.isFinite(nextValue)
+                                      ) {
+                                          return;
+                                      }
+                                      const clamped = Math.min(
+                                          scrollbackLimit.max,
+                                          Math.max(scrollbackLimit.min, Math.round(nextValue)),
+                                      );
+                                      updateState({
+                                          scrollbackLimit: clamped,
+                                      });
+                                      localStorageClient.scrollbackLimit.write(clamped);
+                                  })}
+                              ></${ViraForm}>
+                              <hr class="section-divider" />
                               ${state.loadError
                                   ? html`
                                         <div class="error">${state.loadError}</div>

@@ -76,6 +76,12 @@ export const paneSplit = {
     default: 0.5,
 } as const;
 
+export const scrollbackLimit = {
+    min: 100,
+    max: 100_000,
+    default: 20_000,
+} as const;
+
 function clamp(value: number, min: number, max: number, fallback: number): number {
     if (!Number.isFinite(value)) {
         return fallback;
@@ -102,6 +108,18 @@ export const localStorageClient = {
         defaultValue: paneSplit.default,
         parse: (raw) =>
             clamp(Number.parseFloat(raw), paneSplit.min, paneSplit.max, paneSplit.default),
+        serialize: (value) => String(value),
+    }),
+    scrollbackLimit: defineSetting<number>({
+        key: 'agent-storm:scrollback-limit',
+        defaultValue: scrollbackLimit.default,
+        parse: (raw) =>
+            clamp(
+                Math.round(Number.parseFloat(raw)),
+                scrollbackLimit.min,
+                scrollbackLimit.max,
+                scrollbackLimit.default,
+            ),
         serialize: (value) => String(value),
     }),
 };

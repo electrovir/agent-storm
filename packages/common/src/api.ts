@@ -556,6 +556,14 @@ export const ptyWebSocket = defineWebSocket({
     searchParams: {
         folder: defineShape(''),
         kind: enumShape(PaneKind),
+        /**
+         * Max scrollback lines this client wants replayed on attach, as a decimal string (search
+         * params are strings). The backend truncates the pane's buffered scrollback to the last N
+         * lines before sending it, so a client that keeps a small xterm buffer doesn't pay to
+         * transfer and process history it will immediately discard. Empty or invalid means "no
+         * client limit" and the full buffered scrollback is replayed.
+         */
+        scrollbackLimit: defineShape(''),
     },
 });
 

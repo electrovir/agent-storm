@@ -126,6 +126,7 @@ export async function attachPane({
     folder,
     kind,
     aiCmd,
+    scrollbackLimit,
     onData,
     onExit,
 }: Readonly<{
@@ -137,6 +138,12 @@ export async function attachPane({
      * daemon started.
      */
     aiCmd?: string | undefined;
+    /**
+     * Client-requested cap on replayed scrollback lines, forwarded to the daemon's attach
+     * handshake. The daemon truncates the buffered scrollback to the last N lines before replaying
+     * it.
+     */
+    scrollbackLimit?: number | undefined;
     onData: (data: string) => void;
     onExit: (exitCode: number | undefined) => void;
 }>): Promise<PaneAttachment> {
@@ -149,6 +156,7 @@ export async function attachPane({
             folder,
             kind,
             aiCmd,
+            scrollbackLimit,
         }),
     );
 
