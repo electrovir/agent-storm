@@ -50,6 +50,7 @@ import {
     getConfig,
     getFolders,
     getUpdateStatus,
+    hideRepo,
     killFolderPanes,
     putConfig,
     resetAiSession,
@@ -84,6 +85,22 @@ const mobileSearchIcon = createSizedIcon(lucideIcons.Search, mobileButtonIconSiz
 const mobilePlusIcon = createSizedIcon(lucideIcons.Plus, mobileButtonIconSize);
 const mobileEllipsisIcon = createSizedIcon(lucideIcons.Ellipsis, mobileButtonIconSize);
 const mobileFilterIcon = createSizedIcon(lucideIcons.ListFilter, mobileButtonIconSize);
+
+/**
+ * Icons for the per-folder / repo / worktree row (⋯) menu items. Sized down from lucide's native
+ * 24px so they sit proportionally next to the menu label text.
+ */
+const menuIconSize = 16;
+const menuOpenPrIcon = createSizedIcon(lucideIcons.ExternalLink, menuIconSize);
+const menuShowAiIcon = createSizedIcon(lucideIcons.Eye, menuIconSize);
+const menuHideAiIcon = createSizedIcon(lucideIcons.EyeOff, menuIconSize);
+const menuRestartAiIcon = createSizedIcon(lucideIcons.RotateCw, menuIconSize);
+const menuNewSessionIcon = createSizedIcon(lucideIcons.RefreshCcw, menuIconSize);
+const menuEditCommandsIcon = createSizedIcon(lucideIcons.Terminal, menuIconSize);
+const menuKillPanesIcon = createSizedIcon(lucideIcons.PowerOff, menuIconSize);
+const menuHideRepoIcon = createSizedIcon(lucideIcons.Archive, menuIconSize);
+const menuDeleteWorktreeIcon = createSizedIcon(lucideIcons.Trash2, menuIconSize);
+const menuRemoveRepoIcon = createSizedIcon(lucideIcons.X, menuIconSize);
 
 const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
     [SidebarGrouping.Repo]: 'Group by repo',
@@ -1365,18 +1382,18 @@ function buildRowMenuEntries(
                         Open PR
                     </${ViraLink}>
                 `,
-                iconOverride: lucideIcons.ExternalLink,
+                iconOverride: menuOpenPrIcon,
             },
         {
             content: folder.aiHidden ? 'Show AI pane' : 'Hide AI pane',
-            iconOverride: folder.aiHidden ? lucideIcons.Eye : lucideIcons.EyeOff,
+            iconOverride: folder.aiHidden ? menuShowAiIcon : menuHideAiIcon,
             onClick: () => {
                 void toggleAiHidden(folder.path, updateState);
             },
         },
         {
             content: 'Restart AI',
-            iconOverride: lucideIcons.RotateCw,
+            iconOverride: menuRestartAiIcon,
             onClick: () => {
                 void (async () => {
                     try {
@@ -1404,7 +1421,7 @@ function buildRowMenuEntries(
         folder.resetAiSessionCmd
             ? {
                   content: 'New AI session',
-                  iconOverride: lucideIcons.RefreshCcw,
+                  iconOverride: menuNewSessionIcon,
                   onClick: () => {
                       void (async () => {
                           try {
@@ -1424,14 +1441,14 @@ function buildRowMenuEntries(
             : undefined,
         {
             content: 'Edit folder commands',
-            iconOverride: lucideIcons.Terminal,
+            iconOverride: menuEditCommandsIcon,
             onClick: () => {
                 void openEditFolderModal(folder, updateState);
             },
         },
         {
             content: 'Kill folder panes',
-            iconOverride: lucideIcons.PowerOff,
+            iconOverride: menuKillPanesIcon,
             onClick: () => {
                 void (async () => {
                     try {
@@ -1456,10 +1473,43 @@ function buildRowMenuEntries(
                 })();
             },
         },
+        /**
+         * Standalone repos only (worktree children carry a `parentRepoPath`). Clears the repo's
+         * `lastInteractedAtMs`, which the recency filter treats as hidden — the repo drops out of
+         * the default sidebar list but still surfaces in search and the unfiltered view. Also kills
+         * the folder's panes (same as "Kill folder panes") so hiding a repo tears down its running
+         * PTYs and drops it from `openedFolders`/route via `foldersRemoved`, rather than leaving a
+         * hidden-but-running session behind. Refresh the config mirror afterward so the filter
+         * (which reads `state.repos`) reflects the cleared timestamp without waiting for the next
+         * poll.
+         */
+        !folder.parentRepoPath && {
+            content: 'Hide repo',
+            iconOverride: menuHideRepoIcon,
+            onClick: () => {
+                void (async () => {
+                    try {
+                        await hideRepo({
+                            folder: folder.path,
+                        });
+                        await killFolderPanes({
+                            folder: folder.path,
+                        });
+                        emitFoldersRemoved([folder.path]);
+                        const refreshedConfig = await getConfig();
+                        updateState({
+                            repos: refreshedConfig.repos,
+                        });
+                    } catch (error: unknown) {
+                        showError(updateState, error);
+                    }
+                })();
+            },
+        },
         folder.parentRepoPath
             ? {
                   content: 'Delete worktree',
-                  iconOverride: lucideIcons.Trash2,
+                  iconOverride: menuDeleteWorktreeIcon,
                   onClick: () => {
                       void confirmDeleteWorktree(
                           folder.path,
@@ -1471,7 +1521,7 @@ function buildRowMenuEntries(
               }
             : {
                   content: 'Remove repo',
-                  iconOverride: lucideIcons.X,
+                  iconOverride: menuRemoveRepoIcon,
                   onClick: () => {
                       void confirmRemoveRepo(folder.path, updateState, () =>
                           emitFoldersRemoved([folder.path]),
