@@ -1,4 +1,5 @@
 import {configJsonSchema, defaultConfig, type Config} from '@agent-storm/common';
+import {pickObjectKeys} from '@augment-vir/common';
 import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
 import {type JsonValue} from 'type-fest';
 import {
@@ -17,26 +18,32 @@ import {localStorageClient, scrollbackLimit} from '../../util/local-storage-clie
 
 /**
  * Config properties that round-trip through `/config` (so the backend can persist them across
- * restarts) but are entirely backend-managed — the user has no business editing them in the
- * settings UI. Stripped from both the schema we hand to `ViraJsonForm` and from the form's
- * input/output so changes to user-editable fields don't blow away the runtime state.
+ * restarts) but are hidden from the settings form. Reasons vary: `githubPollingAutoDisable` is
+ * entirely backend-managed (the user has no business editing it here), while `repos`,
+ * `folderAiCmds`, and `hiddenAiPane` are per-folder data managed through the sidebar rather than
+ * this JSON form (and too large / noisy to belong here). Stripped from both the schema we hand to
+ * `ViraJsonForm` and from the form's input/output, then preserved on save so hiding them never
+ * blows away their runtime state.
  */
-const backendManagedKeys = ['githubPollingAutoDisable'] as const satisfies ReadonlyArray<
-    keyof Config
->;
+const hiddenConfigKeys = [
+    'githubPollingAutoDisable',
+    'repos',
+    'folderAiCmds',
+    'hiddenAiPane',
+] as const satisfies ReadonlyArray<keyof Config>;
 
 const formJsonSchema: ViraJsonSchemaObject = (() => {
     const properties: Record<string, ViraJsonSchema> = {
         ...(configJsonSchema.properties as Record<string, ViraJsonSchema>),
     };
-    backendManagedKeys.forEach((key) => {
+    hiddenConfigKeys.forEach((key) => {
         delete properties[key];
     });
     return {
         ...configJsonSchema,
         properties,
         required: configJsonSchema.required.filter(
-            (key) => !(backendManagedKeys as ReadonlyArray<string>).includes(key),
+            (key) => !(hiddenConfigKeys as ReadonlyArray<string>).includes(key),
         ),
     };
 })();
@@ -45,7 +52,7 @@ function toJsonValue(config: Readonly<Config>): JsonValue {
     const visible = {
         ...config,
     } as Record<string, unknown>;
-    backendManagedKeys.forEach((key) => {
+    hiddenConfigKeys.forEach((key) => {
         delete visible[key];
     });
     return JSON.parse(JSON.stringify(visible)) as JsonValue;
@@ -53,18 +60,15 @@ function toJsonValue(config: Readonly<Config>): JsonValue {
 
 function fromJsonValue(value: JsonValue, current: Readonly<Config>): Config {
     /**
-     * Preserve the current backend-managed fields when merging the user-edited form back into a
-     * full Config. Without this, the form's output (which only knows about user-editable fields)
-     * would lack those keys and they'd revert to defaults on save.
+     * Preserve the current hidden fields when merging the user-edited form back into a full Config.
+     * Without this, the form's output (which only knows about the visible fields) would lack those
+     * keys and they'd revert to defaults on save.
      */
-    const merged: Config = {
+    return {
         ...defaultConfig,
         ...(value as Partial<Config>),
+        ...pickObjectKeys(current, hiddenConfigKeys),
     };
-    backendManagedKeys.forEach((key) => {
-        merged[key] = current[key];
-    });
-    return merged;
 }
 
 export const VirSettingsModal = defineElement<{
