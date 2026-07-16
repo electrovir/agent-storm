@@ -97,6 +97,16 @@ export const VirPaneGroup = defineElement<{
              * turn.
              */
             activeShellTab: 'shell' as 'shell' | 'services',
+            /**
+             * Whether the user has ever clicked the Services tab for this folder this session.
+             * The Services terminal (and therefore its `npm start` PTY — attach spawns the PTY on
+             * first mount) is only created once this flips true, so opening a branch no longer
+             * launches its dev-server stack unless the user actually asks for it. Requested by
+             * wadlo: auto-starting services for every clicked branch was a large part of the
+             * many-agent RAM/CPU load. Stays true after the first click so tab flips and the MRU
+             * terminal-window remounts reattach to the running services PTY.
+             */
+            servicesRequested: false,
         };
     },
     styles: css`
@@ -721,7 +731,10 @@ export const VirPaneGroup = defineElement<{
                                               ? 'true'
                                               : 'false'}
                                           ${listen('click', () =>
-                                              updateState({activeShellTab: 'services'}),
+                                              updateState({
+                                                  activeShellTab: 'services',
+                                                  servicesRequested: true,
+                                              }),
                                           )}
                                       >
                                           Services
@@ -750,14 +763,18 @@ export const VirPaneGroup = defineElement<{
                                           role="tabpanel"
                                           ?data-active=${state.activeShellTab === 'services'}
                                       >
-                                          <${VirTerminal.assign({
-                                              folder: inputs.folder,
-                                              kind: PaneKind.Services,
-                                              active:
-                                                  inputs.active &&
-                                                  state.activeShellTab === 'services',
-                                              showAccessoryKeys: isMobile,
-                                          })}></${VirTerminal}>
+                                          ${state.servicesRequested
+                                              ? html`
+                                                    <${VirTerminal.assign({
+                                                        folder: inputs.folder,
+                                                        kind: PaneKind.Services,
+                                                        active:
+                                                            inputs.active &&
+                                                            state.activeShellTab === 'services',
+                                                        showAccessoryKeys: isMobile,
+                                                    })}></${VirTerminal}>
+                                                `
+                                              : ''}
                                       </div>
                                   </div>
                               </div>

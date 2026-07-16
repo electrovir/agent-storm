@@ -45,3 +45,4 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Only the 3 most-recently-active folders keep terminals mounted; older ones unmount to save RAM/WebGL.
 - Worktree creation accepts one-shot initialAiPrompt typed into the AI pane, never persisted.
 - Sweep reconcile reads only the branch; cache persists once per sweep; dirty-poll gated on live panes.
+- Services pane (npm start) spawns only when the Services tab is first clicked, not on branch open.
