@@ -537,6 +537,14 @@ const createWorktreeRequestShape = defineShape({
      * worktree inherits the global / repo-level default.
      */
     resetAiSessionCmd: nullableShape(''),
+    /**
+     * Optional one-shot task prompt typed into the new worktree's AI pane once Claude's TUI is up.
+     * Deliberately NOT persisted anywhere: baking a prompt into the folder's `aiCmd` re-submits it
+     * on every pane respawn (daemon restart, Restart AI, pane exit), which re-runs bootstrap
+     * instructions against a worktree that now has real work on it. This field exists only in the
+     * create request, so the prompt fires exactly once.
+     */
+    initialAiPrompt: nullableShape(''),
 });
 
 const deleteWorktreeRequestShape = defineShape({
