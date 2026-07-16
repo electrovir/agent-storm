@@ -166,14 +166,24 @@ function clampSidebarWidth(value: number): number {
 
 type AppState = {
     /**
-     * Folders the user has clicked into, by absolute path, in most-recently-activated-last order.
-     * The currently-active folder is derived from the URL + folder info; this list is the "ever
-     * opened during this session" superset. The MRU ordering matters: only the last
-     * `maxLiveTerminalFolders` entries keep their terminals mounted — older entries' pane slots
-     * stay (preserving any VS Code iframe) but their terminals unmount to free WebGL contexts,
-     * scrollback memory, and websocket parse work.
+     * Folders the user has clicked into, by absolute path. Kept around so each pane keeps its
+     * terminal scrollback when the user switches folders. The currently-active folder is derived
+     * from the URL + folder info; this list is the "ever opened during this session" superset.
+     *
+     * Append-only ON PURPOSE: this list drives the keyed `repeat` of pane slots, and reordering a
+     * keyed repeat physically moves the slot's DOM node, which disconnects/reconnects the mounted
+     * `VirTerminal`s — their cleanup hooks then dispose the xterm + websocket without re-running
+     * init, leaving blank panes. Recency lives separately in {@link AppState.terminalMru}.
      */
     openedFolders: ReadonlyArray<string>;
+    /**
+     * The same folders in most-recently-activated-last order. Only the last
+     * `maxLiveTerminalFolders` entries keep their terminals mounted — older entries' pane slots
+     * stay (preserving any VS Code iframe) but their terminals unmount to free WebGL contexts,
+     * scrollback memory, and websocket parse work. Kept separate from `openedFolders` so recency
+     * changes never reorder the rendered pane-slot list (see the warning there).
+     */
+    terminalMru: ReadonlyArray<string>;
     folderInfo: Map<string, FolderInfo>;
     pollHandle: ReturnType<typeof setInterval> | undefined;
     settingsOpen: boolean;
@@ -222,6 +232,7 @@ export const VirApp = defineElement()({
     state(): AppState {
         return {
             openedFolders: [],
+            terminalMru: [],
             folderInfo: new Map(),
             pollHandle: undefined,
             settingsOpen: false,
@@ -540,15 +551,23 @@ export const VirApp = defineElement()({
 
         /**
          * Keep `openedFolders` in sync with the URL so a freshly-resolved folder mounts its pane
-         * without a manual click, and keep the MRU ordering fresh so the active folder is always
-         * inside the live-terminal window. Defers the state update via a microtask so we don't
-         * mutate during render.
+         * without a manual click (append-only — never reordered, see the state comment), and bump
+         * the separate `terminalMru` recency list so the active folder is always inside the
+         * live-terminal window. Defers the state update via a microtask so we don't mutate during
+         * render.
          */
-        if (activeFolder && state.openedFolders.at(-1) !== activeFolder) {
-            const newOpened = moveToMruEnd(state.openedFolders, activeFolder);
+        if (activeFolder && state.terminalMru.at(-1) !== activeFolder) {
+            const newOpened = state.openedFolders.includes(activeFolder)
+                ? state.openedFolders
+                : [
+                      ...state.openedFolders,
+                      activeFolder,
+                  ];
+            const newMru = moveToMruEnd(state.terminalMru, activeFolder);
             void Promise.resolve().then(() => {
                 updateState({
                     openedFolders: newOpened,
+                    terminalMru: newMru,
                 });
             });
         }
@@ -677,9 +696,15 @@ export const VirApp = defineElement()({
                     }
                 })();
             }
-            if (state.openedFolders.at(-1) !== folderPath) {
+            if (state.terminalMru.at(-1) !== folderPath) {
                 updateState({
-                    openedFolders: moveToMruEnd(state.openedFolders, folderPath),
+                    openedFolders: state.openedFolders.includes(folderPath)
+                        ? state.openedFolders
+                        : [
+                              ...state.openedFolders,
+                              folderPath,
+                          ],
+                    terminalMru: moveToMruEnd(state.terminalMru, folderPath),
                 });
             }
             /**
@@ -714,6 +739,7 @@ export const VirApp = defineElement()({
             }
             updateState({
                 openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
+                terminalMru: state.terminalMru.filter((folder) => !removed.has(folder)),
             });
         };
 
@@ -817,12 +843,12 @@ export const VirApp = defineElement()({
                             /**
                              * Terminals live only for the MRU-window folders. The `active` OR-guard
                              * covers the one render between activating an out-of-window folder and
-                             * the deferred MRU reorder landing — without it that first render would
+                             * the deferred MRU bump landing — without it that first render would
                              * mount-then-unmount-then-remount the terminals.
                              */
                             const terminalsMounted =
                                 active ||
-                                state.openedFolders.slice(-maxLiveTerminalFolders).includes(folder);
+                                state.terminalMru.slice(-maxLiveTerminalFolders).includes(folder);
                             return html`
                                 <div class="pane-slot" ?data-active=${active}>
                                     <${VirPaneGroup.assign({
