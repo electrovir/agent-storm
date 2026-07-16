@@ -32,6 +32,8 @@ Combined output is teed to `.logs/dev.log` — see the `read-backend-logs` skill
 - Do NOT put app state in localStorage. Persist it to the agent-storm config (`~/.config/agent-storm.json`) via a server endpoint instead. localStorage is per-browser, per-port, easily wiped, and invisible to other clients of the same workspace — anything we want to survive a reload or sync across the desktop+browser builds belongs in the config. The auth secret is the lone exception because the bearer token has to live on the client.
 - Vira menu-item hover/active reads `--vira-form-selection-*-color`; override per theme or dropdowns show brand-blue.
 - Backend runs via `tsx watch` and auto-restarts on server/common edits; routes that look like CORS errors usually mean the restart crashed — check `.logs/dev.log`.
+- tsx restarts can hang for minutes at "Waiting for graceful termination" (open pty websockets hold the old process) — the old code keeps serving, so verify the backend process start time before trusting that an edit is live.
+- The daemon appends `--resume <uuidv5(folder)>` to bare claude aiCmds (`withClaudeSession` in pty-pool) — pane respawns resume the same Claude conversation, so anything baked into aiCmd argv gets re-submitted INTO that conversation on every respawn. Use `initialAiPrompt` on `/worktrees/create` for one-shot prompts, never aiCmd.
 - `packages/common` is a shared TS library — no vite config or `virmator frontend` scripts.
 - `git worktree add --no-checkout` rejects existing dirs and leaves the index empty — run `git reset`.
 - "Skill" / "automate" means write a runnable script (e.g. `scripts/foo.mjs`); LLM only maps request → script args, never does the work.
