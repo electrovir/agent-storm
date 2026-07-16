@@ -121,6 +121,11 @@ type SidebarState = {
      * the prior behavior — toggling any repo's "Working" header collapses them all.
      */
     workingCollapsed: boolean;
+    /**
+     * Whether each repo's "Do later" section is collapsed. Single shared flag, same rationale as
+     * {@link workingCollapsed}.
+     */
+    doLaterCollapsed: boolean;
     repoModalOpen: boolean;
     repoPath: string;
     repoAiCmd: string;
@@ -231,6 +236,7 @@ export const VirSidebar = defineElement<{
             loadError: undefined,
             openMenuKey: undefined,
             workingCollapsed: localStorageClient.workingGroupCollapsed.read(),
+            doLaterCollapsed: localStorageClient.doLaterGroupCollapsed.read(),
             repoModalOpen: false,
             repoPath: '',
             repoAiCmd: '',
@@ -440,7 +446,8 @@ export const VirSidebar = defineElement<{
             color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
         }
 
-        .group-label[data-variant='working'] {
+        .group-label[data-variant='working'],
+        .group-label[data-variant='do-later'] {
             border-top: 1px solid
                 ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             margin-top: 4px;
@@ -992,6 +999,7 @@ export const VirSidebar = defineElement<{
                         ${renderRepoChildren({
                             children,
                             workingCollapsed: state.workingCollapsed,
+                            doLaterCollapsed: state.doLaterCollapsed,
                             activeFolder: inputs.activeFolder,
                             openMenuKey: state.openMenuKey,
                             onActivate: emitFolderActivated,
@@ -1265,14 +1273,16 @@ function renderPaneChip(label: string, status: PaneStatus) {
 }
 
 /**
- * Render a repo's worktree children split into two sections, matching the sidebar's prior behavior:
- * "Needs attention" first, then a collapsible "Working" group (worktrees whose progress-tracker has
- * a step actively loading — see {@link isWorking}). Each label is shown only when its group is
- * non-empty. The "Working" collapse state is shared across repos (single persisted flag).
+ * Render a repo's worktree children split into three sections: "Needs attention" first, then a
+ * collapsible "Do later" group (worktrees the user parked via the row menu), then a collapsible
+ * "Working" group (worktrees whose progress-tracker has a step actively loading — see
+ * {@link isWorking}). Each label is shown only when its group is non-empty. Both collapse states
+ * are shared across repos (single persisted flag each).
  */
 function renderRepoChildren({
     children,
     workingCollapsed,
+    doLaterCollapsed,
     activeFolder,
     openMenuKey,
     onActivate,
@@ -1283,6 +1293,7 @@ function renderRepoChildren({
 }: Readonly<{
     children: ReadonlyArray<FolderInfo>;
     workingCollapsed: boolean;
+    doLaterCollapsed: boolean;
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
@@ -1291,8 +1302,10 @@ function renderRepoChildren({
     emitPaneRestarted: (detail: PaneRestartedEvent) => void;
     updateState: SidebarUpdate;
 }>) {
-    const needsAttention = children.filter((child) => !isWorking(child));
-    const working = children.filter(isWorking);
+    const doLater = children.filter((child) => child.doLater);
+    const active = children.filter((child) => !child.doLater);
+    const needsAttention = active.filter((child) => !isWorking(child));
+    const working = active.filter(isWorking);
     const renderChild = (folder: FolderInfo, isWorkingRow: boolean) =>
         renderRow({
             folder,
@@ -1311,6 +1324,11 @@ function renderRepoChildren({
         updateState({workingCollapsed: next});
         localStorageClient.workingGroupCollapsed.write(next);
     };
+    const toggleDoLater = () => {
+        const next = !doLaterCollapsed;
+        updateState({doLaterCollapsed: next});
+        localStorageClient.doLaterGroupCollapsed.write(next);
+    };
     return html`
         ${needsAttention.length
             ? html`
@@ -1323,6 +1341,35 @@ function renderRepoChildren({
               `
             : ''}
         ${needsAttention.map((child) => renderChild(child, false))}
+        ${doLater.length
+            ? html`
+                  <div
+                      class="group-label collapsible"
+                      data-variant="do-later"
+                      ?data-collapsed=${doLaterCollapsed}
+                      role="button"
+                      tabindex="0"
+                      aria-expanded=${doLaterCollapsed ? 'false' : 'true'}
+                      ${listen('click', toggleDoLater)}
+                      ${listen('keydown', (event: KeyboardEvent) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                              return;
+                          }
+                          event.preventDefault();
+                          toggleDoLater();
+                      })}
+                  >
+                      <span class="group-left">
+                          <span class="group-chevron">▾</span>
+                          <span>Do later</span>
+                      </span>
+                      <span class="group-count">
+                          ${doLater.length.toString().padStart(2, '0')}
+                      </span>
+                  </div>
+                  ${doLaterCollapsed ? '' : doLater.map((child) => renderChild(child, false))}
+              `
+            : ''}
         ${working.length
             ? html`
                   <div
@@ -1654,6 +1701,15 @@ function buildRowMenuEntries(
                 })();
             },
         },
+        folder.parentRepoPath && !folder.isBaseBranch
+            ? {
+                  content: folder.doLater ? "Move to 'active'" : "Move to 'do later'",
+                  iconOverride: folder.doLater ? lucideIcons.CornerUpLeft : lucideIcons.Clock,
+                  onClick: () => {
+                      void toggleDoLater(folder.path, updateState);
+                  },
+              }
+            : undefined,
         folder.parentRepoPath && !folder.isBaseBranch
             ? {
                   content: folder.isHidden ? 'Mark visible' : 'Mark hidden',
@@ -2282,6 +2338,25 @@ async function toggleWorktreeHidden(
                 : [
                       ...config.hiddenWorktrees,
                       worktreePath,
+                  ],
+        });
+        await refresh(updateState);
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+async function toggleDoLater(folderPath: string, updateState: SidebarUpdate): Promise<void> {
+    try {
+        const config = await getConfig();
+        const isDoLater = config.doLaterFolders.includes(folderPath);
+        await putConfig({
+            ...config,
+            doLaterFolders: isDoLater
+                ? config.doLaterFolders.filter((path) => path !== folderPath)
+                : [
+                      ...config.doLaterFolders,
+                      folderPath,
                   ],
         });
         await refresh(updateState);

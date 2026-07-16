@@ -364,6 +364,12 @@ type RefreshTarget = {
      */
     isHidden: boolean;
     /**
+     * Whether the user moved this folder to the sidebar's "Do later" section via the row's
+     * three-dot menu. Mirrored from `config.doLaterFolders`; unlike `isHidden` the row stays
+     * visible, just regrouped.
+     */
+    doLater: boolean;
+    /**
      * SHA captured the last time the user checked Self-review (code) on this worktree, mirrored
      * from `worktreeConfigShape.lastReviewedSha`. Lifted into the target up-front so the progress
      * tracker can show the right state on the very first render — before any sweep has built a
@@ -400,6 +406,7 @@ function enumerateTargets(config: Readonly<Config>): RefreshTarget[] {
                         folder: repo.path,
                     }),
                     isHidden: false,
+                    doLater: false,
                     lastReviewedSha: null,
                     mergeStepValues: {},
                 },
@@ -422,6 +429,7 @@ function enumerateTargets(config: Readonly<Config>): RefreshTarget[] {
                     folder: repo.path,
                 }),
                 isHidden: false,
+                doLater: false,
                 lastReviewedSha: null,
                 mergeStepValues: {},
             },
@@ -444,6 +452,7 @@ function enumerateTargets(config: Readonly<Config>): RefreshTarget[] {
                         fallbackFolders: [repo.path],
                     }),
                     isHidden: config.hiddenWorktrees.includes(worktree.path),
+                    doLater: config.doLaterFolders.includes(worktree.path),
                     lastReviewedSha: worktree.lastReviewedSha ?? null,
                     mergeStepValues: worktree.mergeStepValues ?? {},
                 }),
@@ -573,6 +582,7 @@ async function buildFolderInfo({
         aiCmd: target.aiCmd,
         resetAiSessionCmd: target.resetAiSessionCmd,
         isHidden: target.isHidden,
+        doLater: target.doLater,
         branch: git.branch,
         git: {
             dirty: git.dirty,
@@ -667,6 +677,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         aiCmd: target.aiCmd,
         resetAiSessionCmd: target.resetAiSessionCmd,
         isHidden: target.isHidden,
+        doLater: target.doLater,
         branch: null,
         git: {
             dirty: false,
@@ -728,6 +739,7 @@ export function getCachedFolders(): FolderInfo[] {
             aiCmd: target.aiCmd,
             resetAiSessionCmd: target.resetAiSessionCmd,
             isHidden: target.isHidden,
+            doLater: target.doLater,
             hasUncommittedChanges: liveUncommitted,
             // `lastReviewedSha` and `mergeStepValues` are authored at the config layer (the
             // `/worktrees/mark-reviewed` and `/worktrees/set-merge-step` endpoints write
@@ -899,6 +911,7 @@ function normalizeCachedFolderInfo(info: FolderInfo): FolderInfo {
                 ? info.mergeStepValues
                 : {},
         isHidden: typeof info.isHidden === 'boolean' ? info.isHidden : false,
+        doLater: typeof info.doLater === 'boolean' ? info.doLater : false,
         aiCmd: typeof info.aiCmd === 'string' ? info.aiCmd : '',
         resetAiSessionCmd:
             typeof info.resetAiSessionCmd === 'string' ? info.resetAiSessionCmd : '',
@@ -940,6 +953,7 @@ async function loadPersistedCache(): Promise<void> {
                         ? target.mergeStepValues
                         : {},
                 isHidden: typeof target.isHidden === 'boolean' ? target.isHidden : false,
+                doLater: typeof target.doLater === 'boolean' ? target.doLater : false,
             }));
             parsed.entries.forEach((pair) => {
                 if (!Array.isArray(pair) || pair.length !== 2) {

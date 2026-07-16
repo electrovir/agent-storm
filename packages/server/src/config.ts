@@ -54,6 +54,7 @@ function normalizeConfig(config: Readonly<Config>): Config {
             }),
         hiddenAiPane: config.hiddenAiPane.map((path) => normalizePath(path)),
         hiddenWorktrees: (config.hiddenWorktrees ?? []).map((path) => normalizePath(path)),
+        doLaterFolders: (config.doLaterFolders ?? []).map((path) => normalizePath(path)),
     };
 }
 
@@ -246,6 +247,7 @@ export async function loadConfig(): Promise<Config> {
         folderAiCmds: parsed.folderAiCmds || defaultConfig.folderAiCmds,
         hiddenAiPane: parsed.hiddenAiPane || defaultConfig.hiddenAiPane,
         hiddenWorktrees: parsed.hiddenWorktrees || defaultConfig.hiddenWorktrees,
+        doLaterFolders: parsed.doLaterFolders || defaultConfig.doLaterFolders,
     };
     return normalizeConfig(merged);
 }
