@@ -224,6 +224,60 @@ async function runPostWorktreeCmd({
     attachment.close();
 }
 
+/**
+ * Type a one-shot task prompt into a worktree's AI pane, as if the user had typed it. Attaches to
+ * the pane (spawning Claude via the folder's normal `aiCmd` if it isn't running yet), waits for the
+ * TUI's boot output to go quiet so the text lands in Claude's composer rather than a half-started
+ * process, then writes the prompt and a carriage return to submit it. The prompt is never
+ * persisted — see `initialAiPrompt` on the create-worktree request shape for why.
+ */
+async function sendInitialAiPrompt({
+    worktreePath,
+    prompt,
+}: Readonly<{
+    worktreePath: string;
+    prompt: string;
+}>): Promise<void> {
+    const settleQuietMs = 800;
+    const maxWaitMs = 30_000;
+    const pollMs = 200;
+    const output = {
+        receivedAny: false,
+        lastDataAt: 0,
+    };
+    const attachment = await attachPane({
+        folder: worktreePath,
+        kind: PaneKind.Ai,
+        aiCmd: await resolveAiCmdForFolder(worktreePath),
+        onData() {
+            output.receivedAny = true;
+            output.lastDataAt = Date.now();
+        },
+        onExit() {},
+    });
+    try {
+        const deadline = Date.now() + maxWaitMs;
+        while (Date.now() < deadline) {
+            if (output.receivedAny && Date.now() - output.lastDataAt > settleQuietMs) {
+                break;
+            }
+            await wait({milliseconds: pollMs});
+        }
+        if (!output.receivedAny) {
+            log.error(
+                `AI pane for ${worktreePath} produced no output within ${maxWaitMs}ms; skipping initial prompt.`,
+            );
+            return;
+        }
+        attachment.write(prompt);
+        await wait({milliseconds: 250});
+        attachment.write('\r');
+        await wait({milliseconds: 250});
+    } finally {
+        attachment.close();
+    }
+}
+
 async function resolveAiCmdForFolder(folder: string): Promise<string | undefined> {
     const config = await loadConfig().catch(() => undefined);
     if (!config) {
@@ -344,6 +398,19 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
             repoPath: requestData.repoPath,
             worktreePath,
         });
+        const initialAiPrompt = requestData.initialAiPrompt?.trim();
+        if (initialAiPrompt) {
+            /**
+             * Fire-and-forget: Claude's TUI takes seconds to boot and the create response
+             * shouldn't block on it. Failures only cost the prompt, never the worktree.
+             */
+            void sendInitialAiPrompt({
+                worktreePath,
+                prompt: initialAiPrompt,
+            }).catch((error: unknown) => {
+                log.error(`Failed to send initial AI prompt to ${worktreePath}: ${String(error)}`);
+            });
+        }
         return {
             [HttpStatus.Ok]: {
                 responseData: {
