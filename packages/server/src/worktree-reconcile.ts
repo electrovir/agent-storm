@@ -1,5 +1,5 @@
 import type {Config, RepoConfig} from '@agent-storm/common';
-import {getGitInfo, isWorktreeRoot, listWorktreeChildren} from './git.js';
+import {getGitBranch, isWorktreeRoot, listWorktreeChildren} from './git.js';
 
 /**
  * Walks every repo in the config and rebuilds its `worktrees` + `isWorktreeLayout` from the
@@ -46,8 +46,8 @@ async function reconcileRepo(repo: Readonly<RepoConfig>): Promise<RepoConfig> {
     const existingByPath = new Map(repo.worktrees.map((worktree) => [worktree.path, worktree]));
     const worktrees = await Promise.all(
         onDisk.map(async (path) => {
-            const info = await getGitInfo(path);
-            const isBase = !!repo.baseBranch && info.branch === repo.baseBranch;
+            const branch = await getGitBranch(path);
+            const isBase = !!repo.baseBranch && branch === repo.baseBranch;
             const existing = existingByPath.get(path);
             return {
                 path,

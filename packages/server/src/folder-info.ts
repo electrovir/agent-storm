@@ -1163,7 +1163,12 @@ async function refreshOnce(
             await autoHideMergedWorktree(target);
         }
         cache.set(target.folder, info);
-        persistCache();
+        /**
+         * No persistCache() here on purpose: this runs once per folder per sweep, and each call
+         * serializes the ENTIRE cache — per-folder persistence made sweeps O(N²) in JSON.stringify
+         * work. The sweep persists once after the loop; a crash mid-sweep costs at most one
+         * sweep's freshness in a best-effort cache.
+         */
     } catch {
         /* swallow per-folder errors so one bad repo doesn't stop the sweep */
     }
@@ -1249,9 +1254,8 @@ async function runSweep(): Promise<void> {
     const validPaths = new Set(targets.map((target) => target.folder));
     const stale = Array.from(cache.keys()).filter((path) => !validPaths.has(path));
     stale.forEach((path) => cache.delete(path));
-    if (stale.length > 0) {
-        persistCache();
-    }
+    // Single end-of-sweep persist covers every refreshOnce write above plus the stale prune.
+    persistCache();
 }
 
 async function refreshLivePaneStatus(): Promise<void> {
@@ -1263,15 +1267,29 @@ async function refreshLivePaneStatus(): Promise<void> {
 }
 
 /**
- * Sweep every currently-published target with the cheap `git status --porcelain` probe and
- * publish the result into `localStatusCache`. Sequential to keep subprocess pressure flat;
- * stale entries (folders dropped from the published target list) are pruned at the end. Only
- * considers non-worktree-root targets — the bare worktree root has no working tree of its own.
+ * Sweep currently-published targets with the cheap `git status --porcelain` probe and publish the
+ * result into `localStatusCache`. Sequential to keep subprocess pressure flat; stale entries
+ * (folders dropped from the published target list) are pruned at the end. Only considers
+ * non-worktree-root targets — the bare worktree root has no working tree of its own.
+ *
+ * Only folders with a live AI/Shell pane are probed: the fast poll exists so the progress
+ * tracker's self-QA / self-review checkboxes invalidate quickly while the user (or Claude) is
+ * actively editing, and active editing implies a live pane. Idle folders fall back to the ~25s
+ * sweep's `git.dirty` — their cache entry is dropped so a stale fast-poll value can't shadow the
+ * fresher sweep result in `getCachedFolders`. This keeps the always-on subprocess rate
+ * proportional to active folders instead of total worktrees.
  */
 async function refreshLocalStatus(): Promise<void> {
     const targets = refreshState.targets;
     for (const target of targets) {
         if (target.isWorktreeRoot) {
+            continue;
+        }
+        const hasLivePane =
+            isLivePaneStatus(livePaneStatus.lookup(target.folder, PaneKind.Ai)) ||
+            isLivePaneStatus(livePaneStatus.lookup(target.folder, PaneKind.Shell));
+        if (!hasLivePane) {
+            localStatusCache.delete(target.folder);
             continue;
         }
         try {
