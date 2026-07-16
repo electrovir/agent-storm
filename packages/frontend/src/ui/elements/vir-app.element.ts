@@ -147,6 +147,9 @@ const hamburgerIcon = createSizedIcon(lucideIcons.Menu, 16);
  * websocket that keeps parsing output while hidden. Folders outside this window stay in
  * `openedFolders` (their pane slot and any VS Code iframe survive) but their terminals unmount;
  * re-activating one remounts the terminals and the daemon's replay buffer restores the history.
+ *
+ * This terminal-virtualization window was requested by wadlo for performance reasons (many-agent
+ * sessions were maxing out RAM/CPU); it gave us a moderate improvement.
  */
 const maxLiveTerminalFolders = 3;
 

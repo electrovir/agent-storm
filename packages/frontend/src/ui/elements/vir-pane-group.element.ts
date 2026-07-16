@@ -47,6 +47,9 @@ export const VirPaneGroup = defineElement<{
      * terminals unmount entirely; the daemon's PTYs keep running and its replay buffer restores the
      * visible history when the folder is activated again. The VS Code iframe is intentionally NOT
      * gated by this — it may hold unsaved editor state, so it never unmounts implicitly.
+     *
+     * Requested by wadlo for performance reasons (many-agent sessions were maxing out RAM/CPU);
+     * gave us a moderate improvement.
      */
     terminalsMounted: boolean;
 }>()({
