@@ -68,6 +68,20 @@ export async function getGitInfo(folder: string): Promise<GitInfo> {
     };
 }
 
+/**
+ * Just the checked-out branch name — one git subprocess instead of `getGitInfo`'s five. Reconcile
+ * only needs the branch (to compute `isBase`), and it runs for every worktree at the top of every
+ * sweep, so the difference is hundreds of subprocess spawns per minute on many-worktree setups.
+ */
+export async function getGitBranch(folder: string): Promise<string | null> {
+    const branch = await runGit(folder, [
+        'rev-parse',
+        '--abbrev-ref',
+        'HEAD',
+    ]).then((output) => output?.trim() || null);
+    return !branch || branch === 'HEAD' ? null : branch;
+}
+
 export async function hasUncommittedChanges(folder: string): Promise<boolean> {
     const status = await runGit(folder, [
         'status',
