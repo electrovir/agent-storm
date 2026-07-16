@@ -39,6 +39,16 @@ export const VirPaneGroup = defineElement<{
      */
     screenSize: ScreenSize;
     aiRestartKey: number;
+    /**
+     * Whether this group's terminals should exist at all. `vir-app` keeps only the most recently
+     * activated folders' terminals mounted (see `maxLiveTerminalFolders` there) — every mounted
+     * terminal costs a WebGL context (browsers cap ~8-16 per page), a 20k-line scrollback buffer,
+     * and a live PTY websocket that parses output even while `display: none`. When false the
+     * terminals unmount entirely; the daemon's PTYs keep running and its replay buffer restores the
+     * visible history when the folder is activated again. The VS Code iframe is intentionally NOT
+     * gated by this — it may hold unsaved editor state, so it never unmounts implicitly.
+     */
+    terminalsMounted: boolean;
 }>()({
     tagName: 'vir-pane-group',
     events: {
@@ -80,7 +90,8 @@ export const VirPaneGroup = defineElement<{
             /**
              * Which shell-area tab is foregrounded inside the CLI view. Both PTYs stay mounted
              * regardless so the background one keeps streaming (and `npm start` isn't restarted
-             * every flip); the inactive tab body just gets `display: none` while it waits its turn.
+             * every flip); the inactive tab body just gets `display: none` while it waits its
+             * turn.
              */
             activeShellTab: 'shell' as 'shell' | 'services',
         };
@@ -633,106 +644,121 @@ export const VirPaneGroup = defineElement<{
                         `
                       : ''}
                 <div class="cli-panes" ?data-hidden=${isCodeTab} ?data-mobile=${isMobile}>
-                    ${inputs.aiHidden
+                    ${!inputs.terminalsMounted
                         ? ''
                         : html`
+                              ${inputs.aiHidden
+                                  ? ''
+                                  : html`
+                                        <div
+                                            class="pane ai-pane"
+                                            ?data-hidden=${!showAiPane}
+                                            data-pane-focused=${aiFocused ? 'true' : 'false'}
+                                            ${listen('focusin', () =>
+                                                updateState({
+                                                    focusedKind: PaneKind.Ai,
+                                                }),
+                                            )}
+                                        >
+                                            <div class="pane-body">
+                                                ${repeat(
+                                                    [inputs.aiRestartKey],
+                                                    (restartKeyValue) => String(restartKeyValue),
+                                                    () => html`
+                                                        <${VirTerminal.assign({
+                                                            folder: inputs.folder,
+                                                            kind: PaneKind.Ai,
+                                                            active: inputs.active,
+                                                            showAccessoryKeys: isMobile,
+                                                        })}></${VirTerminal}>
+                                                    `,
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div
+                                            class="divider ${state.dragging ? 'dragging' : ''}"
+                                            role="separator"
+                                            aria-orientation="vertical"
+                                            title="Drag to resize. Double-click to reset."
+                                            ${listen('pointerdown', onDividerPointerDown)}
+                                            ${listen('dblclick', onDividerDoubleClick)}
+                                        ></div>
+                                    `}
                               <div
-                                  class="pane ai-pane"
-                                  ?data-hidden=${!showAiPane}
-                                  data-pane-focused=${aiFocused ? 'true' : 'false'}
+                                  class="pane shell-pane"
+                                  ?data-hidden=${!showShellPane}
+                                  data-pane-focused=${shellFocused ? 'true' : 'false'}
                                   ${listen('focusin', () =>
                                       updateState({
-                                          focusedKind: PaneKind.Ai,
+                                          focusedKind: PaneKind.Shell,
                                       }),
                                   )}
                               >
-                                  <div class="pane-body">
-                                      ${repeat(
-                                          [inputs.aiRestartKey],
-                                          (restartKeyValue) => String(restartKeyValue),
-                                          () => html`
-                                              <${VirTerminal.assign({
-                                                  folder: inputs.folder,
-                                                  kind: PaneKind.Ai,
-                                                  active: inputs.active,
-                                                  showAccessoryKeys: isMobile,
-                                              })}></${VirTerminal}>
-                                          `,
-                                      )}
+                                  <div class="tab-bar" role="tablist" aria-label="Shell area">
+                                      <button
+                                          type="button"
+                                          class="tab"
+                                          role="tab"
+                                          ?data-active=${state.activeShellTab === 'shell'}
+                                          aria-selected=${state.activeShellTab === 'shell'
+                                              ? 'true'
+                                              : 'false'}
+                                          ${listen('click', () =>
+                                              updateState({activeShellTab: 'shell'}),
+                                          )}
+                                      >
+                                          Shell
+                                      </button>
+                                      <button
+                                          type="button"
+                                          class="tab"
+                                          role="tab"
+                                          ?data-active=${state.activeShellTab === 'services'}
+                                          aria-selected=${state.activeShellTab === 'services'
+                                              ? 'true'
+                                              : 'false'}
+                                          ${listen('click', () =>
+                                              updateState({activeShellTab: 'services'}),
+                                          )}
+                                      >
+                                          Services
+                                      </button>
+                                  </div>
+                                  <div class="tab-body">
+                                      <div
+                                          class="tab-pane"
+                                          role="tabpanel"
+                                          ?data-active=${state.activeShellTab === 'shell'}
+                                      >
+                                          <${VirTerminal.assign({
+                                              folder: inputs.folder,
+                                              kind: PaneKind.Shell,
+                                              // Re-fit triggers only when the worktree is active AND this
+                                              // tab is the foregrounded one — flipping tabs re-runs fit on
+                                              // the newly visible terminal so the xterm canvas matches the
+                                              // body size after a display:none round-trip.
+                                              active:
+                                                  inputs.active && state.activeShellTab === 'shell',
+                                              showAccessoryKeys: isMobile,
+                                          })}></${VirTerminal}>
+                                      </div>
+                                      <div
+                                          class="tab-pane"
+                                          role="tabpanel"
+                                          ?data-active=${state.activeShellTab === 'services'}
+                                      >
+                                          <${VirTerminal.assign({
+                                              folder: inputs.folder,
+                                              kind: PaneKind.Services,
+                                              active:
+                                                  inputs.active &&
+                                                  state.activeShellTab === 'services',
+                                              showAccessoryKeys: isMobile,
+                                          })}></${VirTerminal}>
+                                      </div>
                                   </div>
                               </div>
-                              <div
-                                  class="divider ${state.dragging ? 'dragging' : ''}"
-                                  role="separator"
-                                  aria-orientation="vertical"
-                                  title="Drag to resize. Double-click to reset."
-                                  ${listen('pointerdown', onDividerPointerDown)}
-                                  ${listen('dblclick', onDividerDoubleClick)}
-                              ></div>
                           `}
-                    <div
-                        class="pane shell-pane"
-                        ?data-hidden=${!showShellPane}
-                        data-pane-focused=${shellFocused ? 'true' : 'false'}
-                        ${listen('focusin', () =>
-                            updateState({
-                                focusedKind: PaneKind.Shell,
-                            }),
-                        )}
-                    >
-                        <div class="tab-bar" role="tablist" aria-label="Shell area">
-                            <button
-                                type="button"
-                                class="tab"
-                                role="tab"
-                                ?data-active=${state.activeShellTab === 'shell'}
-                                aria-selected=${state.activeShellTab === 'shell' ? 'true' : 'false'}
-                                ${listen('click', () => updateState({activeShellTab: 'shell'}))}
-                            >
-                                Shell
-                            </button>
-                            <button
-                                type="button"
-                                class="tab"
-                                role="tab"
-                                ?data-active=${state.activeShellTab === 'services'}
-                                aria-selected=${state.activeShellTab === 'services' ? 'true' : 'false'}
-                                ${listen('click', () => updateState({activeShellTab: 'services'}))}
-                            >
-                                Services
-                            </button>
-                        </div>
-                        <div class="tab-body">
-                            <div
-                                class="tab-pane"
-                                role="tabpanel"
-                                ?data-active=${state.activeShellTab === 'shell'}
-                            >
-                                <${VirTerminal.assign({
-                                    folder: inputs.folder,
-                                    kind: PaneKind.Shell,
-                                    // Re-fit triggers only when the worktree is active AND this
-                                    // tab is the foregrounded one — flipping tabs re-runs fit on
-                                    // the newly visible terminal so the xterm canvas matches the
-                                    // body size after a display:none round-trip.
-                                    active: inputs.active && state.activeShellTab === 'shell',
-                                    showAccessoryKeys: isMobile,
-                                })}></${VirTerminal}>
-                            </div>
-                            <div
-                                class="tab-pane"
-                                role="tabpanel"
-                                ?data-active=${state.activeShellTab === 'services'}
-                            >
-                                <${VirTerminal.assign({
-                                    folder: inputs.folder,
-                                    kind: PaneKind.Services,
-                                    active: inputs.active && state.activeShellTab === 'services',
-                                    showAccessoryKeys: isMobile,
-                                })}></${VirTerminal}>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
         `;

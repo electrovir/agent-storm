@@ -14,6 +14,7 @@ import {
     ViraThemeClient,
 } from 'vira';
 import {getFolders, touchRepo} from '../../util/api-client.js';
+import {setEffectiveTheme} from '../../util/effective-theme.js';
 import {installErrorReporter, reportClientError} from '../../util/error-reporter.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {
@@ -25,7 +26,6 @@ import {
 } from '../../util/router.js';
 import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
 import '../../util/service-origin.js';
-import {setEffectiveTheme} from '../../util/effective-theme.js';
 import {applyAllCssVars} from '../../util/storm-vir-theme.js';
 import {VirAddRepo} from './vir-add-repo.element.js';
 import {VirAddWorktree} from './vir-add-worktree.element.js';
@@ -140,6 +140,23 @@ const folderInfoPollMs = 2000;
 
 const hamburgerIcon = createSizedIcon(lucideIcons.Menu, 16);
 
+/**
+ * How many folders (the most recently activated ones) keep live terminals mounted. Every mounted
+ * folder costs up to 3 xterm instances — each with a WebGL context (browsers cap ~8-16 per page, so
+ * 3 folders ≈ 9 contexts is already near the limit), a 20k-line scrollback buffer, and a live PTY
+ * websocket that keeps parsing output while hidden. Folders outside this window stay in
+ * `openedFolders` (their pane slot and any VS Code iframe survive) but their terminals unmount;
+ * re-activating one remounts the terminals and the daemon's replay buffer restores the history.
+ */
+const maxLiveTerminalFolders = 3;
+
+function moveToMruEnd(folders: ReadonlyArray<string>, folder: string): ReadonlyArray<string> {
+    return [
+        ...folders.filter((entry) => entry !== folder),
+        folder,
+    ];
+}
+
 function clampSidebarWidth(value: number): number {
     if (!Number.isFinite(value)) {
         return sidebarWidth.default;
@@ -149,18 +166,21 @@ function clampSidebarWidth(value: number): number {
 
 type AppState = {
     /**
-     * Folders the user has clicked into, by absolute path. Kept around so each pane keeps its
-     * terminal scrollback when the user switches folders. The currently-active folder is derived
-     * from the URL + folder info; this list is the "ever opened during this session" superset.
+     * Folders the user has clicked into, by absolute path, in most-recently-activated-last order.
+     * The currently-active folder is derived from the URL + folder info; this list is the "ever
+     * opened during this session" superset. The MRU ordering matters: only the last
+     * `maxLiveTerminalFolders` entries keep their terminals mounted — older entries' pane slots
+     * stay (preserving any VS Code iframe) but their terminals unmount to free WebGL contexts,
+     * scrollback memory, and websocket parse work.
      */
     openedFolders: ReadonlyArray<string>;
     folderInfo: Map<string, FolderInfo>;
     pollHandle: ReturnType<typeof setInterval> | undefined;
     settingsOpen: boolean;
     /**
-     * PR URL currently being shown by the fullscreen vir-pr-embed overlay, or null when the
-     * overlay is closed. Set when the progress tracker fires `prEmbedRequested`; cleared by
-     * the embed's `closed` event (X-button click).
+     * PR URL currently being shown by the fullscreen vir-pr-embed overlay, or null when the overlay
+     * is closed. Set when the progress tracker fires `prEmbedRequested`; cleared by the embed's
+     * `closed` event (X-button click).
      */
     embeddedPrUrl: string | null;
     route: AppRoute;
@@ -520,14 +540,12 @@ export const VirApp = defineElement()({
 
         /**
          * Keep `openedFolders` in sync with the URL so a freshly-resolved folder mounts its pane
-         * without a manual click. Defers the state update via a microtask so we don't mutate during
-         * render.
+         * without a manual click, and keep the MRU ordering fresh so the active folder is always
+         * inside the live-terminal window. Defers the state update via a microtask so we don't
+         * mutate during render.
          */
-        if (activeFolder && !state.openedFolders.includes(activeFolder)) {
-            const newOpened = [
-                ...state.openedFolders,
-                activeFolder,
-            ];
+        if (activeFolder && state.openedFolders.at(-1) !== activeFolder) {
+            const newOpened = moveToMruEnd(state.openedFolders, activeFolder);
             void Promise.resolve().then(() => {
                 updateState({
                     openedFolders: newOpened,
@@ -659,12 +677,9 @@ export const VirApp = defineElement()({
                     }
                 })();
             }
-            if (!state.openedFolders.includes(folderPath)) {
+            if (state.openedFolders.at(-1) !== folderPath) {
                 updateState({
-                    openedFolders: [
-                        ...state.openedFolders,
-                        folderPath,
-                    ],
+                    openedFolders: moveToMruEnd(state.openedFolders, folderPath),
                 });
             }
             /**
@@ -799,6 +814,15 @@ export const VirApp = defineElement()({
                         (folder) => {
                             const info = state.folderInfo.get(folder);
                             const active = folder === activeFolder;
+                            /**
+                             * Terminals live only for the MRU-window folders. The `active` OR-guard
+                             * covers the one render between activating an out-of-window folder and
+                             * the deferred MRU reorder landing — without it that first render would
+                             * mount-then-unmount-then-remount the terminals.
+                             */
+                            const terminalsMounted =
+                                active ||
+                                state.openedFolders.slice(-maxLiveTerminalFolders).includes(folder);
                             return html`
                                 <div class="pane-slot" ?data-active=${active}>
                                     <${VirPaneGroup.assign({
@@ -809,6 +833,7 @@ export const VirApp = defineElement()({
                                         screenSize: state.screenSize,
                                         aiRestartKey:
                                             state.paneRestartKeys[`${folder}:${PaneKind.Ai}`] || 0,
+                                        terminalsMounted,
                                     })}
                                         ${listen(VirPaneGroup.events.tabRequested, (event) => {
                                             const requestedTab = event.detail;
