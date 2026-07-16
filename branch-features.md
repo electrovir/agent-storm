@@ -41,3 +41,4 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - PR cache preserves prior snapshot across stale-cache, inactive-pane, and backoff cases; never wipes badges on a skipped fetch.
 - Worktrees auto-hide (not delete) on observed open-to-merged PR transition; skips base and live panes.
 - Three-dot menu gains "Restart services" to respawn the killed `npm start` services pane in place.
+- Worktrees can be moved to a collapsible "Do later" sidebar section (above Working) via the three-dot menu.

@@ -114,4 +114,14 @@ export const localStorageClient = {
         parse: (raw) => raw === 'true',
         serialize: (value) => String(value),
     }),
+    /**
+     * Whether the sidebar's "Do later" group is collapsed. Defaults to collapsed — deferred rows
+     * are ones the user has explicitly parked, so they shouldn't crowd the list by default.
+     */
+    doLaterGroupCollapsed: defineSetting<boolean>({
+        key: 'agent-storm:sidebar-do-later-collapsed',
+        defaultValue: true,
+        parse: (raw) => raw === 'true',
+        serialize: (value) => String(value),
+    }),
 };

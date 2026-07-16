@@ -265,6 +265,20 @@ export const configJsonSchema = {
             },
         },
         /**
+         * Folder paths the user has moved to the sidebar's "Do later" section via the row's
+         * three-dot menu. Mirrors the shape of `hiddenWorktrees`, but these rows STAY visible —
+         * they're just pulled out of "Needs attention" / "Working" into their own "Do later" group.
+         * Cleaned up alongside the worktree's row on delete.
+         */
+        doLaterFolders: {
+            type: 'array',
+            default: [],
+            title: 'Do-later folders',
+            items: {
+                type: 'string',
+            },
+        },
+        /**
          * Whether the sidebar should show worktrees marked as hidden. Optional + falsy by default so
          * the "Hidden" mark actually hides things on first use; toggled from the worktree-section
          * three-dot menu. Persisted in config (not localStorage) so the choice syncs across the
@@ -371,6 +385,7 @@ export const configJsonSchema = {
         'terminalClickableLinks',
         'sidebarGrouping',
         'hiddenWorktrees',
+        'doLaterFolders',
     ],
 } as const satisfies JSONSchema;
 
@@ -397,6 +412,12 @@ export const folderInfoShape = defineShape({
      * toggle is on.
      */
     isHidden: false,
+    /**
+     * Whether the user moved this folder to the sidebar's "Do later" section. Mirrored from
+     * `config.doLaterFolders`; unlike `isHidden` the row stays visible — it's just grouped under
+     * "Do later" instead of "Needs attention" / "Working".
+     */
+    doLater: false,
     branch: nullableShape(''),
     git: {
         dirty: false,
