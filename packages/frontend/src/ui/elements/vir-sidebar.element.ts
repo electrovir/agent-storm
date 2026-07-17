@@ -3,6 +3,7 @@ import {
     PaneKind,
     PaneStatus,
     type RepoConfig,
+    type ReviewRequestedStatus,
     SidebarGrouping,
     type UpdateStatus,
 } from '@agent-storm/common';
@@ -49,6 +50,7 @@ import {
     deleteWorktree,
     getConfig,
     getFolders,
+    getReviewRequestedStatus,
     getUpdateStatus,
     killFolderPanes,
     putConfig,
@@ -64,10 +66,10 @@ const allowedLinkHostnames = ['github.com'];
 
 /**
  * "Working" = at least one of the worktree's progress-tracker steps is currently rendering as
- * loading (AI generating, CI in flight, get-approval spinning while waiting on a reviewer, …).
- * The merge-steps config is the single source of truth, so the sidebar grouping never drifts from
- * what the user sees on the step nodes. Everything else — failures, done, idle — falls through to
- * "Needs attention". Used to split each repo's worktrees into the two sidebar sections.
+ * loading (AI generating, CI in flight, get-approval spinning while waiting on a reviewer, …). The
+ * merge-steps config is the single source of truth, so the sidebar grouping never drifts from what
+ * the user sees on the step nodes. Everything else — failures, done, idle — falls through to "Needs
+ * attention". Used to split each repo's worktrees into the two sidebar sections.
  */
 function isWorking(folder: FolderInfo): boolean {
     return isAnyMergeStepLoading(folder);
@@ -191,6 +193,12 @@ type SidebarState = {
      * worktrees" entry flips it. `undefined` while config hasn't loaded yet (renders as false).
      */
     showHiddenWorktrees: boolean | undefined;
+    /**
+     * Count of open PRs awaiting the user's review (GitHub-wide), from the backend's cached `gh`
+     * search. `undefined` before the first poll lands; `count: null` when unavailable — both hide
+     * the footer counter.
+     */
+    reviewRequested: ReviewRequestedStatus | undefined;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -262,6 +270,7 @@ export const VirSidebar = defineElement<{
             searchQuery: '',
             repos: [],
             updateStatus: undefined,
+            reviewRequested: undefined,
             showHiddenWorktrees: undefined,
         };
     },
@@ -448,8 +457,7 @@ export const VirSidebar = defineElement<{
 
         .group-label[data-variant='working'],
         .group-label[data-variant='do-later'] {
-            border-top: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
             margin-top: 4px;
         }
 
@@ -479,6 +487,15 @@ export const VirSidebar = defineElement<{
          * Rows in the "Working" group are passive — the user isn't expected to act until something
          * completes — so dim their name. The active row stays full strength via [data-active].
          */
+        /*
+         * A parent task whose work has been carved out into active sub-task worktrees reads as
+         * "waiting on its children" — dim its name to a lighter gray so the eye lands on the
+         * sub-tasks instead. The active row stays full strength via [data-active].
+         */
+        .row[data-has-subtasks]:not([data-active]) .name {
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+        }
+
         .row[data-working]:not([data-active]) .name {
             opacity: 0.6;
         }
@@ -527,6 +544,23 @@ export const VirSidebar = defineElement<{
         :host([data-mobile-modal]) .update-banner {
             font-size: 13px;
             padding: 10px 16px;
+        }
+
+        .review-requested {
+            flex-shrink: 0;
+            padding: 6px 10px;
+            font-size: 11px;
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+        }
+
+        .review-requested:hover {
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+        }
+
+        .review-requested .review-count {
+            font-feature-settings: 'tnum';
+            font-weight: 600;
         }
 
         .empty {
@@ -665,6 +699,16 @@ export const VirSidebar = defineElement<{
         const worktreeRoots = visibleFolders.filter((folder) => folder.isWorktreeRoot);
         const showHiddenWorktrees = !!state.showHiddenWorktrees;
         /**
+         * Paths of folders that currently have at least one active (non-hidden) sub-task —
+         * worktrees spun out of them with `parentTaskPath` pointing back. Their rows render with a
+         * dimmed name so it's visible at a glance that the work has been carved out.
+         */
+        const parentsWithSubTasks = new Set(
+            state.folders.flatMap((folder) =>
+                folder.parentTaskPath && !folder.isHidden ? [folder.parentTaskPath] : [],
+            ),
+        );
+        /**
          * Count of hidden (non-base-branch) worktree children across all roots, shown next to the
          * "Show hidden worktrees" toggle so the user knows how many rows the toggle would reveal.
          */
@@ -692,11 +736,11 @@ export const VirSidebar = defineElement<{
             /**
              * Optimistically bump the owning repo's `lastInteractedAtMs` in the local repos mirror
              * so the hide-inactive filter keeps the repo visible the instant the search query is
-             * cleared and the view reverts to the recency filter. The backend touch
-             * — fired from vir-app's `folderActivated` handler — persists this, but it's async and
-             * wouldn't land before the re-filter, so an inactive repo would otherwise vanish until
-             * the next poll. Resolve the owning repo the same way the backend does: a worktree's
-             * parent repo, else the folder itself.
+             * cleared and the view reverts to the recency filter. The backend touch — fired from
+             * vir-app's `folderActivated` handler — persists this, but it's async and wouldn't land
+             * before the re-filter, so an inactive repo would otherwise vanish until the next poll.
+             * Resolve the owning repo the same way the backend does: a worktree's parent repo, else
+             * the folder itself.
              */
             const folder = state.folders.find((entry) => entry.path === path);
             const owningRepoPath = folder?.parentRepoPath ?? folder?.path ?? path;
@@ -793,7 +837,8 @@ export const VirSidebar = defineElement<{
                             /**
                              * Bump the search button to Standard emphasis while a search is active
                              * so it stays visibly "on" after the pop-up closes — the query persists
-                             * past close, so the filter is still applied even with the pop-up shut.
+                             * past close, so the filter is still applied even with the pop-up
+                             * shut.
                              */
                             buttonEmphasis: trimmedSearchQuery
                                 ? ViraEmphasis.Standard
@@ -915,6 +960,7 @@ export const VirSidebar = defineElement<{
                     renderRow({
                         folder,
                         indented: false,
+                        hasActiveSubTasks: parentsWithSubTasks.has(folder.path),
                         activeFolder: inputs.activeFolder,
                         openMenuKey: state.openMenuKey,
                         onActivate: emitFolderActivated,
@@ -1000,6 +1046,7 @@ export const VirSidebar = defineElement<{
                             children,
                             workingCollapsed: state.workingCollapsed,
                             doLaterCollapsed: state.doLaterCollapsed,
+                            parentsWithSubTasks,
                             activeFolder: inputs.activeFolder,
                             openMenuKey: state.openMenuKey,
                             onActivate: emitFolderActivated,
@@ -1011,6 +1058,22 @@ export const VirSidebar = defineElement<{
                     `;
                 })}
             </div>
+            ${state.reviewRequested?.count != null
+                ? html`
+                      <div class="review-requested">
+                          <${ViraLink.assign({
+                              link: {
+                                  url: 'https://github.com/pulls/review-requested',
+                                  newTab: true,
+                              },
+                              disableLinkStyles: true,
+                          })}>
+                              <span class="review-count">${state.reviewRequested.count}</span>
+                              PR${state.reviewRequested.count === 1 ? '' : 's'} awaiting your review
+                          </${ViraLink}>
+                      </div>
+                  `
+                : ''}
             ${state.updateStatus?.isUpToDate === false
                 ? html`
                       <div
@@ -1276,13 +1339,14 @@ function renderPaneChip(label: string, status: PaneStatus) {
  * Render a repo's worktree children split into three sections: "Needs attention" first, then a
  * collapsible "Do later" group (worktrees the user parked via the row menu), then a collapsible
  * "Working" group (worktrees whose progress-tracker has a step actively loading — see
- * {@link isWorking}). Each label is shown only when its group is non-empty. Both collapse states
- * are shared across repos (single persisted flag each).
+ * {@link isWorking}). Each label is shown only when its group is non-empty. Both collapse states are
+ * shared across repos (single persisted flag each).
  */
 function renderRepoChildren({
     children,
     workingCollapsed,
     doLaterCollapsed,
+    parentsWithSubTasks,
     activeFolder,
     openMenuKey,
     onActivate,
@@ -1294,6 +1358,7 @@ function renderRepoChildren({
     children: ReadonlyArray<FolderInfo>;
     workingCollapsed: boolean;
     doLaterCollapsed: boolean;
+    parentsWithSubTasks: ReadonlySet<string>;
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
@@ -1311,6 +1376,7 @@ function renderRepoChildren({
             folder,
             indented: true,
             working: isWorkingRow,
+            hasActiveSubTasks: parentsWithSubTasks.has(folder.path),
             activeFolder,
             openMenuKey,
             onActivate,
@@ -1363,9 +1429,7 @@ function renderRepoChildren({
                           <span class="group-chevron">▾</span>
                           <span>Do later</span>
                       </span>
-                      <span class="group-count">
-                          ${doLater.length.toString().padStart(2, '0')}
-                      </span>
+                      <span class="group-count">${doLater.length.toString().padStart(2, '0')}</span>
                   </div>
                   ${doLaterCollapsed ? '' : doLater.map((child) => renderChild(child, false))}
               `
@@ -1392,9 +1456,7 @@ function renderRepoChildren({
                           <span class="group-chevron">▾</span>
                           <span>Working</span>
                       </span>
-                      <span class="group-count">
-                          ${working.length.toString().padStart(2, '0')}
-                      </span>
+                      <span class="group-count">${working.length.toString().padStart(2, '0')}</span>
                   </div>
                   ${workingCollapsed ? '' : working.map((child) => renderChild(child, true))}
               `
@@ -1406,6 +1468,7 @@ function renderRow({
     folder,
     indented,
     working = false,
+    hasActiveSubTasks = false,
     activeFolder,
     openMenuKey,
     onActivate,
@@ -1417,6 +1480,7 @@ function renderRow({
     folder: FolderInfo;
     indented: boolean;
     working?: boolean | undefined;
+    hasActiveSubTasks?: boolean | undefined;
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
@@ -1437,6 +1501,7 @@ function renderRow({
             ?data-active=${activeFolder === folder.path}
             ?data-indented=${indented}
             ?data-working=${working}
+            ?data-has-subtasks=${hasActiveSubTasks}
             ?data-menu-open=${openMenuKey === rowMenuKey}
             ${listen('click', () => onActivate(folder.path))}
         >
@@ -1756,26 +1821,29 @@ const pendingWorktreeDeletions = new Set<string>();
 async function refresh(updateState: SidebarUpdate): Promise<void> {
     try {
         /**
-         * Fetch folders + config + update-status in parallel. Config tells us the current
-         * `sidebarGrouping` so the filter menu can mark the active choice; folders feeds the list;
-         * update-status drives the "pull from github" banner. The backend caches update-status for
-         * ~10 minutes, so calling it on every 2s poll is fine — almost every call returns instantly
-         * from the cache without hitting the GitHub remote.
+         * Fetch folders + config + update-status + review-requested count in parallel. Config tells
+         * us the current `sidebarGrouping` so the filter menu can mark the active choice; folders
+         * feeds the list; update-status drives the "pull from github" banner. The backend caches
+         * update-status (~10 min) and review-requested (~5 min), so calling them on every 2s poll
+         * is fine — almost every call returns instantly from the cache without hitting GitHub.
          */
         const [
             folders,
             config,
             updateStatus,
+            reviewRequested,
         ] = await Promise.all([
             getFolders(),
             getConfig(),
             getUpdateStatus().catch(() => undefined),
+            getReviewRequestedStatus().catch(() => undefined),
         ]);
         updateState({
             folders: pendingWorktreeDeletions.size
                 ? folders.filter((folder) => !pendingWorktreeDeletions.has(folder.path))
                 : folders,
             loadError: undefined,
+            reviewRequested,
             sidebarGrouping: config.sidebarGrouping,
             onlyShowRecent: config.onlyShowRecent,
             showHiddenWorktrees: config.showHiddenWorktrees,

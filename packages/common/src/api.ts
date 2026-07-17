@@ -104,9 +104,9 @@ export const configJsonSchema = {
                     /**
                      * The branch that's treated as the source-of-truth worktree for this repo. Its
                      * worktree is hidden from the sidebar and cannot be deleted; it's the canonical
-                     * place to keep shared local-only files (e.g. `.not-committed/`) that get seeded
-                     * into new worktrees. Null means no base branch is configured (no hiding, no
-                     * deletion guard).
+                     * place to keep shared local-only files (e.g. `.not-committed/`) that get
+                     * seeded into new worktrees. Null means no base branch is configured (no
+                     * hiding, no deletion guard).
                      */
                     baseBranch: {
                         type: [
@@ -118,9 +118,9 @@ export const configJsonSchema = {
                     },
                     /**
                      * Explicit list of worktrees tracked under this repo. Source of truth for what
-                     * the sidebar shows; reconciled against the filesystem when the config is saved,
-                     * when a worktree is created or deleted, and at the start of each background
-                     * sweep. Empty for regular (non-worktree-layout) git repos.
+                     * the sidebar shows; reconciled against the filesystem when the config is
+                     * saved, when a worktree is created or deleted, and at the start of each
+                     * background sweep. Empty for regular (non-worktree-layout) git repos.
                      */
                     worktrees: {
                         type: 'array',
@@ -150,8 +150,8 @@ export const configJsonSchema = {
                                  * Local HEAD commit SHA captured the last time the user checked the
                                  * Self-review (code) step. The progress tracker uses this to
                                  * invalidate the self-review checkbox when a new local commit moves
-                                 * HEAD past what was actually reviewed. Null when the step has never
-                                 * been checked or after invalidation.
+                                 * HEAD past what was actually reviewed. Null when the step has
+                                 * never been checked or after invalidation.
                                  */
                                 lastReviewedSha: {
                                     type: [
@@ -165,9 +165,9 @@ export const configJsonSchema = {
                                  * Per-step booleans for the progress tracker's user-toggled merge
                                  * steps (self-QA, self-review-code, etc.). Keyed by the step's
                                  * `storageKey`. Stored on the worktree config — and so persisted in
-                                 * `~/.config/agent-storm.json` — rather than in browser localStorage
-                                 * so progress survives across machines / clients and so the desktop
-                                 * and browser builds agree on state.
+                                 * `~/.config/agent-storm.json` — rather than in browser
+                                 * localStorage so progress survives across machines / clients and
+                                 * so the desktop and browser builds agree on state.
                                  */
                                 mergeStepValues: {
                                     type: 'object',
@@ -176,6 +176,22 @@ export const configJsonSchema = {
                                         type: 'boolean',
                                     },
                                     title: 'Merge step values',
+                                },
+                                /**
+                                 * Path of the worktree this one was spun out of as a sub-task (e.g.
+                                 * carving just the frontend slice out of a bigger branch).
+                                 * Null/absent for worktrees that aren't sub-tasks of anything.
+                                 * Stored on the child so parent deletion needs no cleanup — a
+                                 * dangling path simply matches no sidebar row. Intentionally not in
+                                 * `required` so older configs load unchanged.
+                                 */
+                                parentTaskPath: {
+                                    type: [
+                                        'string',
+                                        'null',
+                                    ],
+                                    default: null,
+                                    title: 'Parent task worktree path',
                                 },
                             },
                             required: [
@@ -253,8 +269,8 @@ export const configJsonSchema = {
          * Worktree paths the user has marked as hidden from the sidebar. Mirrors the shape of
          * `hiddenAiPane` rather than living per-worktree under `repos[].worktrees[]` so the toggle
          * surfaces with a single `putConfig` call and doesn't need a dedicated endpoint. Filtered
-         * out of the sidebar's tab list unless `showHiddenWorktrees` is on; cleaned up alongside the
-         * worktree's row on delete and alongside the repo's rows on remove.
+         * out of the sidebar's tab list unless `showHiddenWorktrees` is on; cleaned up alongside
+         * the worktree's row on delete and alongside the repo's rows on remove.
          */
         hiddenWorktrees: {
             type: 'array',
@@ -279,10 +295,10 @@ export const configJsonSchema = {
             },
         },
         /**
-         * Whether the sidebar should show worktrees marked as hidden. Optional + falsy by default so
-         * the "Hidden" mark actually hides things on first use; toggled from the worktree-section
-         * three-dot menu. Persisted in config (not localStorage) so the choice syncs across the
-         * desktop + browser builds.
+         * Whether the sidebar should show worktrees marked as hidden. Optional + falsy by default
+         * so the "Hidden" mark actually hides things on first use; toggled from the
+         * worktree-section three-dot menu. Persisted in config (not localStorage) so the choice
+         * syncs across the desktop + browser builds.
          */
         showHiddenWorktrees: {
             type: 'boolean',
@@ -408,8 +424,8 @@ export const folderInfoShape = defineShape({
     resetAiSessionCmd: '',
     /**
      * Whether the user marked this worktree as hidden from the sidebar. Mirrored from
-     * `config.hiddenWorktrees`; the sidebar filters these rows out unless the "Show hidden"
-     * toggle is on.
+     * `config.hiddenWorktrees`; the sidebar filters these rows out unless the "Show hidden" toggle
+     * is on.
      */
     isHidden: false,
     /**
@@ -418,6 +434,12 @@ export const folderInfoShape = defineShape({
      * "Do later" instead of "Needs attention" / "Working".
      */
     doLater: false,
+    /**
+     * Path of the worktree this one was spun out of as a sub-task, mirrored from the worktree's
+     * config entry. Null when this folder isn't a sub-task. The sidebar uses it to find parents
+     * with active sub-tasks and dim their row names.
+     */
+    parentTaskPath: nullableShape(''),
     branch: nullableShape(''),
     git: {
         dirty: false,
@@ -434,31 +456,31 @@ export const folderInfoShape = defineShape({
     /** Local HEAD commit SHA for the worktree, or null when detached / not a repo. */
     localCommitHash: nullableShape(''),
     /**
-     * The PR's remote head SHA from `gh pr view --json headRefOid`. Null if no PR exists or
-     * GitHub polling is disabled. Lets the progress tracker tell "PR open" from "PR open AND
-     * everything pushed" without having to peek at the local upstream ref.
+     * The PR's remote head SHA from `gh pr view --json headRefOid`. Null if no PR exists or GitHub
+     * polling is disabled. Lets the progress tracker tell "PR open" from "PR open AND everything
+     * pushed" without having to peek at the local upstream ref.
      */
     branchCommitHash: nullableShape(''),
     /** Whether the open PR is in draft state. Undefined when no PR exists. */
     prIsDraft: false,
     /**
-     * Aggregated CI verdict mirrored from `PrInfo.ciPassing`. `null` while checks are still
-     * running or no checks have registered yet — the progress tracker pairs this with
-     * `prCiInProgress` to tell those two cases apart.
+     * Aggregated CI verdict mirrored from `PrInfo.ciPassing`. `null` while checks are still running
+     * or no checks have registered yet — the progress tracker pairs this with `prCiInProgress` to
+     * tell those two cases apart.
      */
     prCiPassing: nullableShape(false),
     /**
-     * True while at least one CI check is still running. Lets the UI surface a loading state
-     * on the "Pass CI" step and classify the worktree as "Working" rather than
-     * "Needs attention" while checks are in flight.
+     * True while at least one CI check is still running. Lets the UI surface a loading state on the
+     * "Pass CI" step and classify the worktree as "Working" rather than "Needs attention" while
+     * checks are in flight.
      */
     prCiInProgress: false,
     /**
-     * Aggregated result of *review-flavoured* status checks (anything whose name matches
-     * `/review/i` — same set excluded from `prCiPassing`). These are CI checks that gate on
-     * "all required human approvals received", so the "Get approval" step uses this directly
-     * instead of GitHub's `reviewDecision`, which would also count bot reviewers (Claude,
-     * Copilot, etc.) the user doesn't actually care about.
+     * Aggregated result of _review-flavoured_ status checks (anything whose name matches
+     * `/review/i` — same set excluded from `prCiPassing`). These are CI checks that gate on "all
+     * required human approvals received", so the "Get approval" step uses this directly instead of
+     * GitHub's `reviewDecision`, which would also count bot reviewers (Claude, Copilot, etc.) the
+     * user doesn't actually care about.
      *
      * Null when there are no review checks on the PR (or all are still running).
      */
@@ -467,26 +489,25 @@ export const folderInfoShape = defineShape({
     prReviewCheckInProgress: false,
     prApproved: false,
     /**
-     * True when at least one reviewer's current verdict is "changes requested" — i.e. their
-     * latest review requested changes and they have NOT since been re-requested. Re-requesting a
-     * reviewer leaves GitHub's `reviewDecision` stuck on `CHANGES_REQUESTED`, so the server
-     * resolves this per-reviewer against the pending review requests rather than trusting the
-     * aggregate decision. Powers the red-exclamation failure state on the "Get approval" step.
+     * True when at least one reviewer's current verdict is "changes requested" — i.e. their latest
+     * review requested changes and they have NOT since been re-requested. Re-requesting a reviewer
+     * leaves GitHub's `reviewDecision` stuck on `CHANGES_REQUESTED`, so the server resolves this
+     * per-reviewer against the pending review requests rather than trusting the aggregate decision.
+     * Powers the red-exclamation failure state on the "Get approval" step.
      */
     prReviewChangesRequested: false,
     /**
-     * True when reviewers have been requested but haven't yet responded
-     * (`reviewDecision === 'REVIEW_REQUIRED'` with non-empty `reviewRequests`). Distinguishes
-     * "waiting on humans" from "no reviewers configured" so the approval step only shows a
-     * loading state when someone is actually expected to act.
+     * True when reviewers have been requested but haven't yet responded (`reviewDecision ===
+     * 'REVIEW_REQUIRED'` with non-empty `reviewRequests`). Distinguishes "waiting on humans" from
+     * "no reviewers configured" so the approval step only shows a loading state when someone is
+     * actually expected to act.
      */
     prReviewPending: false,
     /**
-     * True iff at least one inline review thread on the PR is still unresolved AND not
-     * outdated. Outdated threads (pointing at code that no longer exists in the diff) are
-     * excluded — the reviewer's concern is moot regardless of whether anyone clicked
-     * "Resolve conversation". Drives the red-exclam state on the "Get approval" step
-     * alongside `prReviewChangesRequested`.
+     * True iff at least one inline review thread on the PR is still unresolved AND not outdated.
+     * Outdated threads (pointing at code that no longer exists in the diff) are excluded — the
+     * reviewer's concern is moot regardless of whether anyone clicked "Resolve conversation".
+     * Drives the red-exclam state on the "Get approval" step alongside `prReviewChangesRequested`.
      */
     prHasUnresolvedReviewComments: false,
     /**
@@ -545,6 +566,12 @@ const createWorktreeRequestShape = defineShape({
      * create request, so the prompt fires exactly once.
      */
     initialAiPrompt: nullableShape(''),
+    /**
+     * Optional path of the worktree this new one is a sub-task of (spun out of it, e.g. a
+     * frontend-only carve-out). Persisted on the new worktree's config entry; the sidebar dims a
+     * parent's row while it has non-hidden sub-tasks. Null for unrelated branches.
+     */
+    parentTaskPath: nullableShape(''),
 });
 
 const deleteWorktreeRequestShape = defineShape({
@@ -626,6 +653,17 @@ const updateStatusResponseShape = defineShape({
     latestSha: nullableShape(''),
 });
 
+const reviewRequestedResponseShape = defineShape({
+    /**
+     * Number of open PRs currently awaiting the authenticated `gh` user's review, across all of
+     * GitHub. Null when the count is unavailable (gh missing/unauthenticated, rate-limited, or
+     * GitHub polling disabled) — the sidebar hides its counter rather than showing a stale zero.
+     */
+    count: nullableShape(0),
+});
+
+export type ReviewRequestedStatus = typeof reviewRequestedResponseShape.runtimeType;
+
 const repoTouchRequestShape = defineShape({
     /**
      * Path of the activated folder. Can be a top-level repo path OR a worktree path — the backend
@@ -648,14 +686,14 @@ const repoInspectResponseShape = defineShape({
     currentBranch: nullableShape(''),
     workingTreeClean: false,
     /**
-     * Branches present in the repo as worktrees (for already-Worktree layouts) or just the
-     * single current branch (for Regular layouts that haven't been converted yet). Empty for
-     * non-repo / detached states. Used by the add-repo UI to pick a base branch.
+     * Branches present in the repo as worktrees (for already-Worktree layouts) or just the single
+     * current branch (for Regular layouts that haven't been converted yet). Empty for non-repo /
+     * detached states. Used by the add-repo UI to pick a base branch.
      */
     branches: [''],
     /**
-     * For WorktreeChild state: the resolved parent path that should be registered as the
-     * repo root. Null for every other state.
+     * For WorktreeChild state: the resolved parent path that should be registered as the repo root.
+     * Null for every other state.
      */
     worktreeRoot: nullableShape(''),
 });
@@ -848,6 +886,19 @@ export const updateCheckEndpoint = defineEndpoint({
     },
 });
 
+export const reviewRequestedEndpoint = defineEndpoint({
+    path: '/review-requested',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewRequestedResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const createWorktreeEndpoint = defineEndpoint({
     path: '/worktrees/create',
     requests: {
@@ -1009,6 +1060,7 @@ export const agentStormService = defineApi({
         configEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
+        reviewRequestedEndpoint,
         createWorktreeEndpoint,
         deleteWorktreeEndpoint,
         restartPaneEndpoint,

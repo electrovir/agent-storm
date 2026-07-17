@@ -1,9 +1,4 @@
-import {
-    PaneKind,
-    PaneStatus,
-    type Config,
-    type FolderInfo,
-} from '@agent-storm/common';
+import {PaneKind, PaneStatus, type Config, type FolderInfo} from '@agent-storm/common';
 import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
@@ -39,22 +34,21 @@ type RepoPrCacheEntry = {
     fetchedAt: number;
     prsByBranch: Map<string, PrInfo>;
     /**
-     * Branches we've already looked up during this cache window (either via the batch fetch
-     * or the per-branch fallback). Used to short-circuit `fetchPrInfoForBranch` for branches
-     * confirmed to have no PR — otherwise every sweep would re-shell `gh pr view` for a worktree
-     * with no PR, wasting subprocess time and rate-limit budget. Reset on each new batch fetch
-     * so a freshly-created PR is picked up within one cache TTL.
+     * Branches we've already looked up during this cache window (either via the batch fetch or the
+     * per-branch fallback). Used to short-circuit `fetchPrInfoForBranch` for branches confirmed to
+     * have no PR — otherwise every sweep would re-shell `gh pr view` for a worktree with no PR,
+     * wasting subprocess time and rate-limit budget. Reset on each new batch fetch so a
+     * freshly-created PR is picked up within one cache TTL.
      */
     checkedBranches: Set<string>;
 };
 
 /**
- * Outcome of a PR lookup. `authoritative: true` means GitHub gave us a current answer
- * (found the PR, or confirmed there's no PR for this branch) — `info: null` here means
- * "no PR exists" and the caller should clear any stale UI badges. `authoritative: false`
- * means we couldn't query GitHub (polling disabled, no active pane and cache stale, network
- * blip) — the caller should preserve whatever PR snapshot it last saw rather than wiping
- * the sidebar's open-PR / draft / CI badges.
+ * Outcome of a PR lookup. `authoritative: true` means GitHub gave us a current answer (found the
+ * PR, or confirmed there's no PR for this branch) — `info: null` here means "no PR exists" and the
+ * caller should clear any stale UI badges. `authoritative: false` means we couldn't query GitHub
+ * (polling disabled, no active pane and cache stale, network blip) — the caller should preserve
+ * whatever PR snapshot it last saw rather than wiping the sidebar's open-PR / draft / CI badges.
  */
 type PrLookupResult = {
     info: PrInfo | null;
@@ -203,8 +197,8 @@ function markAutoDisabled(reason: GitHubPollingDisableReason, message: string): 
 /**
  * Mirror of `config.disabledGitHubPolling`, refreshed on each sweep + on startup. Lets the
  * lowest-level fetch site short-circuit without re-reading the config file on every call. The
- * config is still the source of truth — this is just a hot cache so `getOrFetchRepoCacheEntry` can gate
- * without I/O.
+ * config is still the source of truth — this is just a hot cache so `getOrFetchRepoCacheEntry` can
+ * gate without I/O.
  */
 const userPollingState: {manuallyDisabled: boolean} = {
     manuallyDisabled: false,
@@ -229,16 +223,16 @@ async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
 }
 
 /**
- * Resolve the per-repo cache entry, refreshing from GitHub when stale and allowed. Returns
- * the cached entry alongside an `isFresh` flag so the caller can tell "we just fetched this"
- * from "we're serving stale data because we couldn't refresh." Returns `null` only when there
- * is no cached data at all and we couldn't fetch — that's the case where the caller must
- * preserve the prior FolderInfo snapshot to avoid wiping the sidebar.
+ * Resolve the per-repo cache entry, refreshing from GitHub when stale and allowed. Returns the
+ * cached entry alongside an `isFresh` flag so the caller can tell "we just fetched this" from
+ * "we're serving stale data because we couldn't refresh." Returns `null` only when there is no
+ * cached data at all and we couldn't fetch — that's the case where the caller must preserve the
+ * prior FolderInfo snapshot to avoid wiping the sidebar.
  *
- * Stale-but-cached data is still returned (with `isFresh: false`) on inactive panes,
- * auto-disable backoff, and benign fetch failures. The previous behavior dropped to an empty
- * map any time a fresh fetch couldn't run, which is what was causing the sidebar's PR badges
- * to vanish whenever the user closed all Claude panes.
+ * Stale-but-cached data is still returned (with `isFresh: false`) on inactive panes, auto-disable
+ * backoff, and benign fetch failures. The previous behavior dropped to an empty map any time a
+ * fresh fetch couldn't run, which is what was causing the sidebar's PR badges to vanish whenever
+ * the user closed all Claude panes.
  */
 async function getOrFetchRepoCacheEntry(
     slug: Readonly<RepoSlug>,
@@ -254,10 +248,10 @@ async function getOrFetchRepoCacheEntry(
         return {entry: existing, isFresh: true};
     }
     /**
-     * Stale or missing. The caller-decided activity gate and the auto-disable backoff both
-     * mean "don't pay for a fresh fetch right now" — but we still want the caller to see
-     * whatever we last had, so the sidebar's PR badges survive an idle period or a transient
-     * auth blip. Empty Map is only returned when there's literally nothing cached yet.
+     * Stale or missing. The caller-decided activity gate and the auto-disable backoff both mean
+     * "don't pay for a fresh fetch right now" — but we still want the caller to see whatever we
+     * last had, so the sidebar's PR badges survive an idle period or a transient auth blip. Empty
+     * Map is only returned when there's literally nothing cached yet.
      */
     if (!allowFetch || isAutoDisabled()) {
         return existing ? {entry: existing, isFresh: false} : null;
@@ -268,9 +262,9 @@ async function getOrFetchRepoCacheEntry(
             fetchedAt: Date.now(),
             prsByBranch,
             /**
-             * Seed `checkedBranches` with every branch returned by the batch. Subsequent
-             * fallbacks add to this set so a branch confirmed-no-PR isn't re-checked every
-             * sweep until the next batch refresh.
+             * Seed `checkedBranches` with every branch returned by the batch. Subsequent fallbacks
+             * add to this set so a branch confirmed-no-PR isn't re-checked every sweep until the
+             * next batch refresh.
              */
             checkedBranches: new Set(prsByBranch.keys()),
         };
@@ -310,10 +304,10 @@ async function getCachedPrInfo(
         return {info: hit, authoritative: true};
     }
     /**
-     * Branch not in the batch. Two cases: we've already fallen back for this branch in the
-     * current cache window (or it was just confirmed missing from a fresh batch we seeded
-     * `checkedBranches` from) → authoritative no-PR. Otherwise we need to fall back via
-     * `gh pr view` if we're allowed.
+     * Branch not in the batch. Two cases: we've already fallen back for this branch in the current
+     * cache window (or it was just confirmed missing from a fresh batch we seeded `checkedBranches`
+     * from) → authoritative no-PR. Otherwise we need to fall back via `gh pr view` if we're
+     * allowed.
      */
     if (entry.checkedBranches.has(branch)) {
         return {info: null, authoritative: true};
@@ -346,9 +340,9 @@ type RefreshTarget = {
      * Whether the target tracks the parent repo's base branch. Pulled from
      * `config.repos[].worktrees[].isBase` so we know up-front — without running git — that the
      * placeholder for this folder should report `isBaseBranch: true` and be hidden from the
-     * sidebar. The previous design left `isBase` undecidable until the background sweep had
-     * read each worktree's branch, which made the base worktree visible for one sweep cycle
-     * after adding a repo.
+     * sidebar. The previous design left `isBase` undecidable until the background sweep had read
+     * each worktree's branch, which made the base worktree visible for one sweep cycle after adding
+     * a repo.
      */
     isBase: boolean;
     baseBranch: string | null;
@@ -358,9 +352,9 @@ type RefreshTarget = {
     /** Resolved effective reset-AI-session command for this folder; empty when none configured. */
     resetAiSessionCmd: string;
     /**
-     * Whether the user marked this worktree as hidden via the row's three-dot menu. Mirrored
-     * from `config.hiddenWorktrees` so the sidebar's "Show hidden" filter can decide whether
-     * to render this row.
+     * Whether the user marked this worktree as hidden via the row's three-dot menu. Mirrored from
+     * `config.hiddenWorktrees` so the sidebar's "Show hidden" filter can decide whether to render
+     * this row.
      */
     isHidden: boolean;
     /**
@@ -370,18 +364,23 @@ type RefreshTarget = {
      */
     doLater: boolean;
     /**
+     * Path of the worktree this one was spun out of as a sub-task, mirrored from the worktree's
+     * config entry. Null for non-sub-task folders.
+     */
+    parentTaskPath: string | null;
+    /**
      * SHA captured the last time the user checked Self-review (code) on this worktree, mirrored
      * from `worktreeConfigShape.lastReviewedSha`. Lifted into the target up-front so the progress
-     * tracker can show the right state on the very first render — before any sweep has built a
-     * full `FolderInfo` — and so the placeholder doesn't drop a previously-checked review back
-     * to undefined whenever the cache is cold.
+     * tracker can show the right state on the very first render — before any sweep has built a full
+     * `FolderInfo` — and so the placeholder doesn't drop a previously-checked review back to
+     * undefined whenever the cache is cold.
      */
     lastReviewedSha: string | null;
     /**
      * Per-step booleans for the progress tracker's user-toggled merge steps, mirrored from
-     * `worktreeConfigShape.mergeStepValues`. Same up-front-lift rationale as `lastReviewedSha`:
-     * the tracker reads this before any sweep has run, so a freshly-loaded session shows the
-     * persisted check state immediately rather than first rendering everything as unchecked.
+     * `worktreeConfigShape.mergeStepValues`. Same up-front-lift rationale as `lastReviewedSha`: the
+     * tracker reads this before any sweep has run, so a freshly-loaded session shows the persisted
+     * check state immediately rather than first rendering everything as unchecked.
      */
     mergeStepValues: Partial<Record<string, boolean>>;
 };
@@ -407,6 +406,7 @@ function enumerateTargets(config: Readonly<Config>): RefreshTarget[] {
                     }),
                     isHidden: false,
                     doLater: false,
+                    parentTaskPath: null,
                     lastReviewedSha: null,
                     mergeStepValues: {},
                 },
@@ -430,6 +430,7 @@ function enumerateTargets(config: Readonly<Config>): RefreshTarget[] {
                 }),
                 isHidden: false,
                 doLater: false,
+                parentTaskPath: null,
                 lastReviewedSha: null,
                 mergeStepValues: {},
             },
@@ -453,6 +454,7 @@ function enumerateTargets(config: Readonly<Config>): RefreshTarget[] {
                     }),
                     isHidden: config.hiddenWorktrees.includes(worktree.path),
                     doLater: config.doLaterFolders.includes(worktree.path),
+                    parentTaskPath: worktree.parentTaskPath ?? null,
                     lastReviewedSha: worktree.lastReviewedSha ?? null,
                     mergeStepValues: worktree.mergeStepValues ?? {},
                 }),
@@ -549,9 +551,9 @@ async function buildFolderInfo({
     const git = await getGitInfo(target.folder);
     /**
      * Worktree roots are bare and never have a PR — short-circuit to an authoritative empty.
-     * User-disabled polling or auto-disable backoff means no GitHub call ran this sweep —
-     * treat as non-authoritative so the prior snapshot carries forward instead of nulling
-     * out badges. Everything else goes through the per-repo cache lookup.
+     * User-disabled polling or auto-disable backoff means no GitHub call ran this sweep — treat as
+     * non-authoritative so the prior snapshot carries forward instead of nulling out badges.
+     * Everything else goes through the per-repo cache lookup.
      */
     const prLookup: PrLookupResult = target.isWorktreeRoot
         ? {info: null, authoritative: true}
@@ -559,11 +561,10 @@ async function buildFolderInfo({
           ? {info: null, authoritative: false}
           : await getCachedPrInfo(target.folder, git.branch, repoHasActivePane);
     /**
-     * Tri-state branch:
-     *   found → fresh snapshot from the PR.
-     *   authoritative miss → GitHub confirmed no PR; clear stale UI badges.
-     *   non-authoritative → couldn't query (inactive pane + stale cache, disabled polling,
-     *     fetch error); keep showing the last-known snapshot so the sidebar doesn't blank.
+     * Tri-state branch: found → fresh snapshot from the PR. authoritative miss → GitHub confirmed
+     * no PR; clear stale UI badges. non-authoritative → couldn't query (inactive pane + stale
+     * cache, disabled polling, fetch error); keep showing the last-known snapshot so the sidebar
+     * doesn't blank.
      */
     const prSnapshot: PrSnapshot = prLookup.info
         ? prSnapshotFromPr(prLookup.info)
@@ -583,6 +584,7 @@ async function buildFolderInfo({
         resetAiSessionCmd: target.resetAiSessionCmd,
         isHidden: target.isHidden,
         doLater: target.doLater,
+        parentTaskPath: target.parentTaskPath,
         branch: git.branch,
         git: {
             dirty: git.dirty,
@@ -624,10 +626,10 @@ const refreshState: {
 };
 
 /**
- * Last fetched pane-status snapshot from the daemon, refreshed on a dedicated 1s ticker
- * independent of the slow git/PR sweep. `getCachedFolders` overlays this onto each emitted
- * FolderInfo so the sidebar's Working / Needs-attention grouping reflects the live state of
- * each Claude pty rather than whatever was true at the last full sweep (up to ~25s stale).
+ * Last fetched pane-status snapshot from the daemon, refreshed on a dedicated 1s ticker independent
+ * of the slow git/PR sweep. `getCachedFolders` overlays this onto each emitted FolderInfo so the
+ * sidebar's Working / Needs-attention grouping reflects the live state of each Claude pty rather
+ * than whatever was true at the last full sweep (up to ~25s stale).
  */
 const livePaneStatus: {
     lookup: (folder: string, kind: PaneKind) => PaneStatus;
@@ -636,28 +638,28 @@ const livePaneStatus: {
 };
 
 /**
- * Per-folder dirty-tree snapshot maintained by `runLocalStatusPoll` on a ~5s cadence — much
- * faster than the 25s git/PR sweep so the progress tracker's self-QA / self-review checkboxes
- * invalidate quickly after the user makes a local edit. Map is keyed by folder path; entries
- * survive sweep refreshes (the full sweep writes the same field via `buildFolderInfo`, but the
- * fast poll updates it five times per sweep in between).
+ * Per-folder dirty-tree snapshot maintained by `runLocalStatusPoll` on a ~5s cadence — much faster
+ * than the 25s git/PR sweep so the progress tracker's self-QA / self-review checkboxes invalidate
+ * quickly after the user makes a local edit. Map is keyed by folder path; entries survive sweep
+ * refreshes (the full sweep writes the same field via `buildFolderInfo`, but the fast poll updates
+ * it five times per sweep in between).
  */
 const localStatusCache = new Map<string, boolean>();
 
 /**
- * Poll cadence for the AI pane "is this terminal rendering right now?" check. The daemon's
- * status reply is already a cheap in-memory lookup plus one local Unix-socket round-trip, so a
- * 1s tick is well within budget. Matched to `aiBusyWindowMs` in pty-pool so a pane that goes
- * quiet for one tick reliably falls out of Busy on the next tick.
+ * Poll cadence for the AI pane "is this terminal rendering right now?" check. The daemon's status
+ * reply is already a cheap in-memory lookup plus one local Unix-socket round-trip, so a 1s tick is
+ * well within budget. Matched to `aiBusyWindowMs` in pty-pool so a pane that goes quiet for one
+ * tick reliably falls out of Busy on the next tick.
  */
 const paneStatusPollMs = 1_000;
 
 /**
  * Poll cadence for the per-worktree `git status --porcelain` check that feeds the progress
- * tracker's "uncommitted changes" input. Five seconds is a compromise: fast enough that
- * unchecking self-QA / self-review on first edit feels responsive, slow enough to avoid
- * spawning a git subprocess per worktree every second. The poll walks worktrees sequentially
- * to stay friendly under many-repo configs.
+ * tracker's "uncommitted changes" input. Five seconds is a compromise: fast enough that unchecking
+ * self-QA / self-review on first edit feels responsive, slow enough to avoid spawning a git
+ * subprocess per worktree every second. The poll walks worktrees sequentially to stay friendly
+ * under many-repo configs.
  */
 const localStatusPollMs = 5_000;
 
@@ -678,6 +680,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         resetAiSessionCmd: target.resetAiSessionCmd,
         isHidden: target.isHidden,
         doLater: target.doLater,
+        parentTaskPath: target.parentTaskPath,
         branch: null,
         git: {
             dirty: false,
@@ -728,8 +731,7 @@ export function getCachedFolders(): FolderInfo[] {
         // self-QA / self-review can re-invalidate within a few seconds of the user touching a
         // file. Falls back to the cached `git.dirty` for the very first response before the
         // fast poll has run.
-        const liveUncommitted =
-            localStatusCache.get(target.folder) ?? base.hasUncommittedChanges;
+        const liveUncommitted = localStatusCache.get(target.folder) ?? base.hasUncommittedChanges;
         return {
             ...base,
             parentRepoPath: target.parentRepoPath,
@@ -740,6 +742,7 @@ export function getCachedFolders(): FolderInfo[] {
             resetAiSessionCmd: target.resetAiSessionCmd,
             isHidden: target.isHidden,
             doLater: target.doLater,
+            parentTaskPath: target.parentTaskPath,
             hasUncommittedChanges: liveUncommitted,
             // `lastReviewedSha` and `mergeStepValues` are authored at the config layer (the
             // `/worktrees/mark-reviewed` and `/worktrees/set-merge-step` endpoints write
@@ -758,8 +761,8 @@ export function getCachedFolders(): FolderInfo[] {
 /**
  * Re-enumerate targets from the given config and publish them immediately so `/folders` reflects
  * the change without waiting for the next background sweep. Use this when the caller has already
- * mutated and saved `config.repos[].worktrees` directly (e.g. via `addWorktreeToConfig`) — it
- * skips the full disk-scan reconcile, which is the slow part on repos with many worktrees.
+ * mutated and saved `config.repos[].worktrees` directly (e.g. via `addWorktreeToConfig`) — it skips
+ * the full disk-scan reconcile, which is the slow part on repos with many worktrees.
  */
 export function publishTargets(config: Readonly<Config>): void {
     const targets = enumerateTargets(config);
@@ -771,13 +774,13 @@ export function publishTargets(config: Readonly<Config>): void {
 }
 
 /**
- * Reconcile-then-publish: scans disk to rebuild every repo's worktree list, persists any drift
- * back to disk, and publishes the resulting targets. Use this when the caller can't precompute
- * the delta — i.e. the `/config` PUT endpoint, where an arbitrary config replaces the live one
- * and we don't know which worktrees changed. The sweep idles for up to ~10s between runs; without
- * this hook a repo added (or deleted) via an endpoint would not appear in (or disappear from)
- * `/folders` for that whole window, which makes the frontend's "home + empty folders → redirect
- * to /add-repo" guard fire spuriously right after add.
+ * Reconcile-then-publish: scans disk to rebuild every repo's worktree list, persists any drift back
+ * to disk, and publishes the resulting targets. Use this when the caller can't precompute the delta
+ * — i.e. the `/config` PUT endpoint, where an arbitrary config replaces the live one and we don't
+ * know which worktrees changed. The sweep idles for up to ~10s between runs; without this hook a
+ * repo added (or deleted) via an endpoint would not appear in (or disappear from) `/folders` for
+ * that whole window, which makes the frontend's "home + empty folders → redirect to /add-repo"
+ * guard fire spuriously right after add.
  *
  * Returns the reconciled config in case the caller wants to skip a redundant reload.
  */
@@ -830,10 +833,10 @@ function persistCache(): void {
 }
 
 /**
- * The shape of `FolderInfo` evolves; cache files written by older builds can be missing fields
- * the current schema marks as required (e.g. `isBaseBranch` landed after the worktree-config
- * refactor). Drop any cached entry whose top-level fields don't line up so `/folders` doesn't
- * serve a response that fails its own outgoing-shape validation — the next sweep will repopulate.
+ * The shape of `FolderInfo` evolves; cache files written by older builds can be missing fields the
+ * current schema marks as required (e.g. `isBaseBranch` landed after the worktree-config refactor).
+ * Drop any cached entry whose top-level fields don't line up so `/folders` doesn't serve a response
+ * that fails its own outgoing-shape validation — the next sweep will repopulate.
  */
 function isValidCachedFolderInfo(info: unknown): info is FolderInfo {
     if (!info || typeof info !== 'object') {
@@ -853,11 +856,11 @@ function isValidCachedFolderInfo(info: unknown): info is FolderInfo {
 
 /**
  * Backfill any fields a pre-merge-step-tracker cache file is missing. The cache survives across
- * server upgrades, so an older entry could be lacking `hasUncommittedChanges`,
- * `localCommitHash`, `branchCommitHash`, `prIsDraft`, `prCiPassing`, `prCiInProgress`,
- * `prApproved`, `prReviewChangesRequested`, `prReviewPending`, or `lastReviewedSha`. Without
- * backfill, `/folders` would emit those as undefined and fail outgoing-shape validation on the
- * very first request after restart.
+ * server upgrades, so an older entry could be lacking `hasUncommittedChanges`, `localCommitHash`,
+ * `branchCommitHash`, `prIsDraft`, `prCiPassing`, `prCiInProgress`, `prApproved`,
+ * `prReviewChangesRequested`, `prReviewPending`, or `lastReviewedSha`. Without backfill, `/folders`
+ * would emit those as undefined and fail outgoing-shape validation on the very first request after
+ * restart.
  */
 function normalizeCachedFolderInfo(info: FolderInfo): FolderInfo {
     return {
@@ -879,8 +882,7 @@ function normalizeCachedFolderInfo(info: FolderInfo): FolderInfo {
             typeof info.prCiPassing === 'boolean' || info.prCiPassing === null
                 ? info.prCiPassing
                 : null,
-        prCiInProgress:
-            typeof info.prCiInProgress === 'boolean' ? info.prCiInProgress : false,
+        prCiInProgress: typeof info.prCiInProgress === 'boolean' ? info.prCiInProgress : false,
         prReviewCheckPassing:
             typeof info.prReviewCheckPassing === 'boolean' || info.prReviewCheckPassing === null
                 ? info.prReviewCheckPassing
@@ -894,8 +896,7 @@ function normalizeCachedFolderInfo(info: FolderInfo): FolderInfo {
             typeof info.prReviewChangesRequested === 'boolean'
                 ? info.prReviewChangesRequested
                 : false,
-        prReviewPending:
-            typeof info.prReviewPending === 'boolean' ? info.prReviewPending : false,
+        prReviewPending: typeof info.prReviewPending === 'boolean' ? info.prReviewPending : false,
         prHasUnresolvedReviewComments:
             typeof info.prHasUnresolvedReviewComments === 'boolean'
                 ? info.prHasUnresolvedReviewComments
@@ -912,9 +913,9 @@ function normalizeCachedFolderInfo(info: FolderInfo): FolderInfo {
                 : {},
         isHidden: typeof info.isHidden === 'boolean' ? info.isHidden : false,
         doLater: typeof info.doLater === 'boolean' ? info.doLater : false,
+        parentTaskPath: typeof info.parentTaskPath === 'string' ? info.parentTaskPath : null,
         aiCmd: typeof info.aiCmd === 'string' ? info.aiCmd : '',
-        resetAiSessionCmd:
-            typeof info.resetAiSessionCmd === 'string' ? info.resetAiSessionCmd : '',
+        resetAiSessionCmd: typeof info.resetAiSessionCmd === 'string' ? info.resetAiSessionCmd : '',
     };
 }
 
@@ -954,6 +955,8 @@ async function loadPersistedCache(): Promise<void> {
                         : {},
                 isHidden: typeof target.isHidden === 'boolean' ? target.isHidden : false,
                 doLater: typeof target.doLater === 'boolean' ? target.doLater : false,
+                parentTaskPath:
+                    typeof target.parentTaskPath === 'string' ? target.parentTaskPath : null,
             }));
             parsed.entries.forEach((pair) => {
                 if (!Array.isArray(pair) || pair.length !== 2) {
@@ -1050,12 +1053,12 @@ async function loadPersistedGithubCache(): Promise<void> {
                     }
                     /**
                      * Restore every persisted entry regardless of TTL. Entries older than
-                     * `repoPrCacheTtlMs` are still useful as the "preserve prior" fallback
-                     * when the new sweep can't reach GitHub (no active pane + cache stale,
-                     * auth backoff, etc.) — they'll be refreshed naturally on the next
-                     * eligible sweep, but until then we serve them rather than blanking the
-                     * sidebar. The previous load logic dropped these entries, which is why a
-                     * cold restart followed by a stretch of inactivity wiped PR badges.
+                     * `repoPrCacheTtlMs` are still useful as the "preserve prior" fallback when the
+                     * new sweep can't reach GitHub (no active pane + cache stale, auth backoff,
+                     * etc.) — they'll be refreshed naturally on the next eligible sweep, but until
+                     * then we serve them rather than blanking the sidebar. The previous load logic
+                     * dropped these entries, which is why a cold restart followed by a stretch of
+                     * inactivity wiped PR badges.
                      */
                     const prsByBranch: Map<string, PrInfo> = new Map(entry.prs);
                     const rawChecked: unknown = entry.checkedBranches;
@@ -1095,15 +1098,15 @@ const perFolderDelayMs = 100;
 const sweepIdleMs = 5000;
 
 /**
- * Auto-hide a worktree the moment we observe its PR transition from open to merged — the row
- * drops out of the sidebar's default view but the worktree, its files, and its panes are left
- * fully intact (recoverable via the "Show hidden" toggle). The transition must be witnessed by
- * *this server*: a prior FolderInfo with `prUrl` set and `prMerged: false`, followed by a fresh
+ * Auto-hide a worktree the moment we observe its PR transition from open to merged — the row drops
+ * out of the sidebar's default view but the worktree, its files, and its panes are left fully
+ * intact (recoverable via the "Show hidden" toggle). The transition must be witnessed by _this
+ * server_: a prior FolderInfo with `prUrl` set and `prMerged: false`, followed by a fresh
  * `prMerged: true`. A first-observation merged PR (no prior, or `prUrl` was null) counts as
- * "previous status unknown" and is never enough — a freshly-started server shouldn't hide
- * worktrees whose PRs were merged before we ever saw them open. Skips the base-branch worktree,
- * already-hidden worktrees, and worktrees with a live Claude/shell pane (the user is still
- * working there).
+ * "previous status unknown" and is never enough — a freshly-started server shouldn't hide worktrees
+ * whose PRs were merged before we ever saw them open. Skips the base-branch worktree,
+ * already-hidden worktrees, and worktrees with a live Claude/shell pane (the user is still working
+ * there).
  */
 function shouldAutoHideOnMerge(
     target: Readonly<RefreshTarget>,
@@ -1136,7 +1139,10 @@ async function autoHideMergedWorktree(target: Readonly<RefreshTarget>): Promise<
     }
     const updatedConfig: Config = {
         ...config,
-        hiddenWorktrees: [...config.hiddenWorktrees, target.folder],
+        hiddenWorktrees: [
+            ...config.hiddenWorktrees,
+            target.folder,
+        ],
     };
     await saveConfig(updatedConfig).catch(() => {
         /* persistence is best-effort — the row still hides this session via publishTargets */
@@ -1166,8 +1172,8 @@ async function refreshOnce(
         /**
          * No persistCache() here on purpose: this runs once per folder per sweep, and each call
          * serializes the ENTIRE cache — per-folder persistence made sweeps O(N²) in JSON.stringify
-         * work. The sweep persists once after the loop; a crash mid-sweep costs at most one
-         * sweep's freshness in a best-effort cache.
+         * work. The sweep persists once after the loop; a crash mid-sweep costs at most one sweep's
+         * freshness in a best-effort cache.
          */
     } catch {
         /* swallow per-folder errors so one bad repo doesn't stop the sweep */
@@ -1230,8 +1236,8 @@ async function runSweep(): Promise<void> {
     const disabledGitHubPolling = isGitHubPollingDisabled(config);
     /**
      * Snapshot which repos have at least one live pane (AI or Shell, Busy or Idle) at sweep start.
-     * `getOrFetchRepoCacheEntry` uses this to skip the GraphQL fetch for repos the user isn't actively
-     * working with — cache hits still serve their stale data, but no network trip is spent
+     * `getOrFetchRepoCacheEntry` uses this to skip the GraphQL fetch for repos the user isn't
+     * actively working with — cache hits still serve their stale data, but no network trip is spent
      * refreshing PRs for an inactive repo.
      */
     const activeRepoKeys = computeActiveRepoKeys(targets, statusLookup);
@@ -1272,12 +1278,12 @@ async function refreshLivePaneStatus(): Promise<void> {
  * (folders dropped from the published target list) are pruned at the end. Only considers
  * non-worktree-root targets — the bare worktree root has no working tree of its own.
  *
- * Only folders with a live AI/Shell pane are probed: the fast poll exists so the progress
- * tracker's self-QA / self-review checkboxes invalidate quickly while the user (or Claude) is
- * actively editing, and active editing implies a live pane. Idle folders fall back to the ~25s
- * sweep's `git.dirty` — their cache entry is dropped so a stale fast-poll value can't shadow the
- * fresher sweep result in `getCachedFolders`. This keeps the always-on subprocess rate
- * proportional to active folders instead of total worktrees.
+ * Only folders with a live AI/Shell pane are probed: the fast poll exists so the progress tracker's
+ * self-QA / self-review checkboxes invalidate quickly while the user (or Claude) is actively
+ * editing, and active editing implies a live pane. Idle folders fall back to the ~25s sweep's
+ * `git.dirty` — their cache entry is dropped so a stale fast-poll value can't shadow the fresher
+ * sweep result in `getCachedFolders`. This keeps the always-on subprocess rate proportional to
+ * active folders instead of total worktrees.
  */
 async function refreshLocalStatus(): Promise<void> {
     const targets = refreshState.targets;
@@ -1314,9 +1320,9 @@ function scheduleLocalStatusPoll(): void {
 }
 
 /**
- * Recursive `setTimeout` rather than `setInterval` so a slow daemon round-trip can never cause
- * two pane-status fetches to overlap. The poll runs continuously from server startup so the
- * sidebar reflects live Claude activity even when no full sweep has run recently.
+ * Recursive `setTimeout` rather than `setInterval` so a slow daemon round-trip can never cause two
+ * pane-status fetches to overlap. The poll runs continuously from server startup so the sidebar
+ * reflects live Claude activity even when no full sweep has run recently.
  */
 function schedulePaneStatusPoll(): void {
     setTimeout(() => {
