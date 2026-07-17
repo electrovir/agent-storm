@@ -1,6 +1,7 @@
 import {
     agentStormService,
     checkPathEndpoint,
+    clientErrorEndpoint,
     configEndpoint,
     convertRepoEndpoint,
     createPathEndpoint,
@@ -11,7 +12,6 @@ import {
     folderPickerEndpoint,
     foldersEndpoint,
     killPanesEndpoint,
-    clientErrorEndpoint,
     markWorktreeReviewedEndpoint,
     PaneKind,
     ptyWebSocket,
@@ -19,6 +19,7 @@ import {
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    reviewRequestedEndpoint,
     setMergeStepEndpoint,
     stageTrivialHunksEndpoint,
     startTestServerEndpoint,
@@ -37,10 +38,14 @@ import {
     silentServerLogger,
 } from '@rest-vir/host';
 import fastify from 'fastify';
+import {spawnSync} from 'node:child_process';
 import {appendFileSync, writeFileSync} from 'node:fs';
 import {mkdir, stat} from 'node:fs/promises';
+import {dirname, join, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
+import {appendClientError, resetClientErrorLog} from './client-errors.js';
 import {startConfigBackupLoop} from './config-backup.js';
 import {
     getFolderAiCmd,
@@ -50,7 +55,6 @@ import {
     setFolderAiCmd,
     setFolderResetAiSessionCmd,
 } from './config.js';
-import {addWorktreeToConfig, removeWorktreeFromConfig} from './worktree-reconcile.js';
 import {
     attachPane,
     killFolderPanes,
@@ -61,7 +65,6 @@ import {
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {serverLogPath} from './file-paths.js';
-import {appendClientError, resetClientErrorLog} from './client-errors.js';
 import {
     getCachedFolders,
     publishTargets,
@@ -79,13 +82,12 @@ import {
     removeWorktree,
 } from './git.js';
 import {normalizePath} from './paths.js';
-import {getUpdateStatus} from './update-check.js';
-import {dirname, join, resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {spawnSync} from 'node:child_process';
-import {saveUpload} from './uploads.js';
+import {getReviewRequestedStatus} from './review-requested.js';
 import {ensureTestServer, installShutdownHooks} from './test-server.js';
+import {getUpdateStatus} from './update-check.js';
+import {saveUpload} from './uploads.js';
 import {attachVscodeProxy} from './vscode-proxy.js';
+import {addWorktreeToConfig, removeWorktreeFromConfig} from './worktree-reconcile.js';
 
 // Resolve once at module load — `scripts/stage-trivial-hunks.mjs` lives at the agent-storm
 // repo root, three levels up from this file (`packages/server/src/index.ts`).
@@ -228,8 +230,8 @@ async function runPostWorktreeCmd({
  * Type a one-shot task prompt into a worktree's AI pane, as if the user had typed it. Attaches to
  * the pane (spawning Claude via the folder's normal `aiCmd` if it isn't running yet), waits for the
  * TUI's boot output to go quiet so the text lands in Claude's composer rather than a half-started
- * process, then writes the prompt and a carriage return to submit it. The prompt is never
- * persisted — see `initialAiPrompt` on the create-worktree request shape for why.
+ * process, then writes the prompt and a carriage return to submit it. The prompt is never persisted
+ * — see `initialAiPrompt` on the create-worktree request shape for why.
  */
 async function sendInitialAiPrompt({
     worktreePath,
@@ -338,6 +340,16 @@ const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
     },
 });
 
+const reviewRequestedImplementation = implementor.implementEndpoint(reviewRequestedEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await getReviewRequestedStatus(),
+            },
+        };
+    },
+});
+
 const updateCheckImplementation = implementor.implementEndpoint(updateCheckEndpoint, {
     async [HttpMethod.Get]() {
         return {
@@ -387,7 +399,14 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
         const newPath = normalizePath(join(requestData.repoPath, requestData.name));
         const config = await loadConfig().catch(() => undefined);
         if (config) {
-            const updated = addWorktreeToConfig(config, requestData.repoPath, newPath);
+            const updated = addWorktreeToConfig(
+                config,
+                requestData.repoPath,
+                newPath,
+                requestData.parentTaskPath?.trim()
+                    ? normalizePath(requestData.parentTaskPath.trim())
+                    : null,
+            );
             if (updated !== config) {
                 await saveConfig(updated);
             }
@@ -401,8 +420,8 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
         const initialAiPrompt = requestData.initialAiPrompt?.trim();
         if (initialAiPrompt) {
             /**
-             * Fire-and-forget: Claude's TUI takes seconds to boot and the create response
-             * shouldn't block on it. Failures only cost the prompt, never the worktree.
+             * Fire-and-forget: Claude's TUI takes seconds to boot and the create response shouldn't
+             * block on it. Failures only cost the prompt, never the worktree.
              */
             void sendInitialAiPrompt({
                 worktreePath,
@@ -799,7 +818,12 @@ const stageTrivialHunksImplementation = implementor.implementEndpoint(stageTrivi
             encoding: 'utf8',
             maxBuffer: 64 * 1024 * 1024,
         });
-        const output = [result.stdout, result.stderr].filter(Boolean).join('');
+        const output = [
+            result.stdout,
+            result.stderr,
+        ]
+            .filter(Boolean)
+            .join('');
         if (result.status !== 0) {
             throw new RejectRequestError(
                 HttpStatus.InternalServerError,
@@ -983,6 +1007,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
     endpoints: [
         configImplementation,
         foldersImplementation,
+        reviewRequestedImplementation,
         updateCheckImplementation,
         createWorktreeImplementation,
         deleteWorktreeImplementation,
@@ -1025,11 +1050,11 @@ await attachApi(server, implementation, {
  */
 attachVscodeProxy(server);
 /**
- * Default to `127.0.0.1` so the dev server isn't reachable over LAN. The auth-secret on the
- * wire would otherwise be a passive-sniffer hazard (no TLS in dev). LAN testing — the UI from
- * a phone or another laptop — is still possible via `AGENT_STORM_BIND_HOST=0.0.0.0`, at which
- * point the bearer-secret check becomes the only thing gating access (which is fine because
- * the secret is 256 bits of unguessable randomness; see `packages/server/src/auth.ts`).
+ * Default to `127.0.0.1` so the dev server isn't reachable over LAN. The auth-secret on the wire
+ * would otherwise be a passive-sniffer hazard (no TLS in dev). LAN testing — the UI from a phone or
+ * another laptop — is still possible via `AGENT_STORM_BIND_HOST=0.0.0.0`, at which point the
+ * bearer-secret check becomes the only thing gating access (which is fine because the secret is 256
+ * bits of unguessable randomness; see `packages/server/src/auth.ts`).
  */
 const bindHost = process.env.AGENT_STORM_BIND_HOST || '127.0.0.1';
 const listenAddress = await server.listen({

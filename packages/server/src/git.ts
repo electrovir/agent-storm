@@ -625,7 +625,7 @@ type GhExecResult = {
     stderr: string;
 };
 
-async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
+export async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
     try {
         const result = await exec('gh', [...args]);
         return {

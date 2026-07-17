@@ -15,6 +15,7 @@ import {
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    reviewRequestedEndpoint,
     setMergeStepEndpoint,
     stageTrivialHunksEndpoint,
     startTestServerEndpoint,
@@ -25,6 +26,7 @@ import {
     type FolderInfo,
     type PaneKind,
     type RepoInspection,
+    type ReviewRequestedStatus,
     type UpdateStatus,
 } from '@agent-storm/common';
 import {HttpStatus} from '@augment-vir/common';
@@ -112,6 +114,12 @@ export async function getFolders(): Promise<FolderInfo[]> {
 
 export async function getUpdateStatus(): Promise<UpdateStatus> {
     return await requestApi('GET /update-check', () => client.fetch(updateCheckEndpoint).GET());
+}
+
+export async function getReviewRequestedStatus(): Promise<ReviewRequestedStatus> {
+    return await requestApi('GET /review-requested', () =>
+        client.fetch(reviewRequestedEndpoint).GET(),
+    );
 }
 
 export async function createWorktree(
