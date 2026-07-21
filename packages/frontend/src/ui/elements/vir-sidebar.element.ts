@@ -558,9 +558,20 @@ export const VirSidebar = defineElement<{
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
-        .review-requested .review-count {
-            font-feature-settings: 'tnum';
-            font-weight: 600;
+        /*
+         * Reviews-waiting call-to-action: unlike the quiet zero-count line above, pending reviews
+         * should pull the eye — a full-width flat green button pinned at the sidebar bottom.
+         */
+        .review-requested-cta {
+            flex-shrink: 0;
+            padding: 8px 10px;
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+        }
+
+        .review-requested-cta vira-link,
+        .review-requested-cta vira-button {
+            display: block;
+            width: 100%;
         }
 
         .empty {
@@ -1058,9 +1069,9 @@ export const VirSidebar = defineElement<{
                     `;
                 })}
             </div>
-            ${state.reviewRequested?.count != null
+            ${state.reviewRequested?.count
                 ? html`
-                      <div class="review-requested">
+                      <div class="review-requested-cta">
                           <${ViraLink.assign({
                               link: {
                                   url: 'https://github.com/pulls/review-requested',
@@ -1068,12 +1079,32 @@ export const VirSidebar = defineElement<{
                               },
                               disableLinkStyles: true,
                           })}>
-                              <span class="review-count">${state.reviewRequested.count}</span>
-                              PR${state.reviewRequested.count === 1 ? '' : 's'} awaiting your review
+                              <${ViraButton.assign({
+                                  text: `${state.reviewRequested.count} PR${
+                                      state.reviewRequested.count === 1 ? '' : 's'
+                                  } awaiting your review`,
+                                  color: ViraColorVariant.Positive,
+                                  buttonEmphasis: ViraEmphasis.Standard,
+                                  buttonSize: ViraSize.Medium,
+                              })}></${ViraButton}>
                           </${ViraLink}>
                       </div>
                   `
-                : ''}
+                : state.reviewRequested?.count === 0
+                  ? html`
+                        <div class="review-requested">
+                            <${ViraLink.assign({
+                                link: {
+                                    url: 'https://github.com/pulls/review-requested',
+                                    newTab: true,
+                                },
+                                disableLinkStyles: true,
+                            })}>
+                                No PRs awaiting your review
+                            </${ViraLink}>
+                        </div>
+                    `
+                  : ''}
             ${state.updateStatus?.isUpToDate === false
                 ? html`
                       <div
