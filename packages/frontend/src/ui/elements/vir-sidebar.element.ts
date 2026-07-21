@@ -594,6 +594,14 @@ export const VirSidebar = defineElement<{
             width: 100%;
         }
 
+        /*
+         * 2x the Medium size's 32px. vira-button's inner <button> is height:100% of its host, and
+         * document-level styles on the host win over its :host default, so a plain height works.
+         */
+        .review-requested-cta vira-link vira-button {
+            height: 64px;
+        }
+
         .empty {
             padding: 16px 10px;
             color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
