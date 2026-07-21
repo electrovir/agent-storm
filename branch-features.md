@@ -48,3 +48,4 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Services pane (npm start) spawns only when the Services tab is first clicked, not on branch open.
 - Worktrees can record a parentTaskPath; parents with active sub-tasks render dimmed in the sidebar.
 - Sidebar bottom shows PRs awaiting review as a prominent green button; quiet text when zero.
+- Refresh icon next to the review counter force-fetches past the 5-minute server cache.

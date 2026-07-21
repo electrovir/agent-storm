@@ -122,6 +122,12 @@ export async function getReviewRequestedStatus(): Promise<ReviewRequestedStatus>
     );
 }
 
+export async function refreshReviewRequestedStatus(): Promise<ReviewRequestedStatus> {
+    return await requestApi('POST /review-requested', () =>
+        client.fetch(reviewRequestedEndpoint).POST(),
+    );
+}
+
 export async function createWorktree(
     params: Readonly<{
         repoPath: string;

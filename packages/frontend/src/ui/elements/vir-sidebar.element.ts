@@ -54,6 +54,7 @@ import {
     getUpdateStatus,
     killFolderPanes,
     putConfig,
+    refreshReviewRequestedStatus,
     resetAiSession,
     restartPane,
     touchRepo,
@@ -86,6 +87,7 @@ const buttonIconSize = 16;
 const searchIcon = createSizedIcon(lucideIcons.Search, buttonIconSize);
 const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
 const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
+const refreshCountIcon = createSizedIcon(lucideIcons.RefreshCw, buttonIconSize);
 const filterIcon = createSizedIcon(lucideIcons.ListFilter, buttonIconSize);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
@@ -199,6 +201,11 @@ type SidebarState = {
      * the footer counter.
      */
     reviewRequested: ReviewRequestedStatus | undefined;
+    /**
+     * True while the footer's refresh button has a forced re-fetch in flight. Disables the button
+     * so impatient clicks don't stack GitHub search calls.
+     */
+    reviewRefreshing: boolean;
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
@@ -271,6 +278,7 @@ export const VirSidebar = defineElement<{
             repos: [],
             updateStatus: undefined,
             reviewRequested: undefined,
+            reviewRefreshing: false,
             showHiddenWorktrees: undefined,
         };
     },
@@ -548,6 +556,10 @@ export const VirSidebar = defineElement<{
 
         .review-requested {
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
             padding: 6px 10px;
             font-size: 11px;
             border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
@@ -564,12 +576,20 @@ export const VirSidebar = defineElement<{
          */
         .review-requested-cta {
             flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
             padding: 8px 10px;
             border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
         }
 
+        .review-requested-cta vira-link {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
         .review-requested-cta vira-link,
-        .review-requested-cta vira-button {
+        .review-requested-cta vira-link vira-button {
             display: block;
             width: 100%;
         }
@@ -1088,6 +1108,7 @@ export const VirSidebar = defineElement<{
                                   buttonSize: ViraSize.Medium,
                               })}></${ViraButton}>
                           </${ViraLink}>
+                          ${renderReviewRefreshButton(state, updateState)}
                       </div>
                   `
                 : state.reviewRequested?.count === 0
@@ -1102,6 +1123,7 @@ export const VirSidebar = defineElement<{
                             })}>
                                 No PRs awaiting your review
                             </${ViraLink}>
+                            ${renderReviewRefreshButton(state, updateState)}
                         </div>
                     `
                   : ''}
@@ -1340,6 +1362,43 @@ export const VirSidebar = defineElement<{
         `;
     },
 });
+
+/**
+ * Icon button beside the review-requested footer that forces a fresh GitHub fetch, bypassing the
+ * backend's 5-minute cache — so the count drops right after the user finishes a review instead of
+ * waiting out the cache window.
+ */
+function renderReviewRefreshButton(
+    state: Readonly<Pick<SidebarState, 'reviewRefreshing'>>,
+    updateState: SidebarUpdate,
+) {
+    return html`
+        <${ViraButton.assign({
+            icon: refreshCountIcon,
+            buttonSize: ViraSize.Medium,
+            buttonEmphasis: ViraEmphasis.Subtle,
+            color: ViraColorVariant.Neutral,
+            isDisabled: state.reviewRefreshing,
+        })}
+            title="Re-check PRs awaiting your review"
+            ${listen('click', () => {
+                void (async () => {
+                    updateState({reviewRefreshing: true});
+                    try {
+                        const reviewRequested = await refreshReviewRequestedStatus();
+                        updateState({
+                            reviewRequested,
+                            reviewRefreshing: false,
+                        });
+                    } catch (error: unknown) {
+                        updateState({reviewRefreshing: false});
+                        showError(updateState, error);
+                    }
+                })();
+            })}
+        ></${ViraButton}>
+    `;
+}
 
 function renderPaneChip(label: string, status: PaneStatus) {
     if (status === PaneStatus.None) {

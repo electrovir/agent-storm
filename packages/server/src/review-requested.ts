@@ -58,3 +58,18 @@ export async function getReviewRequestedStatus(): Promise<ReviewRequestedStatus>
     }
     return await cacheState.inFlight;
 }
+
+/**
+ * Bypass the TTL cache and fetch a fresh count now (the sidebar's refresh button). Any in-flight
+ * fetch is awaited first so its completion can't overwrite the fresh result with older data; the
+ * fresh fetch then repopulates the cache for subsequent polls.
+ */
+export async function forceRefreshReviewRequestedStatus(): Promise<ReviewRequestedStatus> {
+    if (cacheState.inFlight) {
+        await cacheState.inFlight.catch(() => {
+            /* the stale fetch's own failure handling already applied; we just needed it done */
+        });
+    }
+    cacheState.fetchedAtMs = 0;
+    return await getReviewRequestedStatus();
+}
