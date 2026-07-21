@@ -82,7 +82,7 @@ import {
     removeWorktree,
 } from './git.js';
 import {normalizePath} from './paths.js';
-import {getReviewRequestedStatus} from './review-requested.js';
+import {forceRefreshReviewRequestedStatus, getReviewRequestedStatus} from './review-requested.js';
 import {ensureTestServer, installShutdownHooks} from './test-server.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
@@ -345,6 +345,13 @@ const reviewRequestedImplementation = implementor.implementEndpoint(reviewReques
         return {
             [HttpStatus.Ok]: {
                 responseData: await getReviewRequestedStatus(),
+            },
+        };
+    },
+    async [HttpMethod.Post]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await forceRefreshReviewRequestedStatus(),
             },
         };
     },

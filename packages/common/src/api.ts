@@ -896,6 +896,18 @@ export const reviewRequestedEndpoint = defineEndpoint({
                 },
             },
         },
+        /**
+         * Force a fresh GitHub fetch, bypassing the server's TTL cache, and return the new count.
+         * Used by the sidebar's refresh button so the counter drops immediately after the user
+         * finishes a review instead of waiting out the cache window.
+         */
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewRequestedResponseShape,
+                },
+            },
+        },
     },
 });
 
