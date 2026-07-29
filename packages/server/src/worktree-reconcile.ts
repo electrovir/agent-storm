@@ -109,16 +109,28 @@ export function addWorktreeToConfig(
 
 /**
  * Fast path for the "we just deleted a worktree" case. Drops the matching entry from `worktrees`
- * without re-scanning disk. Returns the input untouched if no entry matches.
+ * without re-scanning disk, and clears any other worktree's `parentTaskPath` that pointed at the
+ * deleted path — otherwise a later branch recreated at the same path would inherit stale sub-task
+ * links and immediately render as blocked. Returns the input untouched if nothing matches.
  */
 export function removeWorktreeFromConfig(config: Readonly<Config>, worktreePath: string): Config {
     const repos = config.repos.map((repo) => {
-        if (!repo.worktrees.some((worktree) => worktree.path === worktreePath)) {
+        const hasDeleted = repo.worktrees.some((worktree) => worktree.path === worktreePath);
+        const hasDanglingRef = repo.worktrees.some(
+            (worktree) => worktree.parentTaskPath === worktreePath,
+        );
+        if (!hasDeleted && !hasDanglingRef) {
             return repo;
         }
         return {
             ...repo,
-            worktrees: repo.worktrees.filter((worktree) => worktree.path !== worktreePath),
+            worktrees: repo.worktrees
+                .filter((worktree) => worktree.path !== worktreePath)
+                .map((worktree) =>
+                    worktree.parentTaskPath === worktreePath
+                        ? {...worktree, parentTaskPath: null}
+                        : worktree,
+                ),
         };
     });
     return {...config, repos};
