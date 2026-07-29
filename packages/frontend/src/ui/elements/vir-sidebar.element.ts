@@ -53,7 +53,6 @@ import {
     hideRepo,
     killFolderPanes,
     putConfig,
-    resetAiSession,
     restartPane,
     touchRepo,
 } from '../../util/api-client.js';
@@ -94,8 +93,6 @@ const menuIconSize = 16;
 const menuOpenPrIcon = createSizedIcon(lucideIcons.ExternalLink, menuIconSize);
 const menuShowAiIcon = createSizedIcon(lucideIcons.Eye, menuIconSize);
 const menuHideAiIcon = createSizedIcon(lucideIcons.EyeOff, menuIconSize);
-const menuRestartAiIcon = createSizedIcon(lucideIcons.RotateCw, menuIconSize);
-const menuNewSessionIcon = createSizedIcon(lucideIcons.RefreshCcw, menuIconSize);
 const menuEditCommandsIcon = createSizedIcon(lucideIcons.Terminal, menuIconSize);
 const menuKillPanesIcon = createSizedIcon(lucideIcons.PowerOff, menuIconSize);
 const menuHideRepoIcon = createSizedIcon(lucideIcons.Archive, menuIconSize);
@@ -846,7 +843,6 @@ export const VirSidebar = defineElement<{
                         onActivate: emitFolderActivated,
                         removeFolderLocally,
                         emitFoldersRemoved,
-                        emitPaneRestarted,
                         updateState,
                     }),
                 )}
@@ -919,7 +915,6 @@ export const VirSidebar = defineElement<{
                                 onActivate: emitFolderActivated,
                                 removeFolderLocally,
                                 emitFoldersRemoved,
-                                emitPaneRestarted,
                                 updateState,
                             }),
                         )}
@@ -1218,7 +1213,6 @@ function renderRow({
     onActivate,
     removeFolderLocally,
     emitFoldersRemoved,
-    emitPaneRestarted,
     updateState,
 }: Readonly<{
     folder: FolderInfo;
@@ -1228,7 +1222,6 @@ function renderRow({
     onActivate: (folder: string) => void;
     removeFolderLocally: (path: string) => void;
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
-    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
     updateState: SidebarUpdate;
 }>) {
     const nameWithMarkers = [
@@ -1290,7 +1283,6 @@ function renderRow({
                             updateState,
                             removeFolderLocally,
                             emitFoldersRemoved,
-                            emitPaneRestarted,
                         ),
                     )}
                 </${ViraMenuTrigger}>
@@ -1366,7 +1358,6 @@ function buildRowMenuEntries(
     updateState: SidebarUpdate,
     removeFolderLocally: (path: string) => void,
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void,
-    emitPaneRestarted: (detail: PaneRestartedEvent) => void,
 ): ReadonlyArray<ViraMenuItemEntry> {
     return [
         folder.prUrl &&
@@ -1391,54 +1382,6 @@ function buildRowMenuEntries(
                 void toggleAiHidden(folder.path, updateState);
             },
         },
-        {
-            content: 'Restart AI',
-            iconOverride: menuRestartAiIcon,
-            onClick: () => {
-                void (async () => {
-                    try {
-                        await restartPane({
-                            folder: folder.path,
-                            kind: PaneKind.Ai,
-                        });
-                        emitPaneRestarted({
-                            folder: folder.path,
-                            kind: PaneKind.Ai,
-                        });
-                    } catch (error: unknown) {
-                        showError(updateState, error);
-                    }
-                })();
-            },
-        },
-        /**
-         * Surface the "Restart AI session" item only when a command is actually configured (per-
-         * folder override → global default — backend has already resolved that and put the result
-         * into `folder.resetAiSessionCmd`). Acts exactly like "Restart AI" — kills the AI pty and
-         * spawns a fresh one — but launches the reset-session command instead of the folder's
-         * normal `aiCmd`. Emits `paneRestarted` the same way so the mounted terminal reconnects.
-         */
-        folder.resetAiSessionCmd
-            ? {
-                  content: 'New AI session',
-                  iconOverride: menuNewSessionIcon,
-                  onClick: () => {
-                      void (async () => {
-                          try {
-                              await resetAiSession({
-                                  folder: folder.path,
-                              });
-                              emitPaneRestarted({
-                                  folder: folder.path,
-                                  kind: PaneKind.Ai,
-                              });
-                          } catch (error: unknown) {
-                              showError(updateState, error);
-                          }
-                      })();
-                  },
-              }
-            : undefined,
         {
             content: 'Edit folder commands',
             iconOverride: menuEditCommandsIcon,

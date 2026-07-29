@@ -1,14 +1,50 @@
 // cspell:words titlebar
 
-import {PaneKind} from '@agent-storm/common';
+import {PaneKind, type FolderSessions, type SessionMeta} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
-import {viraThemeByKeys} from 'vira';
-import {ensureVscode, killVscode} from '../../util/api-client.js';
+import {
+    HorizontalAnchor,
+    renderMenuItemEntries,
+    ViraButton,
+    ViraColorVariant,
+    ViraEmphasis,
+    ViraMenuTrigger,
+    ViraSize,
+    viraThemeByKeys,
+    type ViraMenuItemEntry,
+} from 'vira';
+import {
+    closeSession,
+    createSession,
+    ensureVscode,
+    getFolderSessions,
+    killVscode,
+    renameSession,
+    resetAiSession,
+    restartPane,
+} from '../../util/api-client.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {getBackendBaseUrl} from '../../util/service-origin.js';
 import {VirTerminal} from './vir-terminal.element.js';
+
+/** Tab label: the user's name when set, otherwise the tab's 1-based position. */
+function sessionLabel(session: Readonly<SessionMeta>, index: number): string {
+    return session.name || String(index + 1);
+}
+
+/**
+ * Resolve a 1-based URL index to a live session. An index can outlive the session it referenced
+ * (the tab was closed, or the folder's list shrank), so anything out of range falls back to the
+ * first session rather than rendering an empty pane.
+ */
+function sessionAtIndex(
+    sessions: ReadonlyArray<Readonly<SessionMeta>>,
+    oneBasedIndex: number,
+): SessionMeta | undefined {
+    return sessions[oneBasedIndex - 1] || sessions[0];
+}
 
 function clampSplit(value: number): number {
     if (!Number.isFinite(value)) {
@@ -39,6 +75,19 @@ export const VirPaneGroup = defineElement<{
      */
     screenSize: ScreenSize;
     aiRestartKey: number;
+    /**
+     * 1-based index of the active session tab for each pane, straight from the URL. Two values
+     * because desktop shows both panes at once, so each has its own independent selection. An index
+     * past the end of the folder's list falls back to the first session.
+     */
+    aiSessionIndex: number;
+    shellSessionIndex: number;
+    /**
+     * Backend-resolved "reset AI session" command for this folder (per-folder override → global
+     * default). Empty means not configured, which hides the corresponding session-menu item — same
+     * signal the sidebar row menu used.
+     */
+    resetAiSessionCmd: string;
 }>()({
     tagName: 'vir-pane-group',
     events: {
@@ -47,11 +96,31 @@ export const VirPaneGroup = defineElement<{
          * URL param to the requested value (the actual route paths stay the same).
          */
         tabRequested: defineElementEvent<FrontendTab>(),
+        /**
+         * Emitted when the user selects (or creates, or closes into) a different session tab.
+         * Carries the 1-based index the URL should now hold for that pane kind.
+         */
+        sessionRequested: defineElementEvent<{kind: PaneKind; index: number}>(),
     },
     state() {
         return {
             split: localStorageClient.paneSplit.read(),
             dragging: false,
+            /**
+             * Session tab lists for this folder, both kinds. Undefined until the first `/sessions`
+             * load resolves; the panes render nothing until then so a terminal never mounts against
+             * a guessed session id.
+             */
+            sessions: undefined as FolderSessions | undefined,
+            sessionsRequested: false,
+            sessionsError: undefined as string | undefined,
+            /**
+             * Per-session remount counters, keyed `${kind}:${sessionId}`. Bumping one forces its
+             * `VirTerminal` to unmount and remount, which is how a restart gets a fresh socket
+             * against the newly-spawned PTY (the terminal bakes its connection into `onDomCreated`,
+             * which does not re-run on input changes).
+             */
+            restartKeys: {} as Record<string, number | undefined>,
             /**
              * Which pane last received focus inside this group. Sticky across window blur/focus
              * cycles: a `:focus-within` CSS-based highlight loses match when the user cmd+tabs away
@@ -243,6 +312,11 @@ export const VirPaneGroup = defineElement<{
             min-height: 0;
             overflow: hidden;
             transition: filter 120ms ease;
+            /* Column so the session sub-tab strip sits above the terminal in normal flow. */
+            display: flex;
+            flex-direction: column;
+            /* Anchor for .session-add-floating. */
+            position: relative;
         }
 
         .ai-pane {
@@ -263,8 +337,99 @@ export const VirPaneGroup = defineElement<{
             filter: brightness(0.75) saturate(0.9);
         }
 
+        /*
+         * Session sub-tab strip, nested under the CLI/Code (or AI/Shell/Code) tab bar. Rendered only
+         * when a pane has more than one session so single-session users lose no vertical space; the
+         * "+" control lives in the pane's hover affordance instead (see .session-add).
+         */
+        .session-bar {
+            flex-grow: 0;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            padding: 2px 4px;
+            box-sizing: border-box;
+            /*
+             * Must stay overflow: visible. Any scroll/hidden value here establishes a clipping box
+             * that cuts off each tab's pop-up menu — and setting only overflow-x makes overflow-y
+             * compute to auto, so it clips vertically too. Tabs wrap to a second line instead of
+             * scrolling; their labels are usually a single digit, so wrapping is rare.
+             */
+            flex-wrap: wrap;
+            border-bottom: 1px solid
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            font-family: ui-sans-serif, system-ui, sans-serif;
+            font-size: 11px;
+            /* Keep the strip from being squeezed out when the terminal wants all the height. */
+            min-height: 26px;
+        }
+
+        .session-tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
+            padding: 2px 4px 2px 8px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+            background: transparent;
+            font: inherit;
+            max-width: 160px;
+        }
+
+        .session-tab:hover {
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
+        }
+
+        .session-tab[data-selected] {
+            color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+            border-color: ${viraThemeByKeys.blue.foreground.decoration.foreground.value};
+        }
+
+        .session-tab-label {
+            min-width: 0;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
         .pane-body {
-            height: 100%;
+            /* Fill whatever the session strip leaves behind. */
+            flex-grow: 1;
+            flex-shrink: 1;
+            min-height: 0;
+        }
+
+        /*
+         * When a pane has a single session there's no tab strip, so this is the only way to create a
+         * second one. Floated over the terminal's top-right rather than taking flow space, and only
+         * opaque on pane hover, so a user who never wants multiple sessions never sees it. Absolute
+         * positioning (rather than collapsing the strip's height) avoids re-triggering an xterm refit
+         * on every hover.
+         */
+        .session-add-floating {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            z-index: 2;
+            opacity: 0;
+            transition: opacity 120ms ease;
+        }
+
+        .pane:hover .session-add-floating,
+        .session-add-floating:focus-within {
+            opacity: 1;
+        }
+
+        .session-error {
+            padding: 2px 6px;
+            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+            font-family: ui-sans-serif, system-ui, sans-serif;
+            font-size: 11px;
         }
 
         .divider {
@@ -309,6 +474,322 @@ export const VirPaneGroup = defineElement<{
         }
     `,
     render({inputs, state, updateState, host, dispatch, events}) {
+        /**
+         * Load this folder's session tabs once per mount. The pane group is keyed by folder up in
+         * `vir-app`, so a folder switch mounts a fresh element and re-runs this.
+         */
+        if (!state.sessionsRequested) {
+            updateState({
+                sessionsRequested: true,
+            });
+            void getFolderSessions({
+                folder: inputs.folder,
+            })
+                .then((sessions) => {
+                    updateState({
+                        sessions,
+                        sessionsError: undefined,
+                    });
+                })
+                .catch((error: unknown) => {
+                    updateState({
+                        sessionsError: error instanceof Error ? error.message : String(error),
+                    });
+                });
+        }
+
+        /** Replace the local list after any mutation so tab order and names match the server. */
+        const applySessions = (sessions: FolderSessions) => {
+            updateState({
+                sessions,
+                sessionsError: undefined,
+            });
+        };
+
+        const reportSessionError = (error: unknown) => {
+            updateState({
+                sessionsError: error instanceof Error ? error.message : String(error),
+            });
+        };
+
+        const bumpRestartKey = (kind: PaneKind, sessionId: string) => {
+            const key = `${kind}:${sessionId}`;
+            updateState({
+                restartKeys: {
+                    ...state.restartKeys,
+                    [key]: (state.restartKeys[key] || 0) + 1,
+                },
+            });
+        };
+
+        const sessionIndexFor = (kind: PaneKind): number =>
+            kind === PaneKind.Ai ? inputs.aiSessionIndex : inputs.shellSessionIndex;
+
+        const onAddSession = (kind: PaneKind) => {
+            void createSession({
+                folder: inputs.folder,
+                kind,
+            })
+                .then((sessions) => {
+                    applySessions(sessions);
+                    /** Jump to the session just created — it's appended, so it's the last one. */
+                    dispatch(
+                        new events.sessionRequested({
+                            kind,
+                            index: sessions[kind].length,
+                        }),
+                    );
+                })
+                .catch(reportSessionError);
+        };
+
+        const onRenameSession = (kind: PaneKind, session: Readonly<SessionMeta>, index: number) => {
+            /**
+             * A native prompt rather than a modal: it's the smallest thing that does the job, and
+             * `vir-terminal` already uses `window.prompt` for its paste fallback. Worth upgrading
+             * to an inline input if renaming turns out to be frequent.
+             */
+            const nextName = window.prompt(
+                'Session name (empty to use its number):',
+                session.name || String(index + 1),
+            );
+            if (nextName == undefined) {
+                return;
+            }
+            void renameSession({
+                folder: inputs.folder,
+                kind,
+                sessionId: session.id,
+                name: nextName,
+            })
+                .then(applySessions)
+                .catch(reportSessionError);
+        };
+
+        const onRestartSession = (kind: PaneKind, session: Readonly<SessionMeta>) => {
+            void restartPane({
+                folder: inputs.folder,
+                kind,
+                sessionId: session.id,
+            })
+                .then(() => bumpRestartKey(kind, session.id))
+                .catch(reportSessionError);
+        };
+
+        const onResetAiSession = (session: Readonly<SessionMeta>) => {
+            void resetAiSession({
+                folder: inputs.folder,
+                sessionId: session.id,
+            })
+                .then(() => bumpRestartKey(PaneKind.Ai, session.id))
+                .catch(reportSessionError);
+        };
+
+        const onCloseSession = (kind: PaneKind, session: Readonly<SessionMeta>, index: number) => {
+            void closeSession({
+                folder: inputs.folder,
+                kind,
+                sessionId: session.id,
+            })
+                .then((sessions) => {
+                    applySessions(sessions);
+                    /**
+                     * Keep the selection in range after a removal. Closing the active tab (or any
+                     * tab before it) shifts everything left, so clamp to the new length.
+                     */
+                    const nextIndex = Math.min(
+                        Math.max(
+                            1,
+                            sessionIndexFor(kind) > index
+                                ? sessionIndexFor(kind) - 1
+                                : sessionIndexFor(kind),
+                        ),
+                        sessions[kind].length,
+                    );
+                    dispatch(
+                        new events.sessionRequested({
+                            kind,
+                            index: nextIndex,
+                        }),
+                    );
+                })
+                .catch(reportSessionError);
+        };
+
+        /**
+         * Per-tab menu. Restart / reset live here rather than on the folder's sidebar row because
+         * with several sessions per pane, "restart the AI" is only meaningful against a specific
+         * one.
+         */
+        const buildSessionMenuEntries = ({
+            kind,
+            session,
+            index,
+            sessionCount,
+        }: Readonly<{
+            kind: PaneKind;
+            session: Readonly<SessionMeta>;
+            index: number;
+            sessionCount: number;
+        }>): ReadonlyArray<ViraMenuItemEntry> => {
+            /**
+             * Annotated so each literal widens to `ViraMenuItemEntry` (whose `content` is an
+             * `HtmlInterpolation`, not a `string`) before the conditional entries are filtered
+             * out.
+             */
+            const entries: ReadonlyArray<ViraMenuItemEntry | undefined> = [
+                {
+                    content: 'Rename',
+                    onClick: () => onRenameSession(kind, session, index),
+                },
+                {
+                    content: 'Restart',
+                    onClick: () => onRestartSession(kind, session),
+                },
+                kind === PaneKind.Ai && inputs.resetAiSessionCmd
+                    ? {
+                          content: 'New AI session',
+                          onClick: () => onResetAiSession(session),
+                      }
+                    : undefined,
+                {
+                    content: 'New tab',
+                    onClick: () => onAddSession(kind),
+                },
+                /** The last remaining tab can't be closed — a pane with no tabs has nothing to show. */
+                sessionCount > 1
+                    ? {
+                          content: 'Close',
+                          onClick: () => onCloseSession(kind, session, index),
+                      }
+                    : undefined,
+            ];
+            return entries.filter((entry): entry is ViraMenuItemEntry => !!entry);
+        };
+
+        /**
+         * Sole "new session" affordance for a pane showing one session, where the tab strip (and so
+         * its `+`) is hidden.
+         */
+        const renderFloatingAddSession = (kind: PaneKind) => html`
+            <span class="session-add-floating">
+                <${ViraButton.assign({
+                    buttonSize: ViraSize.Small,
+                    buttonEmphasis: ViraEmphasis.Subtle,
+                    color: ViraColorVariant.Neutral,
+                    text: '+',
+                })}
+                    title="New session"
+                    ${listen('click', () => onAddSession(kind))}
+                ></${ViraButton}>
+            </span>
+        `;
+
+        const renderSessionBar = (
+            kind: PaneKind,
+            sessions: ReadonlyArray<Readonly<SessionMeta>>,
+        ) => {
+            const activeSession = sessionAtIndex(sessions, sessionIndexFor(kind));
+            return html`
+                <div class="session-bar" role="tablist" aria-label="Sessions">
+                    ${repeat(
+                        sessions,
+                        (session) => session.id,
+                        (session, index) => html`
+                            <div
+                                class="session-tab"
+                                role="tab"
+                                ?data-selected=${session.id === activeSession?.id}
+                                aria-selected=${session.id === activeSession?.id}
+                                title=${session.name || `Session ${index + 1}`}
+                                ${listen('click', () =>
+                                    dispatch(
+                                        new events.sessionRequested({
+                                            kind,
+                                            index: index + 1,
+                                        }),
+                                    ),
+                                )}
+                            >
+                                <span class="session-tab-label">
+                                    ${sessionLabel(session, index)}
+                                </span>
+                                <span ${listen('click', (event) => event.stopPropagation())}>
+                                    <${ViraMenuTrigger.assign({
+                                        horizontalAnchor: HorizontalAnchor.Right,
+                                    })}>
+                                        <${ViraButton.assign({
+                                            buttonSize: ViraSize.Small,
+                                            buttonEmphasis: ViraEmphasis.Subtle,
+                                            color: ViraColorVariant.Neutral,
+                                            text: '⋮',
+                                        })}
+                                            slot=${ViraMenuTrigger.slotNames[
+                                                'vira-menu-trigger-trigger'
+                                            ]}
+                                            title="Session actions"
+                                        ></${ViraButton}>
+                                        ${renderMenuItemEntries(
+                                            buildSessionMenuEntries({
+                                                kind,
+                                                session,
+                                                index,
+                                                sessionCount: sessions.length,
+                                            }),
+                                        )}
+                                    </${ViraMenuTrigger}>
+                                </span>
+                            </div>
+                        `,
+                    )}
+                    <${ViraButton.assign({
+                        buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        color: ViraColorVariant.Neutral,
+                        text: '+',
+                    })}
+                        class="session-add"
+                        title="New session"
+                        ${listen('click', () => onAddSession(kind))}
+                    ></${ViraButton}>
+                </div>
+            `;
+        };
+
+        /**
+         * Mount exactly one terminal per pane: the active session's. Inactive sessions keep their
+         * PTY alive on the daemon and replay scrollback on reattach, so holding a socket open for
+         * each would buy nothing but idle connections. The `repeat` key combines the session id
+         * with its restart counter so both switching tabs and restarting force a fresh element —
+         * `VirTerminal` opens its socket in `onDomCreated`, which never re-runs for a reused
+         * element.
+         */
+        const renderPaneTerminal = (
+            kind: PaneKind,
+            sessions: ReadonlyArray<Readonly<SessionMeta>>,
+        ) => {
+            const session = sessionAtIndex(sessions, sessionIndexFor(kind));
+            if (!session) {
+                return '';
+            }
+            const folderRestartKey = kind === PaneKind.Ai ? inputs.aiRestartKey : 0;
+            const sessionRestartKey = state.restartKeys[`${kind}:${session.id}`] || 0;
+            const mountKey = `${session.id}:${sessionRestartKey + folderRestartKey}`;
+            return repeat(
+                [mountKey],
+                (key) => key,
+                () => html`
+                    <${VirTerminal.assign({
+                        folder: inputs.folder,
+                        kind,
+                        sessionId: session.id,
+                        active: inputs.active,
+                        showAccessoryKeys: inputs.screenSize === ScreenSize.Mobile,
+                    })}></${VirTerminal}>
+                `,
+            );
+        };
+
         const split = clampSplit(state.split);
         host.style.setProperty('--ai-grow', String(split));
         host.style.setProperty('--shell-grow', String(1 - split));
@@ -597,20 +1078,19 @@ export const VirPaneGroup = defineElement<{
                                       }),
                                   )}
                               >
+                                  ${state.sessions && state.sessions.ai.length > 1
+                                      ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
+                                      : renderFloatingAddSession(PaneKind.Ai)}
+                                  ${state.sessionsError
+                                      ? html`
+                                            <div class="session-error" role="alert">
+                                                ${state.sessionsError}
+                                            </div>
+                                        `
+                                      : ''}
                                   <div class="pane-body">
-                                      ${mountAiTerminal
-                                          ? repeat(
-                                                [inputs.aiRestartKey],
-                                                (restartKeyValue) => String(restartKeyValue),
-                                                () => html`
-                                                    <${VirTerminal.assign({
-                                                        folder: inputs.folder,
-                                                        kind: PaneKind.Ai,
-                                                        active: inputs.active,
-                                                        showAccessoryKeys: isMobile,
-                                                    })}></${VirTerminal}>
-                                                `,
-                                            )
+                                      ${mountAiTerminal && state.sessions
+                                          ? renderPaneTerminal(PaneKind.Ai, state.sessions.ai)
                                           : ''}
                                   </div>
                               </div>
@@ -633,16 +1113,12 @@ export const VirPaneGroup = defineElement<{
                             }),
                         )}
                     >
+                        ${state.sessions && state.sessions.shell.length > 1
+                            ? renderSessionBar(PaneKind.Shell, state.sessions.shell)
+                            : renderFloatingAddSession(PaneKind.Shell)}
                         <div class="pane-body">
-                            ${mountShellTerminal
-                                ? html`
-                                      <${VirTerminal.assign({
-                                          folder: inputs.folder,
-                                          kind: PaneKind.Shell,
-                                          active: inputs.active,
-                                          showAccessoryKeys: isMobile,
-                                      })}></${VirTerminal}>
-                                  `
+                            ${mountShellTerminal && state.sessions
+                                ? renderPaneTerminal(PaneKind.Shell, state.sessions.shell)
                                 : ''}
                         </div>
                     </div>

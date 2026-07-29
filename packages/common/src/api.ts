@@ -286,9 +286,65 @@ const folderActionRequestShape = defineShape({
     folder: '',
 });
 
+/**
+ * One session tab within a folder's pane. `id` is opaque and is the third segment of the daemon's
+ * pane key; the display label is `name || String(index + 1)`, so an unnamed session shows its
+ * 1-based position. Order within the owning array is the tab order and therefore defines the
+ * index.
+ */
+export const sessionMetaShape = defineShape({
+    id: '',
+    name: '',
+});
+
+/**
+ * Full session list for one folder, both kinds at once. Every session mutation returns this so the
+ * frontend replaces its list wholesale instead of patching and risking drift from the server's
+ * ordering.
+ */
+const sessionsResponseShape = defineShape({
+    ai: [sessionMetaShape],
+    shell: [sessionMetaShape],
+});
+
+const sessionListRequestShape = defineShape({
+    folder: '',
+});
+
+const sessionCreateRequestShape = defineShape({
+    folder: '',
+    kind: enumShape(PaneKind),
+});
+
+const sessionRenameRequestShape = defineShape({
+    folder: '',
+    kind: enumShape(PaneKind),
+    sessionId: '',
+    /** Empty clears the custom name, reverting the tab's label to its 1-based index. */
+    name: '',
+});
+
+const sessionCloseRequestShape = defineShape({
+    folder: '',
+    kind: enumShape(PaneKind),
+    sessionId: '',
+});
+
+/**
+ * `sessionId` is optional so a browser left open across an upgrade (a phone on the LAN page, say)
+ * keeps working: an omitted value resolves to the folder's first session, which is exactly the
+ * single-pane behavior that client was built against.
+ */
 const paneActionRequestShape = defineShape({
     folder: '',
     kind: enumShape(PaneKind),
+    sessionId: nullableShape(''),
+});
+
+/** See {@link paneActionRequestShape} for why `sessionId` is optional. */
+const paneSessionFolderRequestShape = defineShape({
+    folder: '',
+    sessionId: nullableShape(''),
 });
 
 const createWorktreeRequestShape = defineShape({
@@ -466,11 +522,72 @@ export const killPanesEndpoint = defineEndpoint({
  * resolved command is non-empty. Returns a no-op 200 when no command is configured so a stale
  * frontend doesn't surface errors after the user clears the setting.
  */
+export const sessionListEndpoint = defineEndpoint({
+    path: '/sessions/list',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: sessionListRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: sessionsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Appends a new session to the end of the folder+kind list. The PTY is not spawned here — it spawns
+ * lazily on the first `/pty` attach, matching how the original single session per pane behaves.
+ */
+export const sessionCreateEndpoint = defineEndpoint({
+    path: '/sessions/create',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: sessionCreateRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: sessionsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const sessionRenameEndpoint = defineEndpoint({
+    path: '/sessions/rename',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: sessionRenameRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: sessionsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** Drops the session from the store and kills its PTY. Closing the last session is a no-op. */
+export const sessionCloseEndpoint = defineEndpoint({
+    path: '/sessions/close',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: sessionCloseRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: sessionsResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const resetAiSessionEndpoint = defineEndpoint({
     path: '/panes/reset-ai-session',
     requests: {
         [HttpMethod.Post]: {
-            requestData: folderActionRequestShape,
+            requestData: paneSessionFolderRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
                     responseData: okResponseShape,
@@ -577,6 +694,12 @@ export const ptyWebSocket = defineWebSocket({
         folder: defineShape(''),
         kind: enumShape(PaneKind),
         /**
+         * Which session tab within this folder+kind to attach to. Empty resolves to the folder's
+         * first session, so a client predating multi-session (or one whose session list hasn't
+         * loaded yet) lands on the same PTY it always did.
+         */
+        sessionId: defineShape(''),
+        /**
          * Max scrollback lines this client wants replayed on attach, as a decimal string (search
          * params are strings). The backend truncates the pane's buffered scrollback to the last N
          * lines before sending it, so a client that keeps a small xterm buffer doesn't pay to
@@ -597,6 +720,10 @@ export const agentStormService = defineApi({
         deleteWorktreeEndpoint,
         restartPaneEndpoint,
         killPanesEndpoint,
+        sessionListEndpoint,
+        sessionCreateEndpoint,
+        sessionRenameEndpoint,
+        sessionCloseEndpoint,
         resetAiSessionEndpoint,
         restartDaemonEndpoint,
         touchRepoEndpoint,
@@ -618,3 +745,5 @@ export type Config = SchemaShapeToType<typeof configJsonSchema, NonNullable<unkn
 export type RepoConfig = Config['repos'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
+export type SessionMeta = typeof sessionMetaShape.runtimeType;
+export type FolderSessions = typeof sessionsResponseShape.runtimeType;

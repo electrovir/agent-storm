@@ -3,8 +3,8 @@ import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
-import {killProcessTree} from './kill-process-tree.js';
-import type {StatusEntry} from './protocol.js';
+import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
+import {defaultSessionId, type StatusEntry} from './protocol.js';
 
 const idleThresholdMs = 2000;
 
@@ -54,6 +54,15 @@ type Subscriber = {
 };
 
 type PaneEntry = {
+    /**
+     * Identity duplicated out of the map key so kills and status listings can filter on fields
+     * instead of parsing the key. Parsing was already fragile with two segments; with a third it
+     * would be wrong, and a `startsWith` folder match would make killing `/repo/foo` also kill
+     * `/repo/foobar`.
+     */
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
     pty: IPty | undefined;
     spawnGeneration: number;
     lastOutputAt: number;
@@ -67,6 +76,45 @@ type PaneEntry = {
 /** Bounded replay buffer per pane for newly attached browser terminals. */
 const maxScrollbackBytes = 10_000_000;
 
+/**
+ * Ceiling on scrollback held across every pane. The per-pane cap alone used to bound total usage at
+ * a predictable `folders × 2 × 10 MB`, but a folder can now hold arbitrarily many sessions per
+ * kind, so the product is user-driven and unbounded. When the total is exceeded, scrollback is
+ * trimmed from the least-recently-active panes first — a background session the user hasn't looked
+ * at in an hour is the cheapest thing to forget, and the client's own `scrollbackLimit` (20k lines
+ * by default) means most of a 10 MB buffer would never be replayed anyway.
+ */
+const maxTotalScrollbackBytes = 200_000_000;
+
+function totalScrollbackBytes(): number {
+    return Array.from(panes.values()).reduce((total, entry) => total + entry.scrollbackBytes, 0);
+}
+
+/**
+ * Drop whole chunks from the oldest-output panes until the global budget is satisfied. `protected`
+ * is the pane that just received output — trimming it would throw away the very data the user is
+ * most likely watching, so it is only touched if nothing else remains to give.
+ */
+function enforceTotalScrollbackBudget(protectedEntry: PaneEntry): void {
+    if (totalScrollbackBytes() <= maxTotalScrollbackBytes) {
+        return;
+    }
+    const trimOrder = Array.from(panes.values())
+        .filter((entry) => entry !== protectedEntry && entry.scrollbackBytes > 0)
+        .sort((first, second) => first.lastOutputAt - second.lastOutputAt);
+    trimOrder.forEach((entry) => {
+        while (
+            entry.scrollbackChunks.length > 0 &&
+            totalScrollbackBytes() > maxTotalScrollbackBytes
+        ) {
+            const dropped = entry.scrollbackChunks.shift();
+            if (dropped) {
+                entry.scrollbackBytes -= dropped.length;
+            }
+        }
+    });
+}
+
 function appendScrollback(entry: PaneEntry, data: string): void {
     entry.scrollbackChunks.push(data);
     entry.scrollbackBytes += data.length;
@@ -76,6 +124,7 @@ function appendScrollback(entry: PaneEntry, data: string): void {
             entry.scrollbackBytes -= dropped.length;
         }
     }
+    enforceTotalScrollbackBudget(entry);
 }
 
 function clearScrollback(entry: PaneEntry): void {
@@ -91,17 +140,24 @@ function normalizePath(path: string): string {
     return resolve(expanded);
 }
 
-function paneKey(folder: string, kind: PaneKind): string {
-    return `${folder}:${kind}`;
+function resolveSessionId(sessionId: string | undefined): string {
+    return sessionId || defaultSessionId;
 }
 
-function ensureEntry(folder: string, kind: PaneKind): PaneEntry {
-    const key = paneKey(folder, kind);
+function paneKey(folder: string, kind: PaneKind, sessionId: string | undefined): string {
+    return `${folder}:${kind}:${resolveSessionId(sessionId)}`;
+}
+
+function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefined): PaneEntry {
+    const key = paneKey(folder, kind, sessionId);
     const existing = panes.get(key);
     if (existing) {
         return existing;
     }
     const entry: PaneEntry = {
+        folder,
+        kind,
+        sessionId: resolveSessionId(sessionId),
         pty: undefined,
         spawnGeneration: 0,
         lastOutputAt: 0,
@@ -261,6 +317,7 @@ function limitScrollbackLines(scrollback: string, scrollbackLimit: number | unde
 export function attachPane({
     folder,
     kind,
+    sessionId,
     aiCmd,
     scrollbackLimit,
     onData,
@@ -268,6 +325,8 @@ export function attachPane({
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    /** Which session tab to attach to. Empty/omitted resolves to the folder+kind's default. */
+    sessionId?: string | undefined;
     /**
      * Current `aiCmd` from agent-storm config. Used only when spawning a fresh AI PTY here —
      * existing live PTYs continue running whatever command they were launched with until the user
@@ -288,7 +347,7 @@ export function attachPane({
     setSize: (cols: number, rows: number) => void;
     detach: () => void;
 } {
-    const entry = ensureEntry(folder, kind);
+    const entry = ensureEntry(folder, kind, sessionId);
     const isNew = !entry.pty;
     if (!entry.pty) {
         startPty(folder, kind, entry, aiCmd || fallbackAiCommand);
@@ -327,26 +386,30 @@ export function attachPane({
 export function writeToPane({
     folder,
     kind,
+    sessionId,
     data,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    sessionId?: string | undefined;
     data: string;
 }>): void {
-    const entry = panes.get(paneKey(folder, kind));
+    const entry = panes.get(paneKey(folder, kind, sessionId));
     entry?.pty?.write(data);
 }
 
 export function restartPane({
     folder,
     kind,
+    sessionId,
     aiCmd,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    sessionId?: string | undefined;
     aiCmd?: string | undefined;
 }>): void {
-    const entry = ensureEntry(folder, kind);
+    const entry = ensureEntry(folder, kind, sessionId);
     if (entry.pty) {
         killProcessTree(entry.pty.pid);
     }
@@ -356,16 +419,58 @@ export function restartPane({
     startPty(folder, kind, entry, aiCmd || fallbackAiCommand);
 }
 
+/**
+ * Tear down one session, leaving its siblings alone. Used by the session-close flow; the store-side
+ * removal happens in the backend, so a call for an already-dead session is a harmless no-op.
+ */
+export function killPaneSession({
+    folder,
+    kind,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
+}>): void {
+    const key = paneKey(folder, kind, sessionId);
+    const entry = panes.get(key);
+    if (entry?.pty) {
+        killProcessTree(entry.pty.pid);
+        entry.pty = undefined;
+    }
+    panes.delete(key);
+}
+
+/**
+ * Kill every session of every kind under `folder`. Matching is by the entry's `folder` field rather
+ * than a key prefix so a folder can't take down a sibling whose path merely starts with the same
+ * characters. One `ps` snapshot is shared across the batch — see {@link snapshotProcessTable}.
+ */
 export function killFolderPanes({folder}: Readonly<{folder: string}>): void {
-    Object.values(PaneKind).forEach((kind) => {
-        const key = paneKey(folder, kind);
-        const entry = panes.get(key);
-        if (entry?.pty) {
-            killProcessTree(entry.pty.pid);
-            entry.pty = undefined;
-        }
-        panes.delete(key);
-    });
+    const doomed = Array.from(panes.entries()).filter(
+        ([
+            ,
+            entry,
+        ]) => entry.folder === folder,
+    );
+    if (doomed.length === 0) {
+        return;
+    }
+    const processTable = snapshotProcessTable();
+    doomed.forEach(
+        ([
+            key,
+            entry,
+        ]) => {
+            if (entry.pty) {
+                killProcessTree(entry.pty.pid, {
+                    processTable,
+                });
+                entry.pty = undefined;
+            }
+            panes.delete(key);
+        },
+    );
 }
 
 /**
@@ -374,10 +479,17 @@ export function killFolderPanes({folder}: Readonly<{folder: string}>): void {
  * the kill must be immediate.
  */
 export function killAllPanes(): void {
+    /**
+     * Single `ps` snapshot for the whole sweep. With many sessions per folder this is the
+     * difference between one blocking subprocess and dozens, which matters on the shutdown path
+     * where only a ~100ms window exists before the process exits.
+     */
+    const processTable = snapshotProcessTable();
     panes.forEach((entry) => {
         if (entry.pty) {
             killProcessTree(entry.pty.pid, {
                 immediate: true,
+                processTable,
             });
             entry.pty = undefined;
         }
@@ -395,17 +507,12 @@ function entryStatus(entry: PaneEntry | undefined): PaneStatus {
 }
 
 export function listAllPaneStatuses(): StatusEntry[] {
-    return Array.from(panes.entries()).map(
-        ([
-            key,
-            entry,
-        ]) => {
-            const separator = key.lastIndexOf(':');
-            return {
-                folder: key.slice(0, separator),
-                kind: key.slice(separator + 1) as PaneKind,
-                status: entryStatus(entry),
-            };
-        },
-    );
+    return Array.from(panes.values(), (entry) => {
+        return {
+            folder: entry.folder,
+            kind: entry.kind,
+            sessionId: entry.sessionId,
+            status: entryStatus(entry),
+        };
+    });
 }

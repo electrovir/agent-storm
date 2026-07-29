@@ -1,9 +1,11 @@
 import {type PaneKind} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {appendFileSync, existsSync, unlinkSync} from 'node:fs';
 import {createServer, type Socket} from 'node:net';
 import {daemonLogPath, daemonSocketPath} from '../file-paths.js';
 import {
     DaemonAction,
+    daemonProtocolVersion,
     encodeControlFrame,
     encodeDataFrame,
     FrameDecoder,
@@ -22,6 +24,7 @@ import {
     attachPane,
     killAllPanes,
     killFolderPanes,
+    killPaneSession,
     listAllPaneStatuses,
     restartPane,
     writeToPane,
@@ -44,14 +47,23 @@ if (existsSync(daemonSocketPath)) {
     }
 }
 
-function handleAttach(
-    socket: Socket,
-    decoder: FrameDecoder,
-    folder: string,
-    kind: PaneKind,
-    aiCmd: string | undefined,
-    scrollbackLimit: number | undefined,
-): void {
+function handleAttach({
+    socket,
+    decoder,
+    folder,
+    kind,
+    sessionId,
+    aiCmd,
+    scrollbackLimit,
+}: Readonly<{
+    socket: Socket;
+    decoder: FrameDecoder;
+    folder: string;
+    kind: PaneKind;
+    sessionId: string | undefined;
+    aiCmd: string | undefined;
+    scrollbackLimit: number | undefined;
+}>): void {
     const onData = (data: string) => {
         socket.write(encodeDataFrame(data));
     };
@@ -65,6 +77,7 @@ function handleAttach(
     const {isNew, scrollback, setSize, detach} = attachPane({
         folder,
         kind,
+        sessionId,
         aiCmd,
         scrollbackLimit,
         onData,
@@ -84,6 +97,7 @@ function handleAttach(
                 writeToPane({
                     folder,
                     kind,
+                    sessionId,
                     data: frame.payload.toString('utf-8'),
                 });
                 return;
@@ -121,19 +135,39 @@ const server = createServer((socket) => {
 
         const handshake = JSON.parse(controlFrame.payload.toString('utf-8')) as ClientHandshake;
 
+        /**
+         * Validate the action before dispatching. The parsed frame is untrusted socket JSON, so its
+         * declared type guarantees nothing at runtime — and the dispatch below ends in an `else`
+         * that shuts the daemon down. Without this gate, a newer backend probing with an action
+         * this build doesn't know would land in that branch and kill every pane and VS Code
+         * instance across every folder.
+         */
+        if (!check.isEnumValue(handshake.action, DaemonAction)) {
+            log(`unknown action from client: ${String(handshake.action)}`);
+            const response: ErrorResponse = {
+                ok: false,
+                error: `Unknown daemon action: ${String(handshake.action)}`,
+            };
+            socket.write(encodeControlFrame(response));
+            socket.end();
+            return;
+        }
+
         if (handshake.action === DaemonAction.Attach) {
-            handleAttach(
+            handleAttach({
                 socket,
                 decoder,
-                handshake.folder,
-                handshake.kind,
-                handshake.aiCmd,
-                handshake.scrollbackLimit,
-            );
+                folder: handshake.folder,
+                kind: handshake.kind,
+                sessionId: handshake.sessionId,
+                aiCmd: handshake.aiCmd,
+                scrollbackLimit: handshake.scrollbackLimit,
+            });
         } else if (handshake.action === DaemonAction.Status) {
             const response: StatusResponse = {
                 ok: true,
                 panes: listAllPaneStatuses(),
+                protocolVersion: daemonProtocolVersion,
             };
             socket.write(encodeControlFrame(response));
             socket.end();
@@ -141,7 +175,19 @@ const server = createServer((socket) => {
             restartPane({
                 folder: handshake.folder,
                 kind: handshake.kind,
+                sessionId: handshake.sessionId,
                 aiCmd: handshake.aiCmd,
+            });
+            const response: SimpleResponse = {
+                ok: true,
+            };
+            socket.write(encodeControlFrame(response));
+            socket.end();
+        } else if (handshake.action === DaemonAction.SessionKill) {
+            killPaneSession({
+                folder: handshake.folder,
+                kind: handshake.kind,
+                sessionId: handshake.sessionId,
             });
             const response: SimpleResponse = {
                 ok: true,
@@ -199,7 +245,8 @@ const server = createServer((socket) => {
             socket.end();
             /**
              * Give the OK frame a beat to flush over the socket before tearing the daemon down.
-             * `forceShutdown` exits the process; nothing after the timeout runs.
+             * `forceShutdown` exits the process; nothing after the timeout runs. Only reachable for
+             * `Shutdown` now that unknown actions are rejected above.
              */
             setTimeout(() => forceShutdown('shutdown command'), 100);
         }

@@ -11,11 +11,16 @@ import {
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    sessionCloseEndpoint,
+    sessionCreateEndpoint,
+    sessionListEndpoint,
+    sessionRenameEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
     uploadEndpoint,
     type Config,
     type FolderInfo,
+    type FolderSessions,
     type PaneKind,
     type UpdateStatus,
 } from '@agent-storm/common';
@@ -138,10 +143,50 @@ export async function hideRepo(params: Readonly<{folder: string}>): Promise<void
 }
 
 export async function restartPane(
-    params: Readonly<{folder: string; kind: PaneKind}>,
+    params: Readonly<{folder: string; kind: PaneKind; sessionId?: string | undefined}>,
 ): Promise<void> {
     await requestApi('POST /panes/restart', () =>
         client.fetch(restartPaneEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function getFolderSessions(
+    params: Readonly<{folder: string}>,
+): Promise<FolderSessions> {
+    return await requestApi('POST /sessions/list', () =>
+        client.fetch(sessionListEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function createSession(
+    params: Readonly<{folder: string; kind: PaneKind}>,
+): Promise<FolderSessions> {
+    return await requestApi('POST /sessions/create', () =>
+        client.fetch(sessionCreateEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function renameSession(
+    params: Readonly<{folder: string; kind: PaneKind; sessionId: string; name: string}>,
+): Promise<FolderSessions> {
+    return await requestApi('POST /sessions/rename', () =>
+        client.fetch(sessionRenameEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function closeSession(
+    params: Readonly<{folder: string; kind: PaneKind; sessionId: string}>,
+): Promise<FolderSessions> {
+    return await requestApi('POST /sessions/close', () =>
+        client.fetch(sessionCloseEndpoint).POST({
             requestData: params,
         }),
     );
@@ -155,7 +200,9 @@ export async function killFolderPanes(params: Readonly<{folder: string}>): Promi
     );
 }
 
-export async function resetAiSession(params: Readonly<{folder: string}>): Promise<void> {
+export async function resetAiSession(
+    params: Readonly<{folder: string; sessionId?: string | undefined}>,
+): Promise<void> {
     await requestApi('POST /panes/reset-ai-session', () =>
         client.fetch(resetAiSessionEndpoint).POST({
             requestData: params,

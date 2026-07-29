@@ -1,7 +1,6 @@
 import {configJsonSchema, defaultConfig, type Config} from '@agent-storm/common';
-import {pickObjectKeys} from '@augment-vir/common';
+import {pickObjectKeys, type JsonValue} from '@augment-vir/common';
 import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
-import {type JsonValue} from 'type-fest';
 import {
     ViraButton,
     ViraColorVariant,

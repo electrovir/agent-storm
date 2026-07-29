@@ -1,3 +1,4 @@
+import {PaneKind} from '@agent-storm/common';
 import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
 
 /**
@@ -51,6 +52,13 @@ const allowedTabValues: ReadonlyArray<FrontendTab> = [
  *
  * - `tab` — `'ai' | 'shell' | 'code'`. Only kept on repo-selection routes (`/<repoName>` or
  *   `/<repoName>/<worktreeName>`); stripped everywhere else. Absent param ⇒ `ai` (default).
+ * - `aiSession` / `shellSession` — 1-based index of the active session tab within that pane. Two
+ *   separate params rather than one because desktop renders the AI and Shell panes simultaneously,
+ *   so "the active session" is genuinely two independent values. Absent ⇒ session 1.
+ *
+ * Sessions travel as search params rather than path segments for the same reason, plus a path
+ * segment would be ambiguous with `:worktree-name`: `/<repoName>/2` can't be distinguished from a
+ * worktree literally named `2`.
  *
  * Stored as `ReadonlyArray<string>` because `URLSearchParams` allows repeats. We always normalize
  * to a single-element array so url-vir serializes as `?tab=ai` (with the `=`).
@@ -58,8 +66,16 @@ const allowedTabValues: ReadonlyArray<FrontendTab> = [
 export type FrontendSearchParams =
     | Readonly<{
           tab?: ReadonlyArray<FrontendTab>;
+          aiSession?: ReadonlyArray<string>;
+          shellSession?: ReadonlyArray<string>;
       }>
     | undefined;
+
+/** Search-param name carrying each pane kind's active session index. */
+export const sessionSearchParamByKind = {
+    [PaneKind.Ai]: 'aiSession',
+    [PaneKind.Shell]: 'shellSession',
+} as const satisfies Record<PaneKind, keyof NonNullable<FrontendSearchParams>>;
 
 export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, FrontendSearchParams, undefined>>;
 
@@ -71,6 +87,18 @@ function isFrontendTab(value: string): value is FrontendTab {
     return (allowedTabValues as ReadonlyArray<string>).includes(value);
 }
 
+/**
+ * A session param is valid only as a positive integer index. Anything else (a stray string, `0`, a
+ * negative) is dropped rather than clamped so the URL never keeps a value the UI won't honor.
+ */
+function sanitizeSessionIndex(raw: string | undefined): string | undefined {
+    if (!raw) {
+        return undefined;
+    }
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) && parsed >= 1 ? String(parsed) : undefined;
+}
+
 function sanitizeSearch(
     paths: ReadonlyArray<string>,
     rawSearch: Readonly<Record<string, ReadonlyArray<string>>> | undefined,
@@ -79,12 +107,29 @@ function sanitizeSearch(
         return undefined;
     }
     const tabRaw = rawSearch.tab?.[0];
-    if (tabRaw && isFrontendTab(tabRaw)) {
-        return {
-            tab: [tabRaw],
-        };
+    const tab = tabRaw && isFrontendTab(tabRaw) ? tabRaw : undefined;
+    const aiSession = sanitizeSessionIndex(rawSearch.aiSession?.[0]);
+    const shellSession = sanitizeSessionIndex(rawSearch.shellSession?.[0]);
+    if (!tab && !aiSession && !shellSession) {
+        return undefined;
     }
-    return undefined;
+    return {
+        ...(tab
+            ? {
+                  tab: [tab],
+              }
+            : {}),
+        ...(aiSession
+            ? {
+                  aiSession: [aiSession],
+              }
+            : {}),
+        ...(shellSession
+            ? {
+                  shellSession: [shellSession],
+              }
+            : {}),
+    };
 }
 
 /**
@@ -94,6 +139,17 @@ function sanitizeSearch(
 export function tabFromRoute(route: AppRoute): FrontendTab {
     const tab = route.search?.tab?.[0];
     return tab && isFrontendTab(tab) ? tab : defaultFrontendTab;
+}
+
+/**
+ * 1-based index of the active session for one pane kind, defaulting to the first session. The index
+ * is resolved against the folder's live session list by the pane group — an index past the end
+ * falls back to the first session there, since the URL can outlive the sessions it referenced.
+ */
+export function sessionIndexFromRoute(route: AppRoute, kind: PaneKind): number {
+    const raw = route.search?.[sessionSearchParamByKind[kind]]?.[0];
+    const parsed = Number(raw);
+    return raw && Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
 }
 
 export const router = new SpaRouter<FrontendPaths, FrontendSearchParams, undefined>({
