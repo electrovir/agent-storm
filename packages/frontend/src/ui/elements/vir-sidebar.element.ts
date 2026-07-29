@@ -82,6 +82,7 @@ const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
 const dashIcon = createSizedIcon(lucideIcons.Minus, 12);
 const exitedIcon = createSizedIcon(lucideIcons.X, 12);
 const mergedCheckIcon = createSizedIcon(lucideIcons.Check, 14);
+const blockedIcon = createSizedIcon(lucideIcons.X, 14);
 
 const buttonIconSize = 16;
 const searchIcon = createSizedIcon(lucideIcons.Search, buttonIconSize);
@@ -444,6 +445,16 @@ export const VirSidebar = defineElement<{
             flex-shrink: 0;
         }
 
+        .blocked-x {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            color: ${viraThemeByKeys.red.foreground.header.foreground.value};
+            flex-shrink: 0;
+        }
+
         .group-label {
             display: flex;
             justify-content: space-between;
@@ -738,15 +749,20 @@ export const VirSidebar = defineElement<{
         const worktreeRoots = visibleFolders.filter((folder) => folder.isWorktreeRoot);
         const showHiddenWorktrees = !!state.showHiddenWorktrees;
         /**
-         * Paths of folders that currently have at least one active (non-hidden) sub-task —
-         * worktrees spun out of them with `parentTaskPath` pointing back. Their rows render with a
-         * dimmed name so it's visible at a glance that the work has been carved out.
+         * For each folder that currently has live (non-hidden, non-deleted) sub-tasks — worktrees
+         * spun out of it with `parentTaskPath` pointing back — the names of those sub-task
+         * branches. Such "blocked" parents render with a dimmed name, a red ✕ whose tooltip names
+         * the blockers, and sort below unblocked rows in their sidebar group.
          */
-        const parentsWithSubTasks = new Set(
-            state.folders.flatMap((folder) =>
-                folder.parentTaskPath && !folder.isHidden ? [folder.parentTaskPath] : [],
-            ),
-        );
+        const blockingSubTasksByParent = new Map<string, string[]>();
+        state.folders.forEach((folder) => {
+            if (!folder.parentTaskPath || folder.isHidden) {
+                return;
+            }
+            const blockers = blockingSubTasksByParent.get(folder.parentTaskPath) ?? [];
+            blockers.push(folder.name);
+            blockingSubTasksByParent.set(folder.parentTaskPath, blockers);
+        });
         /**
          * Count of hidden (non-base-branch) worktree children across all roots, shown next to the
          * "Show hidden worktrees" toggle so the user knows how many rows the toggle would reveal.
@@ -995,11 +1011,11 @@ export const VirSidebar = defineElement<{
                           </div>
                       `
                     : ''}
-                ${standaloneFolders.map((folder) =>
+                ${sortBlockedLast(standaloneFolders, blockingSubTasksByParent).map((folder) =>
                     renderRow({
                         folder,
                         indented: false,
-                        hasActiveSubTasks: parentsWithSubTasks.has(folder.path),
+                        blockedBy: blockingSubTasksByParent.get(folder.path),
                         activeFolder: inputs.activeFolder,
                         openMenuKey: state.openMenuKey,
                         onActivate: emitFolderActivated,
@@ -1085,7 +1101,7 @@ export const VirSidebar = defineElement<{
                             children,
                             workingCollapsed: state.workingCollapsed,
                             doLaterCollapsed: state.doLaterCollapsed,
-                            parentsWithSubTasks,
+                            blockingSubTasksByParent,
                             activeFolder: inputs.activeFolder,
                             openMenuKey: state.openMenuKey,
                             onActivate: emitFolderActivated,
@@ -1372,6 +1388,21 @@ export const VirSidebar = defineElement<{
 });
 
 /**
+ * Stable partition: unblocked rows first, then rows blocked by live sub-tasks. Applied within each
+ * sidebar group so blocked parents sink below actionable branches without disturbing the
+ * alphabetical order inside either half.
+ */
+function sortBlockedLast(
+    folders: ReadonlyArray<FolderInfo>,
+    blockingSubTasksByParent: ReadonlyMap<string, ReadonlyArray<string>>,
+): FolderInfo[] {
+    return [
+        ...folders.filter((folder) => !blockingSubTasksByParent.has(folder.path)),
+        ...folders.filter((folder) => blockingSubTasksByParent.has(folder.path)),
+    ];
+}
+
+/**
  * Icon button beside the review-requested footer that forces a fresh GitHub fetch, bypassing the
  * backend's 5-minute cache — so the count drops right after the user finishes a review instead of
  * waiting out the cache window.
@@ -1444,7 +1475,7 @@ function renderRepoChildren({
     children,
     workingCollapsed,
     doLaterCollapsed,
-    parentsWithSubTasks,
+    blockingSubTasksByParent,
     activeFolder,
     openMenuKey,
     onActivate,
@@ -1456,7 +1487,7 @@ function renderRepoChildren({
     children: ReadonlyArray<FolderInfo>;
     workingCollapsed: boolean;
     doLaterCollapsed: boolean;
-    parentsWithSubTasks: ReadonlySet<string>;
+    blockingSubTasksByParent: ReadonlyMap<string, ReadonlyArray<string>>;
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
@@ -1465,16 +1496,22 @@ function renderRepoChildren({
     emitPaneRestarted: (detail: PaneRestartedEvent) => void;
     updateState: SidebarUpdate;
 }>) {
-    const doLater = children.filter((child) => child.doLater);
+    const doLater = sortBlockedLast(
+        children.filter((child) => child.doLater),
+        blockingSubTasksByParent,
+    );
     const active = children.filter((child) => !child.doLater);
-    const needsAttention = active.filter((child) => !isWorking(child));
-    const working = active.filter(isWorking);
+    const needsAttention = sortBlockedLast(
+        active.filter((child) => !isWorking(child)),
+        blockingSubTasksByParent,
+    );
+    const working = sortBlockedLast(active.filter(isWorking), blockingSubTasksByParent);
     const renderChild = (folder: FolderInfo, isWorkingRow: boolean) =>
         renderRow({
             folder,
             indented: true,
             working: isWorkingRow,
-            hasActiveSubTasks: parentsWithSubTasks.has(folder.path),
+            blockedBy: blockingSubTasksByParent.get(folder.path),
             activeFolder,
             openMenuKey,
             onActivate,
@@ -1566,7 +1603,7 @@ function renderRow({
     folder,
     indented,
     working = false,
-    hasActiveSubTasks = false,
+    blockedBy,
     activeFolder,
     openMenuKey,
     onActivate,
@@ -1578,7 +1615,8 @@ function renderRow({
     folder: FolderInfo;
     indented: boolean;
     working?: boolean | undefined;
-    hasActiveSubTasks?: boolean | undefined;
+    /** Names of this folder's live sub-task branches; non-empty means the row is "blocked". */
+    blockedBy?: ReadonlyArray<string> | undefined;
     activeFolder: string | undefined;
     openMenuKey: string | undefined;
     onActivate: (folder: string) => void;
@@ -1599,7 +1637,7 @@ function renderRow({
             ?data-active=${activeFolder === folder.path}
             ?data-indented=${indented}
             ?data-working=${working}
-            ?data-has-subtasks=${hasActiveSubTasks}
+            ?data-has-subtasks=${!!blockedBy?.length}
             ?data-menu-open=${openMenuKey === rowMenuKey}
             ${listen('click', () => onActivate(folder.path))}
         >
@@ -1614,6 +1652,15 @@ function renderRow({
             >
                 ${nameWithMarkers}
             </span>
+            ${blockedBy?.length
+                ? html`
+                      <span class="blocked-x" title="blocked by ${blockedBy.join(', ')}">
+                          <${ViraIcon.assign({
+                              icon: blockedIcon,
+                          })}></${ViraIcon}>
+                      </span>
+                  `
+                : ''}
             ${folder.prMerged
                 ? html`
                       <span class="pr-merged-check" title="PR merged">

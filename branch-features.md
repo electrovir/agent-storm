@@ -46,6 +46,7 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Worktree creation accepts one-shot initialAiPrompt typed into the AI pane, never persisted.
 - Sweep reconcile reads only the branch; cache persists once per sweep; dirty-poll gated on live panes.
 - Services pane (npm start) spawns only when the Services tab is first clicked, not on branch open.
-- Worktrees can record a parentTaskPath; parents with active sub-tasks render dimmed in the sidebar.
+- Worktrees can record a parentTaskPath; blocked parents render dimmed with a red x naming blockers, sorted last.
+- Deleting a worktree clears parentTaskPath references on any worktrees that pointed at it.
 - Sidebar bottom shows PRs awaiting review as a prominent green button; quiet text when zero.
 - Refresh icon next to the review counter force-fetches past the 5-minute server cache.
