@@ -248,6 +248,13 @@ export const VirTerminal = defineElement<{
     folder: string;
     kind: PaneKind;
     /**
+     * Which session tab within `folder` + `kind` this terminal is attached to. Baked into the
+     * `/pty` search params when the socket opens, so switching sessions must mount a _new_ element
+     * rather than re-assign this input — the `onDomCreated` hook below doesn't re-run on input
+     * changes. `vir-pane-group` guarantees that by keying its `repeat` on the session id.
+     */
+    sessionId: string;
+    /**
      * True when this terminal's pane is the user's currently active folder. Used to re-fit and push
      * a fresh size to the server on the false→true transition: a CSS-hidden pane reports a 0×0
      * content rect and won't have observed live window-resize events, so its server-side dimensions
@@ -288,6 +295,14 @@ export const VirTerminal = defineElement<{
             sendBytes: undefined as ((bytes: string) => void) | undefined,
             /** Toggle the sticky Ctrl modifier on/off. Set once the socket connects. */
             toggleCtrl: undefined as (() => void) | undefined,
+            /**
+             * Flipped by `cleanup` so the async setup below can tell it was unmounted mid-flight.
+             * Setup awaits font loading, config, the auth secret, and the WebSocket handshake
+             * before it has anything to store in `disconnect` — without this flag, an element torn
+             * down during that window leaves a socket open with nothing holding a reference to
+             * close it. Switching session tabs makes that window routine rather than rare.
+             */
+            unmounted: false,
         };
     },
     styles: css`
@@ -393,7 +408,10 @@ export const VirTerminal = defineElement<{
             }
         }
     `,
-    cleanup({state}) {
+    cleanup({state, updateState}) {
+        updateState({
+            unmounted: true,
+        });
         state.resizeObserver?.disconnect();
         state.disconnect?.();
         state.terminal?.dispose();
@@ -590,11 +608,28 @@ export const VirTerminal = defineElement<{
                         () => true,
                     );
 
+                    /**
+                     * Read the flag through a call so TypeScript can't narrow it across the awaits
+                     * below. It genuinely flips when `cleanup` runs partway through this setup,
+                     * which is exactly what the checks are here to catch.
+                     */
+                    const isUnmounted = () => state.unmounted;
+
                     const secret = await ensureSecret();
+                    /**
+                     * Bail before opening the socket if this element was torn down while the awaits
+                     * above were in flight (a fast session-tab or folder switch). Opening it now
+                     * would attach a PTY subscriber that nothing can ever detach.
+                     */
+                    if (isUnmounted()) {
+                        terminal.dispose();
+                        return;
+                    }
                     const socket = await client.connectWebSocket(ptyWebSocket, {
                         searchParams: {
                             folder: inputs.folder,
                             kind: inputs.kind,
+                            sessionId: inputs.sessionId,
                             scrollbackLimit: String(scrollbackLimit),
                         },
                         protocols: [secret],
@@ -607,6 +642,17 @@ export const VirTerminal = defineElement<{
                             },
                         },
                     });
+
+                    /**
+                     * The handshake itself is another await, so re-check: if the element went away
+                     * while it completed, close the socket here since `cleanup` has already run and
+                     * will not run again.
+                     */
+                    if (isUnmounted()) {
+                        void socket.close();
+                        terminal.dispose();
+                        return;
+                    }
 
                     const sendResize = () => {
                         socket.send({

@@ -62,21 +62,60 @@ export class FrameDecoder {
     }
 }
 
+/**
+ * Bumped whenever the daemon's wire contract changes in a way a mismatched backend can't tolerate.
+ * Version 2 introduced `sessionId` on the pane key; a version-1 daemon silently ignores the field
+ * and collapses every session of a folder+kind onto one PTY, so `ensureDaemon` restarts any daemon
+ * that doesn't report at least this value.
+ *
+ * The version is reported on {@link StatusResponse} rather than through a dedicated action because
+ * `Status` is the only introspection action every historical daemon understands — see
+ * {@link DaemonAction.Shutdown} for why probing with a new action would be destructive.
+ */
+export const daemonProtocolVersion = 2;
+
 export enum DaemonAction {
     Attach = 'attach',
     Status = 'status',
     Restart = 'restart',
     Kill = 'kill',
+    /**
+     * Kills one session's PTY, leaving its siblings in the same folder+kind alive. Unknown to
+     * version-1 daemons, which is precisely why the version check must gate on `Status` first.
+     */
+    SessionKill = 'session-kill',
     Shutdown = 'shutdown',
     VscodeEnsure = 'vscode-ensure',
     VscodeKill = 'vscode-kill',
     VscodeList = 'vscode-list',
 }
 
+/**
+ * Id given to the first session of every folder+kind, and the value an empty/absent `sessionId`
+ * resolves to. Shared between the daemon's pane pool and the backend's session store on purpose: if
+ * the store minted a generated id for session 1 while the pool defaulted to something else, a
+ * client that sent no `sessionId` would land on a second PTY that no tab points at — an invisible
+ * session burning CPU.
+ */
+export const defaultSessionId = 'default';
+
+/**
+ * Identifies one session tab within a folder's pane. Empty resolves to the folder+kind's first
+ * session, which keeps pre-multi-session callers (and any client that hasn't loaded its session
+ * list yet) attaching to the same PTY they always did.
+ */
+export type SessionKeyFields = {
+    folder: string;
+    kind: PaneKind;
+    sessionId?: string | undefined;
+};
+
 export type AttachHandshake = {
     action: DaemonAction.Attach;
     folder: string;
     kind: PaneKind;
+    /** See {@link SessionKeyFields.sessionId}. */
+    sessionId?: string | undefined;
     /**
      * Command to invoke for `PaneKind.Ai` when the daemon spawns the PTY for the first time. Sent
      * on every attach because the daemon doesn't read agent-storm's config file — the backend does,
@@ -100,13 +139,23 @@ export type RestartHandshake = {
     action: DaemonAction.Restart;
     folder: string;
     kind: PaneKind;
+    /** See {@link SessionKeyFields.sessionId}. */
+    sessionId?: string | undefined;
     /** See {@link AttachHandshake.aiCmd} — same plumbing, applied to the restart spawn. */
     aiCmd?: string | undefined;
 };
 
+/** Kills every session of every kind under `folder`. */
 export type KillHandshake = {
     action: DaemonAction.Kill;
     folder: string;
+};
+
+export type SessionKillHandshake = {
+    action: DaemonAction.SessionKill;
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
 };
 
 export type ShutdownHandshake = {
@@ -138,6 +187,7 @@ export type ClientHandshake =
     | StatusHandshake
     | RestartHandshake
     | KillHandshake
+    | SessionKillHandshake
     | ShutdownHandshake
     | VscodeEnsureHandshake
     | VscodeKillHandshake
@@ -146,6 +196,8 @@ export type ClientHandshake =
 export type StatusEntry = {
     folder: string;
     kind: PaneKind;
+    /** Absent when reported by a version-1 daemon, which had no concept of sessions. */
+    sessionId?: string | undefined;
     status: PaneStatus;
 };
 
@@ -157,6 +209,11 @@ export type AttachResponse = {
 export type StatusResponse = {
     ok: true;
     panes: StatusEntry[];
+    /**
+     * Absent from version-1 daemons. {@link daemonProtocolVersion} explains why the version travels
+     * on this response instead of its own action.
+     */
+    protocolVersion?: number | undefined;
 };
 
 export type SimpleResponse = {

@@ -13,6 +13,10 @@ import {
     resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    sessionCloseEndpoint,
+    sessionCreateEndpoint,
+    sessionListEndpoint,
+    sessionRenameEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
     uploadEndpoint,
@@ -38,6 +42,7 @@ import {
 import {
     attachPane,
     killFolderPanes,
+    killPaneSession,
     killVscode,
     restartPane,
     shutdownDaemon,
@@ -48,6 +53,15 @@ import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
 import {normalizePath} from './paths.js';
+import {getLivePaneSessionIds} from './pty.js';
+import {
+    createFolderSession,
+    forgetFolderSessions,
+    reconcileFolderSessions,
+    removeFolderSession,
+    renameFolderSession,
+    resolveSessionId,
+} from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
 import {attachVscodeProxy} from './vscode-proxy.js';
@@ -307,12 +321,98 @@ const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktre
             milliseconds: 250,
         });
         await removeWorktree(requestData);
+        /**
+         * Drop the folder's session tabs now that the folder is gone. Worktree paths are derived
+         * deterministically from the worktree name, so leaving them behind means a later worktree
+         * created with the same name inherits this one's named, PTY-less tabs.
+         */
+        await forgetFolderSessions(requestData.worktreePath);
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
                 responseData: {
                     ok: true,
                 },
+            },
+        };
+    },
+});
+
+/**
+ * Reads the folder's tab list, merged with whatever sessions the daemon actually holds a PTY for,
+ * so a running session can never lack a tab. Also materializes the implicit first session for
+ * folders that predate multi-session.
+ */
+const sessionListImplementation = implementor.implementEndpoint(sessionListEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const folder = normalizePath(requestData.folder);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await reconcileFolderSessions({
+                    folder,
+                    liveSessionIds: {
+                        [PaneKind.Ai]: await getLivePaneSessionIds(folder, PaneKind.Ai),
+                        [PaneKind.Shell]: await getLivePaneSessionIds(folder, PaneKind.Shell),
+                    },
+                }),
+            },
+        };
+    },
+});
+
+const sessionCreateImplementation = implementor.implementEndpoint(sessionCreateEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await createFolderSession({
+                    folder: normalizePath(requestData.folder),
+                    kind: requestData.kind,
+                }),
+            },
+        };
+    },
+});
+
+const sessionRenameImplementation = implementor.implementEndpoint(sessionRenameEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await renameFolderSession({
+                    folder: normalizePath(requestData.folder),
+                    kind: requestData.kind,
+                    sessionId: requestData.sessionId,
+                    name: requestData.name,
+                }),
+            },
+        };
+    },
+});
+
+const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const folder = normalizePath(requestData.folder);
+        const {sessions, removed} = await removeFolderSession({
+            folder,
+            kind: requestData.kind,
+            sessionId: requestData.sessionId,
+        });
+        /**
+         * Only kill the PTY once the store actually dropped the tab. Closing the last remaining
+         * session is refused store-side, and killing its process while the tab stays visible would
+         * leave the user looking at a dead terminal with no obvious way to revive it.
+         */
+        if (removed) {
+            await killPaneSession({
+                folder,
+                kind: requestData.kind,
+                sessionId: requestData.sessionId,
+            }).catch(() => {
+                /* no live PTY for this session (never attached, or daemon restarted) */
+            });
+        }
+        return {
+            [HttpStatus.Ok]: {
+                responseData: sessions,
             },
         };
     },
@@ -325,8 +425,15 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
          * command (the daemon caches nothing about config — every fresh spawn uses whatever the
          * backend hands it).
          */
+        const folder = normalizePath(requestData.folder);
         await restartPane({
-            ...requestData,
+            folder,
+            kind: requestData.kind,
+            sessionId: await resolveSessionId({
+                folder,
+                kind: requestData.kind,
+                sessionId: requestData.sessionId ?? undefined,
+            }),
             aiCmd: await resolveAiCmdForFolder(requestData.folder),
         });
         return {
@@ -342,6 +449,11 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
 const killPanesImplementation = implementor.implementEndpoint(killPanesEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         await killFolderPanes(requestData);
+        /**
+         * "Kill folder panes" means all of them, so the tab lists go too — the folder should come
+         * back with a clean single tab per kind rather than a row of tabs whose PTYs are all dead.
+         */
+        await forgetFolderSessions(requestData.folder);
         /**
          * Pair the VS Code instance lifecycle with the pane lifecycle — "kill folder panes" implies
          * "tear down the editor I have for this folder too". Silently ignore the no-vscode case.
@@ -400,6 +512,11 @@ const resetAiSessionImplementation = implementor.implementEndpoint(resetAiSessio
         await restartPane({
             folder,
             kind: PaneKind.Ai,
+            sessionId: await resolveSessionId({
+                folder,
+                kind: PaneKind.Ai,
+                sessionId: requestData.sessionId ?? undefined,
+            }),
             aiCmd: cmd,
         });
         return {
@@ -580,6 +697,16 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
         const attachment = await attachPane({
             folder,
             kind,
+            /**
+             * Resolve against the stored tab list so a hand-edited URL or a client whose session
+             * list hasn't loaded attaches to a real session rather than spawning a PTY under an id
+             * no tab points at.
+             */
+            sessionId: await resolveSessionId({
+                folder,
+                kind,
+                sessionId: searchParams.sessionId,
+            }),
             aiCmd: await resolveAiCmdForFolder(folder),
             scrollbackLimit,
             onData(data) {
@@ -652,6 +779,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         deleteWorktreeImplementation,
         restartPaneImplementation,
         killPanesImplementation,
+        sessionListImplementation,
+        sessionCreateImplementation,
+        sessionRenameImplementation,
+        sessionCloseImplementation,
         resetAiSessionImplementation,
         restartDaemonImplementation,
         touchRepoImplementation,

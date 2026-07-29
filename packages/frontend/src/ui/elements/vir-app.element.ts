@@ -1,4 +1,5 @@
 import {PaneKind, type FolderInfo} from '@agent-storm/common';
+import {omitObjectKeys} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
@@ -19,6 +20,8 @@ import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.
 import {
     defaultFrontendTab,
     router,
+    sessionIndexFromRoute,
+    sessionSearchParamByKind,
     tabFromRoute,
     type AppRoute,
     type FrontendPaths,
@@ -766,20 +769,59 @@ export const VirApp = defineElement()({
                                     screenSize: state.screenSize,
                                     aiRestartKey:
                                         state.paneRestartKeys[`${folder}:${PaneKind.Ai}`] || 0,
+                                    aiSessionIndex: sessionIndexFromRoute(state.route, PaneKind.Ai),
+                                    shellSessionIndex: sessionIndexFromRoute(
+                                        state.route,
+                                        PaneKind.Shell,
+                                    ),
+                                    resetAiSessionCmd: info?.resetAiSessionCmd || '',
                                 })}
+                                    ${listen(VirPaneGroup.events.sessionRequested, (event) => {
+                                        /**
+                                         * Session selection lives in the URL alongside `tab`, so a
+                                         * reload or a shared link lands on the same session. Index
+                                         * 1 is omitted for the same reason the default tab is: it's
+                                         * what the fallback resolves to anyway.
+                                         */
+                                        const paramName =
+                                            sessionSearchParamByKind[event.detail.kind];
+                                        const existingSearch = state.route.search ?? {};
+                                        router.setRoute({
+                                            paths: state.route.paths,
+                                            /**
+                                             * Index 1 drops the param rather than setting it to
+                                             * `undefined`: the search type marks these optional, so
+                                             * an explicit `undefined` isn't assignable.
+                                             */
+                                            search:
+                                                event.detail.index > 1
+                                                    ? {
+                                                          ...existingSearch,
+                                                          [paramName]: [
+                                                              String(event.detail.index),
+                                                          ],
+                                                      }
+                                                    : omitObjectKeys(existingSearch, [paramName]),
+                                        });
+                                    })}
                                     ${listen(VirPaneGroup.events.tabRequested, (event) => {
                                         const requestedTab = event.detail;
+                                        const existingSearch = state.route.search ?? {};
                                         router.setRoute({
                                             paths: state.route.paths,
                                             /**
                                              * Omit `?tab` from the URL when the requested tab is
                                              * the default — keeps URLs short and matches what
-                                             * `tabFromRoute` falls back to anyway.
+                                             * `tabFromRoute` falls back to anyway. Either branch
+                                             * carries the session params through: switching between
+                                             * CLI and Code shouldn't reset which session each pane
+                                             * is showing.
                                              */
                                             search:
                                                 requestedTab === defaultFrontendTab
-                                                    ? undefined
+                                                    ? omitObjectKeys(existingSearch, ['tab'])
                                                     : {
+                                                          ...existingSearch,
                                                           tab: [requestedTab],
                                                       },
                                         });

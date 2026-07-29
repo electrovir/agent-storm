@@ -62,10 +62,24 @@ export async function fetchPaneStatuses(): Promise<StatusEntry[]> {
     return response.panes;
 }
 
+/**
+ * Read the running daemon's wire-contract version. Probes with `Status` because that is the only
+ * introspection action every historical daemon understands — a version-1 daemon treats any
+ * unrecognized action as "shutdown" and would kill every pane before we learned anything. A daemon
+ * that answers without the field is version 1.
+ */
+export async function fetchDaemonProtocolVersion(): Promise<number> {
+    const response = await singleShot<StatusResponse>({
+        action: DaemonAction.Status,
+    });
+    return response.protocolVersion ?? 1;
+}
+
 export async function restartPane(
     params: Readonly<{
         folder: string;
         kind: PaneKind;
+        sessionId?: string | undefined;
         aiCmd?: string | undefined;
     }>,
 ): Promise<void> {
@@ -73,7 +87,23 @@ export async function restartPane(
         action: DaemonAction.Restart,
         folder: params.folder,
         kind: params.kind,
+        sessionId: params.sessionId,
         aiCmd: params.aiCmd,
+    });
+}
+
+export async function killPaneSession(
+    params: Readonly<{
+        folder: string;
+        kind: PaneKind;
+        sessionId: string;
+    }>,
+): Promise<void> {
+    await singleShot<SimpleResponse>({
+        action: DaemonAction.SessionKill,
+        folder: params.folder,
+        kind: params.kind,
+        sessionId: params.sessionId,
     });
 }
 
@@ -125,6 +155,7 @@ export type PaneAttachment = {
 export async function attachPane({
     folder,
     kind,
+    sessionId,
     aiCmd,
     scrollbackLimit,
     onData,
@@ -132,6 +163,8 @@ export async function attachPane({
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    /** Which session tab to attach to. Empty/omitted resolves to the folder+kind's default. */
+    sessionId?: string | undefined;
     /**
      * Current `aiCmd` from agent-storm config — forwarded to the daemon's attach handshake so a
      * fresh AI PTY honors the user's configured command rather than whatever was in env when the
@@ -155,6 +188,7 @@ export async function attachPane({
             action: DaemonAction.Attach,
             folder,
             kind,
+            sessionId,
             aiCmd,
             scrollbackLimit,
         }),

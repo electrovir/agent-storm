@@ -50,7 +50,13 @@ export function collectDescendantPids(processTable: string, rootPid: number): nu
 /** Absolute path so PATH lookup can't be hijacked (and to satisfy sonarjs/no-os-command-from-path). */
 const psBinaryPath = '/bin/ps';
 
-function snapshotProcessTable(): string {
+/**
+ * Capture the current process table. Exported so bulk kills (a folder's whole session set, or every
+ * pane on daemon shutdown) can snapshot once and pass the result into each {@link killProcessTree}
+ * call — `execFileSync` blocks the daemon's event loop, and one `ps` per pane adds up fast now that
+ * a folder can hold many sessions per kind.
+ */
+export function snapshotProcessTable(): string {
     try {
         return execFileSync(psBinaryPath, [
             '-A',
@@ -79,15 +85,22 @@ function signalPid(pid: number, signal: NodeJS.Signals): void {
  *
  * A graceful SIGHUP goes out first; a SIGKILL backstop follows for anything that ignored it. Pass
  * `immediate` on daemon shutdown, where the event loop is about to stop and a deferred SIGKILL
- * would never fire.
+ * would never fire. Pass `processTable` from {@link snapshotProcessTable} when killing many panes at
+ * once so the `ps` subprocess runs once for the batch instead of once per pane.
  */
 export function killProcessTree(
     rootPid: number,
-    {immediate = false}: Readonly<{immediate?: boolean | undefined}> = {},
+    {
+        immediate = false,
+        processTable,
+    }: Readonly<{
+        immediate?: boolean | undefined;
+        processTable?: string | undefined;
+    }> = {},
 ): void {
     const pids = [
         rootPid,
-        ...collectDescendantPids(snapshotProcessTable(), rootPid),
+        ...collectDescendantPids(processTable ?? snapshotProcessTable(), rootPid),
     ];
     pids.forEach((pid) => signalPid(pid, 'SIGHUP'));
     if (immediate) {

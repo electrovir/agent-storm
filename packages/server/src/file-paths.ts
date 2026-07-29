@@ -32,6 +32,14 @@ export const folderInfoCachePath = resolve(notCommittedDir, 'folder-info-cache.j
  */
 export const githubCachePath = resolve(notCommittedDir, 'github-cache.json');
 
+/**
+ * Per-folder session tab lists (order + user-assigned names) for each pane kind. Lives here rather
+ * than in {@link configPath} because it's app state, not a hand-editable setting — but it still has
+ * to survive daemon and server restarts, since a tab name the user typed can't be regenerated the
+ * way git or PR state can.
+ */
+export const sessionStorePath = resolve(notCommittedDir, 'pane-sessions.json');
+
 /** Unix domain socket the pty daemon listens on for new pane attachments. */
 export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
 
