@@ -15,6 +15,13 @@ import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
 
+/**
+ * How many animation frames a fit will wait for xterm to produce a usable cell measurement before
+ * giving up. Measurement normally lands on the frame right after a hidden pane is revealed; the
+ * ceiling only exists so a pane that never becomes measurable can't retry forever.
+ */
+const maxFitRetryFrames = 30;
+
 function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -884,7 +891,11 @@ export const VirTerminal = defineElement<{
                         true,
                     );
 
-                    const fitAndResend = () => {
+                    /**
+                     * Recursion is why this carries a return-type annotation: it re-schedules
+                     * itself on the next frame while xterm's cell measurement is still invalid.
+                     */
+                    const fitAndResendWithRetries = (remainingFrames: number): void => {
                         /**
                          * Bail when the host has no real layout — the pane is `display: none`
                          * because the user switched to a different folder. If we fit anyway,
@@ -898,9 +909,39 @@ export const VirTerminal = defineElement<{
                         if (element.offsetWidth < 10 || element.offsetHeight < 10) {
                             return;
                         }
+                        /**
+                         * A terminal `open()`ed inside a hidden pane measures its cell box as 0×0,
+                         * and xterm only re-measures when its own IntersectionObserver reports the
+                         * screen element visible — which lands _after_ the ResizeObserver entry and
+                         * the activation `requestAnimationFrame` that brought us here. While the
+                         * measurement is invalid `fitAddon.fit()` silently no-ops (its
+                         * `proposeDimensions` returns undefined on a 0-width cell), so fitting and
+                         * sending unconditionally pushes xterm's construction-time 120×32 to the
+                         * pty even though the pane is some other size. The pty then wraps at 120
+                         * cols while xterm renders, say, 95 — invisible until something repaints
+                         * the whole screen (Claude's `/clear`, another folder switch), at which
+                         * point the pane looks shredded and only a manual resize fixes it. So skip
+                         * the send while dims are unreadable and retry on later frames until xterm
+                         * has measured.
+                         */
+                        const proposed = fitAddon.proposeDimensions();
+                        if (
+                            !proposed ||
+                            !Number.isFinite(proposed.cols) ||
+                            !Number.isFinite(proposed.rows)
+                        ) {
+                            if (remainingFrames > 0) {
+                                requestAnimationFrame(() =>
+                                    fitAndResendWithRetries(remainingFrames - 1),
+                                );
+                            }
+                            return;
+                        }
                         fitAddon.fit();
                         sendResize();
                     };
+
+                    const fitAndResend = () => fitAndResendWithRetries(maxFitRetryFrames);
 
                     /**
                      * One-shot initial fit replacing the previous unconditional pair. If the host
@@ -912,7 +953,7 @@ export const VirTerminal = defineElement<{
                      */
                     fitAndResend();
 
-                    const resizeObserver = new ResizeObserver(fitAndResend);
+                    const resizeObserver = new ResizeObserver(() => fitAndResend());
                     resizeObserver.observe(element);
 
                     /**
