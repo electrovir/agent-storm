@@ -1,7 +1,7 @@
 import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from '@rest-vir/api';
 import {defineShape, enumShape, nullableShape, unionShape} from 'object-shape-tester';
 import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-vir';
-import {PaneKind, PaneStatus, SidebarGrouping} from './enums.js';
+import {PaneKind, PaneStatus, SidebarGrouping, SidebarSorting} from './enums.js';
 
 const stringMessageShape = defineShape('');
 
@@ -205,6 +205,17 @@ export const configJsonSchema = {
             description:
                 'How the sidebar arranges folders. "repo" keeps the existing layout (worktrees nested under their repo root); "status" regroups folders by their AI pane status. Selectable from the filter icon next to the Add button in the sidebar as well.',
         },
+        sidebarSorting: {
+            type: 'string',
+            enum: [
+                SidebarSorting.Name,
+                SidebarSorting.Date,
+            ],
+            default: SidebarSorting.Name,
+            title: 'Sidebar sorting',
+            description:
+                'How the sidebar orders folders. "name" sorts alphabetically; "date" puts the most recently created repos and worktrees first. Selectable from the filter icon next to the Add button in the sidebar as well.',
+        },
         /**
          * When on, the sidebar hides standalone repos that haven't been activated within the last 7
          * days (and have no running panes). Worktree-roots and their children are always shown
@@ -255,6 +266,12 @@ export const folderInfoShape = defineShape({
     path: '',
     name: '',
     parentRepoPath: nullableShape(''),
+    /**
+     * Filesystem creation time of the folder in milliseconds since epoch, used by the sidebar's
+     * "Sort by date" option. `0` when the backend couldn't stat the folder, which sorts the folder
+     * last.
+     */
+    createdAtMs: 0,
     isWorktreeRoot: false,
     aiHidden: false,
     aiCmd: '',

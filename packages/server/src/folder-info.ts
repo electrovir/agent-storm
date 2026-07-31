@@ -7,7 +7,7 @@ import {
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {awaitedForEach, log, wait} from '@augment-vir/common';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
 import {getFolderAiCmd, getFolderResetAiSessionCmd, loadConfig, saveConfig} from './config.js';
@@ -280,21 +280,39 @@ async function getCachedPrInfo(
 type RefreshTarget = {
     folder: string;
     parentRepoPath: string | null;
+    createdAtMs: number;
     isWorktreeRoot: boolean;
     aiHidden: boolean;
     aiCmd: string;
     resetAiSessionCmd: string;
 };
 
+/**
+ * Filesystem creation time, used by the sidebar's "Sort by date" option. `birthtimeMs` is 0 on
+ * filesystems that don't record a creation time (notably older Linux ext4), so fall back to the
+ * inode-change time, which for a freshly created directory is effectively its creation time. `0`
+ * when the folder can't be stat'd, e.g. a configured repo whose directory was deleted.
+ */
+async function getCreatedAtMs(folder: string): Promise<number> {
+    try {
+        const stats = await stat(folder);
+        return stats.birthtimeMs || stats.ctimeMs;
+    } catch {
+        return 0;
+    }
+}
+
 async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget[]> {
     const perRepo = await Promise.all(
         config.repos.map(async (repo): Promise<RefreshTarget[]> => {
             const isRoot = await isWorktreeRoot(repo.path);
+            const createdAtMs = await getCreatedAtMs(repo.path);
             if (!isRoot) {
                 return [
                     {
                         folder: repo.path,
                         parentRepoPath: null,
+                        createdAtMs,
                         isWorktreeRoot: false,
                         aiHidden: config.hiddenAiPane.includes(repo.path),
                         aiCmd: getFolderAiCmd({
@@ -313,6 +331,7 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                 {
                     folder: repo.path,
                     parentRepoPath: null,
+                    createdAtMs,
                     isWorktreeRoot: true,
                     aiHidden: false,
                     aiCmd: getFolderAiCmd({
@@ -324,24 +343,27 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         folder: repo.path,
                     }),
                 },
-                ...children.map((child): RefreshTarget => {
-                    return {
-                        folder: child,
-                        parentRepoPath: repo.path,
-                        isWorktreeRoot: false,
-                        aiHidden: config.hiddenAiPane.includes(child),
-                        aiCmd: getFolderAiCmd({
-                            config,
+                ...(await Promise.all(
+                    children.map(async (child): Promise<RefreshTarget> => {
+                        return {
                             folder: child,
-                            fallbackFolders: [repo.path],
-                        }),
-                        resetAiSessionCmd: getFolderResetAiSessionCmd({
-                            config,
-                            folder: child,
-                            fallbackFolders: [repo.path],
-                        }),
-                    };
-                }),
+                            parentRepoPath: repo.path,
+                            createdAtMs: await getCreatedAtMs(child),
+                            isWorktreeRoot: false,
+                            aiHidden: config.hiddenAiPane.includes(child),
+                            aiCmd: getFolderAiCmd({
+                                config,
+                                folder: child,
+                                fallbackFolders: [repo.path],
+                            }),
+                            resetAiSessionCmd: getFolderResetAiSessionCmd({
+                                config,
+                                folder: child,
+                                fallbackFolders: [repo.path],
+                            }),
+                        };
+                    }),
+                )),
             ];
         }),
     );
@@ -368,6 +390,7 @@ async function buildFolderInfo({
         path: target.folder,
         name: basename(target.folder),
         parentRepoPath: target.parentRepoPath,
+        createdAtMs: target.createdAtMs,
         isWorktreeRoot: target.isWorktreeRoot,
         aiHidden: target.aiHidden,
         aiCmd: target.aiCmd,
@@ -419,6 +442,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         path: target.folder,
         name: basename(target.folder),
         parentRepoPath: target.parentRepoPath,
+        createdAtMs: target.createdAtMs,
         isWorktreeRoot: target.isWorktreeRoot,
         aiHidden: target.aiHidden,
         aiCmd: target.aiCmd,

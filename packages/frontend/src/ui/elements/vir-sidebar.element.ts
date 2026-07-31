@@ -6,6 +6,7 @@ import {
     PaneStatus,
     type RepoConfig,
     SidebarGrouping,
+    SidebarSorting,
     type UpdateStatus,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
@@ -106,6 +107,11 @@ const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
     [SidebarGrouping.Status]: 'Group by status',
 };
 
+const sidebarSortingLabels: Record<SidebarSorting, string> = {
+    [SidebarSorting.Name]: 'Sort by name',
+    [SidebarSorting.Date]: 'Sort by date',
+};
+
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
     [PaneStatus.Busy]: String(viraThemeByKeys.pink.foreground.header.foreground.value),
@@ -151,6 +157,12 @@ type SidebarState = {
      * write back into config). `undefined` while we haven't loaded config yet.
      */
     sidebarGrouping: SidebarGrouping | undefined;
+    /**
+     * Mirrors `config.sidebarSorting`. Picks the comparator used for the standalone list, the
+     * worktree roots, and each root's children. `undefined` while config hasn't loaded, which sorts
+     * the same as {@link SidebarSorting.Name}.
+     */
+    sidebarSorting: SidebarSorting | undefined;
     /**
      * Mirrors `config.onlyShowRecent`. When true the sidebar hides standalone repos that lack
      * recent activity AND have no running panes; worktree-roots and their children are always
@@ -242,6 +254,7 @@ export const VirSidebar = defineElement<{
             editFolderGlobalResetAiSessionCmd: '',
             editFolderSubmitting: false,
             sidebarGrouping: undefined,
+            sidebarSorting: undefined,
             onlyShowRecent: undefined,
             searchQuery: '',
             repos: [],
@@ -582,14 +595,13 @@ export const VirSidebar = defineElement<{
             : state.onlyShowRecent
               ? filterByRecency(state.folders, state.repos)
               : state.folders;
+        const folderComparator = folderComparators[state.sidebarSorting ?? SidebarSorting.Name];
         const standaloneFolders = visibleFolders
             .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
-            .toSorted((a, b) =>
-                a.name.localeCompare(b.name, undefined, {
-                    sensitivity: 'base',
-                }),
-            );
-        const worktreeRoots = visibleFolders.filter((folder) => folder.isWorktreeRoot);
+            .toSorted(folderComparator);
+        const worktreeRoots = visibleFolders
+            .filter((folder) => folder.isWorktreeRoot)
+            .toSorted(folderComparator);
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
          * filter against the freshest snapshot without having to ask for a re-read.
@@ -782,6 +794,7 @@ export const VirSidebar = defineElement<{
                         ${renderMenuItemEntries(
                             buildFilterMenuEntries({
                                 sidebarGrouping: state.sidebarGrouping,
+                                sidebarSorting: state.sidebarSorting,
                                 onlyShowRecent: state.onlyShowRecent,
                                 updateState,
                             }),
@@ -851,11 +864,7 @@ export const VirSidebar = defineElement<{
                 ${worktreeRoots.map((root) => {
                     const children = visibleFolders
                         .filter((folder) => folder.parentRepoPath === root.path)
-                        .toSorted((a, b) =>
-                            a.name.localeCompare(b.name, undefined, {
-                                sensitivity: 'base',
-                            }),
-                        );
+                        .toSorted(folderComparator);
                     const repoMenuKey = `repo:${root.path}`;
                     return html`
                         <div
@@ -1312,12 +1321,27 @@ function isValidPrUrl(url: string | null | undefined): boolean {
     }
 }
 
+const folderComparators: Record<SidebarSorting, (a: FolderInfo, b: FolderInfo) => number> = {
+    [SidebarSorting.Name]: (a, b) =>
+        a.name.localeCompare(b.name, undefined, {
+            sensitivity: 'base',
+        }),
+    /**
+     * Newest-created first. Folders the backend couldn't stat carry `createdAtMs: 0` and land at
+     * the end, where they fall back to the name comparator.
+     */
+    [SidebarSorting.Date]: (a, b) =>
+        b.createdAtMs - a.createdAtMs || folderComparators[SidebarSorting.Name](a, b),
+};
+
 function buildFilterMenuEntries({
     sidebarGrouping,
+    sidebarSorting,
     onlyShowRecent,
     updateState,
 }: Readonly<{
     sidebarGrouping: SidebarGrouping | undefined;
+    sidebarSorting: SidebarSorting | undefined;
     onlyShowRecent: boolean | undefined;
     updateState: SidebarUpdate;
 }>): ReadonlyArray<ViraMenuItemEntry> {
@@ -1341,8 +1365,29 @@ function buildFilterMenuEntries({
             },
         };
     });
+    /**
+     * The two sort options are mutually exclusive: picking one writes the single
+     * `config.sidebarSorting` value, which drops the check from the other.
+     */
+    const sortingEntries: ReadonlyArray<ViraMenuItemEntry> = [
+        SidebarSorting.Name,
+        SidebarSorting.Date,
+    ].map((sorting) => {
+        return {
+            content: sidebarSortingLabels[sorting],
+            iconOverride:
+                (sidebarSorting ?? SidebarSorting.Name) === sorting ? lucideIcons.Check : undefined,
+            onClick: () => {
+                if ((sidebarSorting ?? SidebarSorting.Name) === sorting) {
+                    return;
+                }
+                void setSidebarSorting(sorting, updateState);
+            },
+        };
+    });
     return [
         ...groupingEntries,
+        ...sortingEntries,
         {
             content: 'Hide Inactive',
             /**
@@ -1516,6 +1561,7 @@ async function refresh(updateState: SidebarUpdate): Promise<void> {
                 : folders,
             loadError: undefined,
             sidebarGrouping: config.sidebarGrouping,
+            sidebarSorting: config.sidebarSorting,
             onlyShowRecent: config.onlyShowRecent,
             repos: config.repos,
             updateStatus,
@@ -1539,6 +1585,24 @@ async function setSidebarGrouping(
         });
         updateState({
             sidebarGrouping: grouping,
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
+async function setSidebarSorting(
+    sorting: SidebarSorting,
+    updateState: SidebarUpdate,
+): Promise<void> {
+    try {
+        const config = await getConfig();
+        await putConfig({
+            ...config,
+            sidebarSorting: sorting,
+        });
+        updateState({
+            sidebarSorting: sorting,
         });
     } catch (error: unknown) {
         showError(updateState, error);
