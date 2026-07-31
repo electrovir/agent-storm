@@ -1,3 +1,5 @@
+// cspell:words upserts
+
 import {defaultConfig, type Config} from '@agent-storm/common';
 import {log, type ArrayElement} from '@augment-vir/common';
 import {mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises';
@@ -8,10 +10,12 @@ import {normalizePath} from './paths.js';
 function normalizeConfig(config: Readonly<Config>): Config {
     return {
         ...config,
-        repos: config.repos.map((repo) => ({
-            ...repo,
-            path: normalizePath(repo.path),
-        })),
+        repos: config.repos.map((repo) => {
+            return {
+                ...repo,
+                path: normalizePath(repo.path),
+            };
+        }),
         /**
          * Keep an entry if it contributes at least one override — either an AI command or a
          * reset-AI-session command. Entries with both empty are dead weight and would otherwise

@@ -1,4 +1,4 @@
-// cspell:words libexec, logd
+// cspell:words libexec, logd, Pids
 
 /**
  * Sweeps up orphan processes from any prior `npm start` (see {@link killPriorInstances}), then

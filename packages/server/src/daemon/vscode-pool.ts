@@ -1,19 +1,12 @@
 // cspell:words pgroup, pgid
 
 import {spawn, type ChildProcess} from 'node:child_process';
-import {appendFileSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
-import {daemonLogPath} from '../file-paths.js';
+import {createDaemonLog} from './daemon-log.js';
 import {type VscodeListEntry} from './protocol.js';
 
-function log(message: string): void {
-    try {
-        appendFileSync(daemonLogPath, `[${new Date().toISOString()}] [vscode] ${message}\n`);
-    } catch {
-        /* swallow log errors so they never crash the daemon */
-    }
-}
+const log = createDaemonLog('vscode');
 
 function normalizeFolder(folder: string): string {
     const expanded =
@@ -63,7 +56,13 @@ function killEntryGroup(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM')
     child.kill(signal);
 }
 
-function spawnVscode(folder: string, basePath: string): VscodeEntry {
+function spawnVscode({
+    folder,
+    basePath,
+}: Readonly<{
+    folder: string;
+    basePath: string;
+}>): VscodeEntry {
     const normalized = normalizeFolder(folder);
     /**
      * `--without-connection-token` is safe here because the agent-storm backend wraps this server
@@ -186,7 +185,13 @@ function spawnVscode(folder: string, basePath: string): VscodeEntry {
     return entry;
 }
 
-export async function ensureVscode(folder: string, basePath: string): Promise<number> {
+export async function ensureVscode({
+    folder,
+    basePath,
+}: Readonly<{
+    folder: string;
+    basePath: string;
+}>): Promise<number> {
     const normalized = normalizeFolder(folder);
     const existing = instances.get(normalized);
     if (existing && entryIsAlive(existing) && existing.basePath === basePath) {
@@ -202,7 +207,10 @@ export async function ensureVscode(folder: string, basePath: string): Promise<nu
         instances.delete(normalized);
     }
     log(`spawning vscode for ${normalized} (basePath=${basePath || '/'})`);
-    const entry = spawnVscode(normalized, basePath);
+    const entry = spawnVscode({
+        folder: normalized,
+        basePath,
+    });
     instances.set(normalized, entry);
     return entry.ready;
 }
@@ -225,11 +233,13 @@ export function listVscode(): VscodeListEntry[] {
         ([
             folder,
             entry,
-        ]) => ({
-            folder,
-            port: entry.port,
-            basePath: entry.basePath,
-        }),
+        ]) => {
+            return {
+                folder,
+                port: entry.port,
+                basePath: entry.basePath,
+            };
+        },
     ).filter((entry) => entry.port > 0);
 }
 

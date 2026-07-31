@@ -1,3 +1,5 @@
+// cspell:words Meslo, Menlo, keymap, Toggleable
+
 import {PaneKind, ptyWebSocket} from '@agent-storm/common';
 import {colorCss} from '@electrovir/color';
 import {FitAddon} from '@xterm/addon-fit';

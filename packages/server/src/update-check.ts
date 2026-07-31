@@ -1,3 +1,5 @@
+// cspell:words ASKPASS
+
 import {type UpdateStatus} from '@agent-storm/common';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';

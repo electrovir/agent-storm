@@ -5,6 +5,7 @@ import {
     type Config,
     type FolderInfo,
 } from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
@@ -95,8 +96,9 @@ function isAutoDisabled(): boolean {
         githubPollingState.disabledUntilMs = 0;
         void persistAutoDisableToConfig();
         return false;
+    } else {
+        return true;
     }
-    return true;
 }
 
 /**
@@ -322,8 +324,8 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         folder: repo.path,
                     }),
                 },
-                ...children.map(
-                    (child): RefreshTarget => ({
+                ...children.map((child): RefreshTarget => {
+                    return {
                         folder: child,
                         parentRepoPath: repo.path,
                         isWorktreeRoot: false,
@@ -338,8 +340,8 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                             folder: child,
                             fallbackFolders: [repo.path],
                         }),
-                    }),
-                ),
+                    };
+                }),
             ];
         }),
     );
@@ -503,10 +505,12 @@ async function loadPersistedCache(): Promise<void> {
     try {
         const parsed = JSON.parse(contents) as PersistedCache;
         if (Array.isArray(parsed.targets) && Array.isArray(parsed.entries)) {
-            refreshState.targets = parsed.targets.map((target) => ({
-                ...target,
-                aiCmd: typeof target.aiCmd === 'string' ? target.aiCmd : '',
-            }));
+            refreshState.targets = parsed.targets.map((target) => {
+                return {
+                    ...target,
+                    aiCmd: check.isString(target.aiCmd) ? target.aiCmd : '',
+                };
+            });
             /**
              * Validate each entry against the current shape so a schema change (renamed/added
              * field) doesn't poison the `/folders` response with stale objects. Invalid entries are
@@ -628,12 +632,17 @@ const perFolderDelayMs = 100;
  */
 const sweepIdleMs = 5000;
 
-async function refreshOnce(
-    target: RefreshTarget,
-    statusLookup: PaneStatusLookup,
-    disabledGitHubPolling: boolean,
-    repoHasActivePane: boolean,
-): Promise<void> {
+async function refreshOnce({
+    target,
+    statusLookup,
+    disabledGitHubPolling,
+    repoHasActivePane,
+}: Readonly<{
+    target: RefreshTarget;
+    statusLookup: PaneStatusLookup;
+    disabledGitHubPolling: boolean;
+    repoHasActivePane: boolean;
+}>): Promise<void> {
     try {
         const info = await buildFolderInfo({
             target,
@@ -705,12 +714,12 @@ async function runSweep(): Promise<void> {
      * at one folder at a time.
      */
     await awaitedForEach(targets, async (target) => {
-        await refreshOnce(
+        await refreshOnce({
             target,
             statusLookup,
             disabledGitHubPolling,
-            activeRepoKeys.has(repoActivityKey(target)),
-        );
+            repoHasActivePane: activeRepoKeys.has(repoActivityKey(target)),
+        });
         await wait({
             milliseconds: perFolderDelayMs,
         });

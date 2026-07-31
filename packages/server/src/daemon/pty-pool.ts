@@ -1,3 +1,5 @@
+// cspell:words subshell
+
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
@@ -244,7 +246,17 @@ function applyMinSize(entry: PaneEntry): void {
     }
 }
 
-function startPty(folder: string, kind: PaneKind, entry: PaneEntry, aiCmd: string): void {
+function startPty({
+    folder,
+    kind,
+    entry,
+    aiCmd,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    entry: PaneEntry;
+    aiCmd: string;
+}>): void {
     entry.spawnGeneration += 1;
     const spawnGeneration = entry.spawnGeneration;
     const [
@@ -350,7 +362,12 @@ export function attachPane({
     const entry = ensureEntry(folder, kind, sessionId);
     const isNew = !entry.pty;
     if (!entry.pty) {
-        startPty(folder, kind, entry, aiCmd || fallbackAiCommand);
+        startPty({
+            folder,
+            kind,
+            entry,
+            aiCmd: aiCmd || fallbackAiCommand,
+        });
     }
     const subscriber: Subscriber = {
         onData,
@@ -416,7 +433,12 @@ export function restartPane({
     entry.pty = undefined;
     entry.exitCode = undefined;
     clearScrollback(entry);
-    startPty(folder, kind, entry, aiCmd || fallbackAiCommand);
+    startPty({
+        folder,
+        kind,
+        entry,
+        aiCmd: aiCmd || fallbackAiCommand,
+    });
 }
 
 /**
@@ -500,10 +522,13 @@ export function killAllPanes(): void {
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {
     if (!entry) {
         return PaneStatus.None;
-    } else if (!entry.pty) {
+    } else if (entry.pty) {
+        return Date.now() - entry.lastOutputAt < idleThresholdMs
+            ? PaneStatus.Busy
+            : PaneStatus.Idle;
+    } else {
         return entry.exitCode == undefined ? PaneStatus.None : PaneStatus.Exited;
     }
-    return Date.now() - entry.lastOutputAt < idleThresholdMs ? PaneStatus.Busy : PaneStatus.Idle;
 }
 
 export function listAllPaneStatuses(): StatusEntry[] {

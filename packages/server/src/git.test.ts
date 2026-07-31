@@ -1,3 +1,5 @@
+// cspell:words gitdir
+
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {execFile} from 'node:child_process';
@@ -22,7 +24,13 @@ async function git({
 }
 
 describe(removeWorktree.name, () => {
-    async function initRepo(parent: string, mainPath: string): Promise<void> {
+    async function initRepo({
+        parent,
+        mainPath,
+    }: Readonly<{
+        parent: string;
+        mainPath: string;
+    }>): Promise<void> {
         await git({
             cwd: parent,
             args: [
@@ -67,15 +75,18 @@ describe(removeWorktree.name, () => {
     it('removes dirty locked worktrees', async () => {
         const parent = await mkdtemp(join(tmpdir(), 'agent-storm-git-'));
         const mainPath = join(parent, 'main');
-        const worktreePath = join(parent, 'efax-portal-work-item');
+        const worktreePath = join(parent, 'feature-work-item');
         try {
-            await initRepo(parent, mainPath);
+            await initRepo({
+                parent,
+                mainPath,
+            });
             await git({
                 cwd: mainPath,
                 args: [
                     'worktree',
                     'add',
-                    '../efax-portal-work-item',
+                    '../feature-work-item',
                 ],
             });
             await git({
@@ -83,7 +94,7 @@ describe(removeWorktree.name, () => {
                 args: [
                     'worktree',
                     'lock',
-                    '../efax-portal-work-item',
+                    '../feature-work-item',
                 ],
             });
             await writeFile(join(worktreePath, 'tracked.txt'), 'changed\n');
@@ -121,7 +132,10 @@ describe(removeWorktree.name, () => {
         const mainPath = join(parent, 'main');
         const worktreePath = join(parent, 'orphaned-worktree');
         try {
-            await initRepo(parent, mainPath);
+            await initRepo({
+                parent,
+                mainPath,
+            });
             await mkdir(worktreePath);
             await writeFile(join(worktreePath, '.git'), 'gitdir: /missing/gitdir\n');
             await writeFile(join(worktreePath, 'untracked.txt'), 'untracked\n');

@@ -7,5 +7,8 @@ module.exports = {
     ],
     words: [
         ...baseConfig.words,
+        /** Only words appearing in JSON files, which cannot carry inline `cspell:words` comments. */
+        'prebuilds',
+        'webgl',
     ],
 };

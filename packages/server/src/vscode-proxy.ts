@@ -328,12 +328,17 @@ function pipeHttp(request: FastifyRequest, reply: FastifyReply, port: number): v
  * passing the HTTP/1.1 upgrade exchange + subsequent frames through. Lifted from the standard
  * recipe for hand-rolling a WS reverse proxy without pulling in `http-proxy` or `ws`.
  */
-function pipeWebSocket(
-    clientSocket: Socket,
-    head: Buffer,
-    request: IncomingMessage,
-    port: number,
-): void {
+function pipeWebSocket({
+    clientSocket,
+    head,
+    request,
+    port,
+}: Readonly<{
+    clientSocket: Socket;
+    head: Buffer;
+    request: IncomingMessage;
+    port: number;
+}>): void {
     log.info(`[vscode-ws] pipeWebSocket entry: ${request.method} ${request.url} → :${port}`);
     const upstreamSocket = netConnect({
         port,
@@ -596,7 +601,12 @@ export function attachVscodeProxy(server: FastifyInstance): void {
                     socket.destroy();
                     return;
                 }
-                pipeWebSocket(socket as Socket, head, request, port);
+                pipeWebSocket({
+                    clientSocket: socket as Socket,
+                    head,
+                    request,
+                    port,
+                });
             })();
             return;
         }

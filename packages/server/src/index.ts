@@ -1,3 +1,5 @@
+// cspell:words mkdirs
+
 import {
     agentStormService,
     checkPathEndpoint,
