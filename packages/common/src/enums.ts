@@ -27,3 +27,15 @@ export enum SidebarGrouping {
     Repo = 'repo',
     Status = 'status',
 }
+
+/**
+ * How the sidebar orders folders within each group. `Date` uses each folder's filesystem creation
+ * time (newest first), falling back to name for folders the backend couldn't stat.
+ *
+ * The first variant is the default (`enumShape` picks the first value when the field is absent from
+ * config), so `Name` stays as the out-of-the-box behavior.
+ */
+export enum SidebarSorting {
+    Name = 'name',
+    Date = 'date',
+}
