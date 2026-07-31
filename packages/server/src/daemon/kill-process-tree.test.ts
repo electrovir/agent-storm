@@ -1,3 +1,5 @@
+// cspell:words unparseable, pids
+
 import {assert, assertWrap, waitUntil} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {spawn} from 'node:child_process';

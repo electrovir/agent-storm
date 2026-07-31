@@ -1,3 +1,5 @@
+// cspell:words grabbable
+
 import {PaneKind, type FolderInfo} from '@agent-storm/common';
 import {omitObjectKeys} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';

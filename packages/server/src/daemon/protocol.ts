@@ -37,7 +37,7 @@ export type ParsedFrame = {
  * are mutated in place because this sits on a hot socket-read path.
  */
 export class FrameDecoder {
-    private buffer: Buffer = Buffer.alloc(0);
+    protected buffer: Buffer = Buffer.alloc(0);
 
     public push(chunk: Buffer): ParsedFrame[] {
         this.buffer = Buffer.concat([

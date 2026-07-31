@@ -1,8 +1,9 @@
 import {type PaneKind} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {appendFileSync, existsSync, unlinkSync} from 'node:fs';
+import {existsSync, unlinkSync} from 'node:fs';
 import {createServer, type Socket} from 'node:net';
-import {daemonLogPath, daemonSocketPath} from '../file-paths.js';
+import {daemonSocketPath} from '../file-paths.js';
+import {createDaemonLog} from './daemon-log.js';
 import {
     DaemonAction,
     daemonProtocolVersion,
@@ -31,13 +32,7 @@ import {
 } from './pty-pool.js';
 import {ensureVscode, killAllVscode, killVscode, listVscode} from './vscode-pool.js';
 
-function log(message: string): void {
-    try {
-        appendFileSync(daemonLogPath, `[${new Date().toISOString()}] ${message}\n`);
-    } catch {
-        /* swallow log errors so they never crash the daemon */
-    }
-}
+const log = createDaemonLog();
 
 if (existsSync(daemonSocketPath)) {
     try {
@@ -204,7 +199,10 @@ const server = createServer((socket) => {
             socket.write(encodeControlFrame(response));
             socket.end();
         } else if (handshake.action === DaemonAction.VscodeEnsure) {
-            ensureVscode(handshake.folder, handshake.basePath)
+            ensureVscode({
+                folder: handshake.folder,
+                basePath: handshake.basePath,
+            })
                 .then((port) => {
                     const response: VscodeEnsureResponse = {
                         ok: true,

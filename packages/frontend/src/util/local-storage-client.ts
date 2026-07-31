@@ -82,11 +82,23 @@ export const scrollbackLimit = {
     default: 20_000,
 } as const;
 
-function clamp(value: number, min: number, max: number, fallback: number): number {
+type NumberBounds = Readonly<{
+    min: number;
+    max: number;
+    default: number;
+}>;
+
+function clamp({
+    value,
+    bounds,
+}: Readonly<{
+    value: number;
+    bounds: NumberBounds;
+}>) {
     if (!Number.isFinite(value)) {
-        return fallback;
+        return bounds.default;
     }
-    return Math.min(max, Math.max(min, value));
+    return Math.min(bounds.max, Math.max(bounds.min, value));
 }
 
 export const localStorageClient = {
@@ -100,26 +112,30 @@ export const localStorageClient = {
         key: 'agent-storm:sidebar-width',
         defaultValue: sidebarWidth.default,
         parse: (raw) =>
-            clamp(Number.parseFloat(raw), sidebarWidth.min, sidebarWidth.max, sidebarWidth.default),
+            clamp({
+                value: Number.parseFloat(raw),
+                bounds: sidebarWidth,
+            }),
         serialize: (value) => String(value),
     }),
     paneSplit: defineSetting<number>({
         key: 'agent-storm:pane-split',
         defaultValue: paneSplit.default,
         parse: (raw) =>
-            clamp(Number.parseFloat(raw), paneSplit.min, paneSplit.max, paneSplit.default),
+            clamp({
+                value: Number.parseFloat(raw),
+                bounds: paneSplit,
+            }),
         serialize: (value) => String(value),
     }),
     scrollbackLimit: defineSetting<number>({
         key: 'agent-storm:scrollback-limit',
         defaultValue: scrollbackLimit.default,
         parse: (raw) =>
-            clamp(
-                Math.round(Number.parseFloat(raw)),
-                scrollbackLimit.min,
-                scrollbackLimit.max,
-                scrollbackLimit.default,
-            ),
+            clamp({
+                value: Math.round(Number.parseFloat(raw)),
+                bounds: scrollbackLimit,
+            }),
         serialize: (value) => String(value),
     }),
 };

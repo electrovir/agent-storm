@@ -1,4 +1,4 @@
-// cspell:words titlebar
+// cspell:words titlebar, grabbable
 
 import {PaneKind, type FolderSessions, type SessionMeta} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';

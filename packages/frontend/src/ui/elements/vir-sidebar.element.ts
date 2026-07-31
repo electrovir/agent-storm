@@ -1,3 +1,5 @@
+// cspell:words Hyperlegible, upserted
+
 import {
     type FolderInfo,
     PaneKind,
@@ -1278,12 +1280,12 @@ function renderRow({
                         title="Folder actions"
                     ></${ViraButton}>
                     ${renderMenuItemEntries(
-                        buildRowMenuEntries(
+                        buildRowMenuEntries({
                             folder,
                             updateState,
                             removeFolderLocally,
                             emitFoldersRemoved,
-                        ),
+                        }),
                     )}
                 </${ViraMenuTrigger}>
             </span>
@@ -1322,21 +1324,23 @@ function buildFilterMenuEntries({
     const groupingEntries: ReadonlyArray<ViraMenuItemEntry> = [
         SidebarGrouping.Repo,
         SidebarGrouping.Status,
-    ].map((grouping) => ({
-        content: sidebarGroupingLabels[grouping],
-        /**
-         * Mark the active grouping with a check; non-active entries get no icon. `iconOverride` is
-         * the menu's per-item icon slot — leaving it undefined leaves blank space, which keeps the
-         * labels visually aligned across rows.
-         */
-        iconOverride: sidebarGrouping === grouping ? lucideIcons.Check : undefined,
-        onClick: () => {
-            if (sidebarGrouping === grouping) {
-                return;
-            }
-            void setSidebarGrouping(grouping, updateState);
-        },
-    }));
+    ].map((grouping) => {
+        return {
+            content: sidebarGroupingLabels[grouping],
+            /**
+             * Mark the active grouping with a check; non-active entries get no icon. `iconOverride`
+             * is the menu's per-item icon slot — leaving it undefined leaves blank space, which
+             * keeps the labels visually aligned across rows.
+             */
+            iconOverride: sidebarGrouping === grouping ? lucideIcons.Check : undefined,
+            onClick: () => {
+                if (sidebarGrouping === grouping) {
+                    return;
+                }
+                void setSidebarGrouping(grouping, updateState);
+            },
+        };
+    });
     return [
         ...groupingEntries,
         {
@@ -1353,12 +1357,17 @@ function buildFilterMenuEntries({
     ];
 }
 
-function buildRowMenuEntries(
-    folder: FolderInfo,
-    updateState: SidebarUpdate,
-    removeFolderLocally: (path: string) => void,
-    emitFoldersRemoved: (paths: ReadonlyArray<string>) => void,
-): ReadonlyArray<ViraMenuItemEntry> {
+function buildRowMenuEntries({
+    folder,
+    updateState,
+    removeFolderLocally,
+    emitFoldersRemoved,
+}: Readonly<{
+    folder: FolderInfo;
+    updateState: SidebarUpdate;
+    removeFolderLocally: (path: string) => void;
+    emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
+}>): ReadonlyArray<ViraMenuItemEntry> {
     return [
         folder.prUrl &&
             isValidPrUrl(folder.prUrl) && {
@@ -1454,12 +1463,12 @@ function buildRowMenuEntries(
                   content: 'Delete worktree',
                   iconOverride: menuDeleteWorktreeIcon,
                   onClick: () => {
-                      void confirmDeleteWorktree(
-                          folder.path,
+                      void confirmDeleteWorktree({
+                          worktreePath: folder.path,
                           updateState,
                           removeFolderLocally,
-                          () => emitFoldersRemoved([folder.path]),
-                      );
+                          notifyRemoved: () => emitFoldersRemoved([folder.path]),
+                      });
                   },
               }
             : {
@@ -1633,8 +1642,9 @@ function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): Fold
             );
         } else if (folder.parentRepoPath) {
             return nameMatches(folder) || matchingRootPaths.has(folder.parentRepoPath);
+        } else {
+            return nameMatches(folder);
         }
-        return nameMatches(folder);
     });
 }
 
@@ -1999,12 +2009,17 @@ async function submitAddWorktree({
     }
 }
 
-async function confirmDeleteWorktree(
-    worktreePath: string,
-    updateState: SidebarUpdate,
-    removeFolderLocally: (path: string) => void,
-    notifyRemoved: () => void,
-): Promise<void> {
+async function confirmDeleteWorktree({
+    worktreePath,
+    updateState,
+    removeFolderLocally,
+    notifyRemoved,
+}: Readonly<{
+    worktreePath: string;
+    updateState: SidebarUpdate;
+    removeFolderLocally: (path: string) => void;
+    notifyRemoved: () => void;
+}>): Promise<void> {
     if (!window.confirm(`Delete worktree ${worktreePath}?`)) {
         return;
     }

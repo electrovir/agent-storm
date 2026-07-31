@@ -1,3 +1,5 @@
+// cspell:words opencode
+
 import {defaultConfig} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';

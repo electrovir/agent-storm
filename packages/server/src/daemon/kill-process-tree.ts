@@ -1,3 +1,5 @@
+// cspell:words reparented, reparent, pids
+
 import {filterMap, groupArrayBy} from '@augment-vir/common';
 import {execFileSync} from 'node:child_process';
 

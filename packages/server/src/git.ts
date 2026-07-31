@@ -1,4 +1,5 @@
 import {wait} from '@augment-vir/common';
+import {maybeCreateFullDate, toTimestamp, utcTimezone} from 'date-vir';
 import {execFile} from 'node:child_process';
 import {lstat, readdir, rm, stat} from 'node:fs/promises';
 import {dirname, join} from 'node:path';
@@ -86,11 +87,12 @@ export async function isWorktreeRoot(folder: string): Promise<boolean> {
                 const worktreesDir = join(dotGit, 'worktrees');
                 const worktreesStat = await stat(worktreesDir).catch(() => undefined);
                 return worktreesStat?.isDirectory() || false;
+            } else {
+                return false;
             }
-            return false;
         }),
     );
-    return checks.some((isWorktree) => isWorktree);
+    return checks.includes(true);
 }
 
 export async function listWorktreeChildren(folder: string): Promise<string[]> {
@@ -471,9 +473,10 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
                 'unauthenticated',
                 `GitHub authentication failed: ${result.stderr.trim()}`,
             );
+        } else {
+            /** Benign (repo not on GitHub, network blip, etc.) — treat as "no PRs known" for now. */
+            return new Map();
         }
-        /** Benign (repo not on GitHub, network blip, etc.) — treat as "no PRs known" for now. */
-        return new Map();
     }
     const parsed = JSON.parse(result.stdout) as {
         data?: {
@@ -497,8 +500,8 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
             return;
         }
         if (isTerminal) {
-            const closedAtMs = node.closedAt ? new Date(node.closedAt).getTime() : NaN;
-            if (!Number.isFinite(closedAtMs) || closedAtMs < cutoff) {
+            const closedAt = maybeCreateFullDate(node.closedAt, utcTimezone);
+            if (!closedAt || toTimestamp(closedAt) < cutoff) {
                 return;
             }
         }

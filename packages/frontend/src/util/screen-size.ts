@@ -10,7 +10,15 @@ export const screenSizeWidthMax: Readonly<Record<ScreenSize, number>> = {
 
 const stickyThresholdPx = 30;
 
-function widthMatchesSize(width: number, size: ScreenSize, thresholdPx: number): boolean {
+function widthMatchesSize({
+    width,
+    size,
+    thresholdPx,
+}: Readonly<{
+    width: number;
+    size: ScreenSize;
+    thresholdPx: number;
+}>) {
     /**
      * Inclusive on the floor, exclusive on the ceiling: a width exactly equal to a smaller size's
      * max counts as the _larger_ size. With only two sizes this collapses to "below max → Mobile;
@@ -34,8 +42,21 @@ export function determineScreenSize({
     elementWidth: number;
 }>): ScreenSize {
     const width = Math.abs(elementWidth);
-    if (currentScreenSize && widthMatchesSize(width, currentScreenSize, stickyThresholdPx)) {
+    if (
+        currentScreenSize &&
+        widthMatchesSize({
+            width,
+            size: currentScreenSize,
+            thresholdPx: stickyThresholdPx,
+        })
+    ) {
         return currentScreenSize;
     }
-    return widthMatchesSize(width, ScreenSize.Mobile, 0) ? ScreenSize.Mobile : ScreenSize.Desktop;
+    return widthMatchesSize({
+        width,
+        size: ScreenSize.Mobile,
+        thresholdPx: 0,
+    })
+        ? ScreenSize.Mobile
+        : ScreenSize.Desktop;
 }
