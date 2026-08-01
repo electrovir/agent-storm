@@ -1979,7 +1979,14 @@ async function confirmRemoveRepo(
     updateState: SidebarUpdate,
     notifyRemoved: () => void,
 ): Promise<void> {
-    if (!window.confirm(`Remove repo ${repoPath}?`)) {
+    if (
+        !window.confirm(
+            [
+                `Remove repo ${repoPath}?`,
+                'This only removes it from agent-storm; the repo stays on disk.',
+            ].join('\n\n'),
+        )
+    ) {
         return;
     }
     /**
