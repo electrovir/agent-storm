@@ -6,6 +6,11 @@ import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-
 import {
     GitDiffSide,
     GitFileChange,
+    GitHubCheckState,
+    GitHubCommentTarget,
+    GitHubPrState,
+    GitHubReaction,
+    GitHubReviewState,
     PaneKind,
     PaneStatus,
     SidebarGrouping,
@@ -521,6 +526,161 @@ const gitStageHunkRequestShape = defineShape({
     toNewLine: 0,
 });
 
+/**
+ * One reaction bucket on a comment. `count` is everyone's reactions of that kind;
+ * `viewerHasReacted` is what makes the button a toggle rather than a duplicate-add.
+ */
+const gitHubReactionGroupShape = defineShape({
+    reaction: enumShape(GitHubReaction),
+    count: 0,
+    viewerHasReacted: false,
+});
+
+/**
+ * A single comment, in either a review thread or the PR's main conversation. `id` is the GraphQL
+ * node id, which is what the reaction and reply mutations address. `body` is raw markdown — the
+ * pane renders it as preformatted text rather than pulling in a markdown renderer or injecting
+ * GitHub's `bodyHTML` into the page.
+ */
+const gitHubCommentShape = defineShape({
+    id: '',
+    author: '',
+    authorAvatarUrl: '',
+    body: '',
+    /**
+     * GitHub's own rendering of `body`, which is what github.com displays. Rendering markdown from
+     * this rather than parsing `body` in the browser keeps code fences, task lists, issue
+     * references, and `@mentions` looking exactly like they do on GitHub, at the cost of the
+     * frontend having to scrub the HTML before it goes into the DOM.
+     */
+    bodyHtml: '',
+    /** UTC ISO 8601, straight from GitHub. */
+    createdAt: '',
+    url: '',
+    reactions: [gitHubReactionGroupShape],
+});
+
+/**
+ * One inline review conversation, anchored to a file and line. `line` is null once the thread goes
+ * outdated (GitHub can no longer map it onto the current diff), which is also when `isOutdated`
+ * flips.
+ */
+const gitHubReviewThreadShape = defineShape({
+    id: '',
+    path: '',
+    line: nullableShape(0),
+    isResolved: false,
+    isOutdated: false,
+    /** False for threads the token's account isn't allowed to (un)resolve — the button disables. */
+    viewerCanResolve: false,
+    /** The diff excerpt GitHub anchors the thread to, as a unified patch fragment. */
+    diffHunk: '',
+    comments: [gitHubCommentShape],
+});
+
+/** One reviewer's latest verdict. Body is empty for a bare approval with no written summary. */
+const gitHubReviewShape = defineShape({
+    id: '',
+    author: '',
+    authorAvatarUrl: '',
+    state: enumShape(GitHubReviewState),
+    body: '',
+    /** See {@link gitHubCommentShape}'s `bodyHtml`. */
+    bodyHtml: '',
+    createdAt: '',
+    url: '',
+});
+
+/**
+ * Someone asked to review who hasn't submitted one yet. A team request carries the team's name;
+ * GitHub gives no way to tell it apart from a user by name alone, and the pane doesn't need to.
+ */
+const gitHubReviewRequestShape = defineShape({
+    reviewer: '',
+    reviewerAvatarUrl: '',
+});
+
+/**
+ * A single CI entry on the PR's head commit — one GitHub Actions job, or one third-party commit
+ * status. `workflow` is the owning workflow's name for an Actions job and empty for a status;
+ * together with `name` it reproduces github.com's "Workflow / job" label.
+ */
+const gitHubCheckShape = defineShape({
+    name: '',
+    workflow: '',
+    state: enumShape(GitHubCheckState),
+    /** Link to the run's logs. Empty when GitHub didn't supply one. */
+    url: '',
+    /** The status's one-line summary. Actions jobs don't have one. */
+    description: '',
+});
+
+const gitHubPrShape = defineShape({
+    /** GraphQL node id of the PR itself — the subject a new conversation comment attaches to. */
+    id: '',
+    number: 0,
+    url: '',
+    title: '',
+    /** GitHub's rendering of `title`, so inline code spans in a title survive. */
+    titleHtml: '',
+    /** The PR description. Empty when the author left it blank. */
+    body: '',
+    bodyHtml: '',
+    state: enumShape(GitHubPrState),
+    author: '',
+    authorAvatarUrl: '',
+    baseRefName: '',
+    headRefName: '',
+    createdAt: '',
+    /** Rollup verdict across every entry in `checkRuns`. */
+    checks: enumShape(GitHubCheckState),
+    checkRuns: [gitHubCheckShape],
+    reviews: [gitHubReviewShape],
+    /** Outstanding review requests, including re-requests from someone who already reviewed. */
+    reviewRequests: [gitHubReviewRequestShape],
+    threads: [gitHubReviewThreadShape],
+    /** Top-level conversation comments, oldest first. Review summaries are in `reviews`. */
+    comments: [gitHubCommentShape],
+});
+
+/**
+ * Null `pr` means "no GitHub tab for this folder": no PR on the branch, no github.com `origin`, or
+ * `gh` isn't installed / authenticated. Callers can't tell those apart, and don't need to — all
+ * four mean the same thing to the UI.
+ */
+const gitHubPrResponseShape = defineShape({
+    pr: nullableShape(gitHubPrShape),
+});
+
+const gitHubPrRequestShape = defineShape({
+    folder: '',
+    /**
+     * True skips the server's per-folder cache and queries GitHub. Used by the refresh button and
+     * after posting anything, where the point is to see what actually landed.
+     */
+    forceRefresh: false,
+});
+
+const gitHubCommentRequestShape = defineShape({
+    target: enumShape(GitHubCommentTarget),
+    subjectId: '',
+    body: '',
+});
+
+const gitHubReactionRequestShape = defineShape({
+    /** Node id of the comment being reacted to. */
+    subjectId: '',
+    reaction: enumShape(GitHubReaction),
+    /** True adds the viewer's reaction, false removes it. */
+    add: false,
+});
+
+const gitHubResolveThreadRequestShape = defineShape({
+    threadId: '',
+    /** True resolves the thread, false reopens it. */
+    resolved: false,
+});
+
 export const gitDiffStatusEndpoint = defineEndpoint({
     path: '/git/diff/status',
     requests: {
@@ -587,6 +747,68 @@ export const gitStageHunkEndpoint = defineEndpoint({
     requests: {
         [HttpMethod.Post]: {
             requestData: gitStageHunkRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Everything the GitHub pane shows, in one call: the PR itself, each reviewer's verdict, every
+ * inline review thread, and the main conversation. One round trip because it's one GraphQL query —
+ * splitting it per section would multiply the rate-limit cost for no benefit.
+ */
+export const gitHubPrEndpoint = defineEndpoint({
+    path: '/github/pr',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitHubPrRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: gitHubPrResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** Posts a reply into a review thread, or a new top-level comment on the PR. */
+export const gitHubCommentEndpoint = defineEndpoint({
+    path: '/github/comment',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitHubCommentRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const gitHubReactionEndpoint = defineEndpoint({
+    path: '/github/reaction',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitHubReactionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const gitHubResolveThreadEndpoint = defineEndpoint({
+    path: '/github/thread/resolve',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitHubResolveThreadRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
                     responseData: okResponseShape,
@@ -926,6 +1148,10 @@ export const agentStormService = defineApi({
         gitStageFileEndpoint,
         gitStageHunkEndpoint,
         gitDiscardFileEndpoint,
+        gitHubPrEndpoint,
+        gitHubCommentEndpoint,
+        gitHubReactionEndpoint,
+        gitHubResolveThreadEndpoint,
     ],
     webSockets: [ptyWebSocket],
 });
@@ -945,3 +1171,10 @@ export type FolderSessions = typeof sessionsResponseShape.runtimeType;
 export type GitDiffFile = typeof gitDiffFileShape.runtimeType;
 export type GitDiffFileContents = typeof gitDiffFileResponseShape.runtimeType;
 export type GitDiffStatus = typeof gitDiffStatusResponseShape.runtimeType;
+export type GitHubPr = typeof gitHubPrShape.runtimeType;
+export type GitHubComment = typeof gitHubCommentShape.runtimeType;
+export type GitHubReviewThread = typeof gitHubReviewThreadShape.runtimeType;
+export type GitHubReview = typeof gitHubReviewShape.runtimeType;
+export type GitHubReviewRequest = typeof gitHubReviewRequestShape.runtimeType;
+export type GitHubCheck = typeof gitHubCheckShape.runtimeType;
+export type GitHubReactionGroup = typeof gitHubReactionGroupShape.runtimeType;

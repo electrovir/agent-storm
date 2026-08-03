@@ -19,14 +19,23 @@ const cleanGitInfo: GitInfo = {
     notPushed: false,
 };
 
-export async function getGitInfo(folder: string): Promise<GitInfo> {
+/**
+ * The folder's checked-out branch, or null when it isn't a git checkout or is on a detached HEAD
+ * (which has no branch name to match a PR against).
+ */
+export async function getCurrentBranch(folder: string): Promise<string | null> {
     const branch = await runGit(folder, [
         'rev-parse',
         '--abbrev-ref',
         'HEAD',
     ]).then((output) => output?.trim() || null);
+    return !branch || branch === 'HEAD' ? null : branch;
+}
 
-    if (!branch || branch === 'HEAD') {
+export async function getGitInfo(folder: string): Promise<GitInfo> {
+    const branch = await getCurrentBranch(folder);
+
+    if (!branch) {
         return cleanGitInfo;
     }
 
@@ -374,49 +383,56 @@ export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
 }
 
 /**
- * GraphQL query: fetch up to {@link fetchRepoPrsBatchSize} of a repo's most-recently-updated PRs
- * across all states. Variables (`$owner`, `$name`) are passed via `gh api`'s `-f` so the query
- * itself stays constant and the cost-per-call is bounded by node count, keeping us well under the
- * GraphQL hourly point budget.
+ * Open PRs and terminal (closed / merged) PRs are two separate connections rather than one `states:
+ * [OPEN, CLOSED, MERGED]` list, because a single ordered list lets merge churn push a still-open PR
+ * off the end: a repo where twenty PRs merged this week would return zero open ones, and every
+ * worktree branch would silently lose its sidebar marker.
+ *
+ * Both connections are fetched in one call. GitHub charges this query 1 point either way — the
+ * GraphQL cost formula divides total nodes by 100 and floors at 1 — so the open-PR cap costs
+ * nothing to raise and is set high enough to cover every branch a user could have worktrees
+ * against.
  */
-/**
- * Upper bound on PRs returned per repo per call. The GraphQL "cost" the API charges scales with the
- * number of returned objects (rough rule: ~1 point per connection node, capped by `first:`), so
- * lowering this cuts our headroom against the 5000-points/hour primary rate limit. 20 is plenty for
- * the sidebar's use case (we only need to find any open / recently-terminal PR for the branches the
- * user has worktrees against).
- */
-const fetchRepoPrsBatchSize = 20;
+const openPrsBatchSize = 100;
+/** Terminal PRs are only used for the 7-day "recently merged" marker, so a short list is plenty. */
+const terminalPrsBatchSize = 20;
 
-const repoPrsGraphqlQuery = [
-    'query($owner: String!, $name: String!) {',
-    '  repository(owner: $owner, name: $name) {',
-    `    pullRequests(states: [OPEN, CLOSED, MERGED], first: ${fetchRepoPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
+const prNodeFields = [
     '      nodes {',
     '        url',
     '        headRefName',
     '        state',
     '        closedAt',
     '      }',
+].join('\n');
+
+const repoPrsGraphqlQuery = [
+    'query($owner: String!, $name: String!) {',
+    '  repository(owner: $owner, name: $name) {',
+    `    open: pullRequests(states: [OPEN], first: ${openPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
+    prNodeFields,
+    '    }',
+    `    terminal: pullRequests(states: [CLOSED, MERGED], first: ${terminalPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
+    prNodeFields,
     '    }',
     '  }',
     '}',
 ].join('\n');
 
-type RawPrNode = {
+export type RawPrNode = {
     url?: string;
     headRefName?: string;
     state?: string;
     closedAt?: string | null;
 };
 
-type GhExecResult = {
+export type GhExecResult = {
     exitCode: number;
     stdout: string;
     stderr: string;
 };
 
-async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
+export async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
     try {
         const result = await exec('gh', [...args]);
         return {
@@ -481,41 +497,55 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
     const parsed = JSON.parse(result.stdout) as {
         data?: {
             repository?: {
-                pullRequests?: {
-                    nodes?: ReadonlyArray<RawPrNode>;
-                };
+                open?: {nodes?: ReadonlyArray<RawPrNode>};
+                terminal?: {nodes?: ReadonlyArray<RawPrNode>};
             };
         };
     };
-    const nodes = parsed.data?.repository?.pullRequests?.nodes || [];
+    return buildPrsByBranch({
+        openNodes: parsed.data?.repository?.open?.nodes || [],
+        terminalNodes: parsed.data?.repository?.terminal?.nodes || [],
+    });
+}
+
+/**
+ * Collapse both PR connections into one branch → PR lookup. Open PRs are walked first so a branch
+ * that has both an open PR and an older closed one keeps the open one, whatever their update times.
+ * Within each list, nodes arrive ordered by `UPDATED_AT` descending and first wins.
+ *
+ * Exported for tests — everything above it in {@link fetchRepoPrs} needs a live `gh`.
+ */
+export function buildPrsByBranch({
+    openNodes,
+    terminalNodes,
+}: Readonly<{
+    openNodes: ReadonlyArray<RawPrNode>;
+    terminalNodes: ReadonlyArray<RawPrNode>;
+}>): Map<string, PrInfo> {
     const cutoff = Date.now() - sevenDaysMs;
     const map = new Map<string, PrInfo>();
-    nodes.forEach((node) => {
-        if (!node.url || !node.headRefName) {
+    [
+        ...openNodes,
+        ...terminalNodes,
+    ].forEach((node) => {
+        if (!node.url || !node.headRefName || map.has(node.headRefName)) {
             return;
         }
-        const isOpen = node.state === 'OPEN';
         const isTerminal = node.state === 'CLOSED' || node.state === 'MERGED';
-        if (!isOpen && !isTerminal) {
+        if (!isTerminal && node.state !== 'OPEN') {
             return;
         }
         if (isTerminal) {
+            /** Terminal PRs past the window would show a stale "this branch had a PR" marker. */
             const closedAt = maybeCreateFullDate(node.closedAt, utcTimezone);
             if (!closedAt || toTimestamp(closedAt) < cutoff) {
                 return;
             }
         }
-        /**
-         * Nodes arrive ordered by UPDATED_AT DESC; first-wins so we keep the most-recent PR for a
-         * given branch when GitHub has more than one (e.g. a closed PR re-created against the same
-         * branch).
-         */
-        if (!map.has(node.headRefName)) {
-            map.set(node.headRefName, {
-                url: node.url,
-                closed: isTerminal,
-            });
-        }
+        map.set(node.headRefName, {
+            url: node.url,
+            closed: isTerminal,
+        });
     });
     return map;
 }

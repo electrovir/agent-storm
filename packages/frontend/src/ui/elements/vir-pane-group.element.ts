@@ -25,6 +25,7 @@ import {localStorageClient, paneSplit} from '../../util/local-storage-client.js'
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {VirDiffPane} from './vir-diff-pane.element.js';
+import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 /** Tab label: the user's name when set, otherwise the tab's 1-based position. */
@@ -44,6 +45,12 @@ function sessionAtIndex(
     return sessions[oneBasedIndex - 1] || sessions[0];
 }
 
+type TabButton = {
+    label: string;
+    tab: FrontendTab;
+    isActive: boolean;
+};
+
 function clampSplit(value: number): number {
     if (!Number.isFinite(value)) {
         return paneSplit.default;
@@ -62,14 +69,19 @@ export const VirPaneGroup = defineElement<{
      */
     active: boolean;
     /**
-     * Currently-active tab — `'ai' | 'shell' | 'diff'`. Driven by the `?tab=...` param at the app
-     * level so the URL is the source of truth. On desktop, both `ai` and `shell` render the CLI
-     * layout (split panes); on mobile each value shows exactly one pane.
+     * Currently-active tab. Driven by the `?tab=...` param at the app level so the URL is the
+     * source of truth. On desktop, both `ai` and `shell` render the CLI layout (split panes); on
+     * mobile each value shows exactly one pane.
      */
     activeTab: FrontendTab;
     /**
-     * Coarse viewport bucket from `vir-app`'s state. Controls the tab layout (2 tabs vs 3) and the
-     * pane-visibility rules. Updates as the user resizes the window.
+     * URL of the pull request on this folder's branch, or empty when it has none. Non-empty is the
+     * only condition for showing the GitHub tab — the pane fetches the PR's details itself.
+     */
+    prUrl: string;
+    /**
+     * Coarse viewport bucket from `vir-app`'s state. Controls whether the CLI panes get one shared
+     * tab or one each, and the pane-visibility rules. Updates as the user resizes the window.
      */
     screenSize: ScreenSize;
     aiRestartKey: number;
@@ -133,6 +145,8 @@ export const VirPaneGroup = defineElement<{
              * mounted preserves its selected file and scroll position across tab switches.
              */
             diffMounted: false,
+            /** Same lazy-mount-then-keep pattern as `diffMounted` above, for the GitHub pane. */
+            githubMounted: false,
         };
     },
     styles: css`
@@ -218,6 +232,7 @@ export const VirPaneGroup = defineElement<{
         }
 
         .diff-pane,
+        .github-pane,
         .cli-panes {
             position: absolute;
             inset: 0;
@@ -227,6 +242,7 @@ export const VirPaneGroup = defineElement<{
         }
 
         .diff-pane[data-hidden],
+        .github-pane[data-hidden],
         .cli-panes[data-hidden] {
             /*
              * Keep the hidden side mounted so its scroll position and, for the terminals, their
@@ -801,6 +817,12 @@ export const VirPaneGroup = defineElement<{
         const shellFocused = focusedKind === PaneKind.Shell;
 
         const isDiffTab = inputs.activeTab === 'diff';
+        /**
+         * A `?tab=github` URL for a folder whose PR has gone away (merged and aged out, branch
+         * force-pushed) falls back to the CLI layout instead of showing an empty pane. The URL
+         * keeps its value, so the tab and its pane come back if the PR reappears.
+         */
+        const isGithubTab = inputs.activeTab === 'github' && !!inputs.prUrl;
         const isMobile = inputs.screenSize === ScreenSize.Mobile;
         /** Basename of the folder path — matches how folder names are derived elsewhere. */
         const folderName = inputs.folder.split('/').findLast(Boolean) || inputs.folder;
@@ -808,12 +830,12 @@ export const VirPaneGroup = defineElement<{
          * Pane visibility decision matrix:
          *
          * - Desktop, tab=ai|shell → both AI + Shell visible (the existing split layout).
-         * - Desktop, tab=diff → the diff pane visible (both terminals hidden).
+         * - Desktop, tab=diff|github → that pane visible (both terminals hidden).
          * - Mobile, tab=ai → only AI pane visible.
          * - Mobile, tab=shell → only Shell pane visible.
-         * - Mobile, tab=diff → only the diff pane visible.
+         * - Mobile, tab=diff|github → only that pane visible.
          */
-        const showCliPanes = !isDiffTab;
+        const showCliPanes = !isDiffTab && !isGithubTab;
         const showAiPane = showCliPanes && (!isMobile || inputs.activeTab === 'ai');
         const showShellPane = showCliPanes && (!isMobile || inputs.activeTab === 'shell');
 
@@ -834,45 +856,60 @@ export const VirPaneGroup = defineElement<{
             });
         }
 
+        if (isGithubTab && !state.githubMounted) {
+            updateState({
+                githubMounted: true,
+            });
+        }
+
         /**
          * Tab bar layout differs by screen size:
          *
-         * - Desktop: 3 tabs (CLI, Diff, Code). The CLI tab is the active one when `activeTab` is `ai`
-         *   or `shell` — the user can't tell them apart on desktop (both panes are visible) so we
-         *   collapse them into one button. Clicking CLI sets `tab=ai` as a stable default.
-         * - Mobile: 4 tabs (AI, Shell, Diff, Code), each mapping directly to the URL param.
+         * - Desktop: CLI + Diff. The CLI tab is the active one when `activeTab` is `ai` or `shell` —
+         *   the user can't tell them apart on desktop (both panes are visible) so we collapse them
+         *   into one button. Clicking CLI sets `tab=ai` as a stable default.
+         * - Mobile: AI, Shell, Diff, each mapping directly to the URL param.
+         *
+         * Both layouts gain a GitHub tab only while the branch has a PR.
          */
-        const tabButtons: ReadonlyArray<{label: string; tab: FrontendTab; isActive: boolean}> =
-            isMobile
-                ? [
-                      {
-                          label: 'AI',
-                          tab: 'ai',
-                          isActive: inputs.activeTab === 'ai',
-                      },
-                      {
-                          label: 'Shell',
-                          tab: 'shell',
-                          isActive: inputs.activeTab === 'shell',
-                      },
-                      {
-                          label: 'Diff',
-                          tab: 'diff',
-                          isActive: isDiffTab,
-                      },
-                  ]
-                : [
-                      {
-                          label: 'CLI',
-                          tab: 'ai',
-                          isActive: showCliPanes,
-                      },
-                      {
-                          label: 'Diff',
-                          tab: 'diff',
-                          isActive: isDiffTab,
-                      },
-                  ];
+        const cliTabButtons: ReadonlyArray<TabButton> = isMobile
+            ? [
+                  {
+                      label: 'AI',
+                      tab: 'ai',
+                      isActive: inputs.activeTab === 'ai',
+                  },
+                  {
+                      label: 'Shell',
+                      tab: 'shell',
+                      isActive: inputs.activeTab === 'shell',
+                  },
+              ]
+            : [
+                  {
+                      label: 'CLI',
+                      tab: 'ai',
+                      isActive: showCliPanes,
+                  },
+              ];
+        const githubTabButtons: ReadonlyArray<TabButton> = inputs.prUrl
+            ? [
+                  {
+                      label: 'GitHub',
+                      tab: 'github',
+                      isActive: isGithubTab,
+                  },
+              ]
+            : [];
+        const tabButtons: ReadonlyArray<TabButton> = [
+            ...cliTabButtons,
+            {
+                label: 'Diff',
+                tab: 'diff',
+                isActive: isDiffTab,
+            },
+            ...githubTabButtons,
+        ];
 
         const requestTab = (tab: FrontendTab) => {
             dispatch(new events.tabRequested(tab));
@@ -911,6 +948,17 @@ export const VirPaneGroup = defineElement<{
                                   active: isDiffTab && inputs.active,
                                   screenSize: inputs.screenSize,
                               })}></${VirDiffPane}>
+                          </div>
+                      `
+                    : ''}
+                ${state.githubMounted
+                    ? html`
+                          <div class="github-pane" ?data-hidden=${!isGithubTab}>
+                              <${VirGithubPane.assign({
+                                  folder: inputs.folder,
+                                  active: isGithubTab && inputs.active,
+                                  screenSize: inputs.screenSize,
+                              })}></${VirGithubPane}>
                           </div>
                       `
                     : ''}

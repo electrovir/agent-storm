@@ -11,6 +11,10 @@ import {
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
     gitDiscardFileEndpoint,
+    gitHubCommentEndpoint,
+    gitHubPrEndpoint,
+    gitHubReactionEndpoint,
+    gitHubResolveThreadEndpoint,
     gitStageFileEndpoint,
     gitStageHunkEndpoint,
     hideRepoEndpoint,
@@ -65,6 +69,7 @@ import {
     setFileStaged,
 } from './git-diff.js';
 import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
+import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './github-pr.js';
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
 import {
@@ -749,6 +754,63 @@ const gitDiscardFileImplementation = implementor.implementEndpoint(gitDiscardFil
     },
 });
 
+const gitHubPrImplementation = implementor.implementEndpoint(gitHubPrEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    pr: await fetchFolderPr({
+                        folder: normalizePath(requestData.folder),
+                        forceRefresh: requestData.forceRefresh,
+                    }),
+                },
+            },
+        };
+    },
+});
+
+const gitHubCommentImplementation = implementor.implementEndpoint(gitHubCommentEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await postComment(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const gitHubReactionImplementation = implementor.implementEndpoint(gitHubReactionEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await setReaction(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const gitHubResolveThreadImplementation = implementor.implementEndpoint(
+    gitHubResolveThreadEndpoint,
+    {
+        async [HttpMethod.Post]({requestData}) {
+            await setThreadResolved(requestData);
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        ok: true,
+                    },
+                },
+            };
+        },
+    },
+);
+
 const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
     async open({webSocket, searchParams}) {
         const folder = searchParams.folder;
@@ -868,6 +930,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         gitStageFileImplementation,
         gitStageHunkImplementation,
         gitDiscardFileImplementation,
+        gitHubPrImplementation,
+        gitHubCommentImplementation,
+        gitHubReactionImplementation,
+        gitHubResolveThreadImplementation,
     ],
     webSockets: [ptyImplementation],
 });

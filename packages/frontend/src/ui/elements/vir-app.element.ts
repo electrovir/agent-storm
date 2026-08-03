@@ -21,6 +21,8 @@ import {getFolders, touchRepo} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {
     defaultFrontendTab,
+    rememberedTabForFolder,
+    rememberTabForFolder,
     router,
     sessionIndexFromRoute,
     sessionSearchParamByKind,
@@ -603,14 +605,21 @@ export const VirApp = defineElement()({
                 folderInfo: ReadonlyMap<string, FolderInfo>,
             ): void => {
                 /**
-                 * Wipe `search` on a sidebar click so the new repo starts on the default tab (AI).
-                 * Without this, the `?tab=...` value from the previous repo carries over and the
-                 * user can land on, say, the Code tab of the freshly- selected repo, which is
-                 * usually surprising.
+                 * Restore whichever tab this folder was last on rather than carrying the previous
+                 * folder's `?tab=...` across (landing on another repo's Diff tab is surprising) or
+                 * resetting everything to AI (which loses the pane you were deliberately using in
+                 * this folder). Session params are dropped either way — they belong to the folder
+                 * you just left.
                  */
+                const rememberedTab = rememberedTabForFolder(folder.path);
                 router.setRoute({
                     paths: pathsForFolder(folder, folderInfo),
-                    search: undefined,
+                    search:
+                        rememberedTab === defaultFrontendTab
+                            ? undefined
+                            : {
+                                  tab: [rememberedTab],
+                              },
                 });
             };
             const known = state.folderInfo.get(folderPath);
@@ -777,6 +786,7 @@ export const VirApp = defineElement()({
                                         PaneKind.Shell,
                                     ),
                                     resetAiSessionCmd: info?.resetAiSessionCmd || '',
+                                    prUrl: info?.prUrl || '',
                                 })}
                                     ${listen(VirPaneGroup.events.sessionRequested, (event) => {
                                         /**
@@ -809,6 +819,10 @@ export const VirApp = defineElement()({
                                     ${listen(VirPaneGroup.events.tabRequested, (event) => {
                                         const requestedTab = event.detail;
                                         const existingSearch = state.route.search ?? {};
+                                        rememberTabForFolder({
+                                            folder,
+                                            tab: requestedTab,
+                                        });
                                         router.setRoute({
                                             paths: state.route.paths,
                                             /**

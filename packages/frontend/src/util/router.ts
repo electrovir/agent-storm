@@ -1,5 +1,6 @@
 import {PaneKind} from '@agent-storm/common';
 import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
+import {localStorageClient} from './local-storage-client.js';
 
 /**
  * The valid shape of the in-app URL.
@@ -35,9 +36,13 @@ export type FrontendPaths = typeof frontendPathTree.PathsType;
 /**
  * Which pane the user is focused on. On desktop, `ai` and `shell` both render the "CLI" tab with
  * both panes visible side-by-side (their difference doesn't affect the layout); `diff` shows the
- * diff viewer. On mobile, each value shows exactly one pane.
+ * diff viewer and `github` the PR review pane. On mobile, each value shows exactly one pane.
+ *
+ * `github` stays a valid URL value even for folders with no PR (where the tab isn't rendered) — the
+ * pane group falls back to the CLI layout in that case rather than the URL being rewritten, so the
+ * tab reappears if a PR shows up on the next poll.
  */
-export type FrontendTab = 'ai' | 'shell' | 'diff';
+export type FrontendTab = 'ai' | 'shell' | 'diff' | 'github';
 
 export const defaultFrontendTab: FrontendTab = 'ai';
 
@@ -45,6 +50,7 @@ const allowedTabValues: ReadonlyArray<FrontendTab> = [
     'ai',
     'shell',
     'diff',
+    'github',
 ];
 
 /**
@@ -150,6 +156,28 @@ export function sessionIndexFromRoute(route: AppRoute, kind: PaneKind): number {
     const raw = route.search?.[sessionSearchParamByKind[kind]]?.[0];
     const parsed = Number(raw);
     return raw && Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
+}
+
+/**
+ * The tab a folder was last viewed on. Folders are remembered independently so switching to another
+ * repo and back lands on the pane you were using there.
+ */
+export function rememberedTabForFolder(folder: string): FrontendTab {
+    const remembered = localStorageClient.tabByFolder.read()[folder];
+    return remembered && isFrontendTab(remembered) ? remembered : defaultFrontendTab;
+}
+
+export function rememberTabForFolder({
+    folder,
+    tab,
+}: Readonly<{
+    folder: string;
+    tab: FrontendTab;
+}>): void {
+    localStorageClient.tabByFolder.write({
+        ...localStorageClient.tabByFolder.read(),
+        [folder]: tab,
+    });
 }
 
 export const router = new SpaRouter<FrontendPaths, FrontendSearchParams, undefined>({
