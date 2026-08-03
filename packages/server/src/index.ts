@@ -8,6 +8,11 @@ import {
     createWorktreeEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
+    gitDiffFileEndpoint,
+    gitDiffStatusEndpoint,
+    gitDiscardFileEndpoint,
+    gitStageFileEndpoint,
+    gitStageHunkEndpoint,
     hideRepoEndpoint,
     killPanesEndpoint,
     PaneKind,
@@ -45,7 +50,6 @@ import {
     attachPane,
     killFolderPanes,
     killPaneSession,
-    killVscode,
     restartPane,
     shutdownDaemon,
     type PaneAttachment,
@@ -53,6 +57,13 @@ import {
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
+import {
+    discardFileChanges,
+    getDiffFileContents,
+    getDiffStatus,
+    moveHunkAcrossIndex,
+    setFileStaged,
+} from './git-diff.js';
 import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
@@ -66,7 +77,6 @@ import {
 } from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
-import {attachVscodeProxy} from './vscode-proxy.js';
 
 /**
  * Mirror stdout/stderr to `serverLogPath` so the assistant can tail the backend output instead of
@@ -314,11 +324,6 @@ const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktre
         }).catch(() => {
             /* if the daemon has no live panes for this folder, continue with deletion */
         });
-        await killVscode({
-            folder: requestData.worktreePath,
-        }).catch(() => {
-            /* if no vscode was running for this folder, killVscode is a no-op */
-        });
         await wait({
             milliseconds: 250,
         });
@@ -456,13 +461,6 @@ const killPanesImplementation = implementor.implementEndpoint(killPanesEndpoint,
          * back with a clean single tab per kind rather than a row of tabs whose PTYs are all dead.
          */
         await forgetFolderSessions(requestData.folder);
-        /**
-         * Pair the VS Code instance lifecycle with the pane lifecycle — "kill folder panes" implies
-         * "tear down the editor I have for this folder too". Silently ignore the no-vscode case.
-         */
-        await killVscode({
-            folder: requestData.folder,
-        }).catch(() => {});
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -678,6 +676,79 @@ const uploadImplementation = implementor.implementEndpoint(uploadEndpoint, {
     },
 });
 
+const gitDiffStatusImplementation = implementor.implementEndpoint(gitDiffStatusEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await getDiffStatus(normalizePath(requestData.folder)),
+            },
+        };
+    },
+});
+
+const gitDiffFileImplementation = implementor.implementEndpoint(gitDiffFileEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await getDiffFileContents({
+                    ...requestData,
+                    folder: normalizePath(requestData.folder),
+                    oldPath: requestData.oldPath ?? undefined,
+                }),
+            },
+        };
+    },
+});
+
+const gitStageFileImplementation = implementor.implementEndpoint(gitStageFileEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await setFileStaged({
+            ...requestData,
+            folder: normalizePath(requestData.folder),
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const gitStageHunkImplementation = implementor.implementEndpoint(gitStageHunkEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await moveHunkAcrossIndex({
+            ...requestData,
+            folder: normalizePath(requestData.folder),
+            oldPath: requestData.oldPath ?? undefined,
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const gitDiscardFileImplementation = implementor.implementEndpoint(gitDiscardFileEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await discardFileChanges({
+            ...requestData,
+            folder: normalizePath(requestData.folder),
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
     async open({webSocket, searchParams}) {
         const folder = searchParams.folder;
@@ -792,6 +863,11 @@ const implementation = implementApi<undefined>()(agentStormService, {
         checkPathImplementation,
         createPathImplementation,
         uploadImplementation,
+        gitDiffStatusImplementation,
+        gitDiffFileImplementation,
+        gitStageFileImplementation,
+        gitStageHunkImplementation,
+        gitDiscardFileImplementation,
     ],
     webSockets: [ptyImplementation],
 });
@@ -807,12 +883,6 @@ const server = fastify({
 await attachApi(server, implementation, {
     externalOrigin: `http://localhost:${port}`,
 });
-/**
- * Mount the embedded-VS-Code proxy after the main service so its `/vscode-proxy/*` route doesn't
- * collide with rest-vir's path handling. Owns its own routes (`/vscode/ensure`, `/vscode/kill`, the
- * proxy itself) and an HTTP-server `upgrade` listener for WebSocket forwarding.
- */
-attachVscodeProxy(server);
 /**
  * Bind to `0.0.0.0` so the dev server is reachable over LAN (testing the UI from a phone or another
  * laptop after running the vite frontend with `--host`). The auth-secret check in

@@ -18,8 +18,6 @@ import {
     type ResizeNotification,
     type SimpleResponse,
     type StatusResponse,
-    type VscodeEnsureResponse,
-    type VscodeListResponse,
 } from './protocol.js';
 import {
     attachPane,
@@ -30,7 +28,6 @@ import {
     restartPane,
     writeToPane,
 } from './pty-pool.js';
-import {ensureVscode, killAllVscode, killVscode, listVscode} from './vscode-pool.js';
 
 const log = createDaemonLog();
 
@@ -198,43 +195,6 @@ const server = createServer((socket) => {
             };
             socket.write(encodeControlFrame(response));
             socket.end();
-        } else if (handshake.action === DaemonAction.VscodeEnsure) {
-            ensureVscode({
-                folder: handshake.folder,
-                basePath: handshake.basePath,
-            })
-                .then((port) => {
-                    const response: VscodeEnsureResponse = {
-                        ok: true,
-                        port,
-                    };
-                    socket.write(encodeControlFrame(response));
-                    socket.end();
-                })
-                .catch((error: unknown) => {
-                    const message = error instanceof Error ? error.message : String(error);
-                    log(`vscode-ensure failed for ${handshake.folder}: ${message}`);
-                    const response: ErrorResponse = {
-                        ok: false,
-                        error: message,
-                    };
-                    socket.write(encodeControlFrame(response));
-                    socket.end();
-                });
-        } else if (handshake.action === DaemonAction.VscodeKill) {
-            killVscode(handshake.folder);
-            const response: SimpleResponse = {
-                ok: true,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
-        } else if (handshake.action === DaemonAction.VscodeList) {
-            const response: VscodeListResponse = {
-                ok: true,
-                instances: listVscode(),
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
         } else {
             const response: SimpleResponse = {
                 ok: true,
@@ -264,7 +224,6 @@ server.listen(daemonSocketPath, () => {
 function shutdown(signal: string): void {
     log(`${signal} received, shutting down`);
     killAllPanes();
-    killAllVscode();
     server.close(() => {
         if (existsSync(daemonSocketPath)) {
             try {
@@ -280,7 +239,6 @@ function shutdown(signal: string): void {
 function forceShutdown(reason: string): void {
     log(`force shutdown: ${reason}`);
     killAllPanes();
-    killAllVscode();
     if (existsSync(daemonSocketPath)) {
         try {
             unlinkSync(daemonSocketPath);

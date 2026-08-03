@@ -85,9 +85,6 @@ export enum DaemonAction {
      */
     SessionKill = 'session-kill',
     Shutdown = 'shutdown',
-    VscodeEnsure = 'vscode-ensure',
-    VscodeKill = 'vscode-kill',
-    VscodeList = 'vscode-list',
 }
 
 /**
@@ -162,36 +159,13 @@ export type ShutdownHandshake = {
     action: DaemonAction.Shutdown;
 };
 
-export type VscodeEnsureHandshake = {
-    action: DaemonAction.VscodeEnsure;
-    folder: string;
-    /**
-     * Path prefix that the backend's reverse proxy will mount the VS Code server under. The daemon
-     * passes this to `code serve-web` via `--server-base-path` so the asset URLs in the served HTML
-     * resolve correctly through the proxy. Empty string disables the base path.
-     */
-    basePath: string;
-};
-
-export type VscodeKillHandshake = {
-    action: DaemonAction.VscodeKill;
-    folder: string;
-};
-
-export type VscodeListHandshake = {
-    action: DaemonAction.VscodeList;
-};
-
 export type ClientHandshake =
     | AttachHandshake
     | StatusHandshake
     | RestartHandshake
     | KillHandshake
     | SessionKillHandshake
-    | ShutdownHandshake
-    | VscodeEnsureHandshake
-    | VscodeKillHandshake
-    | VscodeListHandshake;
+    | ShutdownHandshake;
 
 export type StatusEntry = {
     folder: string;
@@ -218,22 +192,6 @@ export type StatusResponse = {
 
 export type SimpleResponse = {
     ok: true;
-};
-
-export type VscodeEnsureResponse = {
-    ok: true;
-    port: number;
-};
-
-export type VscodeListEntry = {
-    folder: string;
-    port: number;
-    basePath: string;
-};
-
-export type VscodeListResponse = {
-    ok: true;
-    instances: VscodeListEntry[];
 };
 
 export type ErrorResponse = {
