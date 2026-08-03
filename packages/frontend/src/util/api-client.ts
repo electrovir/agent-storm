@@ -11,6 +11,10 @@ import {
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
     gitDiscardFileEndpoint,
+    gitHubCommentEndpoint,
+    gitHubPrEndpoint,
+    gitHubReactionEndpoint,
+    gitHubResolveThreadEndpoint,
     gitStageFileEndpoint,
     gitStageHunkEndpoint,
     hideRepoEndpoint,
@@ -31,6 +35,9 @@ import {
     type GitDiffFileContents,
     type GitDiffSide,
     type GitDiffStatus,
+    type GitHubCommentTarget,
+    type GitHubPr,
+    type GitHubReaction,
     type PaneKind,
     type UpdateStatus,
 } from '@agent-storm/common';
@@ -290,6 +297,48 @@ export async function discardGitFile(
 ): Promise<void> {
     await requestApi('POST /git/discard/file', () =>
         client.fetch(gitDiscardFileEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/** Null when the folder's branch has no PR, or GitHub isn't reachable through `gh`. */
+export async function getGitHubPr(
+    params: Readonly<{folder: string; forceRefresh: boolean}>,
+): Promise<GitHubPr | null> {
+    const data = await requestApi('POST /github/pr', () =>
+        client.fetch(gitHubPrEndpoint).POST({
+            requestData: params,
+        }),
+    );
+    return data.pr ?? null;
+}
+
+export async function postGitHubComment(
+    params: Readonly<{target: GitHubCommentTarget; subjectId: string; body: string}>,
+): Promise<void> {
+    await requestApi('POST /github/comment', () =>
+        client.fetch(gitHubCommentEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function setGitHubReaction(
+    params: Readonly<{subjectId: string; reaction: GitHubReaction; add: boolean}>,
+): Promise<void> {
+    await requestApi('POST /github/reaction', () =>
+        client.fetch(gitHubReactionEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function setGitHubThreadResolved(
+    params: Readonly<{threadId: string; resolved: boolean}>,
+): Promise<void> {
+    await requestApi('POST /github/thread/resolve', () =>
+        client.fetch(gitHubResolveThreadEndpoint).POST({
             requestData: params,
         }),
     );

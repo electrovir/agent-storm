@@ -63,3 +63,59 @@ export enum GitDiffSide {
     Staged = 'staged',
     Unstaged = 'unstaged',
 }
+
+/**
+ * Lifecycle state of a pull request, flattened from GitHub's separate `state` + `isDraft` fields
+ * into the one value the UI actually branches on.
+ */
+export enum GitHubPrState {
+    Draft = 'draft',
+    Open = 'open',
+    Merged = 'merged',
+    Closed = 'closed',
+}
+
+/**
+ * Aggregate CI result for the PR's head commit, collapsed from GitHub's `statusCheckRollup.state`.
+ * `None` covers both "the repo runs no checks" and "the rollup isn't computed yet".
+ */
+export enum GitHubCheckState {
+    None = 'none',
+    Pending = 'pending',
+    Success = 'success',
+    Failure = 'failure',
+}
+
+/** One reviewer's latest verdict on the PR. */
+export enum GitHubReviewState {
+    Approved = 'approved',
+    ChangesRequested = 'changesRequested',
+    Commented = 'commented',
+    Dismissed = 'dismissed',
+    Pending = 'pending',
+}
+
+/**
+ * Where a new comment lands. A thread reply is addressed by the review thread's node id; a
+ * conversation comment by the pull request's own node id.
+ */
+export enum GitHubCommentTarget {
+    Thread = 'thread',
+    Conversation = 'conversation',
+}
+
+/**
+ * The eight reactions GitHub allows on a comment. Values are GitHub's own `ReactionContent` enum
+ * literals so they can be handed straight to the `addReaction` / `removeReaction` mutations without
+ * a translation table.
+ */
+export enum GitHubReaction {
+    ThumbsUp = 'THUMBS_UP',
+    ThumbsDown = 'THUMBS_DOWN',
+    Laugh = 'LAUGH',
+    Hooray = 'HOORAY',
+    Confused = 'CONFUSED',
+    Heart = 'HEART',
+    Rocket = 'ROCKET',
+    Eyes = 'EYES',
+}

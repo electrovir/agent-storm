@@ -4,6 +4,7 @@ import {
     PaneStatus,
     type Config,
     type FolderInfo,
+    type RepoConfig,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {awaitedForEach, log, wait} from '@augment-vir/common';
@@ -28,14 +29,33 @@ import {getPaneStatusLookup} from './pty.js';
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
 /**
- * How long a freshly-fetched per-repo PR map is reused before the next folder sweep re-fetches it.
- * Per-repo (not per-branch) caching is what keeps GitHub traffic small: one GraphQL call per unique
- * repo per ~1 min, regardless of how many worktrees the user has against that repo. At 20 nodes per
- * call this comes out to ~1200 GraphQL points/hour per active repo — still well under the 5000
- * points/hour primary rate limit, but watch the per-call `cost=` log line if multiple repos are
- * active simultaneously since traffic scales linearly with active-repo count.
+ * How long a per-repo PR map is reused before a sweep re-fetches it. Per-repo (not per-branch)
+ * caching is what keeps GitHub traffic small: one GraphQL call per unique repo, regardless of how
+ * many worktrees the user has against it. Each call costs GitHub 1 GraphQL point, so a user with
+ * twenty repos spends ~40 points/hour against the 5000/hour limit.
+ *
+ * Two tiers, because a repo you're working in should notice a new PR quickly and a repo you last
+ * touched in March does not:
+ *
+ * - Hot: the repo has a live pane, or you activated it within {@link recentInteractionMs}.
+ * - Cold: everything else that's still visible in the sidebar.
+ *
+ * Note that these govern only when a _refresh_ happens. A cached map is served no matter how old it
+ * is (see {@link getCachedRepoPrMap}), which is what keeps PR markers on screen for repos that
+ * aren't being refreshed at all.
  */
-const repoPrCacheTtlMs = 60 * 1000;
+const hotRepoPrTtlMs = 5 * 60 * 1000;
+const coldRepoPrTtlMs = 30 * 60 * 1000;
+
+/** How long after the user last activated a repo it still counts as hot. */
+const recentInteractionMs = 10 * 60 * 1000;
+
+/**
+ * Recency window for the sidebar's "Hide Inactive" filter, mirroring `recencyWindow` in
+ * `vir-sidebar.element.ts`. A standalone repo outside this window with no live pane isn't rendered
+ * while the filter is on, so there's no marker for a PR fetch to feed.
+ */
+const sidebarRecencyWindowMs = 7 * 24 * 60 * 60 * 1000;
 
 type RepoPrCacheEntry = {
     fetchedAt: number;
@@ -44,6 +64,25 @@ type RepoPrCacheEntry = {
 
 /** Key: `${owner}/${name}`. See {@link repoCacheKey}. */
 const repoPrCache = new Map<string, RepoPrCacheEntry>();
+
+/**
+ * Repo paths (the {@link repoActivityKey} group key) that have produced at least one PR at some
+ * point. Sticky and persisted: once a repo is known to be a repo the user opens PRs against, it
+ * stays eligible for polling even after its last PR ages out of the 7-day terminal window.
+ *
+ * This is what lets the sweep skip plain repos entirely — no worktrees, no PR ever seen means the
+ * user doesn't do PR work there and a GraphQL call for it is pure waste. Such a repo re-qualifies
+ * the moment it becomes active (a live pane or a fresh activation), which is exactly when its first
+ * PR would appear, so the exclusion can't strand a repo forever.
+ */
+const everHadPrRepoPaths = new Set<string>();
+
+function markRepoHadPr(repoPath: string): void {
+    if (!everHadPrRepoPaths.has(repoPath)) {
+        everHadPrRepoPaths.add(repoPath);
+        persistGithubCache();
+    }
+}
 
 /**
  * Per-folder resolved GitHub slug. The slug comes from `git remote get-url origin` and never
@@ -210,39 +249,36 @@ async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
     return slug;
 }
 
+/**
+ * The repo's branch → PR lookup, refreshing it first if the cached copy is older than
+ * `refreshTtlMs`. An `undefined` TTL means "never refresh this repo" (it isn't visible in the
+ * sidebar).
+ *
+ * Whatever is cached is always returned, however stale, and that's deliberate: a marker built from
+ * an hour-old fetch is right far more often than no marker at all, and the alternative — returning
+ * an empty map whenever a refresh is skipped — is what made PRs vanish from the sidebar for every
+ * repo the user wasn't actively running a pane in.
+ */
 async function getCachedRepoPrMap(
     slug: Readonly<RepoSlug>,
-    allowFetch: boolean,
+    refreshTtlMs: number | undefined,
 ): Promise<Map<string, PrInfo>> {
-    /**
-     * Belt-and-braces gate against the user's manual kill-switch. The high-level caller in
-     * `buildFolderInfo` already short-circuits on `disabledGitHubPolling`, but checking here too
-     * means any future call path can't accidentally bypass the user's preference — even cache
-     * misses get short-circuited before any network call could be attempted.
-     */
-    if (isUserPollingDisabled()) {
-        return new Map();
-    }
     const key = repoCacheKey(slug);
-    const existing = repoPrCache.get(key);
-    if (existing && Date.now() - existing.fetchedAt < repoPrCacheTtlMs) {
-        return existing.prsByBranch;
-        /**
-         * The caller-decided gate: skip the network trip entirely when the repo has no active
-         * panes. Cache hits above still serve stale data (within the TTL) so the sidebar's PR
-         * badges stay accurate for inactive folders; we just don't spend GraphQL points refreshing
-         * them.
-         */
-    } else if (!allowFetch) {
-        return new Map();
-        /**
-         * Belt-and-braces gate: `buildFolderInfo` already short-circuits on the per-sweep
-         * `disabledGitHubPolling` flag, but that flag is captured once at sweep start so a folder
-         * that triggers auto-disable mid-sweep would still let later folders in the same sweep hit
-         * the API. Re-check on every call so the very next folder skips its own GraphQL trip.
-         */
-    } else if (isAutoDisabled()) {
-        return new Map();
+    const cached = repoPrCache.get(key)?.prsByBranch || new Map<string, PrInfo>();
+    const fetchedAt = repoPrCache.get(key)?.fetchedAt || 0;
+    /**
+     * Both kill-switches are re-checked here rather than trusted from the caller: the per-sweep
+     * flag in `buildFolderInfo` is captured once at sweep start, so a folder that trips
+     * auto-disable mid-sweep would otherwise let every later folder in that same sweep hit the
+     * API.
+     */
+    if (
+        isUserPollingDisabled() ||
+        isAutoDisabled() ||
+        refreshTtlMs == undefined ||
+        Date.now() - fetchedAt < refreshTtlMs
+    ) {
+        return cached;
     }
     try {
         const prsByBranch = await fetchRepoPrs(slug);
@@ -255,7 +291,7 @@ async function getCachedRepoPrMap(
     } catch (error) {
         if (error instanceof GitHubPollingError) {
             markAutoDisabled(error.reason, error.message);
-            return new Map();
+            return cached;
         }
         throw error;
     }
@@ -264,7 +300,7 @@ async function getCachedRepoPrMap(
 async function getCachedPrInfo(
     folder: string,
     branch: string | null,
-    allowFetch: boolean,
+    refreshTtlMs: number | undefined,
 ): Promise<PrInfo | null> {
     if (!branch) {
         return null;
@@ -273,7 +309,7 @@ async function getCachedPrInfo(
     if (!slug) {
         return null;
     }
-    const prsByBranch = await getCachedRepoPrMap(slug, allowFetch);
+    const prsByBranch = await getCachedRepoPrMap(slug, refreshTtlMs);
     return prsByBranch.get(branch) || null;
 }
 
@@ -374,18 +410,21 @@ async function buildFolderInfo({
     target,
     statusLookup,
     disabledGitHubPolling,
-    repoHasActivePane,
+    prRefreshTtlMs,
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
     disabledGitHubPolling: boolean;
-    repoHasActivePane: boolean;
+    prRefreshTtlMs: number | undefined;
 }>): Promise<FolderInfo> {
     const git = await getGitInfo(target.folder);
     const pr =
         target.isWorktreeRoot || disabledGitHubPolling
             ? null
-            : await getCachedPrInfo(target.folder, git.branch, repoHasActivePane);
+            : await getCachedPrInfo(target.folder, git.branch, prRefreshTtlMs);
+    if (pr) {
+        markRepoHadPr(repoActivityKey(target));
+    }
     return {
         path: target.folder,
         name: basename(target.folder),
@@ -545,8 +584,17 @@ async function loadPersistedCache(): Promise<void> {
                     path,
                     info,
                 ]) => {
-                    if (checkValidShape(info, folderInfoShape)) {
-                        cache.set(path, info);
+                    if (!checkValidShape(info, folderInfoShape)) {
+                        return;
+                    }
+                    cache.set(path, info);
+                    /**
+                     * Seed the eligibility set from last session's markers. Without this, upgrading
+                     * into the eligibility rule would make every repo whose PRs are already known
+                     * ineligible until something made it active again.
+                     */
+                    if (info.prUrl) {
+                        everHadPrRepoPaths.add(info.parentRepoPath || info.path);
                     }
                 },
             );
@@ -571,6 +619,8 @@ type PersistedGithubCache = {
             },
         ]
     >;
+    /** Repo paths from {@link everHadPrRepoPaths}. */
+    everHadPr?: ReadonlyArray<string>;
 };
 
 const githubPersistState: {pending: Promise<void>} = {
@@ -592,6 +642,7 @@ function persistGithubCache(): void {
                 },
             ],
         ),
+        everHadPr: Array.from(everHadPrRepoPaths),
     };
     githubPersistState.pending = githubPersistState.pending
         .catch(() => {
@@ -621,12 +672,12 @@ async function loadPersistedGithubCache(): Promise<void> {
                     key,
                     entry,
                 ]) => {
-                    if (
-                        typeof entry?.fetchedAt !== 'number' ||
-                        !Array.isArray(entry.prs) ||
-                        /** Drop already-expired entries so we don't pretend stale data is fresh. */
-                        Date.now() - entry.fetchedAt >= repoPrCacheTtlMs
-                    ) {
+                    /**
+                     * Age is deliberately not checked. `fetchedAt` is carried through as-is so the
+                     * TTL tiers schedule a refresh, and until that refresh lands the sidebar shows
+                     * last session's PR markers instead of nothing.
+                     */
+                    if (typeof entry?.fetchedAt !== 'number' || !Array.isArray(entry.prs)) {
                         return;
                     }
                     repoPrCache.set(key, {
@@ -636,6 +687,9 @@ async function loadPersistedGithubCache(): Promise<void> {
                 },
             );
         }
+        (parsed.everHadPr || []).filter(check.isString).forEach((repoPath) => {
+            everHadPrRepoPaths.add(repoPath);
+        });
     } catch {
         /* corrupted persisted file — ignore and let the live sweep rebuild it */
     }
@@ -652,7 +706,8 @@ const perFolderDelayMs = 100;
  * Idle pause after each complete sweep through every folder. Tuned so the full cycle (sweep + idle)
  * lands near ~10s for typical folder counts, so the sidebar's `*` / `+` markers reflect dirty / not
  * pushed state within a poll interval of git activity. PR fetches piggy-back on this sweep but are
- * gated by the 10-min `repoPrCacheTtlMs`, so a faster sweep does not mean more GitHub traffic.
+ * gated by {@link hotRepoPrTtlMs} / {@link coldRepoPrTtlMs}, so a faster sweep does not mean more
+ * GitHub traffic.
  */
 const sweepIdleMs = 5000;
 
@@ -660,19 +715,19 @@ async function refreshOnce({
     target,
     statusLookup,
     disabledGitHubPolling,
-    repoHasActivePane,
+    prRefreshTtlMs,
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
     disabledGitHubPolling: boolean;
-    repoHasActivePane: boolean;
+    prRefreshTtlMs: number | undefined;
 }>): Promise<void> {
     try {
         const info = await buildFolderInfo({
             target,
             statusLookup,
             disabledGitHubPolling,
-            repoHasActivePane,
+            prRefreshTtlMs,
         });
         cache.set(target.folder, info);
         persistCache();
@@ -695,20 +750,77 @@ function repoActivityKey(target: RefreshTarget): string {
     return target.parentRepoPath || target.folder;
 }
 
-function computeActiveRepoKeys(
-    targets: ReadonlyArray<RefreshTarget>,
-    statusLookup: PaneStatusLookup,
-): Set<string> {
-    const active = new Set<string>();
-    targets.forEach((target) => {
-        if (
-            isLivePaneStatus(statusLookup(target.folder, PaneKind.Ai)) ||
-            isLivePaneStatus(statusLookup(target.folder, PaneKind.Shell))
-        ) {
-            active.add(repoActivityKey(target));
-        }
-    });
-    return active;
+/**
+ * Decide, per repo, how stale its PR map may get before a sweep re-fetches it — or `undefined` for
+ * "never re-fetch this one".
+ *
+ * A repo earns a GraphQL call only if one of three things is true:
+ *
+ * 1. It's active — a live AI/Shell pane, or activated within {@link recentInteractionMs}. This is the
+ *    server-side stand-in for "the folder the user has selected", which the backend can't see
+ *    directly (the selection lives in the frontend URL).
+ * 2. It has worktrees, meaning the group is a worktree-root and its children. Worktree-per-branch is
+ *    the PR workflow, so these always qualify.
+ * 3. It has produced a PR before — see {@link everHadPrRepoPaths}.
+ *
+ * A plain repo with no worktrees that has never shown a PR is skipped entirely. Nothing about it
+ * would ever render a PR marker, so the call would only spend rate limit.
+ *
+ * On top of eligibility, a repo the sidebar isn't rendering is skipped too. That mirrors the "Hide
+ * Inactive" rule (`filterByRecency` in `vir-sidebar.element.ts`) and reads the same inputs, all of
+ * which are already server-side. The sidebar's search box is deliberately ignored — it's transient,
+ * and it only ever widens what's on screen.
+ *
+ * Exported for tests.
+ */
+export function computeRepoPrRefreshTtlByRepo({
+    targets,
+    statusLookup,
+    repos,
+    onlyShowRecent,
+    everHadPrPaths,
+    nowMs,
+}: Readonly<{
+    targets: ReadonlyArray<RefreshTarget>;
+    statusLookup: PaneStatusLookup;
+    repos: ReadonlyArray<RepoConfig>;
+    onlyShowRecent: boolean;
+    everHadPrPaths: ReadonlySet<string>;
+    nowMs: number;
+}>): Map<string, number | undefined> {
+    const groupKeys = Array.from(new Set(targets.map(repoActivityKey)));
+    return new Map(
+        groupKeys.map((key) => {
+            const groupTargets = targets.filter((target) => repoActivityKey(target) === key);
+            const hasLivePane = groupTargets.some(
+                (target) =>
+                    isLivePaneStatus(statusLookup(target.folder, PaneKind.Ai)) ||
+                    isLivePaneStatus(statusLookup(target.folder, PaneKind.Shell)),
+            );
+            const isWorktreeGroup = groupTargets.some(
+                (target) => target.isWorktreeRoot || !!target.parentRepoPath,
+            );
+            const msSinceInteraction =
+                nowMs - (repos.find((repo) => repo.path === key)?.lastInteractedAtMs || 0);
+            const isActive = hasLivePane || msSinceInteraction < recentInteractionMs;
+            const isEligible = isActive || isWorktreeGroup || everHadPrPaths.has(key);
+            const isVisible =
+                !onlyShowRecent ||
+                isWorktreeGroup ||
+                hasLivePane ||
+                msSinceInteraction < sidebarRecencyWindowMs;
+            if (!isEligible || !isVisible) {
+                return [
+                    key,
+                    undefined,
+                ];
+            }
+            return [
+                key,
+                isActive ? hotRepoPrTtlMs : coldRepoPrTtlMs,
+            ];
+        }),
+    );
 }
 
 async function runSweep(): Promise<void> {
@@ -726,12 +838,17 @@ async function runSweep(): Promise<void> {
     const statusLookup = await getPaneStatusLookup();
     const disabledGitHubPolling = isGitHubPollingDisabled(config);
     /**
-     * Snapshot which repos have at least one live pane (AI or Shell, Busy or Idle) at sweep start.
-     * `getCachedRepoPrMap` uses this to skip the GraphQL fetch for repos the user isn't actively
-     * working with — cache hits still serve their stale data, but no network trip is spent
-     * refreshing PRs for an inactive repo.
+     * Snapshot each repo's PR refresh interval at sweep start. Whatever is already cached is served
+     * regardless; this only decides which repos spend a GraphQL call this time around.
      */
-    const activeRepoKeys = computeActiveRepoKeys(targets, statusLookup);
+    const prRefreshTtlByRepo = computeRepoPrRefreshTtlByRepo({
+        targets,
+        statusLookup,
+        repos: config.repos,
+        onlyShowRecent: !!config.onlyShowRecent,
+        everHadPrPaths: everHadPrRepoPaths,
+        nowMs: Date.now(),
+    });
     /**
      * Sequential on purpose: parallel refresh is what created the original 100% CPU problem.
      * `awaitedForEach` awaits each callback before invoking the next, so subprocess pressure stays
@@ -742,7 +859,7 @@ async function runSweep(): Promise<void> {
             target,
             statusLookup,
             disabledGitHubPolling,
-            repoHasActivePane: activeRepoKeys.has(repoActivityKey(target)),
+            prRefreshTtlMs: prRefreshTtlByRepo.get(repoActivityKey(target)),
         });
         await wait({
             milliseconds: perFolderDelayMs,
