@@ -70,6 +70,12 @@ export const sidebarWidth = {
     default: 280,
 } as const;
 
+export const diffSidebarWidth = {
+    min: 140,
+    max: 700,
+    default: 260,
+} as const;
+
 export const paneSplit = {
     min: 0.1,
     max: 0.9,
@@ -115,6 +121,16 @@ export const localStorageClient = {
             clamp({
                 value: Number.parseFloat(raw),
                 bounds: sidebarWidth,
+            }),
+        serialize: (value) => String(value),
+    }),
+    diffSidebarWidth: defineSetting<number>({
+        key: 'agent-storm:diff-sidebar-width',
+        defaultValue: diffSidebarWidth.default,
+        parse: (raw) =>
+            clamp({
+                value: Number.parseFloat(raw),
+                bounds: diffSidebarWidth,
             }),
         serialize: (value) => String(value),
     }),

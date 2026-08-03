@@ -34,23 +34,23 @@ export type FrontendPaths = typeof frontendPathTree.PathsType;
 
 /**
  * Which pane the user is focused on. On desktop, `ai` and `shell` both render the "CLI" tab with
- * both panes visible side-by-side (their difference doesn't affect the layout); `code` shows the VS
- * Code iframe. On mobile, each value shows exactly one pane.
+ * both panes visible side-by-side (their difference doesn't affect the layout); `diff` shows the
+ * diff viewer. On mobile, each value shows exactly one pane.
  */
-export type FrontendTab = 'ai' | 'shell' | 'code';
+export type FrontendTab = 'ai' | 'shell' | 'diff';
 
 export const defaultFrontendTab: FrontendTab = 'ai';
 
 const allowedTabValues: ReadonlyArray<FrontendTab> = [
     'ai',
     'shell',
-    'code',
+    'diff',
 ];
 
 /**
  * Search params allowed on the URL.
  *
- * - `tab` — `'ai' | 'shell' | 'code'`. Only kept on repo-selection routes (`/<repoName>` or
+ * - `tab` — `'ai' | 'shell' | 'diff'`. Only kept on repo-selection routes (`/<repoName>` or
  *   `/<repoName>/<worktreeName>`); stripped everywhere else. Absent param ⇒ `ai` (default).
  * - `aiSession` / `shellSession` — 1-based index of the active session tab within that pane. Two
  *   separate params rather than one because desktop renders the AI and Shell panes simultaneously,

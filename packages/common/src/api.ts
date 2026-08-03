@@ -1,7 +1,16 @@
+// cspell:words numstat, unstages
+
 import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from '@rest-vir/api';
 import {defineShape, enumShape, nullableShape, unionShape} from 'object-shape-tester';
 import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-vir';
-import {PaneKind, PaneStatus, SidebarGrouping, SidebarSorting} from './enums.js';
+import {
+    GitDiffSide,
+    GitFileChange,
+    PaneKind,
+    PaneStatus,
+    SidebarGrouping,
+    SidebarSorting,
+} from './enums.js';
 
 const stringMessageShape = defineShape('');
 
@@ -430,6 +439,170 @@ const repoTouchRequestShape = defineShape({
     folder: '',
 });
 
+/**
+ * One changed file in the Diff pane's file list. `insertions` / `deletions` come from `git diff
+ * --numstat` and are both `0` for untracked files (git has nothing to compare against) and for
+ * binary files.
+ */
+const gitDiffFileShape = defineShape({
+    /** Repo-relative path, always the current (post-rename) path. */
+    path: '',
+    change: enumShape(GitFileChange),
+    /** Previous path, only set when `change` is {@link GitFileChange.Renamed}. */
+    oldPath: nullableShape(''),
+    insertions: 0,
+    deletions: 0,
+});
+
+/**
+ * The two halves of `git status`, kept separate rather than merged. A partially-staged file is in
+ * both lists at once, with different content on each side.
+ */
+const gitDiffStatusResponseShape = defineShape({
+    staged: [gitDiffFileShape],
+    unstaged: [gitDiffFileShape],
+});
+
+const gitDiffFileRequestShape = defineShape({
+    folder: '',
+    /** Repo-relative path, exactly as it came back from {@link gitDiffStatusEndpoint}. */
+    path: '',
+    /**
+     * The file's pre-rename path, when it has one. Without it a renamed file has no `HEAD:<path>`
+     * to read and would render as an all-new file instead of a diff.
+     */
+    oldPath: nullableShape(''),
+    side: enumShape(GitDiffSide),
+});
+
+/** Both sides of one file's diff as plain text, for the requested {@link GitDiffSide}. */
+const gitDiffFileResponseShape = defineShape({
+    /** Contents at `HEAD` (staged side) or in the index (unstaged side). */
+    oldContent: '',
+    /** Contents in the index (staged side) or the working tree (unstaged side). */
+    newContent: '',
+    /**
+     * True when either side is binary or past {@link maxDiffFileBytes}. Both content fields are
+     * empty in that case and the pane shows a placeholder instead of a diff.
+     */
+    tooLargeOrBinary: false,
+});
+
+const gitFileRequestShape = defineShape({
+    folder: '',
+    path: '',
+});
+
+const gitStageFileRequestShape = defineShape({
+    folder: '',
+    path: '',
+    /**
+     * Which direction to move the whole file. `Unstaged` means "this file is currently on the
+     * unstaged side", so the operation stages it; `Staged` unstages it.
+     */
+    side: enumShape(GitDiffSide),
+});
+
+/**
+ * One contiguous change to move across the index, addressed by the line ranges the client is
+ * already displaying. Ranges are 0-based and half-open, into the `oldContent` / `newContent` the
+ * client got from {@link gitDiffFileEndpoint} for this same `side`. The server rebuilds those two
+ * documents and turns the ranges into a real patch, so a stale range fails the `git apply` instead
+ * of silently staging the wrong lines.
+ */
+const gitStageHunkRequestShape = defineShape({
+    folder: '',
+    path: '',
+    oldPath: nullableShape(''),
+    side: enumShape(GitDiffSide),
+    fromOldLine: 0,
+    toOldLine: 0,
+    fromNewLine: 0,
+    toNewLine: 0,
+});
+
+export const gitDiffStatusEndpoint = defineEndpoint({
+    path: '/git/diff/status',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: folderActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: gitDiffStatusResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const gitDiffFileEndpoint = defineEndpoint({
+    path: '/git/diff/file',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitDiffFileRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: gitDiffFileResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const gitStageFileEndpoint = defineEndpoint({
+    path: '/git/stage/file',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitStageFileRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Throws away every change to one file, on both sides of the index at once: the index entry goes
+ * back to `HEAD` and the working tree copy follows. An untracked file is deleted, since it has no
+ * `HEAD` state to return to. Irreversible, so the frontend confirms before calling it.
+ */
+export const gitDiscardFileEndpoint = defineEndpoint({
+    path: '/git/discard/file',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitFileRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const gitStageHunkEndpoint = defineEndpoint({
+    path: '/git/stage/hunk',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitStageHunkRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Files above this size skip content loading entirely. A multi-megabyte file would be diffed
+ * character-by-character in the browser, which is exactly the mobile stall the Diff pane exists to
+ * avoid.
+ */
+export const maxDiffFileBytes = 2 * 1024 * 1024;
+
 export const configEndpoint = defineEndpoint({
     path: '/config',
     requests: {
@@ -748,6 +921,11 @@ export const agentStormService = defineApi({
         checkPathEndpoint,
         createPathEndpoint,
         uploadEndpoint,
+        gitDiffStatusEndpoint,
+        gitDiffFileEndpoint,
+        gitStageFileEndpoint,
+        gitStageHunkEndpoint,
+        gitDiscardFileEndpoint,
     ],
     webSockets: [ptyWebSocket],
 });
@@ -764,3 +942,6 @@ export type FolderInfo = typeof folderInfoShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
 export type SessionMeta = typeof sessionMetaShape.runtimeType;
 export type FolderSessions = typeof sessionsResponseShape.runtimeType;
+export type GitDiffFile = typeof gitDiffFileShape.runtimeType;
+export type GitDiffFileContents = typeof gitDiffFileResponseShape.runtimeType;
+export type GitDiffStatus = typeof gitDiffStatusResponseShape.runtimeType;

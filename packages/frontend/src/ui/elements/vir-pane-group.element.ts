@@ -16,9 +16,7 @@ import {
 import {
     closeSession,
     createSession,
-    ensureVscode,
     getFolderSessions,
-    killVscode,
     renameSession,
     resetAiSession,
     restartPane,
@@ -26,7 +24,7 @@ import {
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
-import {getBackendBaseUrl} from '../../util/service-origin.js';
+import {VirDiffPane} from './vir-diff-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 /** Tab label: the user's name when set, otherwise the tab's 1-based position. */
@@ -64,9 +62,9 @@ export const VirPaneGroup = defineElement<{
      */
     active: boolean;
     /**
-     * Currently-active tab — `'ai' | 'shell' | 'code'`. Driven by the `?tab=...` search param up at
-     * the app level so the URL is the source of truth. On desktop, both `ai` and `shell` render the
-     * CLI layout (split panes); on mobile each value shows exactly one pane.
+     * Currently-active tab — `'ai' | 'shell' | 'diff'`. Driven by the `?tab=...` param at the app
+     * level so the URL is the source of truth. On desktop, both `ai` and `shell` render the CLI
+     * layout (split panes); on mobile each value shows exactly one pane.
      */
     activeTab: FrontendTab;
     /**
@@ -130,22 +128,11 @@ export const VirPaneGroup = defineElement<{
              */
             focusedKind: undefined as PaneKind | undefined,
             /**
-             * VS Code iframe URL for THIS folder. Set after the first `ensureVscode` resolves; once
-             * set, the iframe stays mounted (hidden when CLI tab is active) so its in-memory editor
-             * state survives toggling between tabs. Cleared on close-button click.
+             * Set true the first time the user opens the Diff tab, and never reset. The diff pane
+             * costs nothing while hidden (it holds no socket and no subprocess), so keeping it
+             * mounted preserves its selected file and scroll position across tab switches.
              */
-            vscodeUrl: undefined as string | undefined,
-            vscodeLoading: false,
-            vscodeError: undefined as string | undefined,
-            /**
-             * Set true when the user clicks the close (×) button next to the Code tab. While true,
-             * the render-time auto-ensure block is suppressed so the just-killed VS Code doesn't
-             * immediately respawn during the brief window where `codeTabActive` is still observed
-             * as true (the cliTabRequested event needs a round-trip through vir-app's router state
-             * before the prop flips). Reset to false when the user explicitly re-requests the Code
-             * tab via the tab-bar button.
-             */
-            vscodeUserClosed: false,
+            diffMounted: false,
         };
     },
     styles: css`
@@ -157,10 +144,12 @@ export const VirPaneGroup = defineElement<{
         }
 
         /*
-         * Mobile-only strip naming the active folder. Sits above the tab bar and is tall enough to
-         * fully contain vir-app's absolutely-positioned hamburger (top-left of the stage), so the
-         * tab bar below it stays clear of the hamburger and needs no left padding of its own. The
-         * symmetric horizontal padding keeps the name centered while clearing the hamburger.
+         * Mobile-only strip naming the active folder. Sits above the tab bar and has to fully
+         * contain vir-app's absolutely-positioned hamburger (top-left of the stage, 6px inset on a
+         * 24px button), so the tab bar below it stays clear of the hamburger and needs no left
+         * padding of its own. 32px is that button's extent and nothing more — this strip is pure
+         * overhead on a phone screen. The symmetric horizontal padding keeps the name centered
+         * while clearing the hamburger.
          */
         .folder-name-bar {
             flex-grow: 0;
@@ -169,8 +158,8 @@ export const VirPaneGroup = defineElement<{
             align-items: center;
             justify-content: center;
             box-sizing: border-box;
-            min-height: 44px;
-            padding: 0 44px;
+            min-height: 32px;
+            padding: 0 34px;
             border-bottom: 1px solid
                 ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
         }
@@ -181,7 +170,7 @@ export const VirPaneGroup = defineElement<{
             white-space: nowrap;
             text-overflow: ellipsis;
             font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 600;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
@@ -219,27 +208,6 @@ export const VirPaneGroup = defineElement<{
             border-bottom-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
         }
 
-        .close-vscode {
-            appearance: none;
-            background: transparent;
-            border: none;
-            padding: 4px 6px;
-            margin: 2px 2px 2px 0;
-            border-radius: 3px;
-            cursor: pointer;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            font: inherit;
-            line-height: 1;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .close-vscode:hover {
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
-            background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
-        }
-
         .body {
             display: flex;
             flex-direction: row;
@@ -249,61 +217,24 @@ export const VirPaneGroup = defineElement<{
             position: relative;
         }
 
-        .code-pane,
+        .diff-pane,
         .cli-panes {
             position: absolute;
             inset: 0;
             display: flex;
             flex-direction: row;
-            /*
-             * Clip the iframe's negative margin-top so the shifted-up VS Code workbench doesn't
-             * overflow into the tab strip above the pane group. See .vscode-iframe below for the
-             * offset itself.
-             */
             overflow: hidden;
         }
 
-        .code-pane[data-hidden],
+        .diff-pane[data-hidden],
         .cli-panes[data-hidden] {
-            /* Keep the iframe mounted across CLI ↔ Code toggles so VS Code's in-memory editor
-               state (open files, scroll positions, terminal contents inside the editor) survives.
-               visibility:hidden + pointer-events:none preserves the iframe document while making
-               the hidden side click-through inert. */
+            /*
+             * Keep the hidden side mounted so its scroll position and, for the terminals, their
+             * live PTY sockets survive a tab switch. Hiding by visibility preserves all of that,
+             * and killing pointer events makes the hidden side inert to clicks.
+             */
             visibility: hidden;
             pointer-events: none;
-        }
-
-        .vscode-iframe {
-            /*
-             * Shift the iframe up by VS Code's now-hidden (via visibility: hidden in the proxy's
-             * injected CSS) title bar height so the empty slot sits behind the agent-storm tab
-             * strip. The titlebar still participates in VS Code's grid layout (we kept its slot,
-             * just made the bar invisible) so the workbench's grid math stays correct — only the
-             * visible offset is adjusted from this side. Bump --vscode-titlebar-offset if your VS
-             * Code version has a different titlebar height; 35px matches stable serve-web today.
-             */
-            --vscode-titlebar-offset: 35px;
-            width: 100%;
-            height: calc(100% + var(--vscode-titlebar-offset));
-            margin-top: calc(-1 * var(--vscode-titlebar-offset));
-            border: none;
-            /* Load-time backdrop behind the VS Code iframe (VS Code paints its own theme over this
-               once it boots). Use a neutral theme surface so the flash matches the app's theme. */
-            background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
-        }
-
-        .vscode-status {
-            flex: 1 1 auto;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 13px;
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-        }
-
-        .vscode-error {
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
         }
 
         .pane {
@@ -869,7 +800,7 @@ export const VirPaneGroup = defineElement<{
         const aiFocused = focusedKind === PaneKind.Ai;
         const shellFocused = focusedKind === PaneKind.Shell;
 
-        const isCodeTab = inputs.activeTab === 'code';
+        const isDiffTab = inputs.activeTab === 'diff';
         const isMobile = inputs.screenSize === ScreenSize.Mobile;
         /** Basename of the folder path — matches how folder names are derived elsewhere. */
         const folderName = inputs.folder.split('/').findLast(Boolean) || inputs.folder;
@@ -877,13 +808,14 @@ export const VirPaneGroup = defineElement<{
          * Pane visibility decision matrix:
          *
          * - Desktop, tab=ai|shell → both AI + Shell visible (the existing split layout).
-         * - Desktop, tab=code → VS Code iframe visible (panes hidden).
-         * - Mobile, tab=ai → only AI pane visible (Shell + divider + iframe hidden).
+         * - Desktop, tab=diff → the diff pane visible (both terminals hidden).
+         * - Mobile, tab=ai → only AI pane visible.
          * - Mobile, tab=shell → only Shell pane visible.
-         * - Mobile, tab=code → only iframe visible.
+         * - Mobile, tab=diff → only the diff pane visible.
          */
-        const showAiPane = !isCodeTab && (!isMobile || inputs.activeTab === 'ai');
-        const showShellPane = !isCodeTab && (!isMobile || inputs.activeTab === 'shell');
+        const showCliPanes = !isDiffTab;
+        const showAiPane = showCliPanes && (!isMobile || inputs.activeTab === 'ai');
+        const showShellPane = showCliPanes && (!isMobile || inputs.activeTab === 'shell');
 
         /**
          * Whether to actually mount each terminal (vs. just hide it with CSS). On desktop both are
@@ -896,67 +828,19 @@ export const VirPaneGroup = defineElement<{
         const mountAiTerminal = !isMobile || showAiPane;
         const mountShellTerminal = !isMobile || showShellPane;
 
-        /**
-         * Lazy: kick off the VS Code spawn the first time the user activates the Code tab. Deferred
-         * via microtask so we don't mutate state during render. Once `vscodeUrl` is set the iframe
-         * stays mounted across CLI ↔ Code toggles.
-         */
-        if (
-            isCodeTab &&
-            !state.vscodeUrl &&
-            !state.vscodeLoading &&
-            !state.vscodeError &&
-            !state.vscodeUserClosed
-        ) {
+        if (isDiffTab && !state.diffMounted) {
             updateState({
-                vscodeLoading: true,
+                diffMounted: true,
             });
-            const folder = inputs.folder;
-            void ensureVscode({
-                folder,
-            })
-                .then(({basePath}) => {
-                    const url = `${getBackendBaseUrl()}${basePath}/?folder=${encodeURIComponent(folder)}`;
-                    updateState({
-                        vscodeUrl: url,
-                        vscodeLoading: false,
-                        vscodeError: undefined,
-                    });
-                })
-                .catch((error: unknown) => {
-                    updateState({
-                        vscodeLoading: false,
-                        vscodeError: error instanceof Error ? error.message : String(error),
-                    });
-                });
         }
-
-        const onCloseVscode = () => {
-            const folder = inputs.folder;
-            updateState({
-                vscodeUrl: undefined,
-                vscodeLoading: false,
-                vscodeError: undefined,
-                vscodeUserClosed: true,
-            });
-            void killVscode({
-                folder,
-            }).catch(() => {
-                /* server-side cleanup is best-effort; the iframe is already gone */
-            });
-            /** If the user closes VS Code while looking at the Code tab, snap back to the AI tab. */
-            if (isCodeTab) {
-                dispatch(new events.tabRequested('ai'));
-            }
-        };
 
         /**
          * Tab bar layout differs by screen size:
          *
-         * - Desktop: 2 tabs (CLI, Code). The CLI tab is the active one when `activeTab` is `ai` or
-         *   `shell` — the user can't tell them apart on desktop (both panes are visible) so we
+         * - Desktop: 3 tabs (CLI, Diff, Code). The CLI tab is the active one when `activeTab` is `ai`
+         *   or `shell` — the user can't tell them apart on desktop (both panes are visible) so we
          *   collapse them into one button. Clicking CLI sets `tab=ai` as a stable default.
-         * - Mobile: 3 tabs (AI, Shell, Code), each mapping directly to the URL param.
+         * - Mobile: 4 tabs (AI, Shell, Diff, Code), each mapping directly to the URL param.
          */
         const tabButtons: ReadonlyArray<{label: string; tab: FrontendTab; isActive: boolean}> =
             isMobile
@@ -972,35 +856,25 @@ export const VirPaneGroup = defineElement<{
                           isActive: inputs.activeTab === 'shell',
                       },
                       {
-                          label: 'Code',
-                          tab: 'code',
-                          isActive: isCodeTab,
+                          label: 'Diff',
+                          tab: 'diff',
+                          isActive: isDiffTab,
                       },
                   ]
                 : [
                       {
                           label: 'CLI',
                           tab: 'ai',
-                          isActive: !isCodeTab,
+                          isActive: showCliPanes,
                       },
                       {
-                          label: 'Code',
-                          tab: 'code',
-                          isActive: isCodeTab,
+                          label: 'Diff',
+                          tab: 'diff',
+                          isActive: isDiffTab,
                       },
                   ];
 
         const requestTab = (tab: FrontendTab) => {
-            /**
-             * Reset the user-closed flag on any Code-tab activation so the auto-ensure block fires
-             * fresh — without this, after closing VS Code the user would have to click Code, then
-             * click somewhere else, then click Code again to actually respawn it.
-             */
-            if (tab === 'code' && state.vscodeUserClosed) {
-                updateState({
-                    vscodeUserClosed: false,
-                });
-            }
             dispatch(new events.tabRequested(tab));
         };
 
@@ -1027,44 +901,20 @@ export const VirPaneGroup = defineElement<{
                         </button>
                     `,
                 )}
-                ${state.vscodeUrl
-                    ? html`
-                          <button
-                              type="button"
-                              class="close-vscode"
-                              title="Close VS Code for this folder"
-                              ${listen('click', onCloseVscode)}
-                          >
-                              ×
-                          </button>
-                      `
-                    : ''}
             </div>
             <div class="body">
-                ${state.vscodeUrl
+                ${state.diffMounted
                     ? html`
-                          <div class="code-pane" ?data-hidden=${!isCodeTab}>
-                              <iframe
-                                  class="vscode-iframe"
-                                  src=${state.vscodeUrl}
-                                  title="VS Code"
-                              ></iframe>
+                          <div class="diff-pane" ?data-hidden=${!isDiffTab}>
+                              <${VirDiffPane.assign({
+                                  folder: inputs.folder,
+                                  active: isDiffTab && inputs.active,
+                                  screenSize: inputs.screenSize,
+                              })}></${VirDiffPane}>
                           </div>
                       `
-                    : isCodeTab
-                      ? html`
-                            <div class="vscode-status">
-                                ${state.vscodeError
-                                    ? html`
-                                          <span class="vscode-error">
-                                              VS Code failed to start: ${state.vscodeError}
-                                          </span>
-                                      `
-                                    : 'Starting VS Code…'}
-                            </div>
-                        `
-                      : ''}
-                <div class="cli-panes" ?data-hidden=${isCodeTab} ?data-mobile=${isMobile}>
+                    : ''}
+                <div class="cli-panes" ?data-hidden=${!showCliPanes} ?data-mobile=${isMobile}>
                     ${inputs.aiHidden
                         ? ''
                         : html`

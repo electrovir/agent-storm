@@ -1,3 +1,5 @@
+// cspell:word unstages
+
 import {
     agentStormService,
     checkPathEndpoint,
@@ -6,6 +8,11 @@ import {
     createWorktreeEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
+    gitDiffFileEndpoint,
+    gitDiffStatusEndpoint,
+    gitDiscardFileEndpoint,
+    gitStageFileEndpoint,
+    gitStageHunkEndpoint,
     hideRepoEndpoint,
     killPanesEndpoint,
     resetAiSessionEndpoint,
@@ -21,6 +28,9 @@ import {
     type Config,
     type FolderInfo,
     type FolderSessions,
+    type GitDiffFileContents,
+    type GitDiffSide,
+    type GitDiffStatus,
     type PaneKind,
     type UpdateStatus,
 } from '@agent-storm/common';
@@ -214,50 +224,75 @@ export async function restartDaemon(): Promise<void> {
     await requestApi('POST /daemon/restart', () => client.fetch(restartDaemonEndpoint).POST());
 }
 
-/**
- * Spawn (or reuse) a VS Code instance for the given folder and prime the proxy's session cookie.
- * Returns the path prefix the iframe should use (e.g. `/vscode-proxy/<encoded folder>`); the
- * frontend builds the full iframe `src` by concatenating with the backend origin.
- *
- * Bypasses the rest-vir client because the proxy endpoints aren't part of the api definition — they
- * need raw cookie + WebSocket handling that rest-vir doesn't expose. Uses the same bearer header
- * and credentials policy so the cookie is accepted by the browser.
- */
-export async function ensureVscode(params: Readonly<{folder: string}>): Promise<{
-    basePath: string;
-}> {
-    const bearer = await ensureSecret();
-    const response = await fetch(`${getBackendBaseUrl()}/vscode/ensure`, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${bearer}`,
-            'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(params),
-    });
-    if (!response.ok) {
-        const message = await response.text().catch(() => '');
-        throw new Error(`POST /vscode/ensure failed: ${response.status} ${message}`);
-    }
-    return (await response.json()) as {basePath: string};
+export async function getGitDiffStatus(params: Readonly<{folder: string}>): Promise<GitDiffStatus> {
+    return await requestApi('POST /git/diff/status', () =>
+        client.fetch(gitDiffStatusEndpoint).POST({
+            requestData: params,
+        }),
+    );
 }
 
-export async function killVscode(params: Readonly<{folder: string}>): Promise<void> {
-    const bearer = await ensureSecret();
-    const response = await fetch(`${getBackendBaseUrl()}/vscode/kill`, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${bearer}`,
-            'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify(params),
-    });
-    if (!response.ok) {
-        const message = await response.text().catch(() => '');
-        throw new Error(`POST /vscode/kill failed: ${response.status} ${message}`);
-    }
+export async function getGitDiffFile(
+    params: Readonly<{
+        folder: string;
+        path: string;
+        oldPath?: string | undefined;
+        side: GitDiffSide;
+    }>,
+): Promise<GitDiffFileContents> {
+    return await requestApi('POST /git/diff/file', () =>
+        client.fetch(gitDiffFileEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/**
+ * Move a whole file across the index. `side` is where the file currently sits, so passing
+ * `Unstaged` stages it and passing `Staged` unstages it.
+ */
+export async function setGitFileStaged(
+    params: Readonly<{folder: string; path: string; side: GitDiffSide}>,
+): Promise<void> {
+    await requestApi('POST /git/stage/file', () =>
+        client.fetch(gitStageFileEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/** Same as {@link setGitFileStaged} but for one chunk, addressed by its line ranges. */
+export async function setGitHunkStaged(
+    params: Readonly<{
+        folder: string;
+        path: string;
+        oldPath?: string | undefined;
+        side: GitDiffSide;
+        fromOldLine: number;
+        toOldLine: number;
+        fromNewLine: number;
+        toNewLine: number;
+    }>,
+): Promise<void> {
+    await requestApi('POST /git/stage/hunk', () =>
+        client.fetch(gitStageHunkEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/**
+ * Throw away a file's changes on both sides of the index. Cannot be reversed — confirm before
+ * calling.
+ */
+export async function discardGitFile(
+    params: Readonly<{folder: string; path: string}>,
+): Promise<void> {
+    await requestApi('POST /git/discard/file', () =>
+        client.fetch(gitDiscardFileEndpoint).POST({
+            requestData: params,
+        }),
+    );
 }
 
 export async function uploadFile(

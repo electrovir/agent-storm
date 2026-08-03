@@ -39,3 +39,27 @@ export enum SidebarSorting {
     Name = 'name',
     Date = 'date',
 }
+
+/**
+ * How a file in the Diff pane differs on one side of the index. Derived from a single letter of
+ * `git status --porcelain`'s two-letter code — the index column for a staged entry, the worktree
+ * column for an unstaged one.
+ */
+export enum GitFileChange {
+    Added = 'added',
+    Modified = 'modified',
+    Deleted = 'deleted',
+    Renamed = 'renamed',
+    Untracked = 'untracked',
+}
+
+/**
+ * Which pair of trees a diff compares. `Staged` is `HEAD` → index (what a commit would contain);
+ * `Unstaged` is index → working tree (what a commit would leave behind). A partially-staged file
+ * appears on both sides with different content, which is exactly why the pane can't collapse them
+ * into one `HEAD` → working tree diff.
+ */
+export enum GitDiffSide {
+    Staged = 'staged',
+    Unstaged = 'unstaged',
+}
