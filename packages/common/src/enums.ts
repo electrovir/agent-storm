@@ -41,6 +41,16 @@ export enum SidebarSorting {
 }
 
 /**
+ * How the Diff pane lays out a file's two versions. `Auto` picks by screen size — inline on a
+ * phone, side-by-side otherwise — and is what a config with no stored choice falls back to.
+ */
+export enum DiffLayout {
+    Auto = 'auto',
+    Split = 'split',
+    Inline = 'inline',
+}
+
+/**
  * How a file in the Diff pane differs on one side of the index. Derived from a single letter of
  * `git status --porcelain`'s two-letter code — the index column for a staged entry, the worktree
  * column for an unstaged one.

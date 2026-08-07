@@ -1,6 +1,7 @@
 // cspell:words Meslo, Menlo, keymap, Toggleable
 
 import {PaneKind, ptyWebSocket} from '@agent-storm/common';
+import {wait} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
@@ -21,6 +22,18 @@ const uploadErrorDismissMs = 5000;
  * ceiling only exists so a pane that never becomes measurable can't retry forever.
  */
 const maxFitRetryFrames = 30;
+
+/**
+ * How many frames in a row the proposed dimensions have to come back identical before an activation
+ * fit trusts them.
+ *
+ * A terminal that was hidden measured its cell box against whatever layout it last had. Revealing
+ * the pane doesn't re-measure it synchronously — xterm does that off its own observers, a frame or
+ * more later. The proposal in between is a finite, plausible, wrong number, which is exactly what
+ * the retry loop can't catch: it only rejects unreadable proposals. Waiting for the number to stop
+ * moving is what says the re-measure has landed.
+ */
+const stableFitFrames = 3;
 
 function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -312,6 +325,11 @@ export const VirTerminal = defineElement<{
              * close it. Switching session tabs makes that window routine rather than rare.
              */
             unmounted: false,
+            /**
+             * Temporary on-screen size readout, because the app runs as a PWA where the console
+             * isn't reachable. Remove once the stale-wrap bug is pinned down.
+             */
+            sizeBadge: undefined as string | undefined,
         };
     },
     styles: css`
@@ -339,6 +357,19 @@ export const VirTerminal = defineElement<{
                disables iOS double-tap zoom on the canvas. */
             touch-action: none;
             overscroll-behavior: contain;
+        }
+
+        /* Temporary size readout — see the sizeBadge state field. */
+        .size-badge {
+            position: absolute;
+            top: 0;
+            right: 0;
+            z-index: 10;
+            padding: 1px 4px;
+            pointer-events: none;
+            font-family: ui-monospace, monospace;
+            font-size: 10px;
+            ${colorCss(viraThemeByKeys.red['behind-fg']['small-body'])};
         }
 
         ${defaultXtermStyles}
@@ -458,6 +489,11 @@ export const VirTerminal = defineElement<{
             ${state.uploadError
                 ? html`
                       <div class="upload-error" role="alert">${state.uploadError}</div>
+                  `
+                : ''}
+            ${state.sizeBadge
+                ? html`
+                      <div class="size-badge">${state.sizeBadge}</div>
                   `
                 : ''}
             <div
@@ -634,6 +670,41 @@ export const VirTerminal = defineElement<{
                         terminal.dispose();
                         return;
                     }
+                    /**
+                     * Holds pty output until the terminal knows how wide it is.
+                     *
+                     * A freshly constructed xterm is 120×32 until the first fit, and the pty's
+                     * replayed scrollback is the very first thing the socket delivers — often
+                     * before xterm has even measured its cell box, which is what a fit needs. Text
+                     * written in that window gets wrapped at 120 columns and stays that way; the
+                     * fit that follows resizes the terminal but does not un-wrap what is already in
+                     * the buffer. Queueing until the size is settled is the only way the replay is
+                     * ever laid out at the width it will be read at.
+                     */
+                    const writeGate = {
+                        ready: false,
+                        pending: [] as string[],
+                    };
+                    const writeToTerminal = (data: string) => {
+                        if (writeGate.ready) {
+                            terminal.write(data);
+                        } else {
+                            writeGate.pending = [
+                                ...writeGate.pending,
+                                data,
+                            ];
+                        }
+                    };
+                    const openWriteGate = () => {
+                        if (writeGate.ready) {
+                            return;
+                        }
+                        writeGate.ready = true;
+                        const queued = writeGate.pending;
+                        writeGate.pending = [];
+                        queued.forEach((data) => terminal.write(data));
+                    };
+
                     const socket = await client.connectWebSocket(ptyWebSocket, {
                         searchParams: {
                             folder: inputs.folder,
@@ -644,10 +715,10 @@ export const VirTerminal = defineElement<{
                         protocols: [secret],
                         listeners: {
                             message({message}) {
-                                terminal.write(message);
+                                writeToTerminal(message);
                             },
                             close() {
-                                terminal.write('\r\n[connection closed]\r\n');
+                                writeToTerminal('\r\n[connection closed]\r\n');
                             },
                         },
                     });
@@ -663,13 +734,53 @@ export const VirTerminal = defineElement<{
                         return;
                     }
 
+                    /**
+                     * Last size handed to the pty, for the activation diagnostic below. Temporary:
+                     * remove along with `logActivationSizes` once the stale-wrap bug is pinned
+                     * down.
+                     */
+                    const lastSent = {
+                        cols: 0,
+                        rows: 0,
+                    };
+
                     const sendResize = () => {
+                        lastSent.cols = terminal.cols;
+                        lastSent.rows = terminal.rows;
                         socket.send({
                             resize: {
                                 cols: terminal.cols,
                                 rows: terminal.rows,
                             },
                         });
+                    };
+
+                    /**
+                     * Temporary diagnostic for the AI pane coming back wrapped at the wrong width.
+                     * Prints what each side believes at a given moment in the activation sequence:
+                     * what xterm is rendering at, what the pty was last told, what the fit addon
+                     * would propose right now, and the pixel box plus device pixel ratio those are
+                     * derived from. A one-column gap between `xterm` and `proposed` explains text
+                     * wrapping a character early; a gap between `xterm` and `sent` means the pty is
+                     * wrapping at a width nothing on screen matches.
+                     */
+                    const logActivationSizes = (stage: string) => {
+                        const proposed = fitAddon.proposeDimensions();
+                        const want = proposed ? `${proposed.cols}x${proposed.rows}` : '?';
+                        const sizeBadge = [
+                            stage,
+                            `xterm ${terminal.cols}x${terminal.rows}`,
+                            `sent ${lastSent.cols}x${lastSent.rows}`,
+                            `want ${want}`,
+                            `box ${element.offsetWidth}x${element.offsetHeight}`,
+                            `win ${window.innerWidth}`,
+                            `queued ${writeGate.pending.length}`,
+                        ].join(' · ');
+                        if (sizeBadge !== state.sizeBadge) {
+                            updateState({
+                                sizeBadge,
+                            });
+                        }
                     };
 
                     /**
@@ -892,38 +1003,119 @@ export const VirTerminal = defineElement<{
                     );
 
                     /**
-                     * Recursion is why this carries a return-type annotation: it re-schedules
-                     * itself on the next frame while xterm's cell measurement is still invalid.
+                     * Redraw every glyph on screen.
+                     *
+                     * The WebGL renderer keeps rendered glyphs in a texture atlas, and a canvas
+                     * inside a `display: none` subtree can come back with that atlas corrupt or
+                     * dropped — text renders as garbage, blank boxes, or the wrong characters even
+                     * though the terminal's contents are correct. `clearTextureAtlas` throws the
+                     * cached glyphs away and `refresh` redraws the visible rows from the buffer.
+                     * Dragging the divider used to be the only thing that fixed it, because a
+                     * resize rebuilds the atlas as a side effect.
                      */
-                    const fitAndResendWithRetries = (remainingFrames: number): void => {
-                        /**
-                         * Bail when the host has no real layout — the pane is `display: none`
-                         * because the user switched to a different folder. If we fit anyway,
-                         * `fitAddon.fit()` shrinks xterm to a minimum cols, then `sendResize`
-                         * pushes those tiny dims to the pty, Claude redraws at the tiny width, and
-                         * that narrow rendering goes into xterm's scrollback permanently — visible
-                         * the next time the user returns to this folder. When the pane becomes
-                         * visible again, `ResizeObserver` will fire another entry with real dims
-                         * and we'll catch up then.
-                         */
-                        if (element.offsetWidth < 10 || element.offsetHeight < 10) {
+                    const repaintGlyphs = () => {
+                        terminal.clearTextureAtlas();
+                        terminal.refresh(0, terminal.rows - 1);
+                    };
+
+                    /**
+                     * Do what dragging the pane divider does, because that is the only thing that
+                     * has ever reliably fixed a mangled pane.
+                     *
+                     * A pane comes back with the right dimensions and the wrong picture: xterm's
+                     * buffer holds lines wrapped at an older width, and the TUI's own frame was
+                     * painted against an older geometry. Neither repaints on its own. `refresh`
+                     * redraws the same wrong content, and re-wrapping xterm alone leaves the TUI's
+                     * frame stale, because the program in the pty was never told anything changed.
+                     * Only a real size change fixes both: xterm re-wraps, and the pty raises
+                     * SIGWINCH so the TUI repaints its whole screen.
+                     *
+                     * So change the size for real, one column narrower, and change it back. The
+                     * pause between the two is the point — it gives the TUI time to actually paint
+                     * a frame at the narrow width. Snapping back within the same frame was tried
+                     * first and left two renderings overlaid on the same cells, because the redraw
+                     * landed in a buffer that had already been resized out from under it.
+                     */
+                    const nudgePtySize = async () => {
+                        if (terminal.cols < 2) {
                             return;
                         }
-                        /**
-                         * A terminal `open()`ed inside a hidden pane measures its cell box as 0×0,
-                         * and xterm only re-measures when its own IntersectionObserver reports the
-                         * screen element visible — which lands _after_ the ResizeObserver entry and
-                         * the activation `requestAnimationFrame` that brought us here. While the
-                         * measurement is invalid `fitAddon.fit()` silently no-ops (its
-                         * `proposeDimensions` returns undefined on a 0-width cell), so fitting and
-                         * sending unconditionally pushes xterm's construction-time 120×32 to the
-                         * pty even though the pane is some other size. The pty then wraps at 120
-                         * cols while xterm renders, say, 95 — invisible until something repaints
-                         * the whole screen (Claude's `/clear`, another folder switch), at which
-                         * point the pane looks shredded and only a manual resize fixes it. So skip
-                         * the send while dims are unreadable and retry on later frames until xterm
-                         * has measured.
-                         */
+                        const restoreCols = terminal.cols;
+                        terminal.resize(restoreCols - 1, terminal.rows);
+                        sendResize();
+                        await wait({
+                            milliseconds: 80,
+                        });
+                        terminal.resize(restoreCols, terminal.rows);
+                        sendResize();
+                    };
+
+                    /**
+                     * Which settle chain is the live one. Every entry point bumps it, so an older
+                     * chain still walking its frames sees a mismatch and stops. A counter rather
+                     * than a boolean "busy" flag on purpose: a flag has to be cleared on every exit
+                     * path, and the one path that missed it — an activation chain that never
+                     * reached its final frame — left the terminal unable to resize for the life of
+                     * the socket. A stale generation can only ever be superseded, never stuck.
+                     */
+                    const fitGeneration = {
+                        current: 0,
+                    };
+
+                    /**
+                     * Fit, then push the size to the pty — but only once xterm's proposal has
+                     * repeated `requiredStableFrames` times.
+                     *
+                     * A terminal `open()`ed inside a hidden pane measured its cell box against
+                     * whatever layout it last had. Revealing the pane does not re-measure it
+                     * synchronously; xterm does that off its own observers a frame or more later.
+                     * Fitting immediately means fitting to that stale box: the pty gets a wrong
+                     * width, the TUI redraws at it, and the correct fit arriving three frames later
+                     * leaves both renderings interleaved in the buffer. Waiting for the number to
+                     * stop moving is what says the re-measure has landed.
+                     *
+                     * Recursion is why this carries a return-type annotation.
+                     */
+                    const fitWhenSettled = ({
+                        generation,
+                        remainingFrames,
+                        previous,
+                        stableFrames,
+                        requiredStableFrames,
+                    }: Readonly<{
+                        generation: number;
+                        remainingFrames: number;
+                        previous: Readonly<{cols: number; rows: number}> | undefined;
+                        stableFrames: number;
+                        requiredStableFrames: number;
+                    }>): void => {
+                        if (generation !== fitGeneration.current) {
+                            return;
+                            /**
+                             * No real layout: the pane is `display: none` because the user switched
+                             * folders. Fitting anyway would shrink xterm to its minimum columns and
+                             * push that to the pty, and the TUI's narrow redraw would land in the
+                             * scrollback for the user to find on their return. The ResizeObserver
+                             * fires again when the pane regains a box.
+                             */
+                        } else if (element.offsetWidth < 10 || element.offsetHeight < 10) {
+                            logActivationSizes('too-small');
+                            return;
+                        }
+                        const retry = (
+                            nextPrevious: Readonly<{cols: number; rows: number}> | undefined,
+                            nextStableFrames: number,
+                        ) => {
+                            requestAnimationFrame(() =>
+                                fitWhenSettled({
+                                    generation,
+                                    remainingFrames: remainingFrames - 1,
+                                    previous: nextPrevious,
+                                    stableFrames: nextStableFrames,
+                                    requiredStableFrames,
+                                }),
+                            );
+                        };
                         const proposed = fitAddon.proposeDimensions();
                         if (
                             !proposed ||
@@ -931,41 +1123,87 @@ export const VirTerminal = defineElement<{
                             !Number.isFinite(proposed.rows)
                         ) {
                             if (remainingFrames > 0) {
-                                requestAnimationFrame(() =>
-                                    fitAndResendWithRetries(remainingFrames - 1),
-                                );
+                                retry(undefined, 0);
                             }
                             return;
                         }
+                        const nextStableFrames =
+                            proposed.cols === previous?.cols && proposed.rows === previous.rows
+                                ? stableFrames + 1
+                                : 0;
+                        if (nextStableFrames < requiredStableFrames && remainingFrames > 0) {
+                            retry(proposed, nextStableFrames);
+                            return;
+                        }
                         fitAddon.fit();
+                        /**
+                         * Sent even when xterm was already this size. A socket that has never
+                         * reported a size leaves its pty at the 120×32 it was spawned with, and the
+                         * daemon skips subscribers with no size when it picks a pane's dimensions —
+                         * so a pane that mounted hidden and came up already matching its own layout
+                         * would wrap at 120 forever, until a manual drag finally sent something.
+                         * Re-sending an unchanged size costs nothing: the kernel raises no SIGWINCH
+                         * when the dimensions don't move.
+                         */
                         sendResize();
+                        openWriteGate();
+                        repaintGlyphs();
+                        logActivationSizes('settled');
+                        /*
+                         * Always, not just when the fit was a no-op. Whether the pty sees a size
+                         * change is decided by the size *it* already had, which this element cannot
+                         * know: the pty outlives every mount, so a tab switched away from and back
+                         * remounts xterm at its construction-time 120x32, fits to the same
+                         * dimensions the pty already had, and sends a size that raises no SIGWINCH
+                         * — leaving the replayed scrollback wrapped however it was and the TUI with
+                         * no reason to repaint. The nudge is the only thing that has ever reliably
+                         * fixed that, and running it unconditionally costs one extra repaint.
+                         */
+                        void nudgePtySize();
                     };
 
-                    const fitAndResend = () => fitAndResendWithRetries(maxFitRetryFrames);
-
                     /**
-                     * One-shot initial fit replacing the previous unconditional pair. If the host
-                     * is visible, this fits to the real layout and pushes those dims to the pty
-                     * exactly as before. If it's hidden (mounting inside a not-yet-active
-                     * pane-slot), the guard inside `fitAndResend` makes this a no-op and the
-                     * ResizeObserver + `onActivate` path below picks it up the moment the slot
-                     * gains a real layout.
+                     * Sole entry point for resizing. Supersedes any chain already in flight, which
+                     * also debounces a divider drag: each entry restarts the wait, so the pty hears
+                     * one size a few frames after the drag stops instead of one per pointer move.
                      */
-                    fitAndResend();
+                    const fitAndResend = (requiredStableFrames: number) => {
+                        fitGeneration.current += 1;
+                        fitWhenSettled({
+                            generation: fitGeneration.current,
+                            remainingFrames: maxFitRetryFrames,
+                            previous: undefined,
+                            stableFrames: 0,
+                            requiredStableFrames,
+                        });
+                    };
 
-                    const resizeObserver = new ResizeObserver(() => fitAndResend());
+                    /*
+                     * The one fit that must not wait. A freshly `open()`ed terminal in a visible
+                     * pane has just measured its cell box, so there is no stale measurement to
+                     * settle out — and the pty's replayed scrollback is already on its way. Every
+                     * frame spent waiting is a frame in which that replay is written into a
+                     * terminal still at xterm's construction-time 120×32 and wrapped there for
+                     * good.
+                     */
+                    fitAndResend(0);
+
+                    const resizeObserver = new ResizeObserver(() => {
+                        logActivationSizes('observe');
+                        fitAndResend(stableFitFrames);
+                    });
                     resizeObserver.observe(element);
 
                     /**
-                     * Activation handler: just re-fit and push dims. We tried adding a force-
-                     * SIGWINCH on top of this to coax TUIs (Claude) into re-rendering stale
-                     * scrollback at the new width, but every approach produced visual artifacts —
-                     * the pty and xterm went out of sync mid-redraw and Claude's UI shredded
-                     * itself. So this is back to a plain "make sure dims match" on activation; any
-                     * stale alt-screen content the user wants reflowed can be cleared with Claude's
-                     * own Ctrl+L.
+                     * Activation handler. Revealing a pane fires the ResizeObserver too, so this is
+                     * usually redundant — but a pane revealed at exactly the size it already had
+                     * produces no observer entry, and that is the case that used to come back
+                     * wrapped at a stale width.
                      */
-                    const onActivate = fitAndResend;
+                    const onActivate = () => {
+                        logActivationSizes('activate');
+                        fitAndResend(stableFitFrames);
+                    };
 
                     updateState({
                         terminal,

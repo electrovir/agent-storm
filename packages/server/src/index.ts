@@ -11,6 +11,7 @@ import {
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
     gitDiscardFileEndpoint,
+    gitDiscardHunkEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
@@ -63,6 +64,7 @@ import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
     discardFileChanges,
+    discardHunkChanges,
     getDiffFileContents,
     getDiffStatus,
     moveHunkAcrossIndex,
@@ -79,6 +81,7 @@ import {
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
+    takeFreshAiSession,
 } from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
@@ -206,7 +209,7 @@ async function runPostWorktreeCmd({
     attachment.close();
 }
 
-async function resolveAiCmdForFolder(folder: string): Promise<string | undefined> {
+async function resolveAiCmdsForFolder(folder: string) {
     const config = await loadConfig().catch(() => undefined);
     if (!config) {
         return undefined;
@@ -217,11 +220,24 @@ async function resolveAiCmdForFolder(folder: string): Promise<string | undefined
             return children.includes(folder) ? repo.path : undefined;
         }),
     );
-    return getFolderAiCmd({
-        config,
-        folder,
-        fallbackFolders: parentRepoMatches.filter(check.isTruthy),
-    });
+    const fallbackFolders = parentRepoMatches.filter(check.isTruthy);
+    return {
+        aiCmd: getFolderAiCmd({
+            config,
+            folder,
+            fallbackFolders,
+        }),
+        /** Empty when the user hasn't configured one — see {@link getFolderResetAiSessionCmd}. */
+        resetAiSessionCmd: getFolderResetAiSessionCmd({
+            config,
+            folder,
+            fallbackFolders,
+        }),
+    };
+}
+
+async function resolveAiCmdForFolder(folder: string): Promise<string | undefined> {
+    return (await resolveAiCmdsForFolder(folder))?.aiCmd;
 }
 
 const implementor = createApiImplementor<undefined>()(agentStormService);
@@ -738,6 +754,23 @@ const gitStageHunkImplementation = implementor.implementEndpoint(gitStageHunkEnd
     },
 });
 
+const gitDiscardHunkImplementation = implementor.implementEndpoint(gitDiscardHunkEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await discardHunkChanges({
+            ...requestData,
+            folder: normalizePath(requestData.folder),
+            oldPath: requestData.oldPath ?? undefined,
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const gitDiscardFileImplementation = implementor.implementEndpoint(gitDiscardFileEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         await discardFileChanges({
@@ -824,25 +857,39 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             ? parsedScrollbackLimit
             : undefined;
         /**
+         * Resolve against the stored tab list so a hand-edited URL or a client whose session list
+         * hasn't loaded attaches to a real session rather than spawning a PTY under an id no tab
+         * points at.
+         */
+        const sessionId = await resolveSessionId({
+            folder,
+            kind,
+            sessionId: searchParams.sessionId,
+        });
+        /**
          * Look up the current AI command from agent-storm's config on every attach so the daemon's
          * spawned PTY (when this is the first attach for the folder + kind pair) uses whatever the
          * user has set. Failure is non-fatal — the daemon falls back to its built-in default
          * (`claude`).
          */
+        const aiCmds = await resolveAiCmdsForFolder(folder);
+        /**
+         * A tab the user just added gets the reset-AI-session command, so it opens a new
+         * conversation instead of resuming the one the folder's normal AI command resumes. See
+         * {@link takeFreshAiSession}.
+         */
+        const isFreshAiSession = takeFreshAiSession({
+            folder,
+            sessionId,
+        });
         const attachment = await attachPane({
             folder,
             kind,
-            /**
-             * Resolve against the stored tab list so a hand-edited URL or a client whose session
-             * list hasn't loaded attaches to a real session rather than spawning a PTY under an id
-             * no tab points at.
-             */
-            sessionId: await resolveSessionId({
-                folder,
-                kind,
-                sessionId: searchParams.sessionId,
-            }),
-            aiCmd: await resolveAiCmdForFolder(folder),
+            sessionId,
+            aiCmd:
+                isFreshAiSession && aiCmds?.resetAiSessionCmd
+                    ? aiCmds.resetAiSessionCmd
+                    : aiCmds?.aiCmd,
             scrollbackLimit,
             onData(data) {
                 webSocket.send(data);
@@ -930,6 +977,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         gitStageFileImplementation,
         gitStageHunkImplementation,
         gitDiscardFileImplementation,
+        gitDiscardHunkImplementation,
         gitHubPrImplementation,
         gitHubCommentImplementation,
         gitHubReactionImplementation,

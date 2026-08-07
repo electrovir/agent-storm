@@ -11,6 +11,7 @@ import {
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
     gitDiscardFileEndpoint,
+    gitDiscardHunkEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
@@ -283,6 +284,29 @@ export async function setGitHunkStaged(
 ): Promise<void> {
     await requestApi('POST /git/stage/hunk', () =>
         client.fetch(gitStageHunkEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/**
+ * Throw away one chunk's change, addressed exactly like {@link setGitHunkStaged}. Cannot be reversed
+ * — confirm before calling.
+ */
+export async function discardGitHunk(
+    params: Readonly<{
+        folder: string;
+        path: string;
+        oldPath?: string | undefined;
+        side: GitDiffSide;
+        fromOldLine: number;
+        toOldLine: number;
+        fromNewLine: number;
+        toNewLine: number;
+    }>,
+): Promise<void> {
+    await requestApi('POST /git/discard/hunk', () =>
+        client.fetch(gitDiscardHunkEndpoint).POST({
             requestData: params,
         }),
     );

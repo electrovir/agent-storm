@@ -1,4 +1,4 @@
-// cspell:words numstat, unstaging, nowarn
+// cspell:words numstat, unstaging, nowarn, unidiff
 
 import {
     GitDiffSide,
@@ -551,6 +551,7 @@ function buildHunkPatch({
     mode,
     oldSideExists,
     newSideExists,
+    contextLines,
 }: Readonly<{
     path: string;
     oldContent: string;
@@ -562,12 +563,13 @@ function buildHunkPatch({
     mode: string;
     oldSideExists: boolean;
     newSideExists: boolean;
+    contextLines: number;
 }>): string {
     const old = toLines(oldContent);
     const fresh = toLines(newContent);
 
-    const contextStartOld = Math.max(0, fromOldLine - hunkContextLines);
-    const contextEndOld = Math.min(old.lines.length, toOldLine + hunkContextLines);
+    const contextStartOld = Math.max(0, fromOldLine - contextLines);
+    const contextEndOld = Math.min(old.lines.length, toOldLine + contextLines);
     /** Context lines are shared, so the new side's window shifts by the same amounts. */
     const contextStartNew = fromNewLine - (fromOldLine - contextStartOld);
     const contextEndNew = toNewLine + (contextEndOld - toOldLine);
@@ -636,16 +638,22 @@ async function indexFileMode({
     return raw?.trim().split(' ')[0] || defaultFileMode;
 }
 
-export async function moveHunkAcrossIndex({
-    folder,
-    path,
-    oldPath,
-    side,
-    fromOldLine,
-    toOldLine,
-    fromNewLine,
-    toNewLine,
-}: Readonly<{
+/**
+ * Reverse-apply one hunk so the change it describes is gone rather than moved. Which trees that
+ * touches depends on where the hunk lives: an unstaged hunk only exists in the working tree, so
+ * reverting it there is enough. A staged one is already in the index, and reverting it only there
+ * would leave the same edit sitting unstaged in the working tree — `--index` takes it out of both.
+ *
+ * `--index` requires the working tree to match the index for those lines, so a file that is
+ * partially staged and then edited again fails the apply instead of silently discarding the wrong
+ * version.
+ */
+const discardApplyArgsBySide: Readonly<Record<GitDiffSide, ReadonlyArray<string>>> = {
+    [GitDiffSide.Unstaged]: [],
+    [GitDiffSide.Staged]: ['--index'],
+};
+
+type HunkRequest = Readonly<{
     folder: string;
     path: string;
     oldPath: string | undefined;
@@ -654,7 +662,20 @@ export async function moveHunkAcrossIndex({
     toOldLine: number;
     fromNewLine: number;
     toNewLine: number;
-}>): Promise<void> {
+}>;
+
+/** The two sides' current contents turned into a one-hunk patch describing just the given range. */
+async function buildSideHunkPatch({
+    folder,
+    path,
+    oldPath,
+    side,
+    fromOldLine,
+    toOldLine,
+    fromNewLine,
+    toNewLine,
+    contextLines,
+}: HunkRequest & Readonly<{contextLines: number}>): Promise<string> {
     const {oldBuffer, newBuffer} = await readSideBuffers({
         folder,
         path,
@@ -662,7 +683,7 @@ export async function moveHunkAcrossIndex({
         side,
     });
     if (looksBinary(oldBuffer) || looksBinary(newBuffer)) {
-        throw new Error('Cannot stage part of a binary file.');
+        throw new Error('Cannot change part of a binary file.');
     }
 
     const specs = specsForSide({
@@ -691,7 +712,7 @@ export async function moveHunkAcrossIndex({
         }),
     ]);
 
-    const patch = buildHunkPatch({
+    return buildHunkPatch({
         path,
         oldContent: oldBuffer.toString('utf8'),
         newContent: newBuffer.toString('utf8'),
@@ -702,20 +723,56 @@ export async function moveHunkAcrossIndex({
         mode,
         oldSideExists,
         newSideExists,
+        contextLines,
     });
+}
 
+export async function moveHunkAcrossIndex(request: HunkRequest): Promise<void> {
+    const patch = await buildSideHunkPatch({
+        ...request,
+        contextLines: hunkContextLines,
+    });
     /**
      * Applying to the index only. Staging takes the index→worktree patch forward; unstaging takes
      * the HEAD→index patch backward, which reverts just that hunk in the index and leaves the
      * working tree alone either way.
      */
     await runGitOrThrow(
-        folder,
+        request.folder,
         [
             'apply',
             '--cached',
             '--whitespace=nowarn',
-            ...(side === GitDiffSide.Staged ? ['--reverse'] : []),
+            ...(request.side === GitDiffSide.Staged ? ['--reverse'] : []),
+            '-',
+        ],
+        patch,
+    );
+}
+
+/**
+ * Throw away one hunk's change instead of moving it. See {@link discardApplyArgsBySide} for which
+ * trees that touches.
+ *
+ * The patch carries no context lines, unlike a staged one. Context is taken from the old side, and
+ * a discard applies against the new side — so a second change within three lines of this one would
+ * put its old text in the context and fail the apply. Zero context needs `--unidiff-zero`, which
+ * turns off the same safety check that context would have provided; the line numbers come from the
+ * diff the user is looking at, and a stale one still fails on the `-` lines not matching.
+ */
+export async function discardHunkChanges(request: HunkRequest): Promise<void> {
+    const patch = await buildSideHunkPatch({
+        ...request,
+        contextLines: 0,
+    });
+    await runGitOrThrow(
+        request.folder,
+        [
+            'apply',
+            '--whitespace=nowarn',
+            '--unidiff-zero',
+            '--reverse',
+            ...discardApplyArgsBySide[request.side],
             '-',
         ],
         patch,

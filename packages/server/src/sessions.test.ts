@@ -1,5 +1,5 @@
 import {PaneKind} from '@agent-storm/common';
-import {assert} from '@augment-vir/assert';
+import {assert, assertWrap} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -13,6 +13,7 @@ import {
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
+    takeFreshAiSession,
 } from './sessions.js';
 
 /**
@@ -84,6 +85,49 @@ describe(createFolderSession.name, () => {
             assert.isLengthExactly(afterSecond.shell, 1);
             /** Ids must be unique or two tabs would drive the same PTY. */
             assert.strictEquals(new Set(afterSecond.ai.map((session) => session.id)).size, 3);
+        });
+    });
+});
+
+describe(takeFreshAiSession.name, () => {
+    it('marks only new AI sessions, and only until the first attach', async () => {
+        await withTempFolder(async (folder) => {
+            const sessions = await createFolderSession({
+                folder,
+                kind: PaneKind.Ai,
+            });
+            const withShell = await createFolderSession({
+                folder,
+                kind: PaneKind.Shell,
+            });
+            const newAiSessionId = assertWrap.isDefined(sessions.ai[1]).id;
+
+            assert.isTrue(
+                takeFreshAiSession({
+                    folder,
+                    sessionId: newAiSessionId,
+                }),
+            );
+            /** The PTY exists after the first attach, so a re-attach must not restart it fresh. */
+            assert.isFalse(
+                takeFreshAiSession({
+                    folder,
+                    sessionId: newAiSessionId,
+                }),
+            );
+            /** The folder's pre-existing tab is not new, so it keeps the normal AI command. */
+            assert.isFalse(
+                takeFreshAiSession({
+                    folder,
+                    sessionId: assertWrap.isDefined(sessions.ai[0]).id,
+                }),
+            );
+            assert.isFalse(
+                takeFreshAiSession({
+                    folder,
+                    sessionId: assertWrap.isDefined(withShell.shell[1]).id,
+                }),
+            );
         });
     });
 });
