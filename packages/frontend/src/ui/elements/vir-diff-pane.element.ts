@@ -1,6 +1,7 @@
-// cspell:words keymap, Meslo, Menlo, unstaging
+// cspell:words keymap, Meslo, Menlo, Pilcrow, unstaging, desaturated
 
 import {
+    DiffLayout,
     GitDiffSide,
     GitFileChange,
     type GitDiffFile,
@@ -9,7 +10,7 @@ import {
 import {extractExtension} from '@augment-vir/common';
 import {defaultKeymap, history, historyKeymap} from '@codemirror/commands';
 import {bracketMatching, foldGutter} from '@codemirror/language';
-import {Chunk, MergeView, unifiedMergeView} from '@codemirror/merge';
+import {Chunk, MergeView, diff, unifiedMergeView} from '@codemirror/merge';
 import {EditorState, Text, type Extension} from '@codemirror/state';
 import {
     Decoration,
@@ -32,9 +33,11 @@ import {
 } from 'element-vir';
 import {
     HorizontalAnchor,
+    LoaderAnimated24Icon,
     ViraButton,
     ViraCollapsibleCard,
     ViraColorVariant,
+    ViraEmphasis,
     ViraIcon,
     ViraMenuItem,
     ViraMenuTrigger,
@@ -46,8 +49,11 @@ import {
 } from 'vira';
 import {
     discardGitFile,
+    discardGitHunk,
+    getConfig,
     getGitDiffFile,
     getGitDiffStatus,
+    putConfig,
     setGitFileStaged,
     setGitHunkStaged,
 } from '../../util/api-client.js';
@@ -86,6 +92,11 @@ const changeBadgeColors: Readonly<Record<GitFileChange, CSSResult>> = {
 const caretIcon = createSizedIcon(lucideIcons.ChevronDown, 14);
 
 const revertIcon = createSizedIcon(lucideIcons.Undo2, 14);
+
+/** Toolbar toggles read as settings rather than actions, so they sit a size below the nav arrows. */
+const splitLayoutIcon = createSizedIcon(lucideIcons.Columns2, 12);
+const inlineLayoutIcon = createSizedIcon(lucideIcons.Rows2, 12);
+const whitespaceIcon = createSizedIcon(lucideIcons.Pilcrow, 12);
 
 /** Direction the row's stage button moves the file, matching {@link stageActionLabels}. */
 const stageActionIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
@@ -219,6 +230,95 @@ function fileRowContents(file: Readonly<GitDiffFile>) {
 }
 
 /**
+ * Line-diffing works on strings, so each distinct line is encoded as one character and the file
+ * becomes a string of them. Surrogate code units are skipped: a line landing on a high surrogate
+ * followed by one on a low surrogate would read as a single character and corrupt the alignment.
+ */
+const surrogateRangeStart = 0xd8_00;
+const surrogateRangeEnd = 0xdf_ff;
+const maxEncodedLines = 0xff_ff - (surrogateRangeEnd - surrogateRangeStart + 1);
+
+function encodeLines(lines: ReadonlyArray<string>, codesByLine: Map<string, string>): string {
+    return lines
+        .map((line) => {
+            const existing = codesByLine.get(line);
+            if (existing) {
+                return existing;
+            }
+            const index = codesByLine.size;
+            const code = String.fromCodePoint(
+                index < surrogateRangeStart
+                    ? index
+                    : index + (surrogateRangeEnd - surrogateRangeStart + 1),
+            );
+            codesByLine.set(line, code);
+            return code;
+        })
+        .join('');
+}
+
+/**
+ * The old side of the diff with whitespace-only differences erased, matching `git diff -w`.
+ *
+ * Every old line that pairs with a new line differing only in spacing is replaced by that new
+ * line's exact text, so CodeMirror's own diff finds nothing to mark there. Rewriting the text is
+ * what makes this work everywhere at once — the marks, the change count, the jump buttons, and the
+ * ruler all derive from that diff, so none of them need to know about the setting. Line count is
+ * untouched, which keeps hunk staging's line math valid.
+ */
+function foldWhitespaceOnlyChanges({
+    oldContent,
+    newContent,
+}: Readonly<{
+    oldContent: string;
+    newContent: string;
+}>): string {
+    const oldLines = oldContent.split('\n');
+    const newLines = newContent.split('\n');
+    const codesByLine = new Map<string, string>();
+    const normalize = (line: string) => line.replace(/\s+/g, '');
+    const encodedOld = encodeLines(oldLines.map(normalize), codesByLine);
+    const encodedNew = encodeLines(newLines.map(normalize), codesByLine);
+    if (codesByLine.size > maxEncodedLines) {
+        return oldContent;
+    }
+    const changes = diff(encodedOld, encodedNew);
+    /**
+     * `diff` reports what changed, so the aligned-and-equal runs are the gaps between its changes,
+     * plus the tail after the last one.
+     */
+    const alignedRuns = [
+        ...changes,
+        undefined,
+    ].map((change, index) => {
+        const previous = changes[index - 1];
+        const fromA = previous?.toA ?? 0;
+        return {
+            fromA,
+            fromB: previous?.toB ?? 0,
+            length: (change?.fromA ?? oldLines.length) - fromA,
+        };
+    });
+    const foldedByLine = new Map<number, string>(
+        alignedRuns.flatMap(({fromA, fromB, length}) =>
+            newLines.slice(fromB, fromB + length).map((line, offset) => {
+                return [
+                    fromA + offset,
+                    line,
+                ] as const;
+            }),
+        ),
+    );
+    return oldLines.map((line, index) => foldedByLine.get(index) ?? line).join('\n');
+}
+
+/**
+ * Columns a wrapped row hangs by, so a continuation reads as part of the line above it rather than
+ * as a new statement at column zero.
+ */
+const hangingIndentColumns = 4;
+
+/**
  * Shared read-only editor extensions. Deliberately minimal: the point of replacing the embedded VS
  * Code is that a phone shouldn't pay for an IDE to read a diff.
  */
@@ -242,66 +342,104 @@ const baseExtensions: ReadonlyArray<Extension> = [
         '.cm-scroller': {
             fontFamily: '"MesloLGS NF", Menlo, monospace',
         },
+        /*
+         * The hanging indent is one flat amount for every line, applied in CSS. Matching each
+         * line's own indent instead would take a per-line decoration, and a decoration that changes
+         * how a line wraps changes its height — which is the number the side-by-side layout aligns
+         * its two editors on. When those heights were per line, the aligner drifted and the new
+         * side rendered no text at all.
+         */
+        '.cm-line': {
+            paddingLeft: `${hangingIndentColumns}ch`,
+            textIndent: `-${hangingIndentColumns}ch`,
+        },
     }),
 ];
 
 /**
  * CodeMirror's stock merge colors are a few percent of tint and wash out entirely on a bright
- * screen. These are strong enough to find by scanning. The `.cm-changedText` variants are the
- * within-line spans, which sit on top of the line tint and so have to be darker again to read as a
- * separate layer.
+ * screen. These are strong enough to find by scanning, and the side-by-side and inline layouts use
+ * the same four values so a file looks the same either way.
+ *
+ * Two layers: every changed line gets a pale tint so the extent of the change is visible at a
+ * glance, and the words CodeMirror narrowed the edit down to sit on top in a darker shade. Both are
+ * desaturated versions of Claude Code's own diff colors, which read as too vivid over a full screen
+ * of code.
+ *
+ * All four are opaque on purpose. A translucent tint composites once per element that carries it,
+ * and CodeMirror nests a changed-text span inside a changed line inside (in the unified view) a
+ * deleted chunk — so an alpha that looked right in isolation stacked two or three deep and came out
+ * far darker than intended. Opaque colors render as written no matter how they nest.
+ */
+const removedLineColor = '#fbe9e9';
+const removedTextColor = '#f5cfcf';
+const addedLineColor = '#e7f7e5';
+const addedTextColor = '#cbeec7';
+
+/**
+ * Every within-line rule below has to name its editor's `cm-merge-a` / `cm-merge-b` class and use
+ * the `background` shorthand. `@codemirror/merge`'s base theme styles `.cm-changedText` through
+ * `&light.cm-merge-a .cm-changedText` with a `background:` gradient — three classes and a
+ * shorthand, so a two-class `backgroundColor` here loses the cascade and gets reset to transparent
+ * by the shorthand.
  */
 const deletionColorTheme = EditorView.theme({
-    '.cm-changedLine': {
-        backgroundColor: 'rgba(248, 81, 73, 0.24)',
+    '&.cm-merge-a .cm-changedLine': {
+        background: removedLineColor,
     },
-    '.cm-changedText': {
-        backgroundColor: 'rgba(248, 81, 73, 0.48)',
-    },
-    '.cm-changedLineGutter': {
-        backgroundColor: 'rgba(248, 81, 73, 0.30)',
+    '&.cm-merge-a .cm-changedText': {
+        background: removedTextColor,
     },
 });
 
 const insertionColorTheme = EditorView.theme({
-    '.cm-changedLine': {
-        backgroundColor: 'rgba(46, 160, 67, 0.24)',
+    '&.cm-merge-b .cm-changedLine': {
+        background: addedLineColor,
     },
-    '.cm-changedText': {
-        backgroundColor: 'rgba(46, 160, 67, 0.48)',
-    },
-    '.cm-changedLineGutter': {
-        backgroundColor: 'rgba(46, 160, 67, 0.30)',
+    '&.cm-merge-b .cm-changedText': {
+        background: addedTextColor,
     },
 });
 
-/** The unified view stacks both sides in one editor, so it needs both color families at once. */
+/** The unified view stacks both sides in one `cm-merge-b` editor, so it needs both color families. */
 const unifiedColorTheme = EditorView.theme({
-    '.cm-deletedChunk': {
-        backgroundColor: 'rgba(248, 81, 73, 0.18)',
+    '& .cm-deletedChunk': {
+        background: '#fdf4f4',
     },
-    '.cm-deletedLine, .cm-deletedChunk .cm-deletedLine': {
-        backgroundColor: 'rgba(248, 81, 73, 0.24)',
+    '& .cm-deletedChunk .cm-deletedLine': {
+        background: removedLineColor,
     },
-    '.cm-deletedText': {
-        backgroundColor: 'rgba(248, 81, 73, 0.48)',
+    '& .cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText': {
+        background: removedTextColor,
     },
-    '.cm-insertedLine, .cm-changedLine': {
-        backgroundColor: 'rgba(46, 160, 67, 0.24)',
+    '&.cm-merge-b .cm-insertedLine, &.cm-merge-b .cm-changedLine': {
+        background: addedLineColor,
     },
-    '.cm-changedText': {
-        backgroundColor: 'rgba(46, 160, 67, 0.48)',
+    /**
+     * A chunk small enough for CodeMirror to show old and new text on one line, rather than as
+     * separate deleted and inserted lines. It is a new line carrying its old text inline, so it
+     * takes the added tint and the removed words show through in red.
+     */
+    '&.cm-merge-b .cm-inlineChangedLine': {
+        background: addedLineColor,
     },
-    '.cm-changedLineGutter': {
-        backgroundColor: 'rgba(46, 160, 67, 0.30)',
+    '&.cm-merge-b .cm-changedText': {
+        background: addedTextColor,
     },
 });
 
-/** A button rendered above a chunk that moves just that chunk across the index. */
+const undoHunkLabel = 'Undo hunk';
+
+/**
+ * The buttons rendered above a chunk: move that chunk across the index, and — only for a chunk that
+ * isn't staged yet — throw it away. A staged chunk gets no undo button because unstaging it is the
+ * reversible way back to the same place, and the destructive one is a click away from there.
+ */
 class HunkStageWidget extends WidgetType {
     constructor(
         protected readonly label: string,
         protected readonly onStage: () => void,
+        protected readonly onUndo: (() => void) | undefined,
     ) {
         super();
     }
@@ -313,15 +451,23 @@ class HunkStageWidget extends WidgetType {
     public override toDOM(): HTMLElement {
         const wrapper = document.createElement('div');
         wrapper.className = 'agent-storm-hunk-actions';
+        const onUndo = this.onUndo;
+        wrapper.append(
+            ...(onUndo ? [this.buildButton(undoHunkLabel, onUndo)] : []),
+            this.buildButton(this.label, this.onStage),
+        );
+        return wrapper;
+    }
+
+    protected buildButton(label: string, onClick: () => void): HTMLButtonElement {
         const button = document.createElement('button');
         button.type = 'button';
-        button.textContent = this.label;
+        button.textContent = label;
         button.addEventListener('click', (event) => {
             event.preventDefault();
-            this.onStage();
+            onClick();
         });
-        wrapper.append(button);
-        return wrapper;
+        return button;
     }
 
     /** Without this the editor swallows the click before the button's own listener sees it. */
@@ -335,11 +481,14 @@ function hunkButtonExtension({
     newText,
     label,
     onStageChunk,
+    onUndoChunk,
 }: Readonly<{
     chunks: ReadonlyArray<Chunk>;
     newText: Text;
     label: string;
     onStageChunk: (chunk: Readonly<Chunk>) => void;
+    /** Undefined for a staged chunk, which shows no undo button. */
+    onUndoChunk: ((chunk: Readonly<Chunk>) => void) | undefined;
 }>): Extension {
     const decorations: DecorationSet = Decoration.set(
         chunks.map((chunk) => {
@@ -350,7 +499,11 @@ function hunkButtonExtension({
              */
             const position = newText.lineAt(Math.min(chunk.fromB, newText.length)).from;
             return Decoration.widget({
-                widget: new HunkStageWidget(label, () => onStageChunk(chunk)),
+                widget: new HunkStageWidget(
+                    label,
+                    () => onStageChunk(chunk),
+                    onUndoChunk && (() => onUndoChunk(chunk)),
+                ),
                 side: -1,
                 block: true,
             }).range(position);
@@ -363,6 +516,7 @@ function hunkButtonExtension({
             '.agent-storm-hunk-actions': {
                 display: 'flex',
                 justifyContent: 'flex-end',
+                gap: '4px',
                 padding: '1px 6px',
             },
             '.agent-storm-hunk-actions button': {
@@ -400,6 +554,8 @@ function mountDiffEditor({
     stageLabel,
     syntaxExtensions,
     onStageChunk,
+    onUndoChunk,
+    onGeometryChange,
 }: Readonly<{
     parent: HTMLElement;
     /**
@@ -416,12 +572,24 @@ function mountDiffEditor({
     /** Grammar plus highlight style for this file's type, already resolved by the caller. */
     syntaxExtensions: ReadonlyArray<Extension>;
     onStageChunk: (chunk: Readonly<Chunk>) => void;
+    onUndoChunk: ((chunk: Readonly<Chunk>) => void) | undefined;
+    /**
+     * Fired whenever the new side's layout changes — a resize, a width drag, anything that re-wraps
+     * lines. The ruler's marks are pixel positions, so they go stale exactly when this fires.
+     */
+    onGeometryChange: (view: EditorView) => void;
 }>): MountedEditor {
     const hunkButtons = hunkButtonExtension({
         chunks,
         newText,
         label: stageLabel,
         onStageChunk,
+        onUndoChunk,
+    });
+    const geometryListener = EditorView.updateListener.of((update) => {
+        if (update.geometryChanged) {
+            onGeometryChange(update.view);
+        }
     });
 
     if (unified) {
@@ -434,6 +602,7 @@ function mountDiffEditor({
                 ...syntaxExtensions,
                 unifiedColorTheme,
                 hunkButtons,
+                geometryListener,
                 unifiedMergeView({
                     original: oldContent,
                     /** Read-only pane: there is nothing to revert a chunk into. */
@@ -464,6 +633,7 @@ function mountDiffEditor({
                 ...syntaxExtensions,
                 insertionColorTheme,
                 hunkButtons,
+                geometryListener,
             ],
         },
         gutter: true,
@@ -504,28 +674,38 @@ type RulerMark = {
     color: CSSResult;
 };
 
+/**
+ * Ruler marks reuse the diff body's red and green so the overview reads as the same information at
+ * a smaller scale. A replacement is both a removal and an addition, so its mark is split rather
+ * than given a third color that has to be learned.
+ */
 const rulerColors = {
-    inserted: unsafeCSS('rgba(46, 160, 67, 0.85)'),
+    inserted: unsafeCSS('rgba(106, 194, 43, 0.85)'),
     deleted: unsafeCSS('rgba(248, 81, 73, 0.85)'),
-    modified: unsafeCSS('rgba(56, 139, 253, 0.85)'),
+    modified: unsafeCSS(
+        'linear-gradient(rgba(248, 81, 73, 0.85) 50%, rgba(106, 194, 43, 0.85) 50%)',
+    ),
 };
 
 /** Smallest visible ruler mark, so a one-line change in a huge file is still clickable. */
 const minRulerMarkPercent = 0.8;
 
-function toRulerMarks(chunks: ReadonlyArray<Chunk>, newText: Text): RulerMark[] {
-    const totalLines = Math.max(1, newText.lines);
+/**
+ * Marks are placed by asking the editor where each chunk actually sits, not by dividing line
+ * numbers. Wrapped lines and, in the inline layout, the deleted-text widgets mean a line's share of
+ * the file is nothing like its share of the scroll height — going by line number puts a mark next
+ * to unrelated code.
+ */
+function toRulerMarks(view: EditorView, chunks: ReadonlyArray<Chunk>): RulerMark[] {
+    const totalHeight = Math.max(1, view.contentHeight);
     return chunks.map((chunk) => {
-        const lines = toLineRange({
-            text: newText,
-            from: chunk.fromB,
-            to: chunk.toB,
-        });
+        const start = view.lineBlockAt(Math.min(chunk.fromB, view.state.doc.length));
+        const end = view.lineBlockAt(Math.min(chunk.toB, view.state.doc.length));
         return {
-            topPercent: (lines.from / totalLines) * 100,
+            topPercent: (start.top / totalHeight) * 100,
             heightPercent: Math.max(
                 minRulerMarkPercent,
-                (Math.max(1, lines.to - lines.from) / totalLines) * 100,
+                ((end.bottom - start.top) / totalHeight) * 100,
             ),
             color:
                 chunk.fromA === chunk.toA
@@ -575,8 +755,16 @@ export const VirDiffPane = defineElement<{
             rulerMarks: [] as RulerMark[],
             /** Index into `chunks` that the jump buttons move relative to. */
             activeChunkIndex: 0,
-            /** User's layout choice. Undefined follows the screen size. */
-            unifiedOverride: undefined as boolean | undefined,
+            /**
+             * Layout choice from the server config, so it survives a reload and follows the user
+             * across browsers. `Auto` (and the moment before the config lands) follows the screen
+             * size. The toggle writes the config and updates this in the same step, rather than
+             * waiting on a re-read, so the button responds immediately.
+             */
+            diffLayout: DiffLayout.Auto as DiffLayout,
+            /** Companion to `diffLayout`, from the same config read. */
+            hideWhitespace: true,
+            diffSettingsRequested: false,
             /**
              * Folder the live refresh timer was created for, or undefined when no timer is running.
              * Both the "pane became visible" and "user switched folders" transitions are the same
@@ -922,6 +1110,7 @@ export const VirDiffPane = defineElement<{
         }
 
         .body {
+            position: relative;
             display: flex;
             flex-direction: row;
             flex-grow: 1;
@@ -938,6 +1127,22 @@ export const VirDiffPane = defineElement<{
 
         .editor-host[data-hidden] {
             display: none;
+        }
+
+        /*
+         * Covers the outgoing diff while the next one loads, instead of unmounting the editor and
+         * letting the pane collapse to nothing. The editor underneath keeps its width, so the file
+         * list and the toolbar don't jump every time a different file is picked.
+         */
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: ${viraThemeByKeys.grey['behind-bg'].invisible.background.value};
+            opacity: 0.75;
+            pointer-events: none;
         }
 
         /*
@@ -992,8 +1197,60 @@ export const VirDiffPane = defineElement<{
     },
     render({inputs, state, updateState, host}) {
         const isMobile = inputs.screenSize === ScreenSize.Mobile;
-        const unified = state.unifiedOverride ?? isMobile;
+        /** One read per mount; the toolbar toggles keep both values current after that. */
+        if (!state.diffSettingsRequested) {
+            updateState({
+                diffSettingsRequested: true,
+            });
+            void getConfig().then((config) => {
+                updateState({
+                    diffLayout: config.diffLayout || DiffLayout.Auto,
+                    /** A config written before this field existed reads as undefined, not `false`. */
+                    hideWhitespace: config.diffHideWhitespace ?? true,
+                });
+            });
+        }
+        const unifiedByLayout: Readonly<Record<DiffLayout, boolean>> = {
+            [DiffLayout.Auto]: isMobile,
+            [DiffLayout.Split]: false,
+            [DiffLayout.Inline]: true,
+        };
+        const unified = unifiedByLayout[state.diffLayout];
         const selected = findSelected(state.status, state.selectedValue);
+
+        /** The old side as the editor should diff it, which is not the file's real old text. */
+        const displayedOldContent = (
+            content: Readonly<{oldContent: string; newContent: string}>,
+        ) =>
+            state.hideWhitespace
+                ? foldWhitespaceOnlyChanges({
+                      oldContent: content.oldContent,
+                      newContent: content.newContent,
+                  })
+                : content.oldContent;
+
+        /**
+         * Writes the config so the choice sticks across reloads, and updates the local copy without
+         * waiting on the round trip so the toolbar responds immediately.
+         */
+        const saveDiffSettings = (
+            nextSettings: Readonly<{diffLayout?: DiffLayout; hideWhitespace?: boolean}>,
+        ) => {
+            updateState(nextSettings);
+            void getConfig()
+                .then((config) =>
+                    putConfig({
+                        ...config,
+                        diffLayout: nextSettings.diffLayout ?? state.diffLayout,
+                        diffHideWhitespace: nextSettings.hideWhitespace ?? state.hideWhitespace,
+                    }),
+                )
+                .catch((error: unknown) => {
+                    updateState({
+                        statusError: error instanceof Error ? error.message : String(error),
+                    });
+                });
+        };
 
         /**
          * Re-read status and, if a file is open, its contents. Both writes go through the same
@@ -1143,18 +1400,22 @@ export const VirDiffPane = defineElement<{
             });
         };
 
-        const onStageChunk = (chunk: Readonly<Chunk>) => {
+        /**
+         * The arguments both hunk endpoints take, or undefined when the pane no longer has the file
+         * the chunk came from. Chunk offsets are character positions and the endpoints address
+         * lines. Converting here (rather than server-side) keeps the server from having to re-run
+         * the same diff. The old side has to be the same text the chunks were built from — folding
+         * whitespace rewrites line contents, so character offsets only line up against the folded
+         * copy.
+         */
+        const toHunkRequest = (chunk: Readonly<Chunk>) => {
             const target = findSelected(state.status, state.selectedValue);
             const content = state.diffContent;
             if (!target || !content) {
-                return;
+                return undefined;
             }
-            /**
-             * Chunk offsets are character positions; the endpoint addresses lines. Converting here
-             * (rather than server-side) keeps the server from having to re-run the same diff.
-             */
             const oldLines = toLineRange({
-                text: Text.of(content.oldContent.split('\n')),
+                text: Text.of(displayedOldContent(content).split('\n')),
                 from: chunk.fromA,
                 to: chunk.toA,
             });
@@ -1163,18 +1424,48 @@ export const VirDiffPane = defineElement<{
                 from: chunk.fromB,
                 to: chunk.toB,
             });
+            return {
+                folder: inputs.folder,
+                path: target.file.path,
+                oldPath: target.file.oldPath ?? undefined,
+                side: target.side,
+                fromOldLine: oldLines.from,
+                toOldLine: oldLines.to,
+                fromNewLine: newLines.from,
+                toNewLine: newLines.to,
+            };
+        };
+
+        const onStageChunk = (chunk: Readonly<Chunk>) => {
+            const request = toHunkRequest(chunk);
+            if (!request) {
+                return;
+            }
             void runIndexWrite(async () => {
-                await setGitHunkStaged({
-                    folder: inputs.folder,
-                    path: target.file.path,
-                    oldPath: target.file.oldPath ?? undefined,
-                    side: target.side,
-                    fromOldLine: oldLines.from,
-                    toOldLine: oldLines.to,
-                    fromNewLine: newLines.from,
-                    toNewLine: newLines.to,
-                });
+                await setGitHunkStaged(request);
                 /** Landing back on the first chunk avoids pointing at a chunk that just moved. */
+                updateState({
+                    activeChunkIndex: 0,
+                });
+            });
+        };
+
+        /** Confirmed, because unlike staging this throws the change away for good. */
+        const onUndoChunk = (chunk: Readonly<Chunk>) => {
+            const request = toHunkRequest(chunk);
+            if (
+                !request ||
+                !window.confirm(
+                    [
+                        `Undo this hunk in ${request.path}?`,
+                        'This throws the change away and cannot be undone.',
+                    ].join('\n\n'),
+                )
+            ) {
+                return;
+            }
+            void runIndexWrite(async () => {
+                await discardGitHunk(request);
                 updateState({
                     activeChunkIndex: 0,
                 });
@@ -1212,7 +1503,7 @@ export const VirDiffPane = defineElement<{
         ) {
             const nextRendered = {
                 value: state.selectedValue,
-                oldContent: content.oldContent,
+                oldContent: displayedOldContent(content),
                 newContent: content.newContent,
                 unified,
             };
@@ -1224,27 +1515,35 @@ export const VirDiffPane = defineElement<{
                 previous.newContent !== nextRendered.newContent ||
                 previous.unified !== nextRendered.unified;
             if (changed) {
-                const oldText = Text.of(content.oldContent.split('\n'));
+                const oldText = Text.of(nextRendered.oldContent.split('\n'));
                 const newText = Text.of(content.newContent.split('\n'));
                 const chunks = Chunk.build(oldText, newText);
                 state.editor?.destroy();
                 state.editorParent.replaceChildren();
+                const editor = mountDiffEditor({
+                    parent: state.editorParent,
+                    root: host.shadowRoot,
+                    oldContent: nextRendered.oldContent,
+                    newContent: content.newContent,
+                    unified,
+                    chunks,
+                    newText,
+                    stageLabel: stageLabels[selected?.side ?? GitDiffSide.Unstaged],
+                    syntaxExtensions: state.syntaxExtensions,
+                    onStageChunk,
+                    onUndoChunk: selected?.side === GitDiffSide.Staged ? undefined : onUndoChunk,
+                    onGeometryChange: (view) => {
+                        updateState({
+                            rulerMarks: toRulerMarks(view, chunks),
+                        });
+                    },
+                });
                 updateState({
                     rendered: nextRendered,
                     chunks,
-                    rulerMarks: toRulerMarks(chunks, newText),
-                    editor: mountDiffEditor({
-                        parent: state.editorParent,
-                        root: host.shadowRoot,
-                        oldContent: content.oldContent,
-                        newContent: content.newContent,
-                        unified,
-                        chunks,
-                        newText,
-                        stageLabel: stageLabels[selected?.side ?? GitDiffSide.Unstaged],
-                        syntaxExtensions: state.syntaxExtensions,
-                        onStageChunk,
-                    }),
+                    /** Mark positions come from the mounted editor, so they wait for it to exist. */
+                    rulerMarks: toRulerMarks(editor.view, chunks),
+                    editor,
                 });
             }
         }
@@ -1516,6 +1815,7 @@ export const VirDiffPane = defineElement<{
                         <${ViraButton.assign({
                             icon: lucideIcons.ChevronLeft,
                             buttonSize,
+                            buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
                             isDisabled: !hasFiles,
                         })}
@@ -1525,6 +1825,7 @@ export const VirDiffPane = defineElement<{
                         <${ViraButton.assign({
                             icon: lucideIcons.ChevronRight,
                             buttonSize,
+                            buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
                             isDisabled: !hasFiles,
                         })}
@@ -1536,6 +1837,7 @@ export const VirDiffPane = defineElement<{
                         <${ViraButton.assign({
                             icon: lucideIcons.ChevronUp,
                             buttonSize,
+                            buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
                             isDisabled: !state.chunks.length,
                         })}
@@ -1545,6 +1847,7 @@ export const VirDiffPane = defineElement<{
                         <${ViraButton.assign({
                             icon: lucideIcons.ChevronDown,
                             buttonSize,
+                            buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
                             isDisabled: !state.chunks.length,
                         })}
@@ -1553,14 +1856,36 @@ export const VirDiffPane = defineElement<{
                         ></${ViraButton}>
                     </div>
                     <${ViraButton.assign({
-                        icon: unified ? lucideIcons.Columns2 : lucideIcons.Rows2,
+                        icon: unified ? splitLayoutIcon : inlineLayoutIcon,
                         buttonSize,
+                        buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Plain,
                     })}
                         title=${unified ? 'Switch to side-by-side' : 'Switch to inline'}
                         ${listen('click', () =>
-                            updateState({
-                                unifiedOverride: !unified,
+                            saveDiffSettings({
+                                diffLayout: unified ? DiffLayout.Split : DiffLayout.Inline,
+                            }),
+                        )}
+                    ></${ViraButton}>
+                    <${ViraButton.assign({
+                        icon: whitespaceIcon,
+                        buttonSize,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        /**
+                         * Lit up while whitespace changes are showing, since hiding them is the
+                         * default.
+                         */
+                        color: state.hideWhitespace
+                            ? ViraColorVariant.Plain
+                            : ViraColorVariant.Info,
+                    })}
+                        title=${state.hideWhitespace
+                            ? 'Whitespace-only changes are hidden. Click to show them.'
+                            : 'Whitespace-only changes are shown. Click to hide them.'}
+                        ${listen('click', () =>
+                            saveDiffSettings({
+                                hideWhitespace: !state.hideWhitespace,
                             }),
                         )}
                     ></${ViraButton}>
@@ -1606,7 +1931,7 @@ export const VirDiffPane = defineElement<{
                         `}
                 <div
                     class="editor-host"
-                    ?data-hidden=${!content || content.tooLargeOrBinary}
+                    ?data-hidden=${!selected || content?.tooLargeOrBinary}
                     ${onDomCreated((element) => {
                         if (element instanceof HTMLElement && !state.editorParent) {
                             updateState({
@@ -1615,6 +1940,15 @@ export const VirDiffPane = defineElement<{
                         }
                     })}
                 ></div>
+                ${selected && !content && !state.diffError
+                    ? html`
+                          <div class="loading-overlay">
+                              <${ViraIcon.assign({
+                                  icon: LoaderAnimated24Icon,
+                              })}></${ViraIcon}>
+                          </div>
+                      `
+                    : ''}
                 ${state.rulerMarks.length && content && !content.tooLargeOrBinary
                     ? html`
                           <div class="ruler">
@@ -1627,7 +1961,7 @@ export const VirDiffPane = defineElement<{
                                           style=${css`
                                               top: ${mark.topPercent}%;
                                               height: ${mark.heightPercent}%;
-                                              background-color: ${mark.color};
+                                              background: ${mark.color};
                                           `}
                                           ${listen('click', () => scrollToChunk(index))}
                                       ></button>

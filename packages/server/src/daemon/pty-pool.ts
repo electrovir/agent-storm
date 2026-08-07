@@ -1,12 +1,15 @@
-// cspell:words subshell
+// cspell:words subshell, backgrounded
 
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
 import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {createDaemonLog} from './daemon-log.js';
 import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
 import {defaultSessionId, type StatusEntry} from './protocol.js';
+
+const log = createDaemonLog('size');
 
 const idleThresholdMs = 2000;
 
@@ -70,6 +73,8 @@ type PaneEntry = {
     lastOutputAt: number;
     exitCode: number | undefined;
     subscribers: Set<Subscriber>;
+    /** Last size handed to {@link IPty.resize}, so the size log only fires on an actual change. */
+    appliedSize: PaneSize | undefined;
     /** Bounded scrollback used to replay output to a newly attaching client. */
     scrollbackChunks: string[];
     scrollbackBytes: number;
@@ -165,6 +170,7 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
         lastOutputAt: 0,
         exitCode: undefined,
         subscribers: new Set(),
+        appliedSize: undefined,
         scrollbackChunks: [],
         scrollbackBytes: 0,
     };
@@ -241,9 +247,32 @@ function applyMinSize(entry: PaneEntry): void {
     }
     const cols = sizes.reduce((min, size) => Math.min(min, size.cols), Number.POSITIVE_INFINITY);
     const rows = sizes.reduce((min, size) => Math.min(min, size.rows), Number.POSITIVE_INFINITY);
-    if (Number.isFinite(cols) && Number.isFinite(rows)) {
-        entry.pty.resize(cols, rows);
+    if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
+        return;
     }
+    if (cols !== entry.appliedSize?.cols || rows !== entry.appliedSize.rows) {
+        /**
+         * Temporary diagnostic for panes whose text wraps at the wrong column. Every reported size
+         * is listed, not just the winning min, because the suspected cause is a subscriber the user
+         * can no longer see (a backgrounded phone, a suspended PWA window) holding the pty below
+         * the size the visible terminal is drawing at.
+         */
+        const reported = Array.from(entry.subscribers, (subscriber) =>
+            subscriber.size ? `${subscriber.size.cols}x${subscriber.size.rows}` : 'unreported',
+        ).join(', ');
+        log(
+            [
+                `${entry.folder}:${entry.kind}:${entry.sessionId}`,
+                `-> ${cols}x${rows}`,
+                `from [${reported}]`,
+            ].join(' '),
+        );
+    }
+    entry.appliedSize = {
+        cols,
+        rows,
+    };
+    entry.pty.resize(cols, rows);
 }
 
 function startPty({

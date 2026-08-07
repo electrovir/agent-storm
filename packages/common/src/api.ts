@@ -4,6 +4,7 @@ import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from
 import {defineShape, enumShape, nullableShape, unionShape} from 'object-shape-tester';
 import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-vir';
 import {
+    DiffLayout,
     GitDiffSide,
     GitFileChange,
     GitHubCheckState,
@@ -229,6 +230,34 @@ export const configJsonSchema = {
             title: 'Sidebar sorting',
             description:
                 'How the sidebar orders folders. "name" sorts alphabetically; "date" puts the most recently created repos and worktrees first. Selectable from the filter icon next to the Add button in the sidebar as well.',
+        },
+        /**
+         * Sticky Diff pane layout, written by that pane's own split/inline toggle so the choice
+         * outlives a reload. Absent from `required` so older configs load; missing reads as
+         * `undefined`, which the pane treats the same as `auto`.
+         */
+        diffLayout: {
+            type: 'string',
+            enum: [
+                DiffLayout.Auto,
+                DiffLayout.Split,
+                DiffLayout.Inline,
+            ],
+            default: DiffLayout.Auto,
+            title: 'Diff layout',
+            description:
+                'How the Diff pane shows a file. "auto" uses inline on a phone and side-by-side elsewhere. Also set by the layout button in the Diff pane toolbar.',
+        },
+        /**
+         * Sticky companion to `diffLayout`, written by the Diff pane's whitespace button. Lines
+         * that differ only in whitespace are shown as unchanged, the way `git diff -w` does.
+         */
+        diffHideWhitespace: {
+            type: 'boolean',
+            default: true,
+            title: 'Hide whitespace changes',
+            description:
+                'When on, the Diff pane treats lines that differ only in spacing as unchanged. Toggled by the whitespace button in the Diff pane toolbar.',
         },
         /**
          * When on, the sidebar hides standalone repos that haven't been activated within the last 7
@@ -757,6 +786,25 @@ export const gitStageHunkEndpoint = defineEndpoint({
 });
 
 /**
+ * Throws away one hunk instead of moving it across the index. Addressed exactly like
+ * {@link gitStageHunkEndpoint}, and irreversible for the same reason {@link gitDiscardFileEndpoint}
+ * is, so the frontend confirms before calling it.
+ */
+export const gitDiscardHunkEndpoint = defineEndpoint({
+    path: '/git/discard/hunk',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitStageHunkRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
  * Everything the GitHub pane shows, in one call: the PR itself, each reviewer's verdict, every
  * inline review thread, and the main conversation. One round trip because it's one GraphQL query —
  * splitting it per section would multiply the rate-limit cost for no benefit.
@@ -1148,6 +1196,7 @@ export const agentStormService = defineApi({
         gitStageFileEndpoint,
         gitStageHunkEndpoint,
         gitDiscardFileEndpoint,
+        gitDiscardHunkEndpoint,
         gitHubPrEndpoint,
         gitHubCommentEndpoint,
         gitHubReactionEndpoint,

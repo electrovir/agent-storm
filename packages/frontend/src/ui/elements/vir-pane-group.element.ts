@@ -3,7 +3,9 @@
 import {PaneKind, type FolderSessions, type SessionMeta} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {
+    createSizedIcon,
     HorizontalAnchor,
+    lucideIcons,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
@@ -27,6 +29,8 @@ import {ScreenSize} from '../../util/screen-size.js';
 import {VirDiffPane} from './vir-diff-pane.element.js';
 import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
+
+const sessionMenuIcon = createSizedIcon(lucideIcons.EllipsisVertical, 12);
 
 /** Tab label: the user's name when set, otherwise the tab's 1-based position. */
 function sessionLabel(session: Readonly<SessionMeta>, index: number): string {
@@ -315,7 +319,7 @@ export const VirPaneGroup = defineElement<{
         .session-tab {
             display: inline-flex;
             align-items: center;
-            gap: 2px;
+            gap: 24px;
             flex-shrink: 0;
             padding: 2px 4px 2px 8px;
             border: 1px solid transparent;
@@ -664,12 +668,19 @@ export const VirPaneGroup = defineElement<{
                                 <span ${listen('click', (event) => event.stopPropagation())}>
                                     <${ViraMenuTrigger.assign({
                                         horizontalAnchor: HorizontalAnchor.Right,
+                                        /*
+                                         * Without this the pop-up is capped at the width of the
+                                         * overflow container it opens inside, which here is the
+                                         * one-character-wide session tab — every label came out
+                                         * clipped to its first letter.
+                                         */
+                                        ignoreMaxWidth: true,
                                     })}>
                                         <${ViraButton.assign({
                                             buttonSize: ViraSize.Small,
                                             buttonEmphasis: ViraEmphasis.Subtle,
                                             color: ViraColorVariant.Neutral,
-                                            text: '⋮',
+                                            icon: sessionMenuIcon,
                                         })}
                                             slot=${ViraMenuTrigger.slotNames[
                                                 'vira-menu-trigger-trigger'
