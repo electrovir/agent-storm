@@ -148,8 +148,19 @@ type SidebarState = {
     editFolderPath: string | undefined;
     editFolderAiCmd: string;
     editFolderResetAiSessionCmd: string;
-    editFolderGlobalAiCmd: string;
-    editFolderGlobalResetAiSessionCmd: string;
+    /**
+     * What the folder falls back to when its own field is blank: a worktree's parent-repo override
+     * if there is one, else the global default. Shown as the inputs' placeholder so an empty field
+     * visibly means "inherit this".
+     */
+    editFolderInheritedAiCmd: string;
+    editFolderInheritedResetAiSessionCmd: string;
+    /**
+     * True when the modal is editing a worktree root, whose commands every child worktree inherits
+     * unless the child sets its own. Drives the modal title and which AI panes get restarted on
+     * save.
+     */
+    editFolderIsWorktreeRoot: boolean;
     editFolderSubmitting: boolean;
     /**
      * Mirrors `config.sidebarGrouping`. Fetched lazily on first refresh tick so the filter menu can
@@ -192,6 +203,16 @@ type SidebarState = {
 };
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
+
+const closedEditFolderState: Partial<SidebarState> = {
+    editFolderPath: undefined,
+    editFolderAiCmd: '',
+    editFolderResetAiSessionCmd: '',
+    editFolderInheritedAiCmd: '',
+    editFolderInheritedResetAiSessionCmd: '',
+    editFolderIsWorktreeRoot: false,
+    editFolderSubmitting: false,
+};
 
 type PaneRestartedEvent = {
     folder: string;
@@ -250,8 +271,9 @@ export const VirSidebar = defineElement<{
             editFolderPath: undefined,
             editFolderAiCmd: '',
             editFolderResetAiSessionCmd: '',
-            editFolderGlobalAiCmd: '',
-            editFolderGlobalResetAiSessionCmd: '',
+            editFolderInheritedAiCmd: '',
+            editFolderInheritedResetAiSessionCmd: '',
+            editFolderIsWorktreeRoot: false,
             editFolderSubmitting: false,
             sidebarGrouping: undefined,
             sidebarSorting: undefined,
@@ -689,14 +711,7 @@ export const VirSidebar = defineElement<{
             });
         };
         const closeEditFolderModal = () => {
-            updateState({
-                editFolderPath: undefined,
-                editFolderAiCmd: '',
-                editFolderResetAiSessionCmd: '',
-                editFolderGlobalAiCmd: '',
-                editFolderGlobalResetAiSessionCmd: '',
-                editFolderSubmitting: false,
-            });
+            updateState(closedEditFolderState);
         };
         const submitEditFolderModal = () => {
             void submitEditFolder({
@@ -899,6 +914,19 @@ export const VirSidebar = defineElement<{
                                             iconOverride: lucideIcons.GitBranchPlus,
                                             onClick: () => {
                                                 void openAddWorktreeModal(root.path, updateState);
+                                            },
+                                        },
+                                        {
+                                            /**
+                                             * Editing the root's commands sets the default every
+                                             * child worktree inherits (unless the child has its own
+                                             * override), so this is the one place to change the AI
+                                             * command for a whole repo's worktrees at once.
+                                             */
+                                            content: 'Edit folder commands',
+                                            iconOverride: menuEditCommandsIcon,
+                                            onClick: () => {
+                                                void openEditFolderModal(root, updateState);
                                             },
                                         },
                                         {
@@ -1110,7 +1138,9 @@ export const VirSidebar = defineElement<{
             </${ViraModal}>
             <${ViraModal.assign({
                 open: !!state.editFolderPath,
-                modalTitle: 'Edit folder commands',
+                modalTitle: state.editFolderIsWorktreeRoot
+                    ? 'Edit repo commands (inherited by worktrees)'
+                    : 'Edit folder commands',
             })}
                 ${listen(ViraModal.events.modalClose, closeEditFolderModal)}
             >
@@ -1118,7 +1148,7 @@ export const VirSidebar = defineElement<{
                     <${ViraInput.assign({
                         label: 'AI command override',
                         value: state.editFolderAiCmd,
-                        placeholder: state.editFolderGlobalAiCmd || 'claude',
+                        placeholder: state.editFolderInheritedAiCmd || 'claude',
                         showClearButton: true,
                         disabled: state.editFolderSubmitting,
                     })}
@@ -1136,7 +1166,7 @@ export const VirSidebar = defineElement<{
                     <${ViraInput.assign({
                         label: 'Reset AI session command override',
                         value: state.editFolderResetAiSessionCmd,
-                        placeholder: state.editFolderGlobalResetAiSessionCmd || '/clear',
+                        placeholder: state.editFolderInheritedResetAiSessionCmd || '/clear',
                         showClearButton: true,
                         disabled: state.editFolderSubmitting,
                     })}
@@ -1713,20 +1743,26 @@ function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): Fold
 }
 
 /**
- * Open the "Edit folder commands" modal, seeded with this folder's current overrides (or the global
- * defaults if no override is set). Replaces the previous `window.prompt`-based flow so users can
- * edit the AI command and the reset-AI-session command in a single dialog.
+ * Open the "Edit folder commands" modal, seeded with this folder's current overrides. Works for a
+ * standalone repo, a worktree child, and a worktree root — the root's values act as the default its
+ * children inherit, so the placeholders show whatever the folder currently falls back to (parent
+ * override, else global).
  */
 async function openEditFolderModal(folder: FolderInfo, updateState: SidebarUpdate): Promise<void> {
     try {
         const config = await getConfig();
         const override = config.folderAiCmds.find((entry) => entry.folder === folder.path);
+        const parentOverride = folder.parentRepoPath
+            ? config.folderAiCmds.find((entry) => entry.folder === folder.parentRepoPath)
+            : undefined;
         updateState({
             editFolderPath: folder.path,
             editFolderAiCmd: override?.aiCmd || '',
             editFolderResetAiSessionCmd: override?.resetAiSessionCmd || '',
-            editFolderGlobalAiCmd: config.aiCmd,
-            editFolderGlobalResetAiSessionCmd: config.resetAiSessionCmd || '',
+            editFolderInheritedAiCmd: parentOverride?.aiCmd || config.aiCmd,
+            editFolderInheritedResetAiSessionCmd:
+                parentOverride?.resetAiSessionCmd || config.resetAiSessionCmd || '',
+            editFolderIsWorktreeRoot: folder.isWorktreeRoot,
             editFolderSubmitting: false,
         });
     } catch (error: unknown) {
@@ -1735,10 +1771,12 @@ async function openEditFolderModal(folder: FolderInfo, updateState: SidebarUpdat
 }
 
 /**
- * Persist the modal's two fields into `folderAiCmds`. If both inputs match the corresponding
- * globals, the override entry is dropped entirely; otherwise it's upserted with whichever of the
- * two values differ from the global. Restart the AI pane on save so the new `aiCmd` takes effect
- * (the reset-cmd doesn't need a restart — it's only invoked on demand).
+ * Persist the modal's two fields into `folderAiCmds`. If both inputs match what the folder would
+ * inherit anyway, the override entry is dropped entirely; otherwise it's upserted with whichever of
+ * the two values differ. Restart affected AI panes on save so the new `aiCmd` takes effect (the
+ * reset-cmd doesn't need a restart — it's only invoked on demand). When the edited folder is a
+ * worktree root, "affected" includes every child worktree that doesn't set its own `aiCmd`, since
+ * those inherit the value that just changed.
  */
 async function submitEditFolder({
     state,
@@ -1760,8 +1798,9 @@ async function submitEditFolder({
             editFolderSubmitting: true,
         });
         const config = await getConfig();
-        const aiCmdIsOverride = !!aiCmd && aiCmd !== config.aiCmd;
-        const resetIsOverride = !!resetCmd && resetCmd !== (config.resetAiSessionCmd || '');
+        const aiCmdIsOverride = !!aiCmd && aiCmd !== state.editFolderInheritedAiCmd;
+        const resetIsOverride =
+            !!resetCmd && resetCmd !== state.editFolderInheritedResetAiSessionCmd;
         const otherEntries = config.folderAiCmds.filter((entry) => entry.folder !== folderPath);
         const nextEntries =
             aiCmdIsOverride || resetIsOverride
@@ -1782,24 +1821,33 @@ async function submitEditFolder({
             ...config,
             folderAiCmds: nextEntries,
         });
-        if (aiCmdIsOverride || aiCmd) {
-            await restartPane({
-                folder: folderPath,
-                kind: PaneKind.Ai,
-            });
-            emitPaneRestarted({
-                folder: folderPath,
-                kind: PaneKind.Ai,
-            });
-        }
-        updateState({
-            editFolderPath: undefined,
-            editFolderAiCmd: '',
-            editFolderResetAiSessionCmd: '',
-            editFolderGlobalAiCmd: '',
-            editFolderGlobalResetAiSessionCmd: '',
-            editFolderSubmitting: false,
-        });
+        const inheritingChildren = state.editFolderIsWorktreeRoot
+            ? state.folders.filter(
+                  (folder) =>
+                      folder.parentRepoPath === folderPath &&
+                      !nextEntries.find((entry) => entry.folder === folder.path)?.aiCmd,
+              )
+            : [];
+        const restartTargets = [
+            folderPath,
+            ...inheritingChildren.map((folder) => folder.path),
+        ].filter(
+            (path) =>
+                state.folders.find((folder) => folder.path === path)?.panes.ai !== PaneStatus.None,
+        );
+        await Promise.all(
+            restartTargets.map(async (path) => {
+                await restartPane({
+                    folder: path,
+                    kind: PaneKind.Ai,
+                });
+                emitPaneRestarted({
+                    folder: path,
+                    kind: PaneKind.Ai,
+                });
+            }),
+        );
+        updateState(closedEditFolderState);
         await refresh(updateState);
     } catch (error: unknown) {
         updateState({

@@ -3,7 +3,7 @@
 import {defaultConfig} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {getFolderAiCmd, setFolderAiCmd} from './config.js';
+import {getFolderAiCmd, getFolderResetAiSessionCmd, setFolderAiCmd} from './config.js';
 
 describe(getFolderAiCmd.name, () => {
     it('uses folder overrides before the global command', () => {
@@ -42,6 +42,52 @@ describe(getFolderAiCmd.name, () => {
                 overridden: 'codex',
                 fallback: 'claude',
                 inherited: 'opencode',
+            },
+        );
+    });
+
+    it('inherits each command independently of the other', () => {
+        const config = {
+            ...defaultConfig,
+            aiCmd: 'claude',
+            resetAiSessionCmd: '/clear',
+            folderAiCmds: [
+                {
+                    folder: '/tmp/project-root',
+                    aiCmd: 'opencode',
+                    resetAiSessionCmd: '/reset',
+                },
+                /** Overrides only the reset cmd, so its AI cmd still comes from the root. */
+                {
+                    folder: '/tmp/project-root/worktree-a',
+                    aiCmd: '',
+                    resetAiSessionCmd: '/new',
+                },
+            ],
+        };
+
+        assert.deepEquals(
+            {
+                aiCmd: getFolderAiCmd({
+                    config,
+                    folder: '/tmp/project-root/worktree-a',
+                    fallbackFolders: ['/tmp/project-root'],
+                }),
+                resetAiSessionCmd: getFolderResetAiSessionCmd({
+                    config,
+                    folder: '/tmp/project-root/worktree-a',
+                    fallbackFolders: ['/tmp/project-root'],
+                }),
+                inheritedReset: getFolderResetAiSessionCmd({
+                    config,
+                    folder: '/tmp/project-root/worktree-b',
+                    fallbackFolders: ['/tmp/project-root'],
+                }),
+            },
+            {
+                aiCmd: 'opencode',
+                resetAiSessionCmd: '/new',
+                inheritedReset: '/reset',
             },
         );
     });

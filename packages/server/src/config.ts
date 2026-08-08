@@ -39,6 +39,33 @@ function normalizeConfig(config: Readonly<Config>): Config {
     };
 }
 
+/**
+ * Resolve one override field by walking the folder → fallback-folder chain, taking the first
+ * candidate that actually sets that field. Each field resolves independently: a worktree that only
+ * overrides its reset-cmd still inherits its worktree-root's `aiCmd` rather than skipping straight
+ * to the global default.
+ */
+function findFolderOverride({
+    config,
+    folder,
+    fallbackFolders,
+    pickField,
+}: Readonly<{
+    config: Config;
+    folder: string;
+    fallbackFolders: ReadonlyArray<string>;
+    pickField: (entry: ArrayElement<Config['folderAiCmds']>) => string | undefined;
+}>): string | undefined {
+    const folderCandidates = [
+        normalizePath(folder),
+        ...fallbackFolders.map((fallbackFolder) => normalizePath(fallbackFolder)),
+    ];
+    return folderCandidates.reduce<string | undefined>((found, candidate) => {
+        const entry = config.folderAiCmds.find((other) => other.folder === candidate);
+        return found || (entry ? pickField(entry)?.trim() || undefined : undefined);
+    }, undefined);
+}
+
 export function getFolderAiCmd({
     config,
     folder,
@@ -48,18 +75,14 @@ export function getFolderAiCmd({
     folder: string;
     fallbackFolders?: ReadonlyArray<string> | undefined;
 }>): string {
-    const folderCandidates = [
-        normalizePath(folder),
-        ...fallbackFolders.map((fallbackFolder) => normalizePath(fallbackFolder)),
-    ];
-    const matchingOverride = folderCandidates.reduce<
-        ArrayElement<typeof config.folderAiCmds> | undefined
-    >(
-        (found, candidate) =>
-            found || config.folderAiCmds.find((entry) => entry.folder === candidate),
-        undefined,
+    return (
+        findFolderOverride({
+            config,
+            folder,
+            fallbackFolders,
+            pickField: (entry) => entry.aiCmd,
+        }) || config.aiCmd
     );
-    return matchingOverride?.aiCmd || config.aiCmd;
 }
 
 export function setFolderAiCmd({
@@ -119,18 +142,16 @@ export function getFolderResetAiSessionCmd({
     folder: string;
     fallbackFolders?: ReadonlyArray<string> | undefined;
 }>): string {
-    const folderCandidates = [
-        normalizePath(folder),
-        ...fallbackFolders.map((fallbackFolder) => normalizePath(fallbackFolder)),
-    ];
-    const matchingOverride = folderCandidates.reduce<
-        ArrayElement<typeof config.folderAiCmds> | undefined
-    >(
-        (found, candidate) =>
-            found || config.folderAiCmds.find((entry) => entry.folder === candidate),
-        undefined,
+    return (
+        findFolderOverride({
+            config,
+            folder,
+            fallbackFolders,
+            pickField: (entry) => entry.resetAiSessionCmd,
+        }) ||
+        config.resetAiSessionCmd ||
+        ''
     );
-    return matchingOverride?.resetAiSessionCmd?.trim() || config.resetAiSessionCmd || '';
 }
 
 /**
