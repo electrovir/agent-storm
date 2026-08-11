@@ -131,6 +131,50 @@ function parseTabByFolder(raw: string): Record<string, string> {
     }
 }
 
+/**
+ * Which session tab each folder was last on, per pane kind: `{'/path/to/repo': {ai: 2, shell: 1}}`.
+ * 1-based, matching the URL params. Entries that aren't a positive integer are dropped on read, so
+ * a hand-edited or stale value falls back to the first session rather than pointing at nothing.
+ */
+function parseSessionIndexByFolder(raw: string): Record<string, Record<string, number>> {
+    try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return {};
+        }
+        return Object.fromEntries(
+            Object.entries(parsed).flatMap(
+                ([
+                    folder,
+                    byKind,
+                ]) => {
+                    if (!byKind || typeof byKind !== 'object' || Array.isArray(byKind)) {
+                        return [];
+                    }
+                    const validIndexes = Object.fromEntries(
+                        Object.entries(byKind).filter(
+                            ([
+                                ,
+                                index,
+                            ]) => Number.isSafeInteger(index) && Number(index) >= 1,
+                        ),
+                    ) as Record<string, number>;
+                    return Object.keys(validIndexes).length
+                        ? [
+                              [
+                                  folder,
+                                  validIndexes,
+                              ] as const,
+                          ]
+                        : [];
+                },
+            ),
+        );
+    } catch {
+        return {};
+    }
+}
+
 export const localStorageClient = {
     authSecret: defineSetting<string | undefined>({
         key: 'agent-storm-auth-secret',
@@ -172,6 +216,12 @@ export const localStorageClient = {
         key: 'agent-storm:tab-by-folder',
         defaultValue: {},
         parse: parseTabByFolder,
+        serialize: (value) => JSON.stringify(value),
+    }),
+    sessionIndexByFolder: defineSetting<Record<string, Record<string, number>>>({
+        key: 'agent-storm:session-index-by-folder',
+        defaultValue: {},
+        parse: parseSessionIndexByFolder,
         serialize: (value) => JSON.stringify(value),
     }),
     scrollbackLimit: defineSetting<number>({

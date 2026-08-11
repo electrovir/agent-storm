@@ -325,11 +325,6 @@ export const VirTerminal = defineElement<{
              * close it. Switching session tabs makes that window routine rather than rare.
              */
             unmounted: false,
-            /**
-             * Temporary on-screen size readout, because the app runs as a PWA where the console
-             * isn't reachable. Remove once the stale-wrap bug is pinned down.
-             */
-            sizeBadge: undefined as string | undefined,
         };
     },
     styles: css`
@@ -357,19 +352,6 @@ export const VirTerminal = defineElement<{
                disables iOS double-tap zoom on the canvas. */
             touch-action: none;
             overscroll-behavior: contain;
-        }
-
-        /* Temporary size readout — see the sizeBadge state field. */
-        .size-badge {
-            position: absolute;
-            top: 0;
-            right: 0;
-            z-index: 10;
-            padding: 1px 4px;
-            pointer-events: none;
-            font-family: ui-monospace, monospace;
-            font-size: 10px;
-            ${colorCss(viraThemeByKeys.red['behind-fg']['small-body'])};
         }
 
         ${defaultXtermStyles}
@@ -489,11 +471,6 @@ export const VirTerminal = defineElement<{
             ${state.uploadError
                 ? html`
                       <div class="upload-error" role="alert">${state.uploadError}</div>
-                  `
-                : ''}
-            ${state.sizeBadge
-                ? html`
-                      <div class="size-badge">${state.sizeBadge}</div>
                   `
                 : ''}
             <div
@@ -734,53 +711,13 @@ export const VirTerminal = defineElement<{
                         return;
                     }
 
-                    /**
-                     * Last size handed to the pty, for the activation diagnostic below. Temporary:
-                     * remove along with `logActivationSizes` once the stale-wrap bug is pinned
-                     * down.
-                     */
-                    const lastSent = {
-                        cols: 0,
-                        rows: 0,
-                    };
-
                     const sendResize = () => {
-                        lastSent.cols = terminal.cols;
-                        lastSent.rows = terminal.rows;
                         socket.send({
                             resize: {
                                 cols: terminal.cols,
                                 rows: terminal.rows,
                             },
                         });
-                    };
-
-                    /**
-                     * Temporary diagnostic for the AI pane coming back wrapped at the wrong width.
-                     * Prints what each side believes at a given moment in the activation sequence:
-                     * what xterm is rendering at, what the pty was last told, what the fit addon
-                     * would propose right now, and the pixel box plus device pixel ratio those are
-                     * derived from. A one-column gap between `xterm` and `proposed` explains text
-                     * wrapping a character early; a gap between `xterm` and `sent` means the pty is
-                     * wrapping at a width nothing on screen matches.
-                     */
-                    const logActivationSizes = (stage: string) => {
-                        const proposed = fitAddon.proposeDimensions();
-                        const want = proposed ? `${proposed.cols}x${proposed.rows}` : '?';
-                        const sizeBadge = [
-                            stage,
-                            `xterm ${terminal.cols}x${terminal.rows}`,
-                            `sent ${lastSent.cols}x${lastSent.rows}`,
-                            `want ${want}`,
-                            `box ${element.offsetWidth}x${element.offsetHeight}`,
-                            `win ${window.innerWidth}`,
-                            `queued ${writeGate.pending.length}`,
-                        ].join(' · ');
-                        if (sizeBadge !== state.sizeBadge) {
-                            updateState({
-                                sizeBadge,
-                            });
-                        }
                     };
 
                     /**
@@ -1089,17 +1026,19 @@ export const VirTerminal = defineElement<{
                         stableFrames: number;
                         requiredStableFrames: number;
                     }>): void => {
-                        if (generation !== fitGeneration.current) {
-                            return;
-                            /**
-                             * No real layout: the pane is `display: none` because the user switched
-                             * folders. Fitting anyway would shrink xterm to its minimum columns and
-                             * push that to the pty, and the TUI's narrow redraw would land in the
-                             * scrollback for the user to find on their return. The ResizeObserver
-                             * fires again when the pane regains a box.
-                             */
-                        } else if (element.offsetWidth < 10 || element.offsetHeight < 10) {
-                            logActivationSizes('too-small');
+                        /**
+                         * A superseded generation is abandoned outright. So is a pane with no real
+                         * layout — `display: none` because the user switched folders. Fitting that
+                         * would shrink xterm to its minimum columns and push that to the pty, and
+                         * the TUI's narrow redraw would land in the scrollback for the user to find
+                         * on their return. The ResizeObserver fires again when the pane regains a
+                         * box.
+                         */
+                        if (
+                            generation !== fitGeneration.current ||
+                            element.offsetWidth < 10 ||
+                            element.offsetHeight < 10
+                        ) {
                             return;
                         }
                         const retry = (
@@ -1148,7 +1087,6 @@ export const VirTerminal = defineElement<{
                         sendResize();
                         openWriteGate();
                         repaintGlyphs();
-                        logActivationSizes('settled');
                         /*
                          * Always, not just when the fit was a no-op. Whether the pty sees a size
                          * change is decided by the size *it* already had, which this element cannot
@@ -1189,7 +1127,6 @@ export const VirTerminal = defineElement<{
                     fitAndResend(0);
 
                     const resizeObserver = new ResizeObserver(() => {
-                        logActivationSizes('observe');
                         fitAndResend(stableFitFrames);
                     });
                     resizeObserver.observe(element);
@@ -1201,7 +1138,6 @@ export const VirTerminal = defineElement<{
                      * wrapped at a stale width.
                      */
                     const onActivate = () => {
-                        logActivationSizes('activate');
                         fitAndResend(stableFitFrames);
                     };
 

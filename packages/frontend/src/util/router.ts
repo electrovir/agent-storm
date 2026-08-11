@@ -1,4 +1,5 @@
 import {PaneKind} from '@agent-storm/common';
+import {omitObjectKeys} from '@augment-vir/common';
 import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
 import {localStorageClient} from './local-storage-client.js';
 
@@ -178,6 +179,48 @@ export function rememberTabForFolder({
         ...localStorageClient.tabByFolder.read(),
         [folder]: tab,
     });
+}
+
+/**
+ * The session tab a folder's pane was last on, or 1 when it has never been set. Stored per folder
+ * and per pane kind for the same reason the tab is: coming back to a repo should land on the
+ * session you were working in there, and the AI and Shell panes are shown side by side on desktop
+ * so they each need their own answer.
+ *
+ * The index is only ever a hint. The pane group checks it against the folder's live session list
+ * and corrects the route when the session it names is gone, which is what writes the reset back
+ * here.
+ */
+export function rememberedSessionIndexForFolder(folder: string, kind: PaneKind): number {
+    return localStorageClient.sessionIndexByFolder.read()[folder]?.[kind] ?? 1;
+}
+
+export function rememberSessionIndexForFolder({
+    folder,
+    kind,
+    index,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    index: number;
+}>): void {
+    const stored = localStorageClient.sessionIndexByFolder.read();
+    /** Index 1 is the fallback, so storing it would only be dead weight to read back. */
+    const byKind =
+        index > 1
+            ? {
+                  ...stored[folder],
+                  [kind]: index,
+              }
+            : omitObjectKeys(stored[folder] ?? {}, [kind]);
+    localStorageClient.sessionIndexByFolder.write(
+        Object.keys(byKind).length
+            ? {
+                  ...stored,
+                  [folder]: byKind,
+              }
+            : omitObjectKeys(stored, [folder]),
+    );
 }
 
 export const router = new SpaRouter<FrontendPaths, FrontendSearchParams, undefined>({

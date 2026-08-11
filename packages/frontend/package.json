@@ -47,6 +47,7 @@
         "@codemirror/state": "^6.5.2",
         "@codemirror/view": "^6.36.8",
         "@electrovir/color": "^1.7.11",
+        "@lezer/highlight": "^1.2.3",
         "@rest-vir/api": "^2.2.1",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-web-links": "^0.12.0",
@@ -59,7 +60,8 @@
         "spa-router-vir": "^6.6.1",
         "theme-vir": "^28.25.1",
         "url-vir": "^2.1.10",
-        "vira": "^31.28.1"
+        "vira": "^31.28.1",
+        "vscode-diff": "^3.0.1"
     },
     "devDependencies": {
         "@augment-vir/test": "^32.2.1",

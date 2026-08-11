@@ -21,7 +21,9 @@ import {getFolders, touchRepo} from '../../util/api-client.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {
     defaultFrontendTab,
+    rememberedSessionIndexForFolder,
     rememberedTabForFolder,
+    rememberSessionIndexForFolder,
     rememberTabForFolder,
     router,
     sessionIndexFromRoute,
@@ -605,21 +607,36 @@ export const VirApp = defineElement()({
                 folderInfo: ReadonlyMap<string, FolderInfo>,
             ): void => {
                 /**
-                 * Restore whichever tab this folder was last on rather than carrying the previous
-                 * folder's `?tab=...` across (landing on another repo's Diff tab is surprising) or
-                 * resetting everything to AI (which loses the pane you were deliberately using in
-                 * this folder). Session params are dropped either way — they belong to the folder
-                 * you just left.
+                 * Restore whichever tab and session tabs this folder was last on rather than
+                 * carrying the previous folder's params across (landing on another repo's Diff tab,
+                 * or its AI session 3, is surprising) or resetting everything to the defaults
+                 * (which loses the pane and session you were deliberately using in this folder). A
+                 * remembered session that no longer exists is corrected by the pane group once it
+                 * has the folder's live session list.
                  */
                 const rememberedTab = rememberedTabForFolder(folder.path);
+                const aiSession = rememberedSessionIndexForFolder(folder.path, PaneKind.Ai);
+                const shellSession = rememberedSessionIndexForFolder(folder.path, PaneKind.Shell);
+                const search = {
+                    ...(rememberedTab === defaultFrontendTab
+                        ? {}
+                        : {
+                              tab: [rememberedTab],
+                          }),
+                    ...(aiSession > 1
+                        ? {
+                              aiSession: [String(aiSession)],
+                          }
+                        : {}),
+                    ...(shellSession > 1
+                        ? {
+                              shellSession: [String(shellSession)],
+                          }
+                        : {}),
+                };
                 router.setRoute({
                     paths: pathsForFolder(folder, folderInfo),
-                    search:
-                        rememberedTab === defaultFrontendTab
-                            ? undefined
-                            : {
-                                  tab: [rememberedTab],
-                              },
+                    search: Object.keys(search).length ? search : undefined,
                 });
             };
             const known = state.folderInfo.get(folderPath);
@@ -798,6 +815,11 @@ export const VirApp = defineElement()({
                                         const paramName =
                                             sessionSearchParamByKind[event.detail.kind];
                                         const existingSearch = state.route.search ?? {};
+                                        rememberSessionIndexForFolder({
+                                            folder,
+                                            kind: event.detail.kind,
+                                            index: event.detail.index,
+                                        });
                                         router.setRoute({
                                             paths: state.route.paths,
                                             /**
