@@ -10,12 +10,14 @@ import {
     foldersEndpoint,
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
+    gitDiscardAllEndpoint,
     gitDiscardFileEndpoint,
     gitDiscardHunkEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
     gitHubResolveThreadEndpoint,
+    gitStageAllEndpoint,
     gitStageFileEndpoint,
     gitStageHunkEndpoint,
     hideRepoEndpoint,
@@ -246,6 +248,7 @@ export async function getGitDiffFile(
         path: string;
         oldPath?: string | undefined;
         side: GitDiffSide;
+        allowLarge: boolean;
     }>,
 ): Promise<GitDiffFileContents> {
     return await requestApi('POST /git/diff/file', () =>
@@ -264,6 +267,17 @@ export async function setGitFileStaged(
 ): Promise<void> {
     await requestApi('POST /git/stage/file', () =>
         client.fetch(gitStageFileEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/** Same as {@link setGitFileStaged} but for every file currently on `side`. */
+export async function setGitSideStaged(
+    params: Readonly<{folder: string; side: GitDiffSide}>,
+): Promise<void> {
+    await requestApi('POST /git/stage/all', () =>
+        client.fetch(gitStageAllEndpoint).POST({
             requestData: params,
         }),
     );
@@ -321,6 +335,18 @@ export async function discardGitFile(
 ): Promise<void> {
     await requestApi('POST /git/discard/file', () =>
         client.fetch(gitDiscardFileEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/**
+ * Throw away every changed file's changes, staged and unstaged alike. Cannot be reversed — confirm
+ * before calling.
+ */
+export async function discardAllGitChanges(params: Readonly<{folder: string}>): Promise<void> {
+    await requestApi('POST /git/discard/all', () =>
+        client.fetch(gitDiscardAllEndpoint).POST({
             requestData: params,
         }),
     );

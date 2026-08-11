@@ -476,6 +476,33 @@ export const VirPaneGroup = defineElement<{
         const sessionIndexFor = (kind: PaneKind): number =>
             kind === PaneKind.Ai ? inputs.aiSessionIndex : inputs.shellSessionIndex;
 
+        /**
+         * The incoming index is a hint — it comes from the URL, which in turn comes from what this
+         * folder was last on, and either can name a session that has since been closed. Correcting
+         * it back to the first session here rather than only falling back at render time is what
+         * makes the route and the remembered value agree with what's on screen; `vir-app` persists
+         * whatever `sessionRequested` reports, so this is also what clears the stale memory.
+         */
+        /** Only the active folder owns the URL, so an inactive group correcting it would clobber. */
+        if (state.sessions && inputs.active) {
+            const staleKinds = [
+                PaneKind.Ai,
+                PaneKind.Shell,
+            ].filter(
+                (kind) =>
+                    sessionIndexFor(kind) > 1 &&
+                    sessionIndexFor(kind) > (state.sessions?.[kind].length ?? 0),
+            );
+            staleKinds.forEach((kind) => {
+                dispatch(
+                    new events.sessionRequested({
+                        kind,
+                        index: 1,
+                    }),
+                );
+            });
+        }
+
         const onAddSession = (kind: PaneKind) => {
             void createSession({
                 folder: inputs.folder,

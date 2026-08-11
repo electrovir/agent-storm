@@ -4,10 +4,11 @@ import {
     GitDiffSide,
     GitFileChange,
     maxDiffFileBytes,
+    maxDiffFileLines,
     type GitDiffFile,
     type GitDiffStatus,
 } from '@agent-storm/common';
-import {arrayToObject} from '@augment-vir/common';
+import {arrayToObject, awaitedForEach, removeDuplicates} from '@augment-vir/common';
 import {execFile} from 'node:child_process';
 import {readFile, rm} from 'node:fs/promises';
 import {isAbsolute, relative, resolve} from 'node:path';
@@ -28,6 +29,8 @@ const gitMaxBuffer = maxDiffFileBytes * 4;
  * heuristic git uses — a text file has no NUL in its first block.
  */
 const binarySniffBytes = 8000;
+
+const newlineByte = 0x0a;
 
 /** Unified-diff context lines emitted on each side of a staged or unstaged hunk. */
 const hunkContextLines = 3;
@@ -393,26 +396,35 @@ async function readSideBuffers({
     };
 }
 
+/** Counted on the buffer rather than a decoded string so a multi-megabyte blob isn't decoded twice. */
+function countLines(buffer: Readonly<Buffer>): number {
+    return buffer.reduce((count, byte) => (byte === newlineByte ? count + 1 : count), 1);
+}
+
 export async function getDiffFileContents(
     params: Readonly<{
         folder: string;
         path: string;
         oldPath: string | undefined;
         side: GitDiffSide;
+        allowLarge: boolean;
     }>,
-): Promise<{oldContent: string; newContent: string; tooLargeOrBinary: boolean}> {
+) {
     const {oldBuffer, newBuffer} = await readSideBuffers(params);
 
-    const tooLargeOrBinary =
+    const binary = looksBinary(oldBuffer) || looksBinary(newBuffer);
+    const tooLarge =
         oldBuffer.byteLength > maxDiffFileBytes ||
         newBuffer.byteLength > maxDiffFileBytes ||
-        looksBinary(oldBuffer) ||
-        looksBinary(newBuffer);
+        countLines(oldBuffer) > maxDiffFileLines ||
+        countLines(newBuffer) > maxDiffFileLines;
+    const withheld = binary || (tooLarge && !params.allowLarge);
 
     return {
-        oldContent: tooLargeOrBinary ? '' : oldBuffer.toString('utf8'),
-        newContent: tooLargeOrBinary ? '' : newBuffer.toString('utf8'),
-        tooLargeOrBinary,
+        oldContent: withheld ? '' : oldBuffer.toString('utf8'),
+        newContent: withheld ? '' : newBuffer.toString('utf8'),
+        tooLargeOrBinary: withheld,
+        canShowAnyway: withheld && !binary,
     };
 }
 
@@ -510,6 +522,44 @@ export async function discardFileChanges({
     await rm(absolutePath, {
         force: true,
         recursive: true,
+    });
+}
+
+/**
+ * {@link setFileStaged} for every file currently on one side. Sequential because each git call takes
+ * `index.lock` and parallel ones would fail on the contention.
+ */
+export async function setSideStaged({
+    folder,
+    side,
+}: Readonly<{folder: string; side: GitDiffSide}>): Promise<void> {
+    const status = await getDiffStatus(folder);
+    const files = side === GitDiffSide.Staged ? status.staged : status.unstaged;
+    await awaitedForEach(files, async (file) => {
+        await setFileStaged({
+            folder,
+            path: file.path,
+            side,
+        });
+    });
+}
+
+/**
+ * {@link discardFileChanges} for every changed file. Paths are collected from both sides and
+ * deduped: a partially-staged file is reported on each, and the second discard would throw on the
+ * file the first one already deleted.
+ */
+export async function discardAllChanges(folder: string): Promise<void> {
+    const status = await getDiffStatus(folder);
+    const paths = removeDuplicates([
+        ...status.staged.map((file) => file.path),
+        ...status.unstaged.map((file) => file.path),
+    ]);
+    await awaitedForEach(paths, async (path) => {
+        await discardFileChanges({
+            folder,
+            path,
+        });
     });
 }
 

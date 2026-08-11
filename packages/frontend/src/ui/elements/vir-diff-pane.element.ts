@@ -4,13 +4,15 @@ import {
     DiffLayout,
     GitDiffSide,
     GitFileChange,
+    maxDiffFileLines,
     type GitDiffFile,
+    type GitDiffFileContents,
     type GitDiffStatus,
 } from '@agent-storm/common';
 import {extractExtension} from '@augment-vir/common';
 import {defaultKeymap, history, historyKeymap} from '@codemirror/commands';
 import {bracketMatching, foldGutter} from '@codemirror/language';
-import {Chunk, MergeView, diff, unifiedMergeView} from '@codemirror/merge';
+import {Chunk, MergeView, unifiedMergeView} from '@codemirror/merge';
 import {EditorState, Text, type Extension} from '@codemirror/state';
 import {
     Decoration,
@@ -30,6 +32,7 @@ import {
     onDomCreated,
     unsafeCSS,
     type CSSResult,
+    type HtmlInterpolation,
 } from 'element-vir';
 import {
     HorizontalAnchor,
@@ -48,6 +51,7 @@ import {
     type ViraIconSvg,
 } from 'vira';
 import {
+    discardAllGitChanges,
     discardGitFile,
     discardGitHunk,
     getConfig,
@@ -56,10 +60,13 @@ import {
     putConfig,
     setGitFileStaged,
     setGitHunkStaged,
+    setGitSideStaged,
 } from '../../util/api-client.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
+import {toFileIconUrl} from '../../util/file-icon.js';
 import {diffSidebarWidth, localStorageClient} from '../../util/local-storage-client.js';
 import {ScreenSize} from '../../util/screen-size.js';
+import {diffConfig, diffLines} from '../../util/vscode-diff.js';
 
 /**
  * How often the pane re-reads `git status` and the open file while it's visible. Two seconds is
@@ -104,17 +111,10 @@ const stageActionIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
     [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 14),
 };
 
-/**
- * A path's final segment, and everything before it. Split apart so the file rows can dim the
- * directory and keep the name that actually identifies the file at full contrast.
- */
+/** A path's final segment, which is all the file rows show — the full path is their `title`. */
 function basename(path: string): string {
     const parts = extractExtension(path);
     return `${parts.basename}${parts.extension}`;
-}
-
-function dirnamePrefix(path: string): string {
-    return extractExtension(path).dirname;
 }
 
 const sideLabels: Readonly<Record<GitDiffSide, string>> = {
@@ -185,6 +185,29 @@ function allSelectValues(status: Readonly<GitDiffStatus> | undefined): string[] 
     ];
 }
 
+/**
+ * Pick the selection to carry into a freshly read status. Exact match wins. Failing that, the same
+ * path on the other side does: staging a file removes its unstaged entry and adds a staged one, and
+ * the user staged it while reading it, so following it across is what keeps their place. Only a
+ * path that is gone from both sides — fully staged and committed, or discarded — falls back to the
+ * first file, so the pane never shows a diff for a file that no longer has one.
+ */
+function reselectValue(
+    previousValue: string | undefined,
+    values: ReadonlyArray<string>,
+): string | undefined {
+    if (!previousValue || values.includes(previousValue)) {
+        return previousValue || values[0];
+    }
+    const [
+        ,
+        previousPath,
+    ] = previousValue.split(selectValueSeparator);
+    return (
+        values.find((value) => value.split(selectValueSeparator)[1] === previousPath) || values[0]
+    );
+}
+
 /** One section of the file menu. Empty sides are dropped before rendering. */
 type FileMenuGroup = {
     side: GitDiffSide;
@@ -207,9 +230,15 @@ function toMenuGroups(status: Readonly<GitDiffStatus> | undefined): FileMenuGrou
     ].filter((group) => group.files.length);
 }
 
-/** One file's row contents, shared by the desktop sidebar and the mobile dropdown. */
+/**
+ * One file's row contents, shared by the desktop sidebar and the mobile dropdown. The badge comes
+ * last so it sits at the row's right edge, just inside the hover-revealed row actions. The full
+ * path is still reachable: it's the row's `title`.
+ */
 function fileRowContents(file: Readonly<GitDiffFile>) {
     return html`
+        <img class="file-icon" src=${toFileIconUrl(file.path)} alt="" />
+        <span class="file-basename">${basename(file.path)}</span>
         <span
             class="badge"
             style=${css`
@@ -218,43 +247,7 @@ function fileRowContents(file: Readonly<GitDiffFile>) {
         >
             ${changeBadges[file.change]}
         </span>
-        <span class="file-path">
-            <span class="file-dirname">${dirnamePrefix(file.path)}</span>
-            <span class="file-basename">${basename(file.path)}</span>
-        </span>
-        <span class="counts">
-            <span class="insertions">+${file.insertions}</span>
-            <span class="deletions">−${file.deletions}</span>
-        </span>
     `;
-}
-
-/**
- * Line-diffing works on strings, so each distinct line is encoded as one character and the file
- * becomes a string of them. Surrogate code units are skipped: a line landing on a high surrogate
- * followed by one on a low surrogate would read as a single character and corrupt the alignment.
- */
-const surrogateRangeStart = 0xd8_00;
-const surrogateRangeEnd = 0xdf_ff;
-const maxEncodedLines = 0xff_ff - (surrogateRangeEnd - surrogateRangeStart + 1);
-
-function encodeLines(lines: ReadonlyArray<string>, codesByLine: Map<string, string>): string {
-    return lines
-        .map((line) => {
-            const existing = codesByLine.get(line);
-            if (existing) {
-                return existing;
-            }
-            const index = codesByLine.size;
-            const code = String.fromCodePoint(
-                index < surrogateRangeStart
-                    ? index
-                    : index + (surrogateRangeEnd - surrogateRangeStart + 1),
-            );
-            codesByLine.set(line, code);
-            return code;
-        })
-        .join('');
 }
 
 /**
@@ -275,17 +268,14 @@ function foldWhitespaceOnlyChanges({
 }>): string {
     const oldLines = oldContent.split('\n');
     const newLines = newContent.split('\n');
-    const codesByLine = new Map<string, string>();
     const normalize = (line: string) => line.replace(/\s+/g, '');
-    const encodedOld = encodeLines(oldLines.map(normalize), codesByLine);
-    const encodedNew = encodeLines(newLines.map(normalize), codesByLine);
-    if (codesByLine.size > maxEncodedLines) {
-        return oldContent;
-    }
-    const changes = diff(encodedOld, encodedNew);
+    const changes = diffLines({
+        aLines: oldLines.map(normalize),
+        bLines: newLines.map(normalize),
+    });
     /**
-     * `diff` reports what changed, so the aligned-and-equal runs are the gaps between its changes,
-     * plus the tail after the last one.
+     * The diff reports what changed, so the aligned-and-equal runs are the gaps between its
+     * changes, plus the tail after the last one.
      */
     const alignedRuns = [
         ...changes,
@@ -607,6 +597,7 @@ function mountDiffEditor({
                     original: oldContent,
                     /** Read-only pane: there is nothing to revert a chunk into. */
                     mergeControls: false,
+                    diffConfig,
                 }),
             ],
         });
@@ -637,6 +628,7 @@ function mountDiffEditor({
             ],
         },
         gutter: true,
+        diffConfig,
     });
     return {
         view: merge.b,
@@ -733,9 +725,13 @@ export const VirDiffPane = defineElement<{
             statusError: undefined as string | undefined,
             selectedValue: undefined as string | undefined,
             /** Old/new text for the selected file, or undefined while it loads. */
-            diffContent: undefined as
-                | {oldContent: string; newContent: string; tooLargeOrBinary: boolean}
-                | undefined,
+            diffContent: undefined as GitDiffFileContents | undefined,
+            /**
+             * Selection values whose oversized diff the user asked for anyway. Per file rather than
+             * a pane-wide flag, and dropped on folder change, so one deliberate wait doesn't sign
+             * the user up for every other huge file in the repo.
+             */
+            allowLargeValues: [] as ReadonlyArray<string>,
             diffError: undefined as string | undefined,
             editor: undefined as MountedEditor | undefined,
             /**
@@ -816,6 +812,24 @@ export const VirDiffPane = defineElement<{
             padding: 6px 8px;
             border-bottom: 1px solid
                 ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+        }
+
+        /*
+         * The open file's full path, which nothing else in the pane shows any more — the sidebar
+         * rows and the mobile trigger are both down to the base name.
+         */
+        .selected-path {
+            flex-grow: 0;
+            flex-shrink: 0;
+            padding: 4px 8px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            border-bottom: 1px solid
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            font-family: 'MesloLGS NF', Menlo, monospace;
+            font-size: 11px;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
         /*
@@ -924,13 +938,13 @@ export const VirDiffPane = defineElement<{
 
         .menu-row {
             display: flex;
-            align-items: baseline;
+            align-items: center;
             gap: 10px;
             min-width: 0;
             max-width: 60vw;
         }
 
-        .file-path {
+        .file-basename {
             flex-grow: 1;
             min-width: 0;
             overflow: hidden;
@@ -938,12 +952,16 @@ export const VirDiffPane = defineElement<{
             text-overflow: ellipsis;
         }
 
-        .file-dirname {
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-        }
-
-        .file-basename {
-            font-weight: 600;
+        /*
+         * Fetched lazily from www-static as rows render, so the whole icon set costs nothing until a
+         * file that uses one shows up. Sized in px rather than em to stay pixel-aligned with the
+         * source svgs, which are drawn on a 32px grid.
+         */
+        .file-icon {
+            flex-grow: 0;
+            flex-shrink: 0;
+            width: 16px;
+            height: 16px;
         }
 
         /*
@@ -996,12 +1014,32 @@ export const VirDiffPane = defineElement<{
         }
 
         .sidebar-header {
+            display: flex;
+            align-items: center;
+            gap: 4px;
             flex-grow: 1;
             padding: 6px 8px 2px;
             font-size: 10px;
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+        }
+
+        .sidebar-header-label {
+            flex-grow: 1;
+            min-width: 0;
+        }
+
+        /*
+         * Always visible, unlike the per-row actions: a section header has no row to hover, and
+         * these are the buttons most worth reaching for without hunting.
+         */
+        .header-actions {
+            display: flex;
+            align-items: center;
+            flex-grow: 0;
+            flex-shrink: 0;
+            gap: 2px;
         }
 
         .sidebar-row {
@@ -1021,7 +1059,7 @@ export const VirDiffPane = defineElement<{
 
         .sidebar-row-open {
             display: flex;
-            align-items: baseline;
+            align-items: center;
             gap: 8px;
             flex-grow: 1;
             min-width: 0;
@@ -1052,6 +1090,17 @@ export const VirDiffPane = defineElement<{
         .sidebar-row:hover .row-actions,
         .row-actions:focus-within {
             visibility: visible;
+        }
+
+        /*
+         * A touch screen has no hover to reveal them with, so hiding them would put staging and
+         * discarding out of reach entirely. Keyed on the pointer rather than on viewport width: a
+         * narrow desktop window still has a mouse, and a tablet at desktop width still does not.
+         */
+        @media (hover: none) {
+            .row-actions {
+                visibility: visible;
+            }
         }
 
         .row-action {
@@ -1090,23 +1139,6 @@ export const VirDiffPane = defineElement<{
             width: 1em;
             font-weight: 700;
             font-family: 'MesloLGS NF', Menlo, monospace;
-        }
-
-        .counts {
-            flex-grow: 0;
-            flex-shrink: 0;
-            display: flex;
-            gap: 4px;
-            font-size: 11px;
-            font-family: 'MesloLGS NF', Menlo, monospace;
-        }
-
-        .insertions {
-            color: ${viraThemeByKeys.green.foreground.body.foreground.value};
-        }
-
-        .deletions {
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
         }
 
         .body {
@@ -1177,8 +1209,10 @@ export const VirDiffPane = defineElement<{
 
         .placeholder {
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
+            gap: 12px;
             flex-grow: 1;
             padding: 24px;
             text-align: center;
@@ -1269,15 +1303,8 @@ export const VirDiffPane = defineElement<{
             if (!status) {
                 return;
             }
-            /**
-             * Keep the current selection when it still exists, otherwise fall back to the first
-             * file so the pane is never showing a stale diff for a file that's gone.
-             */
             const values = allSelectValues(status);
-            const selectedValue =
-                state.selectedValue && values.includes(state.selectedValue)
-                    ? state.selectedValue
-                    : values[0];
+            const selectedValue = reselectValue(state.selectedValue, values);
             updateState({
                 status,
                 statusError: undefined,
@@ -1296,6 +1323,7 @@ export const VirDiffPane = defineElement<{
                 path: nextSelected.file.path,
                 oldPath: nextSelected.file.oldPath ?? undefined,
                 side: nextSelected.side,
+                allowLarge: state.allowLargeValues.includes(selectedValue ?? ''),
             }).catch((error: unknown) => {
                 updateState({
                     diffError: error instanceof Error ? error.message : String(error),
@@ -1328,6 +1356,7 @@ export const VirDiffPane = defineElement<{
                           status: undefined,
                           selectedValue: undefined,
                           diffContent: undefined,
+                          allowLargeValues: [],
                       }),
             });
             void refresh();
@@ -1340,6 +1369,24 @@ export const VirDiffPane = defineElement<{
                 refreshTimer: undefined,
             });
         }
+
+        /**
+         * Opt this one file out of the size guard and re-read it. The refresh loop passes
+         * `allowLarge` for anything in this list, so the diff also survives the next poll.
+         */
+        const showLargeDiffAnyway = () => {
+            if (!state.selectedValue) {
+                return;
+            }
+            updateState({
+                allowLargeValues: [
+                    ...state.allowLargeValues,
+                    state.selectedValue,
+                ],
+                diffContent: undefined,
+            });
+            void refresh();
+        };
 
         const selectFile = (value: string) => {
             updateState({
@@ -1376,6 +1423,34 @@ export const VirDiffPane = defineElement<{
                     folder: inputs.folder,
                     path,
                     side,
+                });
+            });
+        };
+
+        const onStageWholeSide = (side: GitDiffSide) => {
+            void runIndexWrite(async () => {
+                await setGitSideStaged({
+                    folder: inputs.folder,
+                    side,
+                });
+            });
+        };
+
+        /** Confirmed for the same reason {@link onDiscardFile} is, and over more files. */
+        const onDiscardAll = () => {
+            if (
+                !window.confirm(
+                    [
+                        'Discard every change in this repo?',
+                        'This throws away both staged and unstaged changes to every changed file and cannot be undone.',
+                    ].join('\n\n'),
+                )
+            ) {
+                return;
+            }
+            void runIndexWrite(async () => {
+                await discardAllGitChanges({
+                    folder: inputs.folder,
                 });
             });
         };
@@ -1517,7 +1592,7 @@ export const VirDiffPane = defineElement<{
             if (changed) {
                 const oldText = Text.of(nextRendered.oldContent.split('\n'));
                 const newText = Text.of(content.newContent.split('\n'));
-                const chunks = Chunk.build(oldText, newText);
+                const chunks = Chunk.build(oldText, newText, diffConfig);
                 state.editor?.destroy();
                 state.editorParent.replaceChildren();
                 const editor = mountDiffEditor({
@@ -1654,6 +1729,61 @@ export const VirDiffPane = defineElement<{
          * even when it's empty, so a file moving across the index can't make lit reuse the staged
          * section's element as the unstaged one and carry its collapsed state along with it.
          */
+        /**
+         * Bulk buttons in each section's header. `stopPropagation` keeps the click from reaching
+         * the collapsible's header, which would otherwise fold the section the button just emptied.
+         * The staged side gets no discard-all: discarding is not per-side (it always throws away
+         * both halves), so one copy of it, on the side that also holds untracked files, is enough.
+         */
+        const sideHeaderActions: Readonly<Record<GitDiffSide, () => HtmlInterpolation>> = {
+            [GitDiffSide.Unstaged]: () => html`
+                <button
+                    type="button"
+                    class="row-action"
+                    title="Discard all changes in this repo"
+                    ?disabled=${state.busy}
+                    ${listen('click', (event) => {
+                        event.stopPropagation();
+                        onDiscardAll();
+                    })}
+                >
+                    <${ViraIcon.assign({
+                        icon: revertIcon,
+                    })}></${ViraIcon}>
+                </button>
+                <button
+                    type="button"
+                    class="row-action"
+                    title="Stage all changes"
+                    ?disabled=${state.busy}
+                    ${listen('click', (event) => {
+                        event.stopPropagation();
+                        onStageWholeSide(GitDiffSide.Unstaged);
+                    })}
+                >
+                    <${ViraIcon.assign({
+                        icon: stageActionIcons[GitDiffSide.Unstaged],
+                    })}></${ViraIcon}>
+                </button>
+            `,
+            [GitDiffSide.Staged]: () => html`
+                <button
+                    type="button"
+                    class="row-action"
+                    title="Unstage all changes"
+                    ?disabled=${state.busy}
+                    ${listen('click', (event) => {
+                        event.stopPropagation();
+                        onStageWholeSide(GitDiffSide.Staged);
+                    })}
+                >
+                    <${ViraIcon.assign({
+                        icon: stageActionIcons[GitDiffSide.Staged],
+                    })}></${ViraIcon}>
+                </button>
+            `,
+        };
+
         const renderSidebarSection = (side: GitDiffSide) => {
             const files =
                 side === GitDiffSide.Staged ? state.status?.staged : state.status?.unstaged;
@@ -1678,7 +1808,10 @@ export const VirDiffPane = defineElement<{
                         class="sidebar-header"
                         slot=${ViraCollapsibleCard.slotNames['vira-collapsible-card-header']}
                     >
-                        ${sideLabels[side]} (${files.length})
+                        <span class="sidebar-header-label">
+                            ${sideLabels[side]} (${files.length})
+                        </span>
+                        <div class="header-actions">${sideHeaderActions[side]()}</div>
                     </div>
                     ${files.map((file) => {
                         const value = toSelectValue(side, file.path);
@@ -1751,6 +1884,14 @@ export const VirDiffPane = defineElement<{
                               >
                                   ${selected
                                       ? html`
+                                            <img
+                                                class="file-icon"
+                                                src=${toFileIconUrl(selected.file.path)}
+                                                alt=""
+                                            />
+                                            <span class="trigger-name">
+                                                ${basename(selected.file.path)}
+                                            </span>
                                             <span
                                                 class="badge"
                                                 style=${css`
@@ -1760,17 +1901,6 @@ export const VirDiffPane = defineElement<{
                                                 `}
                                             >
                                                 ${changeBadges[selected.file.change]}
-                                            </span>
-                                            <span class="trigger-name">
-                                                ${basename(selected.file.path)}
-                                            </span>
-                                            <span class="counts">
-                                                <span class="insertions">
-                                                    +${selected.file.insertions}
-                                                </span>
-                                                <span class="deletions">
-                                                    −${selected.file.deletions}
-                                                </span>
                                             </span>
                                         `
                                       : html`
@@ -1907,6 +2037,13 @@ export const VirDiffPane = defineElement<{
                     ></${ViraButton}>
                 </div>
             </div>
+            ${selected
+                ? html`
+                      <div class="selected-path" title=${selected.file.path}>
+                          ${selected.file.path}
+                      </div>
+                  `
+                : ''}
             <div class="body">
                 ${state.statusError || state.diffError
                     ? html`
@@ -1919,7 +2056,20 @@ export const VirDiffPane = defineElement<{
                           ? content?.tooLargeOrBinary
                               ? html`
                                     <div class="placeholder">
-                                        Binary or oversized file — no diff shown.
+                                        ${content.canShowAnyway
+                                            ? `Over ${maxDiffFileLines} lines — diffing it can lock the page up for a while.`
+                                            : 'Binary or oversized file — no diff shown.'}
+                                        ${content.canShowAnyway
+                                            ? html`
+                                                  <${ViraButton.assign({
+                                                      text: 'Show diff anyway',
+                                                      buttonSize: ViraSize.Small,
+                                                      color: ViraColorVariant.Neutral,
+                                                  })}
+                                                      ${listen('click', showLargeDiffAnyway)}
+                                                  ></${ViraButton}>
+                                              `
+                                            : ''}
                                     </div>
                                 `
                               : ''

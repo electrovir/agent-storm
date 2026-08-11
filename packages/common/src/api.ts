@@ -507,6 +507,12 @@ const gitDiffFileRequestShape = defineShape({
      */
     oldPath: nullableShape(''),
     side: enumShape(GitDiffSide),
+    /**
+     * Set by the placeholder's "Show diff anyway" button to send the content of a file past
+     * {@link maxDiffFileBytes} or {@link maxDiffFileLines}. Binary files ignore it — there is nothing
+     * useful to render.
+     */
+    allowLarge: false,
 });
 
 /** Both sides of one file's diff as plain text, for the requested {@link GitDiffSide}. */
@@ -516,10 +522,16 @@ const gitDiffFileResponseShape = defineShape({
     /** Contents in the index (staged side) or the working tree (unstaged side). */
     newContent: '',
     /**
-     * True when either side is binary or past {@link maxDiffFileBytes}. Both content fields are
-     * empty in that case and the pane shows a placeholder instead of a diff.
+     * True when either side is binary or past {@link maxDiffFileBytes} / {@link maxDiffFileLines}.
+     * Both content fields are empty in that case and the pane shows a placeholder instead of a
+     * diff.
      */
     tooLargeOrBinary: false,
+    /**
+     * True when the only thing stopping the diff is size, so re-requesting with `allowLarge` would
+     * return real content. False for binary files, where the placeholder is the final answer.
+     */
+    canShowAnyway: false,
 });
 
 const gitFileRequestShape = defineShape({
@@ -534,6 +546,12 @@ const gitStageFileRequestShape = defineShape({
      * Which direction to move the whole file. `Unstaged` means "this file is currently on the
      * unstaged side", so the operation stages it; `Staged` unstages it.
      */
+    side: enumShape(GitDiffSide),
+});
+
+const gitStageAllRequestShape = defineShape({
+    folder: '',
+    /** Same meaning as {@link gitStageFileRequestShape}'s `side`, applied to every file on it. */
     side: enumShape(GitDiffSide),
 });
 
@@ -771,6 +789,44 @@ export const gitDiscardFileEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * {@link gitStageFileEndpoint} for every file on one side at once. The server walks what `git
+ * status` currently reports rather than running a repo-wide `git add`, so a file that appeared
+ * since the client's last status fetch is left alone instead of being staged unseen.
+ */
+export const gitStageAllEndpoint = defineEndpoint({
+    path: '/git/stage/all',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: gitStageAllRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * {@link gitDiscardFileEndpoint} for every changed file at once, staged and unstaged alike. Scoped
+ * to the reported status for the same reason {@link gitStageAllEndpoint} is, and irreversible, so
+ * the frontend confirms before calling it.
+ */
+export const gitDiscardAllEndpoint = defineEndpoint({
+    path: '/git/discard/all',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: folderActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const gitStageHunkEndpoint = defineEndpoint({
     path: '/git/stage/hunk',
     requests: {
@@ -872,6 +928,15 @@ export const gitHubResolveThreadEndpoint = defineEndpoint({
  * avoid.
  */
 export const maxDiffFileBytes = 2 * 1024 * 1024;
+
+/**
+ * Line ceiling, checked separately from {@link maxDiffFileBytes} because the browser-side diff costs
+ * far more per line than per byte. A 20k-line file with a quarter of its lines changed diffs in
+ * about half a second; at 50k lines that is closer to three, and past that the algorithm gives up
+ * on an exact answer anyway. Files over this get the placeholder, with a button to render anyway
+ * for the cases where the wait is worth it.
+ */
+export const maxDiffFileLines = 20_000;
 
 export const configEndpoint = defineEndpoint({
     path: '/config',
@@ -1194,8 +1259,10 @@ export const agentStormService = defineApi({
         gitDiffStatusEndpoint,
         gitDiffFileEndpoint,
         gitStageFileEndpoint,
+        gitStageAllEndpoint,
         gitStageHunkEndpoint,
         gitDiscardFileEndpoint,
+        gitDiscardAllEndpoint,
         gitDiscardHunkEndpoint,
         gitHubPrEndpoint,
         gitHubCommentEndpoint,

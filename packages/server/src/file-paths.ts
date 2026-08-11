@@ -68,3 +68,38 @@ export const configBackupDir = resolve(homedir(), '.config', 'agent-storm-backup
 
 /** Directory where dragged-in screenshot uploads land before being attached to a pane. */
 export const uploadsDir = resolve(tmpdir(), 'agent-storm-uploads');
+
+/**
+ * Installed location of the Vir Icons VS Code extension, the source of truth for the Diff pane's
+ * file-type icons. Only read by `generate-file-icons.script.ts`, which copies the icons it needs
+ * into {@link fileIconsDir} so the app itself never depends on VS Code being installed.
+ */
+export const virIconsExtensionDir = resolve(homedir(), '.vscode', 'extensions', 'vir-icons');
+
+/**
+ * VS Code's bundled language extensions. An icon theme keys most of its common entries by language
+ * id rather than by file extension, and these are what map one to the other, so
+ * `generate-file-icons.script.ts` reads them to flatten `languageIds` down to extensions.
+ */
+export const vsCodeBundledExtensionsDir = resolve(
+    '/Applications/downloaded/Visual Studio Code.app/Contents/Resources/app/extensions',
+);
+
+/** Where {@link virIconsExtensionDir}'s icons are copied to, for the frontend to fetch lazily. */
+export const fileIconsDir = resolve(
+    monorepoRoot,
+    'packages',
+    'frontend',
+    'www-static',
+    'file-icons',
+);
+
+/** Generated extension/filename to icon map that pairs with {@link fileIconsDir}. */
+export const fileIconMapPath = resolve(
+    monorepoRoot,
+    'packages',
+    'frontend',
+    'src',
+    'util',
+    'file-icon-map.generated.ts',
+);

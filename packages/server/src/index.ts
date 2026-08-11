@@ -10,12 +10,14 @@ import {
     foldersEndpoint,
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
+    gitDiscardAllEndpoint,
     gitDiscardFileEndpoint,
     gitDiscardHunkEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
     gitHubResolveThreadEndpoint,
+    gitStageAllEndpoint,
     gitStageFileEndpoint,
     gitStageHunkEndpoint,
     hideRepoEndpoint,
@@ -63,12 +65,14 @@ import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
+    discardAllChanges,
     discardFileChanges,
     discardHunkChanges,
     getDiffFileContents,
     getDiffStatus,
     moveHunkAcrossIndex,
     setFileStaged,
+    setSideStaged,
 } from './git-diff.js';
 import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
 import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './github-pr.js';
@@ -737,6 +741,22 @@ const gitStageFileImplementation = implementor.implementEndpoint(gitStageFileEnd
     },
 });
 
+const gitStageAllImplementation = implementor.implementEndpoint(gitStageAllEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await setSideStaged({
+            ...requestData,
+            folder: normalizePath(requestData.folder),
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const gitStageHunkImplementation = implementor.implementEndpoint(gitStageHunkEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         await moveHunkAcrossIndex({
@@ -777,6 +797,19 @@ const gitDiscardFileImplementation = implementor.implementEndpoint(gitDiscardFil
             ...requestData,
             folder: normalizePath(requestData.folder),
         });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const gitDiscardAllImplementation = implementor.implementEndpoint(gitDiscardAllEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await discardAllChanges(normalizePath(requestData.folder));
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -975,8 +1008,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         gitDiffStatusImplementation,
         gitDiffFileImplementation,
         gitStageFileImplementation,
+        gitStageAllImplementation,
         gitStageHunkImplementation,
         gitDiscardFileImplementation,
+        gitDiscardAllImplementation,
         gitDiscardHunkImplementation,
         gitHubPrImplementation,
         gitHubCommentImplementation,
