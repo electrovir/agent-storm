@@ -1,6 +1,11 @@
 // cspell:words titlebar, grabbable
 
-import {PaneKind, type FolderSessions, type SessionMeta} from '@agent-storm/common';
+import {
+    PaneKind,
+    type AiDefinition,
+    type FolderSessions,
+    type SessionMeta,
+} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {
     createSizedIcon,
@@ -18,15 +23,19 @@ import {
 import {
     closeSession,
     createSession,
+    getConfig,
     getFolderSessions,
     renameSession,
     resetAiSession,
     restartPane,
+    setSessionAi,
 } from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
+import {VirAiAvatar} from './vir-ai-avatar.element.js';
+import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirDiffPane} from './vir-diff-pane.element.js';
 import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
@@ -98,11 +107,11 @@ export const VirPaneGroup = defineElement<{
     aiSessionIndex: number;
     shellSessionIndex: number;
     /**
-     * Backend-resolved "reset AI session" command for this folder (per-folder override → global
-     * default). Empty means not configured, which hides the corresponding session-menu item — same
-     * signal the sidebar row menu used.
+     * Backend-resolved AI id for this folder (per-folder override → worktree-root → global
+     * default). Each AI tab uses it unless the tab carries an override of its own. Empty when the
+     * user has defined no AI at all.
      */
-    resetAiSessionCmd: string;
+    folderAiId: string;
 }>()({
     tagName: 'vir-pane-group',
     options: {
@@ -155,6 +164,16 @@ export const VirPaneGroup = defineElement<{
             diffMounted: false,
             /** Same lazy-mount-then-keep pattern as `diffMounted` above, for the GitHub pane. */
             githubMounted: false,
+            /**
+             * The user's AI definitions, needed to show each AI tab's avatar and to populate the
+             * "Change AI" picker. Loaded once per mount and re-read after a change, since this
+             * element is keyed by folder and remounts on a folder switch anyway.
+             */
+            aiDefinitions: [] as ReadonlyArray<AiDefinition>,
+            aiDefinitionsRequested: false,
+            /** Session the "Change AI" picker is open for, and its kind. Undefined when closed. */
+            changeAiSession: undefined as {kind: PaneKind; sessionId: string} | undefined,
+            changeAiSubmitting: false,
         };
     },
     styles: css`
@@ -380,6 +399,23 @@ export const VirPaneGroup = defineElement<{
             opacity: 1;
         }
 
+        /*
+         * Sits left of .session-add-floating in the same corner. Unlike that button this stays fully
+         * opaque: it's the only place a single-session AI pane shows which AI it's running.
+         */
+        .session-ai-corner {
+            position: absolute;
+            top: 4px;
+            right: 26px;
+            z-index: 2;
+            display: inline-flex;
+            padding: 0;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            background: transparent;
+        }
+
         .session-error {
             padding: 2px 6px;
             color: ${viraThemeByKeys.red.foreground.body.foreground.value};
@@ -466,6 +502,34 @@ export const VirPaneGroup = defineElement<{
                 sessionsError: error instanceof Error ? error.message : String(error),
             });
         };
+
+        const loadAiDefinitions = async () => {
+            try {
+                const config = await getConfig();
+                updateState({
+                    aiDefinitions: config.aiDefinitions,
+                });
+            } catch (error: unknown) {
+                reportSessionError(error);
+            }
+        };
+
+        /**
+         * The AI a tab runs: its own override, else whatever the folder resolved to. Undefined when
+         * the definitions haven't loaded yet or the user has defined no AI.
+         */
+        const aiForSession = (session: Readonly<SessionMeta>): AiDefinition | undefined => {
+            return state.aiDefinitions.find(
+                (definition) => definition.id === (session.aiId || inputs.folderAiId),
+            );
+        };
+
+        if (!state.aiDefinitionsRequested) {
+            updateState({
+                aiDefinitionsRequested: true,
+            });
+            void loadAiDefinitions();
+        }
 
         const bumpRestartKey = (kind: PaneKind, sessionId: string) => {
             const key = `${kind}:${sessionId}`;
@@ -567,6 +631,45 @@ export const VirPaneGroup = defineElement<{
                 .catch(reportSessionError);
         };
 
+        /**
+         * Save a tab's AI, then restart it: a running pane keeps whatever command it was spawned
+         * with, so without the restart the new avatar would disagree with what's actually running.
+         */
+        const onChangeSessionAi = (aiId: string) => {
+            const target = state.changeAiSession;
+            if (!target || state.changeAiSubmitting) {
+                return;
+            }
+            updateState({
+                changeAiSubmitting: true,
+            });
+            void setSessionAi({
+                folder: inputs.folder,
+                kind: target.kind,
+                sessionId: target.sessionId,
+                aiId,
+            })
+                .then(async (sessions) => {
+                    applySessions(sessions);
+                    await restartPane({
+                        folder: inputs.folder,
+                        kind: target.kind,
+                        sessionId: target.sessionId,
+                    });
+                    bumpRestartKey(target.kind, target.sessionId);
+                    updateState({
+                        changeAiSession: undefined,
+                        changeAiSubmitting: false,
+                    });
+                })
+                .catch((error: unknown) => {
+                    updateState({
+                        changeAiSubmitting: false,
+                    });
+                    reportSessionError(error);
+                });
+        };
+
         const onCloseSession = (kind: PaneKind, session: Readonly<SessionMeta>, index: number) => {
             void closeSession({
                 folder: inputs.folder,
@@ -628,10 +731,23 @@ export const VirPaneGroup = defineElement<{
                     content: 'Restart',
                     onClick: () => onRestartSession(kind, session),
                 },
-                kind === PaneKind.Ai && inputs.resetAiSessionCmd
+                kind === PaneKind.Ai && aiForSession(session)?.newSessionCommand
                     ? {
                           content: 'New AI session',
                           onClick: () => onResetAiSession(session),
+                      }
+                    : undefined,
+                kind === PaneKind.Ai
+                    ? {
+                          content: 'Change AI',
+                          onClick: () =>
+                              updateState({
+                                  changeAiSession: {
+                                      kind,
+                                      sessionId: session.id,
+                                  },
+                                  changeAiSubmitting: false,
+                              }),
                       }
                     : undefined,
                 {
@@ -667,6 +783,45 @@ export const VirPaneGroup = defineElement<{
             </span>
         `;
 
+        /** Nothing renders until the definitions load, which keeps the strip from jumping around. */
+        const renderSessionAvatar = (session: Readonly<SessionMeta>, sizePx: number) => {
+            const definition = aiForSession(session);
+            return definition
+                ? html`
+                      <${VirAiAvatar.assign({
+                          name: definition.name,
+                          avatarFile: definition.avatarFile || '',
+                          sizePx,
+                      })}
+                          title=${definition.name}
+                      ></${VirAiAvatar}>
+                  `
+                : '';
+        };
+
+        /**
+         * A single-session AI pane has no tab strip, so this is where its avatar lives: a small
+         * always-visible button in the pane's top-right corner that opens the "Change AI" picker.
+         */
+        const renderAiCornerAvatar = (session: Readonly<SessionMeta>) => html`
+            <button
+                type="button"
+                class="session-ai-corner"
+                title="Change AI"
+                ${listen('click', () =>
+                    updateState({
+                        changeAiSession: {
+                            kind: PaneKind.Ai,
+                            sessionId: session.id,
+                        },
+                        changeAiSubmitting: false,
+                    }),
+                )}
+            >
+                ${renderSessionAvatar(session, 14)}
+            </button>
+        `;
+
         const renderSessionBar = (
             kind: PaneKind,
             sessions: ReadonlyArray<Readonly<SessionMeta>>,
@@ -693,6 +848,7 @@ export const VirPaneGroup = defineElement<{
                                     ),
                                 )}
                             >
+                                ${kind === PaneKind.Ai ? renderSessionAvatar(session, 12) : ''}
                                 <span class="session-tab-label">
                                     ${sessionLabel(session, index)}
                                 </span>
@@ -858,6 +1014,20 @@ export const VirPaneGroup = defineElement<{
         const aiFocused = focusedKind === PaneKind.Ai;
         const shellFocused = focusedKind === PaneKind.Shell;
 
+        /**
+         * What the picker shows for the tab it's open against: the tab's own override (empty when
+         * it inherits) and the name of the folder's AI, which is what "Inherit" means here.
+         */
+        const changeAiTargetSession = state.changeAiSession
+            ? state.sessions?.[state.changeAiSession.kind].find(
+                  (session) => session.id === state.changeAiSession?.sessionId,
+              )
+            : undefined;
+        const activeSessionAiOverride = changeAiTargetSession?.aiId || '';
+        const folderAiName =
+            state.aiDefinitions.find((definition) => definition.id === inputs.folderAiId)?.name ||
+            '';
+
         const isDiffTab = inputs.activeTab === 'diff';
         /**
          * A `?tab=github` URL for a folder whose PR has gone away (merged and aged out, branch
@@ -1020,7 +1190,12 @@ export const VirPaneGroup = defineElement<{
                               >
                                   ${state.sessions && state.sessions.ai.length > 1
                                       ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
-                                      : renderFloatingAddSession(PaneKind.Ai)}
+                                      : html`
+                                            ${state.sessions?.ai[0]
+                                                ? renderAiCornerAvatar(state.sessions.ai[0])
+                                                : ''}
+                                            ${renderFloatingAddSession(PaneKind.Ai)}
+                                        `}
                                   ${state.sessionsError
                                       ? html`
                                             <div class="session-error" role="alert">
@@ -1043,6 +1218,24 @@ export const VirPaneGroup = defineElement<{
                                   ${listen('dblclick', onDividerDoubleClick)}
                               ></div>
                           `}
+                    <${VirAiPickerModal.assign({
+                        open: !!state.changeAiSession,
+                        modalTitle: 'Change AI for this tab',
+                        aiDefinitions: state.aiDefinitions,
+                        selectedAiId: activeSessionAiOverride,
+                        inheritedName: folderAiName,
+                        submitting: state.changeAiSubmitting,
+                    })}
+                        ${listen(VirAiPickerModal.events.closeRequested, () =>
+                            updateState({
+                                changeAiSession: undefined,
+                                changeAiSubmitting: false,
+                            }),
+                        )}
+                        ${listen(VirAiPickerModal.events.aiSaveRequested, (event) =>
+                            onChangeSessionAi(event.detail),
+                        )}
+                    ></${VirAiPickerModal}>
                     <div
                         class="pane shell-pane"
                         ?data-hidden=${!showShellPane}

@@ -2,6 +2,8 @@
 
 import {
     agentStormService,
+    aiAvatarEndpoint,
+    aiAvatarUploadEndpoint,
     checkPathEndpoint,
     clientErrorEndpoint,
     configEndpoint,
@@ -30,6 +32,7 @@ import {
     sessionCreateEndpoint,
     sessionListEndpoint,
     sessionRenameEndpoint,
+    sessionSetAiEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
     uploadEndpoint,
@@ -128,8 +131,7 @@ export async function createWorktree(
     params: Readonly<{
         repoPath: string;
         name: string;
-        aiCmd?: string | undefined;
-        resetAiSessionCmd?: string | undefined;
+        aiId?: string | undefined;
     }>,
 ): Promise<void> {
     await requestApi('POST /worktrees/create', () =>
@@ -209,6 +211,40 @@ export async function closeSession(
     return await requestApi('POST /sessions/close', () =>
         client.fetch(sessionCloseEndpoint).POST({
             requestData: params,
+        }),
+    );
+}
+
+/** Empty `aiId` clears the tab's override so it follows its folder's AI again. */
+export async function setSessionAi(
+    params: Readonly<{folder: string; kind: PaneKind; sessionId: string; aiId: string}>,
+): Promise<FolderSessions> {
+    return await requestApi('POST /sessions/set-ai', () =>
+        client.fetch(sessionSetAiEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+export async function uploadAiAvatar(
+    params: Readonly<{filename: string; dataBase64: string}>,
+): Promise<string> {
+    const data = await requestApi('POST /ai/avatar/upload', () =>
+        client.fetch(aiAvatarUploadEndpoint).POST({
+            requestData: params,
+        }),
+    );
+    return data.avatarFile;
+}
+
+export async function getAiAvatar(
+    avatarFile: string,
+): Promise<{dataBase64: string; mimeType: string}> {
+    return await requestApi('POST /ai/avatar', () =>
+        client.fetch(aiAvatarEndpoint).POST({
+            requestData: {
+                avatarFile,
+            },
         }),
     );
 }

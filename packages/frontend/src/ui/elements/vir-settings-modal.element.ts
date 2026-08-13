@@ -4,13 +4,16 @@ import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from
 import {
     ViraButton,
     ViraColorVariant,
+    ViraEmphasis,
     ViraForm,
     ViraFormFieldType,
     ViraJsonForm,
     ViraModal,
+    ViraSelect,
     viraThemeByKeys,
     type ViraJsonSchema,
     type ViraJsonSchemaObject,
+    type ViraSelectOption,
 } from 'vira';
 import {getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
@@ -20,15 +23,18 @@ import {localStorageClient, scrollbackLimit} from '../../util/local-storage-clie
  * Config properties that round-trip through `/config` (so the backend can persist them across
  * restarts) but are hidden from the settings form. Reasons vary: `githubPollingAutoDisable` is
  * entirely backend-managed (the user has no business editing it here), while `repos`,
- * `folderAiCmds`, and `hiddenAiPane` are per-folder data managed through the sidebar rather than
- * this JSON form (and too large / noisy to belong here). Stripped from both the schema we hand to
- * `ViraJsonForm` and from the form's input/output, then preserved on save so hiding them never
- * blows away their runtime state.
+ * `folderAiIds`, and `hiddenAiPane` are per-folder data managed through the sidebar rather than
+ * this JSON form (and too large / noisy to belong here). `aiDefinitions` has its own modal, and
+ * `defaultAiId` is rendered as the AI picker below rather than as a raw id field. Stripped from
+ * both the schema we hand to `ViraJsonForm` and from the form's input/output, then preserved on
+ * save so hiding them never blows away their runtime state.
  */
 const hiddenConfigKeys = [
     'githubPollingAutoDisable',
     'repos',
-    'folderAiCmds',
+    'aiDefinitions',
+    'defaultAiId',
+    'folderAiIds',
     'hiddenAiPane',
 ] as const satisfies ReadonlyArray<keyof Config>;
 
@@ -47,6 +53,19 @@ const formJsonSchema: ViraJsonSchemaObject = (() => {
         ),
     };
 })();
+
+/**
+ * The AI choices for the default picker. An empty leading option covers a config with no AI defined
+ * yet, which is also the state a brand-new install starts in if the seeded definition was deleted.
+ */
+function aiOptions(config: Readonly<Config> | undefined): ViraSelectOption[] {
+    return (config?.aiDefinitions || []).map((definition) => {
+        return {
+            value: definition.id,
+            label: definition.name,
+        };
+    });
+}
 
 function toJsonValue(config: Readonly<Config>): JsonValue {
     const visible = {
@@ -84,6 +103,11 @@ export const VirSettingsModal = defineElement<{
          * Save, etc.). The parent owns the `open` input and is responsible for flipping it false.
          */
         closeRequested: defineElementEvent<void>(),
+        /**
+         * Asks the app to open the "Define AI" modal. Raised rather than rendering that modal here
+         * so the two never stack on top of each other.
+         */
+        defineAiRequested: defineElementEvent<void>(),
     },
     state() {
         return {
@@ -100,6 +124,12 @@ export const VirSettingsModal = defineElement<{
              * the form's output back into a full Config.
              */
             loaded: undefined as Config | undefined,
+            /**
+             * Tracked apart from `loaded` because the default AI can also be changed by the "Define
+             * AI" modal while this one sits open; save() re-reads config and applies just this
+             * field on top, so the two can't clobber each other.
+             */
+            defaultAiId: undefined as string | undefined,
             /**
              * The useWebgl value at load time, captured so save() can detect a flip and trigger a
              * page reload — existing terminals only read the config at construction.
@@ -142,6 +172,14 @@ export const VirSettingsModal = defineElement<{
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
+        /* Default-AI picker and its escape hatch to the "Define AI" modal, kept on one line so the
+           button reads as an action on the same subject as the select. */
+        .ai-row {
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+        }
+
         .section-divider {
             border: none;
             border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
@@ -154,6 +192,7 @@ export const VirSettingsModal = defineElement<{
             updateState({
                 pending: undefined,
                 loaded: undefined,
+                defaultAiId: undefined,
                 useWebgl: undefined,
                 loadError: undefined,
                 saveError: undefined,
@@ -194,6 +233,7 @@ export const VirSettingsModal = defineElement<{
                 updateState({
                     pending: toJsonValue(config),
                     loaded: config,
+                    defaultAiId: config.defaultAiId,
                     // optionalShape default is true; coerce undefined → true for comparison.
                     useWebgl: config.useWebgl,
                     loadError: undefined,
@@ -214,7 +254,16 @@ export const VirSettingsModal = defineElement<{
                 saveError: undefined,
             });
             try {
-                const next = fromJsonValue(state.pending, state.loaded ?? defaultConfig);
+                /**
+                 * Re-read rather than trusting the load-time snapshot: the sidebar and the "Define
+                 * AI" modal write config too, and the hidden keys this form preserves would
+                 * otherwise be whatever they were when the modal opened.
+                 */
+                const current = await getConfig();
+                const next: Config = {
+                    ...fromJsonValue(state.pending, current),
+                    defaultAiId: state.defaultAiId ?? current.defaultAiId,
+                };
                 await putConfig(next);
                 const nextUseWebgl = next.useWebgl;
                 const webglChanged =
@@ -284,6 +333,30 @@ export const VirSettingsModal = defineElement<{
                                       localStorageClient.scrollbackLimit.write(clamped);
                                   })}
                               ></${ViraForm}>
+                              <div class="ai-row">
+                                  <${ViraSelect.assign({
+                                      label: 'Default AI',
+                                      options: aiOptions(state.loaded),
+                                      value: state.defaultAiId || '',
+                                      disabled: state.saving || !state.loaded,
+                                  })}
+                                      ${listen(ViraSelect.events.valueChange, (event) =>
+                                          updateState({
+                                              defaultAiId: event.detail,
+                                          }),
+                                      )}
+                                  ></${ViraSelect}>
+                                  <${ViraButton.assign({
+                                      text: 'Define AI',
+                                      buttonEmphasis: ViraEmphasis.Subtle,
+                                      color: ViraColorVariant.Neutral,
+                                      isDisabled: state.saving,
+                                  })}
+                                      ${listen('click', () =>
+                                          dispatch(new events.defineAiRequested()),
+                                      )}
+                                  ></${ViraButton}>
+                              </div>
                               <hr class="section-divider" />
                               ${state.loadError
                                   ? html`

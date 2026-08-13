@@ -77,6 +77,13 @@ export const configBackupDir = resolve(homedir(), '.config', 'agent-storm-backup
 export const uploadsDir = resolve(tmpdir(), 'agent-storm-uploads');
 
 /**
+ * Avatar images for the user's AI definitions. Lives next to {@link configPath} rather than in
+ * `tmpdir()` like {@link uploadsDir}: these are referenced by the config and have to survive a
+ * reboot, while uploads are throwaway files handed to a terminal once.
+ */
+export const avatarsDir = resolve(homedir(), '.config', 'agent-storm-avatars');
+
+/**
  * Installed location of the Vir Icons VS Code extension, the source of truth for the Diff pane's
  * file-type icons. Only read by `generate-file-icons.script.ts`, which copies the icons it needs
  * into {@link fileIconsDir} so the app itself never depends on VS Code being installed.

@@ -326,6 +326,7 @@ describe(parseSessionStore.name, () => {
                 {
                     id: 'a',
                     name: 'named',
+                    aiId: '',
                 },
             ],
             shell: [],
