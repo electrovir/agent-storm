@@ -1,13 +1,16 @@
 // cspell:words upserts
 
-import {defaultConfig, type Config} from '@agent-storm/common';
-import {log, type ArrayElement} from '@augment-vir/common';
+import {defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
+import {log, omitObjectKeys, setFirstLetterCasing, StringCase} from '@augment-vir/common';
+import {createHash} from 'node:crypto';
 import {mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
+import {pruneAiAvatars} from './ai-avatar.js';
 import {configPath} from './file-paths.js';
 import {normalizePath} from './paths.js';
 
 function normalizeConfig(config: Readonly<Config>): Config {
+    const definitionIds = config.aiDefinitions.map((definition) => definition.id);
     return {
         ...config,
         repos: config.repos.map((repo) => {
@@ -17,183 +20,216 @@ function normalizeConfig(config: Readonly<Config>): Config {
             };
         }),
         /**
-         * Keep an entry if it contributes at least one override — either an AI command or a
-         * reset-AI-session command. Entries with both empty are dead weight and would otherwise
-         * accumulate as users toggle settings on and off.
+         * Drop overrides pointing at a definition that no longer exists, so deleting an AI can't
+         * leave folders resolving to nothing. Those folders fall back to the default instead.
          */
-        folderAiCmds: config.folderAiCmds
-            .filter((entry) => entry.aiCmd.trim() || entry.resetAiSessionCmd?.trim())
+        folderAiIds: config.folderAiIds
+            .filter((entry) => definitionIds.includes(entry.aiId))
             .map((entry) => {
-                const resetCmd = entry.resetAiSessionCmd?.trim() || undefined;
                 return {
+                    ...entry,
                     folder: normalizePath(entry.folder),
-                    aiCmd: entry.aiCmd.trim(),
-                    ...(resetCmd
-                        ? {
-                              resetAiSessionCmd: resetCmd,
-                          }
-                        : {}),
                 };
             }),
+        /** Same reasoning as `folderAiIds`: a dangling default resolves to the first definition. */
+        defaultAiId: definitionIds.includes(config.defaultAiId) ? config.defaultAiId : '',
         hiddenAiPane: config.hiddenAiPane.map((path) => normalizePath(path)),
     };
 }
 
 /**
- * Resolve one override field by walking the folder → fallback-folder chain, taking the first
- * candidate that actually sets that field. Each field resolves independently: a worktree that only
- * overrides its reset-cmd still inherits its worktree-root's `aiCmd` rather than skipping straight
- * to the global default.
+ * The AI a folder resolves to, walking its own override, then each fallback folder's (a worktree's
+ * root repo), then `defaultAiId`, then the first defined AI. Undefined only when the user has
+ * defined no AI at all, which the callers treat as "nothing to spawn".
  */
-function findFolderOverride({
+export function getFolderAiDefinition({
     config,
     folder,
-    fallbackFolders,
-    pickField,
+    fallbackFolders = [],
 }: Readonly<{
     config: Config;
     folder: string;
-    fallbackFolders: ReadonlyArray<string>;
-    pickField: (entry: ArrayElement<Config['folderAiCmds']>) => string | undefined;
-}>): string | undefined {
+    fallbackFolders?: ReadonlyArray<string> | undefined;
+}>): AiDefinition | undefined {
     const folderCandidates = [
         normalizePath(folder),
         ...fallbackFolders.map((fallbackFolder) => normalizePath(fallbackFolder)),
     ];
-    return folderCandidates.reduce<string | undefined>((found, candidate) => {
-        const entry = config.folderAiCmds.find((other) => other.folder === candidate);
-        return found || (entry ? pickField(entry)?.trim() || undefined : undefined);
+    const overrideId = folderCandidates.reduce<string | undefined>((found, candidate) => {
+        return found || config.folderAiIds.find((entry) => entry.folder === candidate)?.aiId;
     }, undefined);
-}
-
-export function getFolderAiCmd({
-    config,
-    folder,
-    fallbackFolders = [],
-}: Readonly<{
-    config: Config;
-    folder: string;
-    fallbackFolders?: ReadonlyArray<string> | undefined;
-}>): string {
     return (
-        findFolderOverride({
+        findAiDefinition({
             config,
-            folder,
-            fallbackFolders,
-            pickField: (entry) => entry.aiCmd,
-        }) || config.aiCmd
-    );
-}
-
-export function setFolderAiCmd({
-    config,
-    folder,
-    aiCmd,
-}: Readonly<{
-    config: Config;
-    folder: string;
-    aiCmd: string;
-}>): Config {
-    const normalizedFolder = normalizePath(folder);
-    const trimmedAiCmd = aiCmd.trim();
-    const existing = config.folderAiCmds.find((entry) => entry.folder === normalizedFolder);
-    const otherFolderAiCmds = config.folderAiCmds.filter(
-        (entry) => entry.folder !== normalizedFolder,
-    );
-    /**
-     * Preserve any existing reset-AI-session override on this folder when only the AI command is
-     * being edited — clearing the AI cmd shouldn't silently drop a sibling reset-cmd override.
-     */
-    const preservedReset = existing?.resetAiSessionCmd?.trim();
-    const aiCmdIsOverride = trimmedAiCmd && trimmedAiCmd !== config.aiCmd;
-    return normalizeConfig({
-        ...config,
-        folderAiCmds:
-            aiCmdIsOverride || preservedReset
-                ? [
-                      ...otherFolderAiCmds,
-                      {
-                          folder: normalizedFolder,
-                          aiCmd: aiCmdIsOverride ? trimmedAiCmd : '',
-                          ...(preservedReset
-                              ? {
-                                    resetAiSessionCmd: preservedReset,
-                                }
-                              : {}),
-                      },
-                  ]
-                : otherFolderAiCmds,
-    });
-}
-
-/**
- * Compute the folder-effective "Restart AI session" command, walking the same per-folder →
- * fallback-folder → global default chain {@link getFolderAiCmd} uses. Returns an empty string when
- * neither the folder nor any fallback nor the global default has a non-empty value; callers
- * (sidebar UI, `/panes/reset-ai-session` endpoint) treat empty as "command not configured" and skip
- * the action / hide the menu item.
- */
-export function getFolderResetAiSessionCmd({
-    config,
-    folder,
-    fallbackFolders = [],
-}: Readonly<{
-    config: Config;
-    folder: string;
-    fallbackFolders?: ReadonlyArray<string> | undefined;
-}>): string {
-    return (
-        findFolderOverride({
-            config,
-            folder,
-            fallbackFolders,
-            pickField: (entry) => entry.resetAiSessionCmd,
+            aiId: overrideId,
         }) ||
-        config.resetAiSessionCmd ||
-        ''
+        findAiDefinition({
+            config,
+            aiId: config.defaultAiId,
+        }) ||
+        config.aiDefinitions[0]
     );
 }
 
+export function findAiDefinition({
+    config,
+    aiId,
+}: Readonly<{
+    config: Config;
+    aiId: string | undefined;
+}>): AiDefinition | undefined {
+    return aiId ? config.aiDefinitions.find((definition) => definition.id === aiId) : undefined;
+}
+
 /**
- * Per-folder setter for the reset-AI-session command. Mirrors {@link setFolderAiCmd}: a trimmed,
- * different-from-global value writes/upserts the override entry; matching the global (or empty)
- * removes the override field and prunes the entry if no other override remains on the same folder.
+ * Point one folder at an AI, or clear its override with an empty `aiId`. Writing the id the folder
+ * would inherit anyway still records an override — the user picked that AI explicitly, and it
+ * should survive a later change to the default.
  */
-export function setFolderResetAiSessionCmd({
+export function setFolderAiId({
     config,
     folder,
-    resetAiSessionCmd,
+    aiId,
 }: Readonly<{
     config: Config;
     folder: string;
-    resetAiSessionCmd: string;
+    aiId: string;
 }>): Config {
     const normalizedFolder = normalizePath(folder);
-    const trimmedReset = resetAiSessionCmd.trim();
-    const existing = config.folderAiCmds.find((entry) => entry.folder === normalizedFolder);
-    const otherFolderAiCmds = config.folderAiCmds.filter(
-        (entry) => entry.folder !== normalizedFolder,
-    );
-    const preservedAiCmd = existing?.aiCmd.trim();
-    const resetIsOverride = trimmedReset && trimmedReset !== config.resetAiSessionCmd;
+    const otherFolders = config.folderAiIds.filter((entry) => entry.folder !== normalizedFolder);
     return normalizeConfig({
         ...config,
-        folderAiCmds:
-            resetIsOverride || preservedAiCmd
-                ? [
-                      ...otherFolderAiCmds,
-                      {
-                          folder: normalizedFolder,
-                          aiCmd: preservedAiCmd || '',
-                          ...(resetIsOverride
-                              ? {
-                                    resetAiSessionCmd: trimmedReset,
-                                }
-                              : {}),
-                      },
-                  ]
-                : otherFolderAiCmds,
+        folderAiIds: aiId
+            ? [
+                  ...otherFolders,
+                  {
+                      folder: normalizedFolder,
+                      aiId,
+                  },
+              ]
+            : otherFolders,
     });
+}
+
+/**
+ * The pre-"Define AI" config keys. Read only by {@link migrateAiConfig}, which converts them into
+ * {@link Config.aiDefinitions} the first time a config written by an older build is loaded.
+ */
+type LegacyAiConfig = {
+    aiCmd?: string | undefined;
+    resetAiSessionCmd?: string | undefined;
+    folderAiCmds?:
+        | ReadonlyArray<{
+              folder?: string | undefined;
+              aiCmd?: string | undefined;
+              resetAiSessionCmd?: string | undefined;
+          }>
+        | undefined;
+};
+
+/**
+ * Id for a migrated definition, derived from its commands rather than generated. `loadConfig`
+ * migrates on every read but only persists on the next save, so a random id would differ between
+ * two reads — folder overrides written against one would dangle against the next, and the frontend
+ * would compare ids from two different loads and find no match.
+ */
+function migratedAiId(pair: Readonly<Omit<AiDefinition, 'id' | 'name'>>): string {
+    const hash = createHash('sha256')
+        .update(`${pair.resumeSessionCommand}\u0000${pair.newSessionCommand}`)
+        .digest('hex');
+    return `migrated-${hash.slice(0, 16)}`;
+}
+
+/** `claude --continue` → `Claude`. Names are cosmetic; the ids are what overrides reference. */
+function aiNameFromCommand(command: string): string {
+    const firstWord = command.trim().split(/\s+/)[0] || 'AI';
+    return setFirstLetterCasing(firstWord, StringCase.Upper);
+}
+
+/**
+ * Turn a legacy config's command strings into AI definitions, and rewrite its per-folder command
+ * overrides into per-folder AI ids. One definition per distinct resume + new-session command pair,
+ * so a user who ran `claude` everywhere and `codex` in one worktree ends up with exactly two. Runs
+ * on every load and is not itself persisted; the next config save is what writes the result to
+ * disk.
+ *
+ * A config that already has definitions is returned untouched, which is what makes this safe to run
+ * on every load. A config with neither definitions nor legacy commands (a fresh install) gets a
+ * single `claude` definition so the AI pane still has something to spawn.
+ */
+export function migrateAiConfig(config: Readonly<Config & LegacyAiConfig>): Config {
+    /** Dropped from the returned object so the next save writes them out of the file for good. */
+    const withoutLegacy = omitObjectKeys(config, [
+        'aiCmd',
+        'resetAiSessionCmd',
+        'folderAiCmds',
+    ]);
+    if (config.aiDefinitions.length) {
+        return withoutLegacy;
+    }
+    const globalResume = config.aiCmd?.trim() || 'claude';
+    const globalNewSession = config.resetAiSessionCmd?.trim() || '';
+    const legacyPairs = [
+        {
+            resumeSessionCommand: globalResume,
+            newSessionCommand: globalNewSession,
+        },
+        ...(config.folderAiCmds || []).map((entry) => {
+            return {
+                resumeSessionCommand: entry.aiCmd?.trim() || globalResume,
+                newSessionCommand: entry.resetAiSessionCmd?.trim() || globalNewSession,
+            };
+        }),
+    ];
+    const definitions = legacyPairs.reduce<AiDefinition[]>((kept, pair) => {
+        const alreadyKept = kept.some(
+            (definition) =>
+                definition.resumeSessionCommand === pair.resumeSessionCommand &&
+                definition.newSessionCommand === pair.newSessionCommand,
+        );
+        if (alreadyKept) {
+            return kept;
+        }
+        const baseName = aiNameFromCommand(pair.resumeSessionCommand);
+        const sameNameCount = kept.filter(
+            (definition) => definition.name.split(' (')[0] === baseName,
+        ).length;
+        return [
+            ...kept,
+            {
+                ...pair,
+                id: migratedAiId(pair),
+                name: sameNameCount ? `${baseName} (${sameNameCount + 1})` : baseName,
+            },
+        ];
+    }, []);
+    const findPairId = (pair: Readonly<Omit<AiDefinition, 'id' | 'name'>>): string =>
+        definitions.find(
+            (definition) =>
+                definition.resumeSessionCommand === pair.resumeSessionCommand &&
+                definition.newSessionCommand === pair.newSessionCommand,
+        )?.id || '';
+    const defaultAiId = findPairId({
+        resumeSessionCommand: globalResume,
+        newSessionCommand: globalNewSession,
+    });
+    return {
+        ...withoutLegacy,
+        aiDefinitions: definitions,
+        defaultAiId,
+        folderAiIds: (config.folderAiCmds || [])
+            .map((entry) => {
+                return {
+                    folder: entry.folder || '',
+                    aiId: findPairId({
+                        resumeSessionCommand: entry.aiCmd?.trim() || globalResume,
+                        newSessionCommand: entry.resetAiSessionCmd?.trim() || globalNewSession,
+                    }),
+                };
+            })
+            /** An entry that resolved to the default is what the folder would inherit anyway. */
+            .filter((entry) => entry.folder && entry.aiId && entry.aiId !== defaultAiId),
+    };
 }
 
 export async function loadConfig(): Promise<Config> {
@@ -209,8 +245,9 @@ export async function loadConfig(): Promise<Config> {
         .then(() => true)
         .catch(() => false);
     if (!exists) {
-        await saveConfig(defaultConfig);
-        return defaultConfig;
+        const seeded = migrateAiConfig(defaultConfig);
+        await saveConfig(seeded);
+        return seeded;
     }
     const contents = await readFile(configPath, 'utf-8');
     if (!contents.trim()) {
@@ -218,15 +255,16 @@ export async function loadConfig(): Promise<Config> {
             `Config file at ${configPath} exists but is empty; refusing to overwrite with defaults.`,
         );
     }
-    const parsed = JSON.parse(contents) as Partial<Config>;
-    const merged: Config = {
+    const parsed = JSON.parse(contents) as Partial<Config> & LegacyAiConfig;
+    const merged: Config & LegacyAiConfig = {
         ...defaultConfig,
         ...parsed,
         repos: parsed.repos || defaultConfig.repos,
-        folderAiCmds: parsed.folderAiCmds || defaultConfig.folderAiCmds,
+        aiDefinitions: parsed.aiDefinitions || defaultConfig.aiDefinitions,
+        folderAiIds: parsed.folderAiIds || defaultConfig.folderAiIds,
         hiddenAiPane: parsed.hiddenAiPane || defaultConfig.hiddenAiPane,
     };
-    return normalizeConfig(merged);
+    return normalizeConfig(migrateAiConfig(merged));
 }
 
 /**
@@ -246,6 +284,8 @@ export async function saveConfig(config: Readonly<Config>): Promise<void> {
     try {
         await writeFile(tempPath, JSON.stringify(normalized, undefined, 4), 'utf-8');
         await rename(tempPath, configPath);
+        /** Replacing or deleting an AI's avatar leaves its old file behind; this is the cleanup. */
+        await pruneAiAvatars(normalized.aiDefinitions);
     } catch (error) {
         log.warning(`Failed to save config: ${String(error)}`);
         throw error;

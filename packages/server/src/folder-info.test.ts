@@ -26,8 +26,7 @@ function soloRepoTarget() {
         createdAtMs: 0,
         isWorktreeRoot: false,
         aiHidden: false,
-        aiCmd: '',
-        resetAiSessionCmd: '',
+        aiId: '',
     };
 }
 
@@ -39,8 +38,7 @@ function worktreeTargets() {
             createdAtMs: 0,
             isWorktreeRoot: true,
             aiHidden: false,
-            aiCmd: '',
-            resetAiSessionCmd: '',
+            aiId: '',
         },
         {
             folder: worktreePath,
@@ -48,8 +46,7 @@ function worktreeTargets() {
             createdAtMs: 0,
             isWorktreeRoot: false,
             aiHidden: false,
-            aiCmd: '',
-            resetAiSessionCmd: '',
+            aiId: '',
         },
     ];
 }

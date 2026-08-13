@@ -34,6 +34,7 @@
         "@agent-storm/common": "*",
         "@augment-vir/assert": "^32.2.1",
         "@augment-vir/common": "^32.2.1",
+        "@augment-vir/web": "^32.2.2",
         "@codemirror/commands": "^6.8.1",
         "@codemirror/lang-css": "^6.3.1",
         "@codemirror/lang-html": "^6.4.9",

@@ -34,6 +34,7 @@ import {
     type FrontendPaths,
 } from '../../util/router.js';
 import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
+import {VirAiModal} from './vir-ai-modal.element.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
@@ -158,6 +159,8 @@ type AppState = {
     folderInfo: Map<string, FolderInfo>;
     pollHandle: ReturnType<typeof setInterval> | undefined;
     settingsOpen: boolean;
+    /** Open state of the "Define AI" modal, raised from the settings modal so the two never stack. */
+    aiModalOpen: boolean;
     route: AppRoute;
     removeRouteListener: (() => void) | undefined;
     sidebarWidth: number;
@@ -205,6 +208,7 @@ export const VirApp = defineElement()({
             folderInfo: new Map(),
             pollHandle: undefined,
             settingsOpen: false,
+            aiModalOpen: false,
             route: router.readCurrentRoute(),
             removeRouteListener: undefined,
             sidebarWidth: localStorageClient.sidebarWidth.read(),
@@ -808,7 +812,7 @@ export const VirApp = defineElement()({
                                         state.route,
                                         PaneKind.Shell,
                                     ),
-                                    resetAiSessionCmd: info?.resetAiSessionCmd || '',
+                                    folderAiId: info?.aiId || '',
                                     prUrl: info?.prUrl || '',
                                 })}
                                     ${listen(VirPaneGroup.events.sessionRequested, (event) => {
@@ -884,7 +888,22 @@ export const VirApp = defineElement()({
                         settingsOpen: false,
                     });
                 })}
+                ${listen(VirSettingsModal.events.defineAiRequested, () => {
+                    updateState({
+                        settingsOpen: false,
+                        aiModalOpen: true,
+                    });
+                })}
             ></${VirSettingsModal}>
+            <${VirAiModal.assign({
+                open: state.aiModalOpen,
+            })}
+                ${listen(VirAiModal.events.closeRequested, () => {
+                    updateState({
+                        aiModalOpen: false,
+                    });
+                })}
+            ></${VirAiModal}>
             <${ViraModal.assign({
                 open: isMobile && state.mobileSidebarOpen,
                 modalTitle: 'Repos',

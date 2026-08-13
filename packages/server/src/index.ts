@@ -2,6 +2,8 @@
 
 import {
     agentStormService,
+    aiAvatarEndpoint,
+    aiAvatarUploadEndpoint,
     checkPathEndpoint,
     clientErrorEndpoint,
     configEndpoint,
@@ -32,9 +34,11 @@ import {
     sessionCreateEndpoint,
     sessionListEndpoint,
     sessionRenameEndpoint,
+    sessionSetAiEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
     uploadEndpoint,
+    type AiDefinition,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {HttpMethod, HttpStatus, log, omitObjectKeys, wait} from '@augment-vir/common';
@@ -45,15 +49,15 @@ import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
 import {appendFile, mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
+import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
 import {initAuth, verifyAuthToken} from './auth.js';
 import {startConfigBackupLoop} from './config-backup.js';
 import {
-    getFolderAiCmd,
-    getFolderResetAiSessionCmd,
+    findAiDefinition,
+    getFolderAiDefinition,
     loadConfig,
     saveConfig,
-    setFolderAiCmd,
-    setFolderResetAiSessionCmd,
+    setFolderAiId,
 } from './config.js';
 import {
     attachPane,
@@ -83,10 +87,12 @@ import {getLivePaneSessionIds} from './pty.js';
 import {
     createFolderSession,
     forgetFolderSessions,
+    getFolderSessions,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
+    setFolderSessionAi,
     takeFreshAiSession,
 } from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
@@ -215,10 +221,32 @@ async function runPostWorktreeCmd({
     attachment.close();
 }
 
-async function resolveAiCmdsForFolder(folder: string) {
+/**
+ * Which AI one tab runs: its own override wins, then its folder's override, then the worktree
+ * root's, then the global default. Config is re-read on every call so a spawn always reflects the
+ * user's current choice rather than whatever was set when the pane first opened.
+ *
+ * Undefined when the user has defined no AI at all, or when config can't be read; the daemon falls
+ * back to its built-in default in that case.
+ */
+async function resolveAiForSession({
+    folder,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    sessionId?: string | undefined;
+}>): Promise<AiDefinition | undefined> {
     const config = await loadConfig().catch(() => undefined);
     if (!config) {
         return undefined;
+    }
+    const sessions = await getFolderSessions(folder);
+    const sessionAi = findAiDefinition({
+        config,
+        aiId: sessions.ai.find((session) => session.id === sessionId)?.aiId,
+    });
+    if (sessionAi) {
+        return sessionAi;
     }
     const parentRepoMatches = await Promise.all(
         config.repos.map(async (repo) => {
@@ -226,24 +254,11 @@ async function resolveAiCmdsForFolder(folder: string) {
             return children.includes(folder) ? repo.path : undefined;
         }),
     );
-    const fallbackFolders = parentRepoMatches.filter(check.isTruthy);
-    return {
-        aiCmd: getFolderAiCmd({
-            config,
-            folder,
-            fallbackFolders,
-        }),
-        /** Empty when the user hasn't configured one — see {@link getFolderResetAiSessionCmd}. */
-        resetAiSessionCmd: getFolderResetAiSessionCmd({
-            config,
-            folder,
-            fallbackFolders,
-        }),
-    };
-}
-
-async function resolveAiCmdForFolder(folder: string): Promise<string | undefined> {
-    return (await resolveAiCmdsForFolder(folder))?.aiCmd;
+    return getFolderAiDefinition({
+        config,
+        folder,
+        fallbackFolders: parentRepoMatches.filter(check.isTruthy),
+    });
 }
 
 const implementor = createApiImplementor<undefined>()(agentStormService);
@@ -300,33 +315,23 @@ const updateCheckImplementation = implementor.implementEndpoint(updateCheckEndpo
 const createWorktreeImplementation = implementor.implementEndpoint(createWorktreeEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         const {worktreePath} = await addWorktree(requestData);
-        const aiCmd = requestData.aiCmd?.trim();
-        const resetCmd = requestData.resetAiSessionCmd?.trim();
-        if (aiCmd || resetCmd) {
+        const aiId = requestData.aiId?.trim();
+        if (aiId) {
             /**
-             * Best-effort overrides write. `loadConfig` throws on read failure rather than
-             * returning defaults, so `.catch(() => undefined)` here is what prevents a transient
-             * race from kicking us into a "defaults + this override" save that would wipe the
-             * user's other settings. Apply both setters in sequence so the second sees the result
-             * of the first.
+             * Best-effort override write. `loadConfig` throws on read failure rather than returning
+             * defaults, so `.catch(() => undefined)` here is what prevents a transient race from
+             * kicking us into a "defaults + this override" save that would wipe the user's other
+             * settings.
              */
             const initial = await loadConfig().catch(() => undefined);
             if (initial) {
-                const withAiCmd = aiCmd
-                    ? setFolderAiCmd({
-                          config: initial,
-                          folder: worktreePath,
-                          aiCmd,
-                      })
-                    : initial;
-                const withReset = resetCmd
-                    ? setFolderResetAiSessionCmd({
-                          config: withAiCmd,
-                          folder: worktreePath,
-                          resetAiSessionCmd: resetCmd,
-                      })
-                    : withAiCmd;
-                await saveConfig(withReset);
+                await saveConfig(
+                    setFolderAiId({
+                        config: initial,
+                        folder: worktreePath,
+                        aiId,
+                    }),
+                );
             }
         }
         await refreshFolderInfoNow();
@@ -452,23 +457,66 @@ const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEnd
     },
 });
 
+const sessionSetAiImplementation = implementor.implementEndpoint(sessionSetAiEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await setFolderSessionAi({
+                    folder: normalizePath(requestData.folder),
+                    kind: requestData.kind,
+                    sessionId: requestData.sessionId,
+                    aiId: requestData.aiId,
+                }),
+            },
+        };
+    },
+});
+
+const aiAvatarUploadImplementation = implementor.implementEndpoint(aiAvatarUploadEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    avatarFile: await saveAiAvatar(requestData),
+                },
+            },
+        };
+    },
+});
+
+const aiAvatarImplementation = implementor.implementEndpoint(aiAvatarEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readAiAvatar(requestData.avatarFile),
+            },
+        };
+    },
+});
+
 const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         /**
-         * Forward the current `aiCmd` so a "Restart AI" picks up any recent config edits to the AI
-         * command (the daemon caches nothing about config — every fresh spawn uses whatever the
-         * backend hands it).
+         * Forward the tab's resolved resume command so a "Restart" picks up any recent change to
+         * which AI it uses (the daemon caches nothing about config — every fresh spawn uses
+         * whatever the backend hands it).
          */
         const folder = normalizePath(requestData.folder);
+        const sessionId = await resolveSessionId({
+            folder,
+            kind: requestData.kind,
+            sessionId: requestData.sessionId ?? undefined,
+        });
         await restartPane({
             folder,
             kind: requestData.kind,
-            sessionId: await resolveSessionId({
-                folder,
-                kind: requestData.kind,
-                sessionId: requestData.sessionId ?? undefined,
-            }),
-            aiCmd: await resolveAiCmdForFolder(requestData.folder),
+            sessionId,
+            aiCmd: (
+                await resolveAiForSession({
+                    folder,
+                    sessionId,
+                })
+            )?.resumeSessionCommand,
         });
         return {
             [HttpStatus.Ok]: {
@@ -501,33 +549,25 @@ const killPanesImplementation = implementor.implementEndpoint(killPanesEndpoint,
 const resetAiSessionImplementation = implementor.implementEndpoint(resetAiSessionEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         /**
-         * "Restart AI session" is the same daemon-side action as the regular "Restart AI" (kill the
-         * pty + spawn a fresh one in the same folder) — the only difference is the command we hand
-         * to the daemon: the resolved reset-AI-session string instead of the folder's normal
-         * `aiCmd`. Re-resolve from config on every call so a stale frontend that still has the menu
-         * rendered after the user cleared the setting just no-ops instead of running whatever it
-         * last saw.
+         * "New AI session" is the same daemon-side action as a regular restart (kill the pty +
+         * spawn a fresh one in the same folder) — the only difference is the command: the resolved
+         * AI's new-session command instead of its resume command. Re-resolve on every call so a
+         * stale frontend still showing the menu item after the user cleared that command just
+         * no-ops instead of running whatever it last saw.
          */
         const folder = normalizePath(requestData.folder);
-        const config = await loadConfig().catch(() => undefined);
-        if (!config) {
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: {
-                        ok: true,
-                    },
-                },
-            };
-        }
-        const cached = await getCachedFolders();
-        const cachedFolder = cached.find((entry) => entry.path === folder);
-        const fallbackFolders = cachedFolder?.parentRepoPath ? [cachedFolder.parentRepoPath] : [];
-        const cmd = getFolderResetAiSessionCmd({
-            config,
+        const sessionId = await resolveSessionId({
             folder,
-            fallbackFolders,
+            kind: PaneKind.Ai,
+            sessionId: requestData.sessionId ?? undefined,
         });
-        if (!cmd) {
+        const newSessionCommand = (
+            await resolveAiForSession({
+                folder,
+                sessionId,
+            })
+        )?.newSessionCommand;
+        if (!newSessionCommand) {
             return {
                 [HttpStatus.Ok]: {
                     responseData: {
@@ -539,12 +579,8 @@ const resetAiSessionImplementation = implementor.implementEndpoint(resetAiSessio
         await restartPane({
             folder,
             kind: PaneKind.Ai,
-            sessionId: await resolveSessionId({
-                folder,
-                kind: PaneKind.Ai,
-                sessionId: requestData.sessionId ?? undefined,
-            }),
-            aiCmd: cmd,
+            sessionId,
+            aiCmd: newSessionCommand,
         });
         return {
             [HttpStatus.Ok]: {
@@ -927,15 +963,17 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             sessionId: searchParams.sessionId,
         });
         /**
-         * Look up the current AI command from agent-storm's config on every attach so the daemon's
-         * spawned PTY (when this is the first attach for the folder + kind pair) uses whatever the
-         * user has set. Failure is non-fatal — the daemon falls back to its built-in default
-         * (`claude`).
+         * Resolve which AI this tab runs on every attach so the daemon's spawned PTY (when this is
+         * the first attach for the folder + kind pair) uses whatever the user has set. Failure is
+         * non-fatal — the daemon falls back to its built-in default (`claude`).
          */
-        const aiCmds = await resolveAiCmdsForFolder(folder);
+        const aiDefinition = await resolveAiForSession({
+            folder,
+            sessionId,
+        });
         /**
-         * A tab the user just added gets the reset-AI-session command, so it opens a new
-         * conversation instead of resuming the one the folder's normal AI command resumes. See
+         * A tab the user just added gets the AI's new-session command, so it opens a new
+         * conversation instead of resuming the one the tab they already had is showing. See
          * {@link takeFreshAiSession}.
          */
         const isFreshAiSession = takeFreshAiSession({
@@ -947,9 +985,9 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             kind,
             sessionId,
             aiCmd:
-                isFreshAiSession && aiCmds?.resetAiSessionCmd
-                    ? aiCmds.resetAiSessionCmd
-                    : aiCmds?.aiCmd,
+                isFreshAiSession && aiDefinition?.newSessionCommand
+                    ? aiDefinition.newSessionCommand
+                    : aiDefinition?.resumeSessionCommand,
             scrollbackLimit,
             onData(data) {
                 webSocket.send(data);
@@ -1025,7 +1063,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         sessionCreateImplementation,
         sessionRenameImplementation,
         sessionCloseImplementation,
+        sessionSetAiImplementation,
         resetAiSessionImplementation,
+        aiAvatarUploadImplementation,
+        aiAvatarImplementation,
         clientErrorImplementation,
         restartDaemonImplementation,
         touchRepoImplementation,

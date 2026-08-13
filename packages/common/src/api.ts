@@ -54,24 +54,77 @@ export const configJsonSchema = {
     additionalProperties: false,
     title: 'agent-storm config',
     properties: {
-        aiCmd: {
-            type: 'string',
-            default: 'claude',
-            title: 'AI command',
-            description: 'Command launched in the AI pane (e.g. `claude`).',
+        /**
+         * Every AI the user has defined: a display name, the command that resumes its last
+         * conversation, the command that starts a fresh one, and an optional avatar. Managed
+         * entirely through the "Define AI" modal, so it's hidden from the settings JSON form.
+         *
+         * Configs predating this field are migrated on load — see `migrateAiConfig` in the server's
+         * `config.ts`, which turns the old `aiCmd` / `resetAiSessionCmd` / `folderAiCmds` strings
+         * into definitions.
+         */
+        aiDefinitions: {
+            type: 'array',
+            default: [],
+            title: 'AI definitions',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                title: 'AI',
+                properties: {
+                    /** Opaque and stable: every override references an AI by this, never by name. */
+                    id: {
+                        type: 'string',
+                        title: 'Id',
+                    },
+                    name: {
+                        type: 'string',
+                        title: 'Name',
+                    },
+                    resumeSessionCommand: {
+                        type: 'string',
+                        title: 'Resume session command',
+                        description:
+                            'Launched when an AI pane spawns for an existing tab (e.g. `claude --continue`).',
+                    },
+                    /**
+                     * Used instead of `resumeSessionCommand` when the pane is deliberately starting
+                     * over: a tab the user just created, or the "New AI session" menu item. Empty
+                     * means this AI can't start a fresh session on demand, which hides that item.
+                     */
+                    newSessionCommand: {
+                        type: 'string',
+                        title: 'New session command',
+                        description:
+                            'Launched for a brand-new tab and by "New AI session" (e.g. `claude`).',
+                    },
+                    /**
+                     * Bare filename inside the avatars directory, not a path — the file is read
+                     * back through `/ai/avatar`. Absent when the user hasn't dropped an image.
+                     */
+                    avatarFile: {
+                        type: 'string',
+                        title: 'Avatar file',
+                    },
+                },
+                required: [
+                    'id',
+                    'name',
+                    'resumeSessionCommand',
+                    'newSessionCommand',
+                ],
+            },
         },
         /**
-         * Optional global default for the "Restart AI session" menu item. When non-empty (or when a
-         * per-folder override is set in `folderAiCmds`), the sidebar row menu shows the item and
-         * clicking it writes this string + newline into the folder's AI pane. Intentionally absent
-         * from `required` so older configs without it still load — missing → "" → no menu item.
+         * Which definition every folder falls back to. Empty (or naming a deleted definition)
+         * resolves to the first entry in `aiDefinitions`, so the default is never dangling.
          */
-        resetAiSessionCmd: {
+        defaultAiId: {
             type: 'string',
             default: '',
-            title: 'Reset AI session command',
+            title: 'Default AI',
             description:
-                'Optional. Command (e.g. `/clear`) sent into the AI pane when the user picks "Restart AI session" from a folder\'s row menu. Per-folder overrides live alongside the AI command override.',
+                'Id of the AI used by folders with no override. Set from the Settings modal.',
         },
         postWorktreeCmd: {
             type: [
@@ -123,38 +176,31 @@ export const configJsonSchema = {
                 ],
             },
         },
-        folderAiCmds: {
+        /**
+         * Per-folder AI choice, set from the "Change AI" modal. A worktree with no entry inherits
+         * its worktree-root's entry, and a folder with neither falls back to `defaultAiId`.
+         */
+        folderAiIds: {
             type: 'array',
             default: [],
-            title: 'Folder AI command overrides',
+            title: 'Folder AI overrides',
             items: {
                 type: 'object',
                 additionalProperties: false,
-                title: 'Folder AI command override',
+                title: 'Folder AI override',
                 properties: {
                     folder: {
                         type: 'string',
                         title: 'Folder',
                     },
-                    aiCmd: {
+                    aiId: {
                         type: 'string',
-                        title: 'AI command',
-                    },
-                    /**
-                     * Optional per-folder override of the global `resetAiSessionCmd`. When the user
-                     * picks "Restart AI session" from a row menu, this wins over the global default
-                     * (and we fall back through worktree-root → global the same way `aiCmd`
-                     * resolution does). Absent from `required` so an entry can exist for the
-                     * `aiCmd` override alone, the reset-cmd override alone, or both.
-                     */
-                    resetAiSessionCmd: {
-                        type: 'string',
-                        title: 'Reset AI session command override',
+                        title: 'AI id',
                     },
                 },
                 required: [
                     'folder',
-                    'aiCmd',
+                    'aiId',
                 ],
             },
         },
@@ -290,10 +336,11 @@ export const configJsonSchema = {
         },
     },
     required: [
-        'aiCmd',
+        'aiDefinitions',
+        'defaultAiId',
         'postWorktreeCmd',
         'repos',
-        'folderAiCmds',
+        'folderAiIds',
         'hiddenAiPane',
         'disabledGitHubPolling',
         'githubPollingAutoDisable',
@@ -317,14 +364,12 @@ export const folderInfoShape = defineShape({
     createdAtMs: 0,
     isWorktreeRoot: false,
     aiHidden: false,
-    aiCmd: '',
     /**
-     * Resolved reset-AI-session command for this folder — backend already walked the per-folder
-     * override → global default lookup. Empty string when no command is configured; the sidebar
-     * uses that as the "don't render the menu item" signal so the frontend never has to recreate
-     * the resolution logic.
+     * Id of the AI this folder resolves to — the backend already walked the per-folder override →
+     * worktree-root override → `defaultAiId` chain, so the frontend never recreates that lookup.
+     * Empty when the user has defined no AI at all.
      */
-    resetAiSessionCmd: '',
+    aiId: '',
     branch: nullableShape(''),
     git: {
         dirty: false,
@@ -355,6 +400,12 @@ const folderActionRequestShape = defineShape({
 export const sessionMetaShape = defineShape({
     id: '',
     name: '',
+    /**
+     * Per-tab AI override, set from the tab's "Change AI" item. Empty means the tab uses whatever
+     * its folder resolves to. Lives with the session rather than in config because it's per-tab app
+     * state, exactly like `name`.
+     */
+    aiId: '',
 });
 
 /**
@@ -390,6 +441,14 @@ const sessionCloseRequestShape = defineShape({
     sessionId: '',
 });
 
+/** Empty `aiId` clears the tab's override, returning it to whatever its folder resolves to. */
+const sessionSetAiRequestShape = defineShape({
+    folder: '',
+    kind: enumShape(PaneKind),
+    sessionId: '',
+    aiId: '',
+});
+
 /**
  * `sessionId` is optional so a browser left open across an upgrade (a phone on the LAN page, say)
  * keeps working: an omitted value resolves to the folder's first session, which is exactly the
@@ -410,13 +469,11 @@ const paneSessionFolderRequestShape = defineShape({
 const createWorktreeRequestShape = defineShape({
     repoPath: '',
     name: '',
-    aiCmd: nullableShape(''),
     /**
-     * Optional per-worktree override of the global reset-AI-session command, collected by the "Add
-     * worktree" modal alongside `aiCmd`. Null/undefined → don't write an override entry; the
-     * worktree inherits the global / repo-level default.
+     * AI chosen in the "Add worktree" modal. Null/undefined (or empty) → don't write an override
+     * entry; the worktree inherits its repo's choice, or the global default.
      */
-    resetAiSessionCmd: nullableShape(''),
+    aiId: nullableShape(''),
 });
 
 const deleteWorktreeRequestShape = defineShape({
@@ -434,6 +491,30 @@ const uploadRequestShape = defineShape({
 
 const uploadResponseShape = defineShape({
     path: '',
+});
+
+/** Same payload as {@link uploadRequestShape}, but the bytes land in the avatars directory. */
+const aiAvatarUploadRequestShape = defineShape({
+    filename: '',
+    dataBase64: '',
+});
+
+const aiAvatarUploadResponseShape = defineShape({
+    /** Bare filename to store in the AI definition's `avatarFile`. */
+    avatarFile: '',
+});
+
+const aiAvatarRequestShape = defineShape({
+    avatarFile: '',
+});
+
+/**
+ * An avatar's bytes, base64-encoded. Served through the API rather than a plain image URL because
+ * every request to the backend needs the bearer header, which an `<img src>` can't carry.
+ */
+const aiAvatarResponseShape = defineShape({
+    dataBase64: '',
+    mimeType: '',
 });
 
 const pathRequestShape = defineShape({
@@ -1041,12 +1122,6 @@ export const killPanesEndpoint = defineEndpoint({
     },
 });
 
-/**
- * Sends the configured "reset AI session" string into a folder's AI pane (per-folder override →
- * global default). Triggered by the row-menu "Restart AI session" item, which only appears when the
- * resolved command is non-empty. Returns a no-op 200 when no command is configured so a stale
- * frontend doesn't surface errors after the user clears the setting.
- */
 export const sessionListEndpoint = defineEndpoint({
     path: '/sessions/list',
     requests: {
@@ -1108,6 +1183,29 @@ export const sessionCloseEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Points one tab at a specific AI (or back at its folder's choice). The caller restarts the tab's
+ * pane afterward, which is what makes the new command take effect.
+ */
+export const sessionSetAiEndpoint = defineEndpoint({
+    path: '/sessions/set-ai',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: sessionSetAiRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: sessionsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Respawns one AI tab with its AI's `newSessionCommand` instead of the resume command, which is
+ * what "New AI session" means. Returns a no-op 200 when the resolved AI has no new-session command,
+ * so a stale frontend still showing the menu item does nothing instead of erroring.
+ */
 export const resetAiSessionEndpoint = defineEndpoint({
     path: '/panes/reset-ai-session',
     requests: {
@@ -1241,6 +1339,40 @@ export const uploadEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Stores an avatar image dropped onto the "Define AI" modal and hands back the filename to record
+ * in the definition. Separate from {@link uploadEndpoint} because those uploads are throwaway files
+ * pasted into a terminal, while these have to outlive a reboot alongside the config.
+ */
+export const aiAvatarUploadEndpoint = defineEndpoint({
+    path: '/ai/avatar/upload',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: aiAvatarUploadRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: aiAvatarUploadResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** POST rather than GET so the filename travels in the body and the bearer header applies. */
+export const aiAvatarEndpoint = defineEndpoint({
+    path: '/ai/avatar',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: aiAvatarRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: aiAvatarResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const ptyWebSocket = defineWebSocket({
     path: '/pty',
     clientMessage: ptyClientMessageShape,
@@ -1279,7 +1411,10 @@ export const agentStormService = defineApi({
         sessionCreateEndpoint,
         sessionRenameEndpoint,
         sessionCloseEndpoint,
+        sessionSetAiEndpoint,
         resetAiSessionEndpoint,
+        aiAvatarUploadEndpoint,
+        aiAvatarEndpoint,
         clientErrorEndpoint,
         restartDaemonEndpoint,
         touchRepoEndpoint,
@@ -1311,6 +1446,7 @@ export const defaultConfig = configShape.default;
  */
 export type Config = SchemaShapeToType<typeof configJsonSchema, NonNullable<unknown>>;
 export type RepoConfig = Config['repos'][number];
+export type AiDefinition = Config['aiDefinitions'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
 export type SessionMeta = typeof sessionMetaShape.runtimeType;

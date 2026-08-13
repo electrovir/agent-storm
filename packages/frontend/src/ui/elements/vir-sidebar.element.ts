@@ -1,6 +1,7 @@
 // cspell:words Hyperlegible, upserted
 
 import {
+    type AiDefinition,
     type FolderInfo,
     PaneKind,
     PaneStatus,
@@ -39,6 +40,8 @@ import {
     ViraMenuTrigger,
     ViraModal,
     ViraPopUpTrigger,
+    ViraSelect,
+    type ViraSelectOption,
     viraShadows,
     ViraSize,
     viraThemeByKeys,
@@ -61,6 +64,7 @@ import {
 } from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
+import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 
 const allowedLinkHostnames = ['github.com'];
 
@@ -127,42 +131,35 @@ type SidebarState = {
     openMenuKey: string | undefined;
     repoModalOpen: boolean;
     repoPath: string;
-    repoAiCmd: string;
-    repoGlobalAiCmd: string;
-    /** New input on the "Add repo" modal — leaves the global default in place when blank. */
-    repoResetAiSessionCmd: string;
-    repoGlobalResetAiSessionCmd: string;
+    /** AI chosen on the "Add repo" modal. Empty means inherit the default. */
+    repoAiId: string;
     repoSubmitting: boolean;
     worktreeModalRepoPath: string | undefined;
     worktreeName: string;
-    worktreeAiCmd: string;
-    worktreeGlobalAiCmd: string;
-    /** New input on the "Add worktree" modal — same semantics as the repo version. */
-    worktreeResetAiSessionCmd: string;
-    worktreeGlobalResetAiSessionCmd: string;
+    /** Same semantics as `repoAiId`, for the "Add worktree" modal. */
+    worktreeAiId: string;
     worktreeSubmitting: boolean;
     /**
-     * Identity of the folder currently being edited in the "Edit folder commands" modal (the one
-     * that replaces the previous `window.prompt`-based AI-cmd flow). `undefined` when the modal is
-     * closed; the path lets us upsert the override into `folderAiCmds` on save.
+     * Folder whose AI is being changed in the picker modal. `undefined` when the modal is closed;
+     * the path is what the override gets written against on save. A worktree root's choice is
+     * inherited by every child that doesn't set its own.
      */
-    editFolderPath: string | undefined;
-    editFolderAiCmd: string;
-    editFolderResetAiSessionCmd: string;
+    changeAiFolderPath: string | undefined;
+    changeAiSelectedId: string;
     /**
-     * What the folder falls back to when its own field is blank: a worktree's parent-repo override
-     * if there is one, else the global default. Shown as the inputs' placeholder so an empty field
-     * visibly means "inherit this".
+     * Name of the AI the folder falls back to with no override — a worktree's parent-repo choice if
+     * it has one, else the global default. Shown on the picker's "Inherit" row.
      */
-    editFolderInheritedAiCmd: string;
-    editFolderInheritedResetAiSessionCmd: string;
+    changeAiInheritedName: string;
+    changeAiIsWorktreeRoot: boolean;
+    changeAiSubmitting: boolean;
     /**
-     * True when the modal is editing a worktree root, whose commands every child worktree inherits
-     * unless the child sets its own. Drives the modal title and which AI panes get restarted on
-     * save.
+     * Mirrors `config.aiDefinitions` so the picker and the add-repo / add-worktree modals can list
+     * the user's AIs. Kept in lockstep with the folders list via `refresh()`.
      */
-    editFolderIsWorktreeRoot: boolean;
-    editFolderSubmitting: boolean;
+    aiDefinitions: ReadonlyArray<AiDefinition>;
+    /** Mirrors `config.defaultAiId`, used to name what an un-overridden folder inherits. */
+    defaultAiId: string;
     /**
      * Mirrors `config.sidebarGrouping`. Fetched lazily on first refresh tick so the filter menu can
      * show which grouping is currently active (and so flipping it via the menu has a fresh value to
@@ -205,14 +202,12 @@ type SidebarState = {
 
 type SidebarUpdate = (newState: Partial<SidebarState>) => void;
 
-const closedEditFolderState: Partial<SidebarState> = {
-    editFolderPath: undefined,
-    editFolderAiCmd: '',
-    editFolderResetAiSessionCmd: '',
-    editFolderInheritedAiCmd: '',
-    editFolderInheritedResetAiSessionCmd: '',
-    editFolderIsWorktreeRoot: false,
-    editFolderSubmitting: false,
+const closedChangeAiState: Partial<SidebarState> = {
+    changeAiFolderPath: undefined,
+    changeAiSelectedId: '',
+    changeAiInheritedName: '',
+    changeAiIsWorktreeRoot: false,
+    changeAiSubmitting: false,
 };
 
 type PaneRestartedEvent = {
@@ -260,25 +255,19 @@ export const VirSidebar = defineElement<{
             openMenuKey: undefined,
             repoModalOpen: false,
             repoPath: '',
-            repoAiCmd: '',
-            repoGlobalAiCmd: '',
-            repoResetAiSessionCmd: '',
-            repoGlobalResetAiSessionCmd: '',
+            repoAiId: '',
             repoSubmitting: false,
             worktreeModalRepoPath: undefined,
             worktreeName: '',
-            worktreeAiCmd: '',
-            worktreeGlobalAiCmd: '',
-            worktreeResetAiSessionCmd: '',
-            worktreeGlobalResetAiSessionCmd: '',
+            worktreeAiId: '',
             worktreeSubmitting: false,
-            editFolderPath: undefined,
-            editFolderAiCmd: '',
-            editFolderResetAiSessionCmd: '',
-            editFolderInheritedAiCmd: '',
-            editFolderInheritedResetAiSessionCmd: '',
-            editFolderIsWorktreeRoot: false,
-            editFolderSubmitting: false,
+            changeAiFolderPath: undefined,
+            changeAiSelectedId: '',
+            changeAiInheritedName: '',
+            changeAiIsWorktreeRoot: false,
+            changeAiSubmitting: false,
+            aiDefinitions: [],
+            defaultAiId: '',
             sidebarGrouping: undefined,
             sidebarSorting: undefined,
             onlyShowRecent: undefined,
@@ -682,10 +671,7 @@ export const VirSidebar = defineElement<{
             updateState({
                 repoModalOpen: false,
                 repoPath: '',
-                repoAiCmd: '',
-                repoGlobalAiCmd: '',
-                repoResetAiSessionCmd: '',
-                repoGlobalResetAiSessionCmd: '',
+                repoAiId: '',
                 repoSubmitting: false,
             });
         };
@@ -700,10 +686,7 @@ export const VirSidebar = defineElement<{
             updateState({
                 worktreeModalRepoPath: undefined,
                 worktreeName: '',
-                worktreeAiCmd: '',
-                worktreeGlobalAiCmd: '',
-                worktreeResetAiSessionCmd: '',
-                worktreeGlobalResetAiSessionCmd: '',
+                worktreeAiId: '',
                 worktreeSubmitting: false,
             });
         };
@@ -712,16 +695,6 @@ export const VirSidebar = defineElement<{
                 state,
                 updateState,
                 onActivate: emitFolderActivated,
-            });
-        };
-        const closeEditFolderModal = () => {
-            updateState(closedEditFolderState);
-        };
-        const submitEditFolderModal = () => {
-            void submitEditFolder({
-                state,
-                updateState,
-                emitPaneRestarted,
             });
         };
 
@@ -922,15 +895,15 @@ export const VirSidebar = defineElement<{
                                         },
                                         {
                                             /**
-                                             * Editing the root's commands sets the default every
-                                             * child worktree inherits (unless the child has its own
-                                             * override), so this is the one place to change the AI
-                                             * command for a whole repo's worktrees at once.
+                                             * The root's AI is what every child worktree inherits
+                                             * (unless the child sets its own), so this is the one
+                                             * place to change the AI for a whole repo's worktrees
+                                             * at once.
                                              */
-                                            content: 'Edit folder commands',
+                                            content: 'Change AI',
                                             iconOverride: menuEditCommandsIcon,
                                             onClick: () => {
-                                                void openEditFolderModal(root, updateState);
+                                                void openChangeAiModal(root, updateState);
                                             },
                                         },
                                         {
@@ -1000,44 +973,18 @@ export const VirSidebar = defineElement<{
                             }
                         })}
                     ></${ViraInput}>
-                    <${ViraInput.assign({
-                        label: 'AI command override',
-                        value: state.repoAiCmd,
-                        placeholder: state.repoGlobalAiCmd || 'claude',
-                        showClearButton: true,
-                        disableBrowserHelps: true,
+                    <${ViraSelect.assign({
+                        label: 'AI',
+                        options: aiSelectOptions(state),
+                        value: state.repoAiId,
                         disabled: state.repoSubmitting,
                     })}
-                        ${listen(ViraInput.events.valueChange, (event) => {
+                        ${listen(ViraSelect.events.valueChange, (event) => {
                             updateState({
-                                repoAiCmd: event.detail,
+                                repoAiId: event.detail,
                             });
                         })}
-                        ${listen('keydown', (event) => {
-                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
-                                submitRepo();
-                            }
-                        })}
-                    ></${ViraInput}>
-                    <${ViraInput.assign({
-                        label: 'Reset AI session command override',
-                        value: state.repoResetAiSessionCmd,
-                        placeholder: state.repoGlobalResetAiSessionCmd || '/clear',
-                        showClearButton: true,
-                        disableBrowserHelps: true,
-                        disabled: state.repoSubmitting,
-                    })}
-                        ${listen(ViraInput.events.valueChange, (event) => {
-                            updateState({
-                                repoResetAiSessionCmd: event.detail,
-                            });
-                        })}
-                        ${listen('keydown', (event) => {
-                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
-                                submitRepo();
-                            }
-                        })}
-                    ></${ViraInput}>
+                    ></${ViraSelect}>
                     <div class="repo-modal-footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -1083,44 +1030,18 @@ export const VirSidebar = defineElement<{
                             }
                         })}
                     ></${ViraInput}>
-                    <${ViraInput.assign({
-                        label: 'AI command override',
-                        value: state.worktreeAiCmd,
-                        placeholder: state.worktreeGlobalAiCmd || 'claude',
-                        showClearButton: true,
-                        disableBrowserHelps: true,
+                    <${ViraSelect.assign({
+                        label: 'AI',
+                        options: aiSelectOptions(state),
+                        value: state.worktreeAiId,
                         disabled: state.worktreeSubmitting,
                     })}
-                        ${listen(ViraInput.events.valueChange, (event) => {
+                        ${listen(ViraSelect.events.valueChange, (event) => {
                             updateState({
-                                worktreeAiCmd: event.detail,
+                                worktreeAiId: event.detail,
                             });
                         })}
-                        ${listen('keydown', (event) => {
-                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
-                                submitWorktree();
-                            }
-                        })}
-                    ></${ViraInput}>
-                    <${ViraInput.assign({
-                        label: 'Reset AI session command override',
-                        value: state.worktreeResetAiSessionCmd,
-                        placeholder: state.worktreeGlobalResetAiSessionCmd || '/clear',
-                        showClearButton: true,
-                        disableBrowserHelps: true,
-                        disabled: state.worktreeSubmitting,
-                    })}
-                        ${listen(ViraInput.events.valueChange, (event) => {
-                            updateState({
-                                worktreeResetAiSessionCmd: event.detail,
-                            });
-                        })}
-                        ${listen('keydown', (event) => {
-                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
-                                submitWorktree();
-                            }
-                        })}
-                    ></${ViraInput}>
+                    ></${ViraSelect}>
                     <div class="worktree-modal-footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -1140,70 +1061,28 @@ export const VirSidebar = defineElement<{
                     </div>
                 </div>
             </${ViraModal}>
-            <${ViraModal.assign({
-                open: !!state.editFolderPath,
-                modalTitle: state.editFolderIsWorktreeRoot
-                    ? 'Edit repo commands (inherited by worktrees)'
-                    : 'Edit folder commands',
+            <${VirAiPickerModal.assign({
+                open: !!state.changeAiFolderPath,
+                modalTitle: state.changeAiIsWorktreeRoot
+                    ? 'Change AI (inherited by worktrees)'
+                    : 'Change AI',
+                aiDefinitions: state.aiDefinitions,
+                selectedAiId: state.changeAiSelectedId,
+                inheritedName: state.changeAiInheritedName,
+                submitting: state.changeAiSubmitting,
             })}
-                ${listen(ViraModal.events.modalClose, closeEditFolderModal)}
-            >
-                <div class="repo-modal-body">
-                    <${ViraInput.assign({
-                        label: 'AI command override',
-                        value: state.editFolderAiCmd,
-                        placeholder: state.editFolderInheritedAiCmd || 'claude',
-                        showClearButton: true,
-                        disabled: state.editFolderSubmitting,
-                    })}
-                        ${listen(ViraInput.events.valueChange, (event) => {
-                            updateState({
-                                editFolderAiCmd: event.detail,
-                            });
-                        })}
-                        ${listen('keydown', (event) => {
-                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
-                                submitEditFolderModal();
-                            }
-                        })}
-                    ></${ViraInput}>
-                    <${ViraInput.assign({
-                        label: 'Reset AI session command override',
-                        value: state.editFolderResetAiSessionCmd,
-                        placeholder: state.editFolderInheritedResetAiSessionCmd || '/clear',
-                        showClearButton: true,
-                        disabled: state.editFolderSubmitting,
-                    })}
-                        ${listen(ViraInput.events.valueChange, (event) => {
-                            updateState({
-                                editFolderResetAiSessionCmd: event.detail,
-                            });
-                        })}
-                        ${listen('keydown', (event) => {
-                            if (event instanceof KeyboardEvent && event.key === 'Enter') {
-                                submitEditFolderModal();
-                            }
-                        })}
-                    ></${ViraInput}>
-                    <div class="repo-modal-footer">
-                        <${ViraButton.assign({
-                            text: 'Cancel',
-                            buttonEmphasis: ViraEmphasis.Subtle,
-                            color: ViraColorVariant.Neutral,
-                            isDisabled: state.editFolderSubmitting,
-                        })}
-                            ${listen('click', closeEditFolderModal)}
-                        ></${ViraButton}>
-                        <${ViraButton.assign({
-                            text: 'Save',
-                            color: ViraColorVariant.Brand,
-                            isDisabled: state.editFolderSubmitting,
-                        })}
-                            ${listen('click', submitEditFolderModal)}
-                        ></${ViraButton}>
-                    </div>
-                </div>
-            </${ViraModal}>
+                ${listen(VirAiPickerModal.events.closeRequested, () =>
+                    updateState(closedChangeAiState),
+                )}
+                ${listen(VirAiPickerModal.events.aiSaveRequested, (event) => {
+                    void submitChangeAi({
+                        aiId: event.detail,
+                        state,
+                        updateState,
+                        emitPaneRestarted,
+                    });
+                })}
+            ></${VirAiPickerModal}>
         `;
     },
 });
@@ -1471,10 +1350,10 @@ function buildRowMenuEntries({
             },
         },
         {
-            content: 'Edit folder commands',
+            content: 'Change AI',
             iconOverride: menuEditCommandsIcon,
             onClick: () => {
-                void openEditFolderModal(folder, updateState);
+                void openChangeAiModal(folder, updateState);
             },
         },
         {
@@ -1598,6 +1477,8 @@ async function refresh(updateState: SidebarUpdate): Promise<void> {
             sidebarSorting: config.sidebarSorting,
             onlyShowRecent: config.onlyShowRecent,
             repos: config.repos,
+            aiDefinitions: config.aiDefinitions,
+            defaultAiId: config.defaultAiId,
             updateStatus,
         });
     } catch (error: unknown) {
@@ -1747,27 +1628,53 @@ function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): Fold
 }
 
 /**
- * Open the "Edit folder commands" modal, seeded with this folder's current overrides. Works for a
- * standalone repo, a worktree child, and a worktree root — the root's values act as the default its
- * children inherit, so the placeholders show whatever the folder currently falls back to (parent
- * override, else global).
+ * Options for every AI select: the definitions, preceded by an "inherit the default" entry. The
+ * empty value is what the backend treats as "no override".
  */
-async function openEditFolderModal(folder: FolderInfo, updateState: SidebarUpdate): Promise<void> {
+function aiSelectOptions(state: Readonly<SidebarState>): ViraSelectOption[] {
+    const defaultName =
+        state.aiDefinitions.find((definition) => definition.id === state.defaultAiId)?.name ||
+        state.aiDefinitions[0]?.name ||
+        '';
+    return [
+        {
+            value: '',
+            label: defaultName ? `Default (${defaultName})` : 'Default',
+        },
+        ...state.aiDefinitions.map((definition) => {
+            return {
+                value: definition.id,
+                label: definition.name,
+            };
+        }),
+    ];
+}
+
+/**
+ * Open the "Change AI" picker for a folder, seeded with its current override. Works for a
+ * standalone repo, a worktree child, and a worktree root — the root's choice acts as the default
+ * its children inherit, so the "Inherit" row names whatever the folder currently falls back to
+ * (parent override, else the global default).
+ */
+async function openChangeAiModal(folder: FolderInfo, updateState: SidebarUpdate): Promise<void> {
     try {
         const config = await getConfig();
-        const override = config.folderAiCmds.find((entry) => entry.folder === folder.path);
-        const parentOverride = folder.parentRepoPath
-            ? config.folderAiCmds.find((entry) => entry.folder === folder.parentRepoPath)
+        const override = config.folderAiIds.find((entry) => entry.folder === folder.path);
+        const parentOverrideId = folder.parentRepoPath
+            ? config.folderAiIds.find((entry) => entry.folder === folder.parentRepoPath)?.aiId
             : undefined;
+        const inherited =
+            config.aiDefinitions.find((definition) => definition.id === parentOverrideId) ||
+            config.aiDefinitions.find((definition) => definition.id === config.defaultAiId) ||
+            config.aiDefinitions[0];
         updateState({
-            editFolderPath: folder.path,
-            editFolderAiCmd: override?.aiCmd || '',
-            editFolderResetAiSessionCmd: override?.resetAiSessionCmd || '',
-            editFolderInheritedAiCmd: parentOverride?.aiCmd || config.aiCmd,
-            editFolderInheritedResetAiSessionCmd:
-                parentOverride?.resetAiSessionCmd || config.resetAiSessionCmd || '',
-            editFolderIsWorktreeRoot: folder.isWorktreeRoot,
-            editFolderSubmitting: false,
+            aiDefinitions: config.aiDefinitions,
+            defaultAiId: config.defaultAiId,
+            changeAiFolderPath: folder.path,
+            changeAiSelectedId: override?.aiId || '',
+            changeAiInheritedName: inherited?.name || '',
+            changeAiIsWorktreeRoot: folder.isWorktreeRoot,
+            changeAiSubmitting: false,
         });
     } catch (error: unknown) {
         showError(updateState, error);
@@ -1775,83 +1682,67 @@ async function openEditFolderModal(folder: FolderInfo, updateState: SidebarUpdat
 }
 
 /**
- * Persist the modal's two fields into `folderAiCmds`. If both inputs match what the folder would
- * inherit anyway, the override entry is dropped entirely; otherwise it's upserted with whichever of
- * the two values differ. Restart affected AI panes on save so the new `aiCmd` takes effect (the
- * reset-cmd doesn't need a restart — it's only invoked on demand). When the edited folder is a
- * worktree root, "affected" includes every child worktree that doesn't set its own `aiCmd`, since
- * those inherit the value that just changed.
+ * Write the folder's AI choice into `folderAiIds` (an empty id drops the override so the folder
+ * inherits again), then restart its AI pane so the new command actually takes effect — a running
+ * pane keeps whatever it was spawned with.
  */
-async function submitEditFolder({
+async function submitChangeAi({
+    aiId,
     state,
     updateState,
     emitPaneRestarted,
 }: Readonly<{
+    aiId: string;
     state: SidebarState;
     updateState: SidebarUpdate;
     emitPaneRestarted: (detail: PaneRestartedEvent) => void;
 }>): Promise<void> {
-    const folderPath = state.editFolderPath;
-    if (!folderPath || state.editFolderSubmitting) {
+    const folderPath = state.changeAiFolderPath;
+    if (!folderPath || state.changeAiSubmitting) {
         return;
     }
-    const aiCmd = state.editFolderAiCmd.trim();
-    const resetCmd = state.editFolderResetAiSessionCmd.trim();
     try {
         updateState({
-            editFolderSubmitting: true,
+            changeAiSubmitting: true,
         });
         const config = await getConfig();
-        const aiCmdIsOverride = !!aiCmd && aiCmd !== state.editFolderInheritedAiCmd;
-        const resetIsOverride =
-            !!resetCmd && resetCmd !== state.editFolderInheritedResetAiSessionCmd;
-        const otherEntries = config.folderAiCmds.filter((entry) => entry.folder !== folderPath);
-        const nextEntries =
-            aiCmdIsOverride || resetIsOverride
+        const otherEntries = config.folderAiIds.filter((entry) => entry.folder !== folderPath);
+        await putConfig({
+            ...config,
+            folderAiIds: aiId
                 ? [
                       ...otherEntries,
                       {
                           folder: folderPath,
-                          aiCmd: aiCmdIsOverride ? aiCmd : '',
-                          ...(resetIsOverride
-                              ? {
-                                    resetAiSessionCmd: resetCmd,
-                                }
-                              : {}),
+                          aiId,
                       },
                   ]
-                : otherEntries;
-        await putConfig({
-            ...config,
-            folderAiCmds: nextEntries,
+                : otherEntries,
         });
         /**
-         * Only the edited folder's own AI pane restarts. Worktrees that inherit the root's command
+         * Only the edited folder's own AI pane restarts. Worktrees that inherit a root's choice
          * keep their running agents — killing a batch of in-progress sessions is never worth
-         * applying a command edit eagerly, and each one picks up the new command on its next
-         * restart anyway.
+         * applying the change eagerly, and each one picks up the new AI on its next restart
+         * anyway.
          */
-        const restartTargets = [folderPath].filter(
-            (path) =>
-                state.folders.find((folder) => folder.path === path)?.panes.ai !== PaneStatus.None,
-        );
-        await Promise.all(
-            restartTargets.map(async (path) => {
-                await restartPane({
-                    folder: path,
-                    kind: PaneKind.Ai,
-                });
-                emitPaneRestarted({
-                    folder: path,
-                    kind: PaneKind.Ai,
-                });
-            }),
-        );
-        updateState(closedEditFolderState);
+        const hasRunningAiPane =
+            state.folders.find((folder) => folder.path === folderPath)?.panes.ai !==
+            PaneStatus.None;
+        if (hasRunningAiPane) {
+            await restartPane({
+                folder: folderPath,
+                kind: PaneKind.Ai,
+            });
+            emitPaneRestarted({
+                folder: folderPath,
+                kind: PaneKind.Ai,
+            });
+        }
+        updateState(closedChangeAiState);
         await refresh(updateState);
     } catch (error: unknown) {
         updateState({
-            editFolderSubmitting: false,
+            changeAiSubmitting: false,
         });
         showError(updateState, error);
     }
@@ -1869,10 +1760,9 @@ async function openAddRepoModal(updateState: SidebarUpdate): Promise<void> {
         updateState({
             repoModalOpen: true,
             repoPath: '',
-            repoAiCmd: '',
-            repoGlobalAiCmd: config.aiCmd,
-            repoResetAiSessionCmd: '',
-            repoGlobalResetAiSessionCmd: config.resetAiSessionCmd || '',
+            repoAiId: '',
+            aiDefinitions: config.aiDefinitions,
+            defaultAiId: config.defaultAiId,
             repoSubmitting: false,
         });
     } catch (error: unknown) {
@@ -1935,35 +1825,13 @@ async function submitAddRepo({
                 repos: refreshedConfig.repos,
                 repoModalOpen: false,
                 repoPath: '',
-                repoAiCmd: '',
-                repoGlobalAiCmd: '',
-                repoResetAiSessionCmd: '',
-                repoGlobalResetAiSessionCmd: '',
+                repoAiId: '',
                 repoSubmitting: false,
             });
             notifyActivated(path);
             return;
         }
-        const aiCmd = state.repoAiCmd.trim();
-        const resetCmd = state.repoResetAiSessionCmd.trim();
-        const aiCmdIsOverride = !!aiCmd && aiCmd !== config.aiCmd;
-        const resetIsOverride = !!resetCmd && resetCmd !== (config.resetAiSessionCmd || '');
-        const otherEntries = config.folderAiCmds.filter((entry) => entry.folder !== path);
-        const folderAiCmds =
-            aiCmdIsOverride || resetIsOverride
-                ? [
-                      ...otherEntries,
-                      {
-                          folder: path,
-                          aiCmd: aiCmdIsOverride ? aiCmd : '',
-                          ...(resetIsOverride
-                              ? {
-                                    resetAiSessionCmd: resetCmd,
-                                }
-                              : {}),
-                      },
-                  ]
-                : otherEntries;
+        const otherEntries = config.folderAiIds.filter((entry) => entry.folder !== path);
         await putConfig({
             ...config,
             repos: [
@@ -1973,7 +1841,15 @@ async function submitAddRepo({
                     postWorktreeCmd: null,
                 },
             ],
-            folderAiCmds,
+            folderAiIds: state.repoAiId
+                ? [
+                      ...otherEntries,
+                      {
+                          folder: path,
+                          aiId: state.repoAiId,
+                      },
+                  ]
+                : otherEntries,
         });
         /**
          * Fetch the new folder list directly so we can find the repo's resolved path (may include a
@@ -1989,10 +1865,7 @@ async function submitAddRepo({
             loadError: undefined,
             repoModalOpen: false,
             repoPath: '',
-            repoAiCmd: '',
-            repoGlobalAiCmd: '',
-            repoResetAiSessionCmd: '',
-            repoGlobalResetAiSessionCmd: '',
+            repoAiId: '',
             repoSubmitting: false,
         });
         const newFolder = folders.find((folder) => folder.path === path);
@@ -2062,10 +1935,9 @@ async function openAddWorktreeModal(repoPath: string, updateState: SidebarUpdate
         updateState({
             worktreeModalRepoPath: repoPath,
             worktreeName: '',
-            worktreeAiCmd: '',
-            worktreeGlobalAiCmd: config.aiCmd,
-            worktreeResetAiSessionCmd: '',
-            worktreeGlobalResetAiSessionCmd: config.resetAiSessionCmd || '',
+            worktreeAiId: '',
+            aiDefinitions: config.aiDefinitions,
+            defaultAiId: config.defaultAiId,
             worktreeSubmitting: false,
         });
     } catch (error: unknown) {
@@ -2087,8 +1959,6 @@ async function submitAddWorktree({
     if (!repoPath || !trimmedName || state.worktreeSubmitting) {
         return;
     }
-    const aiCmd = state.worktreeAiCmd.trim();
-    const resetCmd = state.worktreeResetAiSessionCmd.trim();
     try {
         updateState({
             worktreeSubmitting: true,
@@ -2096,11 +1966,7 @@ async function submitAddWorktree({
         await createWorktree({
             repoPath,
             name: trimmedName,
-            aiCmd: aiCmd && aiCmd !== state.worktreeGlobalAiCmd ? aiCmd : undefined,
-            resetAiSessionCmd:
-                resetCmd && resetCmd !== state.worktreeGlobalResetAiSessionCmd
-                    ? resetCmd
-                    : undefined,
+            aiId: state.worktreeAiId || undefined,
         });
         const folders = await getFolders();
         updateState({
@@ -2108,10 +1974,7 @@ async function submitAddWorktree({
             loadError: undefined,
             worktreeModalRepoPath: undefined,
             worktreeName: '',
-            worktreeAiCmd: '',
-            worktreeGlobalAiCmd: '',
-            worktreeResetAiSessionCmd: '',
-            worktreeGlobalResetAiSessionCmd: '',
+            worktreeAiId: '',
             worktreeSubmitting: false,
         });
         const newWorktree = folders.find(
