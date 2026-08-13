@@ -53,6 +53,13 @@ export const daemonLogPath = resolve(tmpdir(), 'agent-storm-pty-daemon.log');
  */
 export const serverLogPath = resolve(tmpdir(), 'agent-storm-server.log');
 
+/**
+ * Browser-side errors, shipped to the backend by the frontend's error reporter. The app is used as
+ * an installed PWA, which has no reachable devtools console, so this file is the only place a
+ * frontend stack can be read after the fact.
+ */
+export const clientErrorLogPath = resolve(tmpdir(), 'agent-storm-client-errors.log');
+
 /** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocketPath}. */
 export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts');
 

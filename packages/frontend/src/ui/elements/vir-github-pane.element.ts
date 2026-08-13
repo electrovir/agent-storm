@@ -44,6 +44,7 @@ import {
     setGitHubReaction,
     setGitHubThreadResolved,
 } from '../../util/api-client.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 import {sanitizeGitHubHtml} from '../../util/github-markdown.js';
 import {ScreenSize} from '../../util/screen-size.js';
 
@@ -211,6 +212,9 @@ export const VirGithubPane = defineElement<{
     screenSize: ScreenSize;
 }>()({
     tagName: 'vir-github-pane',
+    options: {
+        errorHandler: reportRenderError,
+    },
     state() {
         return {
             pr: undefined as GitHubPr | null | undefined,

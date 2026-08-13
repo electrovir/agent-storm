@@ -8,6 +8,7 @@ import {
     viraThemeByKeys,
 } from 'vira';
 import {getStoredSecret, setStoredSecret, subscribeSecret} from '../../util/auth.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 
 type AuthModalState = {
     open: boolean;
@@ -17,6 +18,9 @@ type AuthModalState = {
 
 export const VirAuthModal = defineElement()({
     tagName: 'vir-auth-modal',
+    options: {
+        errorHandler: reportRenderError,
+    },
     state(): AuthModalState {
         return {
             open: !getStoredSecret(),

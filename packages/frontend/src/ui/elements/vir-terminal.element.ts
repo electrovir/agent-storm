@@ -11,6 +11,7 @@ import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element
 import {createSizedIcon, lucideIcons, ViraIcon, viraThemeByKeys} from 'vira';
 import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
@@ -291,6 +292,9 @@ export const VirTerminal = defineElement<{
     showAccessoryKeys: boolean;
 }>()({
     tagName: 'vir-terminal',
+    options: {
+        errorHandler: reportRenderError,
+    },
     state() {
         return {
             terminal: undefined as Terminal | undefined,

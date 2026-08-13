@@ -23,6 +23,7 @@ import {
     resetAiSession,
     restartPane,
 } from '../../util/api-client.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
@@ -104,6 +105,9 @@ export const VirPaneGroup = defineElement<{
     resetAiSessionCmd: string;
 }>()({
     tagName: 'vir-pane-group',
+    options: {
+        errorHandler: reportRenderError,
+    },
     events: {
         /**
          * Emitted when the user clicks one of the tab buttons. Parent should update the `?tab=...`

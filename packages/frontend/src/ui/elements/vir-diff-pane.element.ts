@@ -62,6 +62,7 @@ import {
     setGitHunkStaged,
     setGitSideStaged,
 } from '../../util/api-client.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
 import {diffSidebarWidth, localStorageClient} from '../../util/local-storage-client.js';
@@ -719,6 +720,9 @@ export const VirDiffPane = defineElement<{
     screenSize: ScreenSize;
 }>()({
     tagName: 'vir-diff-pane',
+    options: {
+        errorHandler: reportRenderError,
+    },
     state() {
         return {
             status: undefined as GitDiffStatus | undefined,

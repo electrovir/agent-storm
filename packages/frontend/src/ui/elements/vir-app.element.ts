@@ -18,6 +18,7 @@ import {
     ViraThemeClient,
 } from 'vira';
 import {getFolders, touchRepo} from '../../util/api-client.js';
+import {installClientErrorLog, reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {
     defaultFrontendTab,
@@ -191,8 +192,13 @@ type AppState = {
 
 type AppUpdate = (newState: Partial<AppState>) => void;
 
+installClientErrorLog();
+
 export const VirApp = defineElement()({
     tagName: 'vir-app',
+    options: {
+        errorHandler: reportRenderError,
+    },
     state(): AppState {
         return {
             openedFolders: [],

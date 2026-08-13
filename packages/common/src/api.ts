@@ -1122,6 +1122,36 @@ export const resetAiSessionEndpoint = defineEndpoint({
     },
 });
 
+const clientErrorRequestShape = defineShape({
+    /** `error.message`, or the stringified value when something other than an `Error` was thrown. */
+    message: '',
+    /** Absent when the thrown value carried no stack (a non-`Error` throw, or a bare event). */
+    stack: nullableShape(''),
+    /** Where in the frontend the error was caught, e.g. `render:vir-diff-pane` or `window.onerror`. */
+    source: '',
+    /** The page URL at the time of the error, so a route-specific crash is reproducible. */
+    pageUrl: '',
+});
+
+/**
+ * Frontend crash sink. The app runs as an installed PWA on phones and on desktop, where there is no
+ * devtools console to read a stack from, so the browser ships errors here and the backend appends
+ * them to a log file the developer (or an AI agent) can read.
+ */
+export const clientErrorEndpoint = defineEndpoint({
+    path: '/client-error',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: clientErrorRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const restartDaemonEndpoint = defineEndpoint({
     path: '/daemon/restart',
     requests: {
@@ -1250,6 +1280,7 @@ export const agentStormService = defineApi({
         sessionRenameEndpoint,
         sessionCloseEndpoint,
         resetAiSessionEndpoint,
+        clientErrorEndpoint,
         restartDaemonEndpoint,
         touchRepoEndpoint,
         hideRepoEndpoint,
