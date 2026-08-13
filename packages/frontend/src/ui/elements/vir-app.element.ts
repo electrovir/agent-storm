@@ -719,6 +719,13 @@ export const VirApp = defineElement()({
             });
         };
 
+        const handleOpenAiModalRequested = () => {
+            updateState({
+                mobileSidebarOpen: false,
+                aiModalOpen: true,
+            });
+        };
+
         const handlePaneRestarted = ({
             folder,
             kind,
@@ -751,6 +758,9 @@ export const VirApp = defineElement()({
                 )}
                 ${listen(VirSidebar.events.openSettingsRequested, () =>
                     handleOpenSettingsRequested(),
+                )}
+                ${listen(VirSidebar.events.openAiModalRequested, () =>
+                    handleOpenAiModalRequested(),
                 )}
             ></${VirSidebar}>
             <div
@@ -934,6 +944,9 @@ export const VirApp = defineElement()({
                         )}
                         ${listen(VirSidebar.events.openSettingsRequested, () =>
                             handleOpenSettingsRequested(),
+                        )}
+                        ${listen(VirSidebar.events.openAiModalRequested, () =>
+                            handleOpenAiModalRequested(),
                         )}
                     ></${VirSidebar}>
                 </div>

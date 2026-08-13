@@ -246,6 +246,8 @@ export const VirSidebar = defineElement<{
         paneRestarted: defineElementEvent<PaneRestartedEvent>(),
         /** Emitted when the user clicks the gear button. Parent owns the modal open state. */
         openSettingsRequested: defineElementEvent<void>(),
+        /** Same deal for the "Define AI" item, which the parent renders as its own modal. */
+        openAiModalRequested: defineElementEvent<void>(),
     },
     state(): SidebarState {
         return {
@@ -816,6 +818,12 @@ export const VirSidebar = defineElement<{
                             })}></${ViraThemeSwitcher}>
                         </div>
                         ${renderMenuItemEntries([
+                            {
+                                content: 'Define AI',
+                                onClick: () => {
+                                    dispatch(new events.openAiModalRequested());
+                                },
+                            },
                             {
                                 content: 'Settings',
                                 onClick: () => {
