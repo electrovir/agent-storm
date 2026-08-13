@@ -16,6 +16,8 @@ import {
     ViraEmphasis,
     ViraInput,
     ViraModal,
+    ViraSelect,
+    type ViraSelectOption,
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
@@ -318,6 +320,32 @@ export const VirAiModal = defineElement<{
             });
         };
 
+        /**
+         * Other AIs whose avatar this draft can borrow, so a second `claude` variant doesn't need
+         * the user to find the same image file again. The draft itself is excluded — copying its
+         * own avatar onto itself does nothing. A lone placeholder entry means there's nothing to
+         * copy, and the whole control is dropped.
+         */
+        const avatarSourceOptions: ViraSelectOption[] = [
+            {
+                value: '',
+                label: 'Pick an AI...',
+            },
+            ...(state.loaded?.aiDefinitions || [])
+                .filter(
+                    (definition) =>
+                        definition.avatarFile &&
+                        definition.id !== state.draft?.id &&
+                        definition.avatarFile !== state.draft?.avatarFile,
+                )
+                .map((definition) => {
+                    return {
+                        value: definition.id,
+                        label: definition.name,
+                    };
+                }),
+        ];
+
         const renderEditor = (draft: Readonly<AiDraft>) => html`
             <div class="editor">
                 <${ViraInput.assign({
@@ -417,6 +445,31 @@ export const VirAiModal = defineElement<{
                           `
                         : ''}
                 </div>
+                ${avatarSourceOptions.length > 1
+                    ? html`
+                          <${ViraSelect.assign({
+                              label: 'Copy avatar from',
+                              options: avatarSourceOptions,
+                              /**
+                               * Always shows the placeholder: picking an entry is an action that
+                               * copies its image onto this draft, not a value this draft holds.
+                               */
+                              value: '',
+                              disabled: state.saving,
+                          })}
+                              ${listen(ViraSelect.events.valueChange, (event) => {
+                                  const source = (state.loaded?.aiDefinitions || []).find(
+                                      (definition) => definition.id === event.detail,
+                                  );
+                                  if (source?.avatarFile) {
+                                      updateDraft({
+                                          avatarFile: source.avatarFile,
+                                      });
+                                  }
+                              })}
+                          ></${ViraSelect}>
+                      `
+                    : ''}
                 <div class="footer">
                     <${ViraButton.assign({
                         text: 'Cancel',
