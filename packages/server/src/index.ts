@@ -3,6 +3,7 @@
 import {
     agentStormService,
     checkPathEndpoint,
+    clientErrorEndpoint,
     configEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
@@ -39,9 +40,10 @@ import {check} from '@augment-vir/assert';
 import {HttpMethod, HttpStatus, log, omitObjectKeys, wait} from '@augment-vir/common';
 import {type OriginRequirement} from '@rest-vir/api';
 import {attachApi, createApiImplementor, implementApi, silentServerLogger} from '@rest-vir/host';
+import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
 import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
-import {mkdir, stat} from 'node:fs/promises';
+import {appendFile, mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {initAuth, verifyAuthToken} from './auth.js';
 import {startConfigBackupLoop} from './config-backup.js';
@@ -62,7 +64,7 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {serverLogPath} from './file-paths.js';
+import {clientErrorLogPath, serverLogPath} from './file-paths.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
     discardAllChanges,
@@ -554,6 +556,31 @@ const resetAiSessionImplementation = implementor.implementEndpoint(resetAiSessio
     },
 });
 
+const clientErrorImplementation = implementor.implementEndpoint(clientErrorEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        /**
+         * One JSON object per line so the file can be tailed and grepped. Append failures are
+         * swallowed: a crash reporter that itself errors would turn one frontend bug into two.
+         */
+        await appendFile(
+            clientErrorLogPath,
+            `${JSON.stringify({
+                at: toUtcIsoString(getNowInUtcTimezone()),
+                ...requestData,
+            })}\n`,
+        ).catch(() => {
+            /* ignore append errors */
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const restartDaemonImplementation = implementor.implementEndpoint(restartDaemonEndpoint, {
     async [HttpMethod.Post]() {
         await shutdownDaemon().catch(() => {
@@ -999,6 +1026,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         sessionRenameImplementation,
         sessionCloseImplementation,
         resetAiSessionImplementation,
+        clientErrorImplementation,
         restartDaemonImplementation,
         touchRepoImplementation,
         hideRepoImplementation,

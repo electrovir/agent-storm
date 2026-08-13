@@ -13,6 +13,7 @@ import {
     type ViraJsonSchemaObject,
 } from 'vira';
 import {getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
 
 /**
@@ -74,6 +75,9 @@ export const VirSettingsModal = defineElement<{
     open: boolean;
 }>()({
     tagName: 'vir-settings-modal',
+    options: {
+        errorHandler: reportRenderError,
+    },
     events: {
         /**
          * Emitted when the user dismisses the modal (clicks the underlying scrim, hits Cancel /

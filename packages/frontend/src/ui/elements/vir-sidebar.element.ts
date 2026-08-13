@@ -59,6 +59,7 @@ import {
     restartPane,
     touchRepo,
 } from '../../util/api-client.js';
+import {reportRenderError} from '../../util/client-error-log.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
 
 const allowedLinkHostnames = ['github.com'];
@@ -227,6 +228,9 @@ export const VirSidebar = defineElement<{
     themeClient: Readonly<ViraThemeClient>;
 }>()({
     tagName: 'vir-sidebar',
+    options: {
+        errorHandler: reportRenderError,
+    },
     events: {
         /**
          * Emitted when the user clicks a folder row or when an internal action (e.g. creating a
@@ -1821,17 +1825,13 @@ async function submitEditFolder({
             ...config,
             folderAiCmds: nextEntries,
         });
-        const inheritingChildren = state.editFolderIsWorktreeRoot
-            ? state.folders.filter(
-                  (folder) =>
-                      folder.parentRepoPath === folderPath &&
-                      !nextEntries.find((entry) => entry.folder === folder.path)?.aiCmd,
-              )
-            : [];
-        const restartTargets = [
-            folderPath,
-            ...inheritingChildren.map((folder) => folder.path),
-        ].filter(
+        /**
+         * Only the edited folder's own AI pane restarts. Worktrees that inherit the root's command
+         * keep their running agents — killing a batch of in-progress sessions is never worth
+         * applying a command edit eagerly, and each one picks up the new command on its next
+         * restart anyway.
+         */
+        const restartTargets = [folderPath].filter(
             (path) =>
                 state.folders.find((folder) => folder.path === path)?.panes.ai !== PaneStatus.None,
         );

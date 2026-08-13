@@ -3,6 +3,7 @@
 import {
     agentStormService,
     checkPathEndpoint,
+    clientErrorEndpoint,
     configEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
@@ -420,6 +421,26 @@ export async function createPath(
 ): Promise<{resolvedPath: string}> {
     return await requestApi('POST /paths/create', () =>
         client.fetch(createPathEndpoint).POST({
+            requestData: params,
+        }),
+    );
+}
+
+/**
+ * Append one browser-side error to the backend's client-error log. Sent through `requestApi` like
+ * everything else, which means a report made before the auth secret is entered waits for it rather
+ * than being dropped.
+ */
+export async function reportClientError(
+    params: Readonly<{
+        message: string;
+        stack?: string | undefined;
+        source: string;
+        pageUrl: string;
+    }>,
+): Promise<void> {
+    await requestApi('POST /client-error', () =>
+        client.fetch(clientErrorEndpoint).POST({
             requestData: params,
         }),
     );
