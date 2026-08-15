@@ -34,6 +34,7 @@ import {
     type FrontendPaths,
 } from '../../util/router.js';
 import {determineScreenSize, ScreenSize} from '../../util/screen-size.js';
+import {applyThemeMode} from '../../util/theme-mode.js';
 import {VirAiModal} from './vir-ai-modal.element.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
@@ -223,7 +224,9 @@ export const VirApp = defineElement()({
             disconnectVisualViewport: undefined,
             mobileSidebarOpen: false,
             paneRestartKeys: {},
-            themeClient: new ViraThemeClient(),
+            themeClient: new ViraThemeClient({
+                applyTheme: applyThemeMode,
+            }),
         };
     },
     styles: css`
@@ -823,6 +826,7 @@ export const VirApp = defineElement()({
                                         PaneKind.Shell,
                                     ),
                                     folderAiId: info?.aiId || '',
+                                    sessionStatuses: info?.sessionStatuses || [],
                                     prUrl: info?.prUrl || '',
                                 })}
                                     ${listen(VirPaneGroup.events.sessionRequested, (event) => {

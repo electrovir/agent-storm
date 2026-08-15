@@ -2,19 +2,23 @@
 
 import {
     PaneKind,
+    PaneStatus,
     type AiDefinition,
     type FolderSessions,
+    type PaneSessionStatus,
     type SessionMeta,
 } from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {
     createSizedIcon,
     HorizontalAnchor,
+    LoaderAnimated24Icon,
     lucideIcons,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
+    ViraIcon,
     ViraMenuTrigger,
     ViraSize,
     viraThemeByKeys,
@@ -41,6 +45,7 @@ import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 const sessionMenuIcon = createSizedIcon(lucideIcons.EllipsisVertical, 12);
+const activityIcon = createSizedIcon(LoaderAnimated24Icon, 12);
 
 /** Tab label: the user's name when set, otherwise the tab's 1-based position. */
 function sessionLabel(session: Readonly<SessionMeta>, index: number): string {
@@ -112,6 +117,12 @@ export const VirPaneGroup = defineElement<{
      * user has defined no AI at all.
      */
     folderAiId: string;
+    /**
+     * Live status of each session the daemon holds a PTY for, refreshed by `vir-app`'s folder poll.
+     * {@link PaneStatus.Busy} is what spins that tab's activity indicator. A session with no entry
+     * (no PTY yet) reads as not busy.
+     */
+    sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>;
 }>()({
     tagName: 'vir-pane-group',
     options: {
@@ -342,9 +353,9 @@ export const VirPaneGroup = defineElement<{
         .session-tab {
             display: inline-flex;
             align-items: center;
-            gap: 24px;
+            gap: 2px;
             flex-shrink: 0;
-            padding: 2px 4px 2px 8px;
+            padding: 1px 2px;
             border: 1px solid transparent;
             border-radius: 4px;
             cursor: pointer;
@@ -369,6 +380,28 @@ export const VirPaneGroup = defineElement<{
             overflow: hidden;
             white-space: nowrap;
             text-overflow: ellipsis;
+            padding: 0 2px;
+        }
+
+        /*
+         * "This tab's process is working" indicator. Sized whether or not it holds a spinner so a tab
+         * keeps its width when activity starts and stops — the strip wraps, so a tab that grew
+         * mid-run could reflow the whole row.
+         */
+        .session-activity {
+            flex-grow: 0;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 12px;
+            height: 12px;
+            color: ${viraThemeByKeys.pink.foreground.header.foreground.value};
+        }
+
+        /* Hidden rather than unrendered so the tab's width doesn't change when activity starts. */
+        .session-activity[data-idle] {
+            visibility: hidden;
         }
 
         .pane-body {
@@ -397,23 +430,6 @@ export const VirPaneGroup = defineElement<{
         .pane:hover .session-add-floating,
         .session-add-floating:focus-within {
             opacity: 1;
-        }
-
-        /*
-         * Sits left of .session-add-floating in the same corner. Unlike that button this stays fully
-         * opaque: it's the only place a single-session AI pane shows which AI it's running.
-         */
-        .session-ai-corner {
-            position: absolute;
-            top: 4px;
-            right: 26px;
-            z-index: 2;
-            display: inline-flex;
-            padding: 0;
-            border: none;
-            border-radius: 50%;
-            cursor: pointer;
-            background: transparent;
         }
 
         .session-error {
@@ -766,6 +782,29 @@ export const VirPaneGroup = defineElement<{
         };
 
         /**
+         * Activity slot for one tab: a spinner while the pane's process is producing output, empty
+         * space otherwise. The element is always rendered so the tab doesn't change width when
+         * activity starts. `floating` picks the placement for a pane with no tab strip to hold it.
+         */
+        const renderActivitySpinner = (kind: PaneKind, session: Readonly<SessionMeta>) => {
+            const isBusy =
+                inputs.sessionStatuses.find(
+                    (entry) => entry.kind === kind && entry.sessionId === session.id,
+                )?.status === PaneStatus.Busy;
+            return html`
+                <span
+                    class="session-activity"
+                    ?data-idle=${!isBusy}
+                    title=${isBusy ? 'Working' : ''}
+                >
+                    <${ViraIcon.assign({
+                        icon: activityIcon,
+                    })}></${ViraIcon}>
+                </span>
+            `;
+        };
+
+        /**
          * Sole "new session" affordance for a pane showing one session, where the tab strip (and so
          * its `+`) is hidden.
          */
@@ -799,29 +838,6 @@ export const VirPaneGroup = defineElement<{
                 : '';
         };
 
-        /**
-         * A single-session AI pane has no tab strip, so this is where its avatar lives: a small
-         * always-visible button in the pane's top-right corner that opens the "Change AI" picker.
-         */
-        const renderAiCornerAvatar = (session: Readonly<SessionMeta>) => html`
-            <button
-                type="button"
-                class="session-ai-corner"
-                title="Change AI"
-                ${listen('click', () =>
-                    updateState({
-                        changeAiSession: {
-                            kind: PaneKind.Ai,
-                            sessionId: session.id,
-                        },
-                        changeAiSubmitting: false,
-                    }),
-                )}
-            >
-                ${renderSessionAvatar(session, 14)}
-            </button>
-        `;
-
         const renderSessionBar = (
             kind: PaneKind,
             sessions: ReadonlyArray<Readonly<SessionMeta>>,
@@ -848,6 +864,7 @@ export const VirPaneGroup = defineElement<{
                                     ),
                                 )}
                             >
+                                ${renderActivitySpinner(kind, session)}
                                 ${kind === PaneKind.Ai ? renderSessionAvatar(session, 12) : ''}
                                 <span class="session-tab-label">
                                     ${sessionLabel(session, index)}
@@ -1190,12 +1207,7 @@ export const VirPaneGroup = defineElement<{
                               >
                                   ${state.sessions && state.sessions.ai.length > 1
                                       ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
-                                      : html`
-                                            ${state.sessions?.ai[0]
-                                                ? renderAiCornerAvatar(state.sessions.ai[0])
-                                                : ''}
-                                            ${renderFloatingAddSession(PaneKind.Ai)}
-                                        `}
+                                      : renderFloatingAddSession(PaneKind.Ai)}
                                   ${state.sessionsError
                                       ? html`
                                             <div class="session-error" role="alert">
@@ -1248,7 +1260,9 @@ export const VirPaneGroup = defineElement<{
                     >
                         ${state.sessions && state.sessions.shell.length > 1
                             ? renderSessionBar(PaneKind.Shell, state.sessions.shell)
-                            : renderFloatingAddSession(PaneKind.Shell)}
+                            : html`
+                                  ${renderFloatingAddSession(PaneKind.Shell)}
+                              `}
                         <div class="pane-body">
                             ${mountShellTerminal && state.sessions
                                 ? renderPaneTerminal(PaneKind.Shell, state.sessions.shell)

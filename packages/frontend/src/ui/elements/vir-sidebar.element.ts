@@ -131,7 +131,7 @@ type SidebarState = {
     openMenuKey: string | undefined;
     repoModalOpen: boolean;
     repoPath: string;
-    /** AI chosen on the "Add repo" modal. Empty means inherit the default. */
+    /** AI chosen on the "Add repo" modal. {@link defaultAiSelectValue} means inherit the default. */
     repoAiId: string;
     repoSubmitting: boolean;
     worktreeModalRepoPath: string | undefined;
@@ -257,11 +257,11 @@ export const VirSidebar = defineElement<{
             openMenuKey: undefined,
             repoModalOpen: false,
             repoPath: '',
-            repoAiId: '',
+            repoAiId: defaultAiSelectValue,
             repoSubmitting: false,
             worktreeModalRepoPath: undefined,
             worktreeName: '',
-            worktreeAiId: '',
+            worktreeAiId: defaultAiSelectValue,
             worktreeSubmitting: false,
             changeAiFolderPath: undefined,
             changeAiSelectedId: '',
@@ -673,7 +673,7 @@ export const VirSidebar = defineElement<{
             updateState({
                 repoModalOpen: false,
                 repoPath: '',
-                repoAiId: '',
+                repoAiId: defaultAiSelectValue,
                 repoSubmitting: false,
             });
         };
@@ -688,7 +688,7 @@ export const VirSidebar = defineElement<{
             updateState({
                 worktreeModalRepoPath: undefined,
                 worktreeName: '',
-                worktreeAiId: '',
+                worktreeAiId: defaultAiSelectValue,
                 worktreeSubmitting: false,
             });
         };
@@ -1636,8 +1636,16 @@ function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): Fold
 }
 
 /**
- * Options for every AI select: the definitions, preceded by an "inherit the default" entry. The
- * empty value is what the backend treats as "no override".
+ * Value of the "use the default AI" entry in the add-repo / add-worktree selects. Deliberately not
+ * the empty string, which `ViraSelect` coerces to "nothing selected" — it then renders its own
+ * hidden placeholder option as selected and the field comes up blank. Mapped back to "no override"
+ * at submit time.
+ */
+const defaultAiSelectValue = 'default';
+
+/**
+ * Options for every AI select: the definitions, preceded by a "use the default" entry carrying
+ * {@link defaultAiSelectValue}.
  */
 function aiSelectOptions(state: Readonly<SidebarState>): ViraSelectOption[] {
     const defaultName =
@@ -1646,7 +1654,7 @@ function aiSelectOptions(state: Readonly<SidebarState>): ViraSelectOption[] {
         '';
     return [
         {
-            value: '',
+            value: defaultAiSelectValue,
             label: defaultName ? `Default (${defaultName})` : 'Default',
         },
         ...state.aiDefinitions.map((definition) => {
@@ -1768,7 +1776,7 @@ async function openAddRepoModal(updateState: SidebarUpdate): Promise<void> {
         updateState({
             repoModalOpen: true,
             repoPath: '',
-            repoAiId: '',
+            repoAiId: defaultAiSelectValue,
             aiDefinitions: config.aiDefinitions,
             defaultAiId: config.defaultAiId,
             repoSubmitting: false,
@@ -1833,7 +1841,7 @@ async function submitAddRepo({
                 repos: refreshedConfig.repos,
                 repoModalOpen: false,
                 repoPath: '',
-                repoAiId: '',
+                repoAiId: defaultAiSelectValue,
                 repoSubmitting: false,
             });
             notifyActivated(path);
@@ -1849,15 +1857,16 @@ async function submitAddRepo({
                     postWorktreeCmd: null,
                 },
             ],
-            folderAiIds: state.repoAiId
-                ? [
-                      ...otherEntries,
-                      {
-                          folder: path,
-                          aiId: state.repoAiId,
-                      },
-                  ]
-                : otherEntries,
+            folderAiIds:
+                state.repoAiId === defaultAiSelectValue
+                    ? otherEntries
+                    : [
+                          ...otherEntries,
+                          {
+                              folder: path,
+                              aiId: state.repoAiId,
+                          },
+                      ],
         });
         /**
          * Fetch the new folder list directly so we can find the repo's resolved path (may include a
@@ -1873,7 +1882,7 @@ async function submitAddRepo({
             loadError: undefined,
             repoModalOpen: false,
             repoPath: '',
-            repoAiId: '',
+            repoAiId: defaultAiSelectValue,
             repoSubmitting: false,
         });
         const newFolder = folders.find((folder) => folder.path === path);
@@ -1943,7 +1952,7 @@ async function openAddWorktreeModal(repoPath: string, updateState: SidebarUpdate
         updateState({
             worktreeModalRepoPath: repoPath,
             worktreeName: '',
-            worktreeAiId: '',
+            worktreeAiId: defaultAiSelectValue,
             aiDefinitions: config.aiDefinitions,
             defaultAiId: config.defaultAiId,
             worktreeSubmitting: false,
@@ -1974,7 +1983,7 @@ async function submitAddWorktree({
         await createWorktree({
             repoPath,
             name: trimmedName,
-            aiId: state.worktreeAiId || undefined,
+            aiId: state.worktreeAiId === defaultAiSelectValue ? undefined : state.worktreeAiId,
         });
         const folders = await getFolders();
         updateState({
@@ -1982,7 +1991,7 @@ async function submitAddWorktree({
             loadError: undefined,
             worktreeModalRepoPath: undefined,
             worktreeName: '',
-            worktreeAiId: '',
+            worktreeAiId: defaultAiSelectValue,
             worktreeSubmitting: false,
         });
         const newWorktree = folders.find(

@@ -13,6 +13,7 @@ import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
+import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
 import {defaultXtermStyles} from './xterm-styles.js';
 
 const uploadErrorDismissMs = 5000;
@@ -114,11 +115,6 @@ function reportDropError(
     });
 }
 
-/**
- * Extracted from Terminal.app's `vir-light` profile via the bundled `extract-terminal-theme.swift`
- * helper. Slots that the plist omits (because they match Terminal.app's built-in defaults) are
- * filled in here so xterm renders the full 16-color palette.
- */
 function decodeFileUri(uri: string): string {
     const withoutScheme = uri.replace(/^file:\/\/(localhost)?/, '');
     return decodeURIComponent(withoutScheme);
@@ -148,34 +144,73 @@ function extractDroppedPaths(transfer: DataTransfer): string[] {
     return [];
 }
 
-const terminalAppTheme: ITheme = {
-    background: '#ffffff',
-    foreground: '#0220b3',
-    cursor: '#ff2600',
-    cursorAccent: '#ffffff',
-    /**
-     * Xterm pre-blends `selectionBackground` against the terminal-level background once at theme
-     * load and paints the result as an opaque rectangle over the cells; it does not invert or
-     * alpha-composite per cell at draw time (that's an xterm renderer limitation).
-     */
-    selectionBackground: 'rgba(56, 213, 255, 0.18)',
-    black: '#000000',
-    red: '#990000',
-    green: '#009400',
-    yellow: '#737300',
-    blue: '#0038ee',
-    magenta: '#b300b3',
-    cyan: '#007f89',
-    white: '#818181',
-    brightBlack: '#666666',
-    brightRed: '#ff0004',
-    brightGreen: '#00bb0f',
-    brightYellow: '#a5a500',
-    brightBlue: '#0064ff',
-    brightMagenta: '#e500e5',
-    brightCyan: '#2799bb',
-    brightWhite: '#bababa',
+/**
+ * Xterm paints its cells from this palette in JS — it renders to a canvas and can't see the Vira
+ * theme's CSS variables — so the light/dark selection has to be handed to it explicitly and
+ * re-handed whenever the user changes it. {@link listenToDarkMode} is what delivers the change.
+ *
+ * The light palette is extracted from Terminal.app's `vir-light` profile via the bundled
+ * `extract-terminal-theme.swift` helper. Slots that the plist omits (because they match
+ * Terminal.app's built-in defaults) are filled in here so xterm renders the full 16-color palette.
+ * The dark palette is its counterpart: the same hues pulled up to stay legible on a dark surface.
+ */
+const terminalThemes: Readonly<Record<'light' | 'dark', ITheme>> = {
+    light: {
+        background: '#ffffff',
+        foreground: '#0220b3',
+        cursor: '#ff2600',
+        cursorAccent: '#ffffff',
+        /**
+         * Xterm pre-blends `selectionBackground` against the terminal-level background once at
+         * theme load and paints the result as an opaque rectangle over the cells; it does not
+         * invert or alpha-composite per cell at draw time (that's an xterm renderer limitation).
+         */
+        selectionBackground: 'rgba(56, 213, 255, 0.18)',
+        black: '#000000',
+        red: '#990000',
+        green: '#009400',
+        yellow: '#737300',
+        blue: '#0038ee',
+        magenta: '#b300b3',
+        cyan: '#007f89',
+        white: '#818181',
+        brightBlack: '#666666',
+        brightRed: '#ff0004',
+        brightGreen: '#00bb0f',
+        brightYellow: '#a5a500',
+        brightBlue: '#0064ff',
+        brightMagenta: '#e500e5',
+        brightCyan: '#2799bb',
+        brightWhite: '#bababa',
+    },
+    dark: {
+        background: '#16181d',
+        foreground: '#d5dbe6',
+        cursor: '#ff5c4d',
+        cursorAccent: '#16181d',
+        selectionBackground: 'rgba(96, 178, 255, 0.30)',
+        black: '#21252b',
+        red: '#e06c75',
+        green: '#98c379',
+        yellow: '#d3ba6a',
+        blue: '#61afef',
+        magenta: '#c678dd',
+        cyan: '#56b6c2',
+        white: '#abb2bf',
+        brightBlack: '#5c6370',
+        brightRed: '#ff7b86',
+        brightGreen: '#b5e890',
+        brightYellow: '#ffd88a',
+        brightBlue: '#82caff',
+        brightMagenta: '#e2a2f5',
+        brightCyan: '#7fd4dd',
+        brightWhite: '#ffffff',
+    },
 };
+
+function terminalTheme(isDark: boolean): ITheme {
+    return isDark ? terminalThemes.dark : terminalThemes.light;
+}
 
 /**
  * Convert a typed character to the control byte a physical Ctrl+<key> would emit: the terminal
@@ -329,9 +364,16 @@ export const VirTerminal = defineElement<{
              * close it. Switching session tabs makes that window routine rather than rare.
              */
             unmounted: false,
+            /** Mirrors {@link isDarkMode} so the host background can follow xterm's palette. */
+            useDarkTheme: isDarkMode(),
+            /** Unsubscribes this terminal from theme changes. Set once the terminal is created. */
+            stopThemeListener: undefined as (() => void) | undefined,
         };
     },
-    styles: css`
+    hostClasses: {
+        'vir-terminal-dark': ({state}) => state.useDarkTheme,
+    },
+    styles: ({hostClasses}) => css`
         :host {
             display: flex;
             flex-direction: column;
@@ -339,7 +381,13 @@ export const VirTerminal = defineElement<{
             width: 100%;
             height: 100%;
             box-sizing: border-box;
-            background: ${unsafeCSS(terminalAppTheme.background || 'transparent')};
+            /* Matches xterm's own background so the strip left over when the terminal doesn't
+               divide evenly into cells doesn't show a different color than the cells above it. */
+            background: ${unsafeCSS(terminalThemes.light.background || 'transparent')};
+        }
+
+        ${hostClasses['vir-terminal-dark'].selector} {
+            background: ${unsafeCSS(terminalThemes.dark.background || 'transparent')};
         }
 
         .terminal-host {
@@ -439,6 +487,7 @@ export const VirTerminal = defineElement<{
             unmounted: true,
         });
         state.resizeObserver?.disconnect();
+        state.stopThemeListener?.();
         state.disconnect?.();
         state.terminal?.dispose();
         if (state.uploadErrorTimeout) {
@@ -518,7 +567,7 @@ export const VirTerminal = defineElement<{
                         cursorStyle: 'bar',
                         cursorWidth: 3,
                         scrollback: scrollbackLimit,
-                        theme: terminalAppTheme,
+                        theme: terminalTheme(isDarkMode()),
                         /**
                          * Seed xterm with the daemon's spawn-default dims (see `pty-pool.ts`'s
                          * `spawn({cols: 120, rows: 32})`). Until `fitAndResend` runs successfully —
@@ -1145,10 +1194,25 @@ export const VirTerminal = defineElement<{
                         fitAndResend(stableFitFrames);
                     };
 
+                    /**
+                     * A palette swap only reaches the cells that get drawn afterwards — everything
+                     * already on screen keeps the colors it was rendered with, and the WebGL
+                     * renderer's glyph atlas still holds them too. `repaintGlyphs` throws that
+                     * atlas away and redraws the visible rows in the new palette.
+                     */
+                    const stopThemeListener = listenToDarkMode((isDark) => {
+                        terminal.options.theme = terminalTheme(isDark);
+                        updateState({
+                            useDarkTheme: isDark,
+                        });
+                        repaintGlyphs();
+                    });
+
                     updateState({
                         terminal,
                         resizeObserver,
                         onActivate,
+                        stopThemeListener,
                         sendBytes: (bytes) => socket.send(bytes),
                         toggleCtrl: () => {
                             ctrlModifier.armed = !ctrlModifier.armed;

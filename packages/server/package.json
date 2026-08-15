@@ -39,7 +39,7 @@
         "auth-vir": "^5.2.0",
         "date-vir": "^8.6.2",
         "fastify": "^5.10.0",
-        "node-pty": "^1.1.0",
+        "node-pty": "^1.2.0-beta.15",
         "object-shape-tester": "^6.14.1",
         "url-vir": "^2.1.10"
     },
