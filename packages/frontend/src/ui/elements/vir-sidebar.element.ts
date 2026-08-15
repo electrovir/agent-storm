@@ -11,7 +11,7 @@ import {
     type UpdateStatus,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {filterMap, log} from '@augment-vir/common';
+import {awaitedForEach, filterMap, getObjectTypedValues, log} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {
     type AnyDuration,
@@ -55,6 +55,7 @@ import {
     deleteWorktree,
     getConfig,
     getFolders,
+    getFolderSessions,
     getUpdateStatus,
     hideRepo,
     killFolderPanes,
@@ -99,9 +100,8 @@ const mobileFilterIcon = createSizedIcon(lucideIcons.ListFilter, mobileButtonIco
  */
 const menuIconSize = 16;
 const menuOpenPrIcon = createSizedIcon(lucideIcons.ExternalLink, menuIconSize);
-const menuShowAiIcon = createSizedIcon(lucideIcons.Eye, menuIconSize);
-const menuHideAiIcon = createSizedIcon(lucideIcons.EyeOff, menuIconSize);
 const menuEditCommandsIcon = createSizedIcon(lucideIcons.Terminal, menuIconSize);
+const menuRestartPanesIcon = createSizedIcon(lucideIcons.RotateCw, menuIconSize);
 const menuKillPanesIcon = createSizedIcon(lucideIcons.PowerOff, menuIconSize);
 const menuHideRepoIcon = createSizedIcon(lucideIcons.Archive, menuIconSize);
 const menuDeleteWorktreeIcon = createSizedIcon(lucideIcons.Trash2, menuIconSize);
@@ -858,6 +858,7 @@ export const VirSidebar = defineElement<{
                         onActivate: emitFolderActivated,
                         removeFolderLocally,
                         emitFoldersRemoved,
+                        emitPaneRestarted,
                         updateState,
                     }),
                 )}
@@ -939,6 +940,7 @@ export const VirSidebar = defineElement<{
                                 onActivate: emitFolderActivated,
                                 removeFolderLocally,
                                 emitFoldersRemoved,
+                                emitPaneRestarted,
                                 updateState,
                             }),
                         )}
@@ -1145,6 +1147,7 @@ function renderRow({
     onActivate,
     removeFolderLocally,
     emitFoldersRemoved,
+    emitPaneRestarted,
     updateState,
 }: Readonly<{
     folder: FolderInfo;
@@ -1154,6 +1157,7 @@ function renderRow({
     onActivate: (folder: string) => void;
     removeFolderLocally: (path: string) => void;
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
     updateState: SidebarUpdate;
 }>) {
     const nameWithMarkers = [
@@ -1215,6 +1219,7 @@ function renderRow({
                             updateState,
                             removeFolderLocally,
                             emitFoldersRemoved,
+                            emitPaneRestarted,
                         }),
                     )}
                 </${ViraMenuTrigger}>
@@ -1323,16 +1328,59 @@ function buildFilterMenuEntries({
     ];
 }
 
+/**
+ * Respawn every session of both kinds under one folder, then remount their terminals. Unlike "Kill
+ * panes" the tab list survives — this is the recovery path for panes whose processes are gone (a
+ * daemon that ran out of PTYs, an agent that crashed) rather than a teardown.
+ */
+async function restartFolderPanes({
+    folder,
+    updateState,
+    emitPaneRestarted,
+}: Readonly<{
+    folder: string;
+    updateState: SidebarUpdate;
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
+}>): Promise<void> {
+    try {
+        const sessions = await getFolderSessions({
+            folder,
+        });
+        await awaitedForEach(getObjectTypedValues(PaneKind), async (kind) => {
+            /**
+             * Serial rather than parallel: each restart spawns a shell that sources the user's
+             * profile, and a folder with several tabs per kind would otherwise fire all of them at
+             * once.
+             */
+            await awaitedForEach(sessions[kind], async (session) => {
+                await restartPane({
+                    folder,
+                    kind,
+                    sessionId: session.id,
+                });
+            });
+            emitPaneRestarted({
+                folder,
+                kind,
+            });
+        });
+    } catch (error: unknown) {
+        showError(updateState, error);
+    }
+}
+
 function buildRowMenuEntries({
     folder,
     updateState,
     removeFolderLocally,
     emitFoldersRemoved,
+    emitPaneRestarted,
 }: Readonly<{
     folder: FolderInfo;
     updateState: SidebarUpdate;
     removeFolderLocally: (path: string) => void;
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
+    emitPaneRestarted: (detail: PaneRestartedEvent) => void;
 }>): ReadonlyArray<ViraMenuItemEntry> {
     return [
         folder.prUrl &&
@@ -1351,13 +1399,6 @@ function buildRowMenuEntries({
                 iconOverride: menuOpenPrIcon,
             },
         {
-            content: folder.aiHidden ? 'Show AI pane' : 'Hide AI pane',
-            iconOverride: folder.aiHidden ? menuShowAiIcon : menuHideAiIcon,
-            onClick: () => {
-                void toggleAiHidden(folder.path, updateState);
-            },
-        },
-        {
             content: 'Change AI',
             iconOverride: menuEditCommandsIcon,
             onClick: () => {
@@ -1365,7 +1406,18 @@ function buildRowMenuEntries({
             },
         },
         {
-            content: 'Kill folder panes',
+            content: 'Restart panes',
+            iconOverride: menuRestartPanesIcon,
+            onClick: () => {
+                void restartFolderPanes({
+                    folder: folder.path,
+                    updateState,
+                    emitPaneRestarted,
+                });
+            },
+        },
+        {
+            content: 'Kill panes',
             iconOverride: menuKillPanesIcon,
             onClick: () => {
                 void (async () => {
@@ -1395,8 +1447,8 @@ function buildRowMenuEntries({
          * Standalone repos only (worktree children carry a `parentRepoPath`). Clears the repo's
          * `lastInteractedAtMs`, which the recency filter treats as hidden — the repo drops out of
          * the default sidebar list but still surfaces in search and the unfiltered view. Also kills
-         * the folder's panes (same as "Kill folder panes") so hiding a repo tears down its running
-         * PTYs and drops it from `openedFolders`/route via `foldersRemoved`, rather than leaving a
+         * the folder's panes (same as "Kill panes") so hiding a repo tears down its running PTYs
+         * and drops it from `openedFolders`/route via `foldersRemoved`, rather than leaving a
          * hidden-but-running session behind. Refresh the config mirror afterward so the filter
          * (which reads `state.repos`) reflects the cleared timestamp without waiting for the next
          * poll.
@@ -1938,7 +1990,6 @@ async function confirmRemoveRepo(
         await putConfig({
             ...config,
             repos: config.repos.filter((repo) => repo.path !== repoPath),
-            hiddenAiPane: config.hiddenAiPane.filter((path) => path !== repoPath),
         });
         await refresh(updateState);
     } catch (error: unknown) {
@@ -2043,24 +2094,5 @@ async function confirmDeleteWorktree({
     } finally {
         pendingWorktreeDeletions.delete(worktreePath);
         await refresh(updateState);
-    }
-}
-
-async function toggleAiHidden(folderPath: string, updateState: SidebarUpdate): Promise<void> {
-    try {
-        const config = await getConfig();
-        const isHidden = config.hiddenAiPane.includes(folderPath);
-        await putConfig({
-            ...config,
-            hiddenAiPane: isHidden
-                ? config.hiddenAiPane.filter((path) => path !== folderPath)
-                : [
-                      ...config.hiddenAiPane,
-                      folderPath,
-                  ],
-        });
-        await refresh(updateState);
-    } catch (error: unknown) {
-        showError(updateState, error);
     }
 }

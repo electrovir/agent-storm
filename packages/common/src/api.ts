@@ -89,14 +89,13 @@ export const configJsonSchema = {
                     },
                     /**
                      * Used instead of `resumeSessionCommand` when the pane is deliberately starting
-                     * over: a tab the user just created, or the "New AI session" menu item. Empty
-                     * means this AI can't start a fresh session on demand, which hides that item.
+                     * over: a tab the user just created. Empty falls back to
+                     * `resumeSessionCommand`.
                      */
                     newSessionCommand: {
                         type: 'string',
                         title: 'New session command',
-                        description:
-                            'Launched for a brand-new tab and by "New AI session" (e.g. `claude`).',
+                        description: 'Launched for a brand-new tab (e.g. `claude`).',
                     },
                     /**
                      * Bare filename inside the avatars directory, not a path — the file is read
@@ -202,14 +201,6 @@ export const configJsonSchema = {
                     'folder',
                     'aiId',
                 ],
-            },
-        },
-        hiddenAiPane: {
-            type: 'array',
-            default: [],
-            title: 'Folders with AI pane hidden',
-            items: {
-                type: 'string',
             },
         },
         disabledGitHubPolling: {
@@ -341,7 +332,6 @@ export const configJsonSchema = {
         'postWorktreeCmd',
         'repos',
         'folderAiIds',
-        'hiddenAiPane',
         'disabledGitHubPolling',
         'githubPollingAutoDisable',
         'useWebgl',
@@ -374,7 +364,6 @@ export const folderInfoShape = defineShape({
      */
     createdAtMs: 0,
     isWorktreeRoot: false,
-    aiHidden: false,
     /**
      * Id of the AI this folder resolves to — the backend already walked the per-folder override →
      * worktree-root override → `defaultAiId` chain, so the frontend never recreates that lookup.
@@ -473,12 +462,6 @@ const sessionSetAiRequestShape = defineShape({
 const paneActionRequestShape = defineShape({
     folder: '',
     kind: enumShape(PaneKind),
-    sessionId: nullableShape(''),
-});
-
-/** See {@link paneActionRequestShape} for why `sessionId` is optional. */
-const paneSessionFolderRequestShape = defineShape({
-    folder: '',
     sessionId: nullableShape(''),
 });
 
@@ -1217,25 +1200,6 @@ export const sessionSetAiEndpoint = defineEndpoint({
     },
 });
 
-/**
- * Respawns one AI tab with its AI's `newSessionCommand` instead of the resume command, which is
- * what "New AI session" means. Returns a no-op 200 when the resolved AI has no new-session command,
- * so a stale frontend still showing the menu item does nothing instead of erroring.
- */
-export const resetAiSessionEndpoint = defineEndpoint({
-    path: '/panes/reset-ai-session',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: paneSessionFolderRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
 const clientErrorRequestShape = defineShape({
     /** `error.message`, or the stringified value when something other than an `Error` was thrown. */
     message: '',
@@ -1428,7 +1392,6 @@ export const agentStormService = defineApi({
         sessionRenameEndpoint,
         sessionCloseEndpoint,
         sessionSetAiEndpoint,
-        resetAiSessionEndpoint,
         aiAvatarUploadEndpoint,
         aiAvatarEndpoint,
         clientErrorEndpoint,

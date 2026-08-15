@@ -33,7 +33,6 @@ function normalizeConfig(config: Readonly<Config>): Config {
             }),
         /** Same reasoning as `folderAiIds`: a dangling default resolves to the first definition. */
         defaultAiId: definitionIds.includes(config.defaultAiId) ? config.defaultAiId : '',
-        hiddenAiPane: config.hiddenAiPane.map((path) => normalizePath(path)),
     };
 }
 
@@ -262,7 +261,6 @@ export async function loadConfig(): Promise<Config> {
         repos: parsed.repos || defaultConfig.repos,
         aiDefinitions: parsed.aiDefinitions || defaultConfig.aiDefinitions,
         folderAiIds: parsed.folderAiIds || defaultConfig.folderAiIds,
-        hiddenAiPane: parsed.hiddenAiPane || defaultConfig.hiddenAiPane,
     };
     return normalizeConfig(migrateAiConfig(merged));
 }

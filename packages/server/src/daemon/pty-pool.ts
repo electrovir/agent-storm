@@ -1,4 +1,4 @@
-// cspell:words subshell, backgrounded
+// cspell:words subshell, backgrounded, ptmx, ptys, spawnp
 
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
@@ -10,6 +10,7 @@ import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
 import {defaultSessionId, type StatusEntry} from './protocol.js';
 
 const log = createDaemonLog('size');
+const reapLog = createDaemonLog('reap');
 
 const idleThresholdMs = 2000;
 
@@ -275,6 +276,29 @@ function applyMinSize(entry: PaneEntry): void {
     entry.pty.resize(cols, rows);
 }
 
+/**
+ * Close the pty's master file descriptor.
+ *
+ * Killing the child process is not enough: node-pty holds a read stream over the master fd, and
+ * macOS keeps a pty allocated for as long as any process holds its master. Without this, every dead
+ * pane leaves one pty allocated for the daemon's whole lifetime, and `kern.tty.ptmx_max` (511 by
+ * default) is reached after a few hundred restarts — at which point every spawn anywhere on the
+ * machine fails with `posix_spawnp failed`.
+ *
+ * `destroy` also SIGHUPs the pty's pid once the stream closes, which node-pty swallows when the
+ * process is already gone. Call it right after the kill rather than later: the longer the gap, the
+ * larger the (tiny) window in which the OS could have recycled that pid onto an unrelated process.
+ */
+function releasePty(pty: IPty): void {
+    /** `destroy` is implemented by node-pty's unix terminal but missing from its public `IPty`. */
+    const destroyable: IPty & {destroy?: (() => void) | undefined} = pty;
+    try {
+        destroyable.destroy?.();
+    } catch {
+        /* the fd may already be closed — nothing left to release */
+    }
+}
+
 function startPty({
     folder,
     kind,
@@ -315,6 +339,11 @@ function startPty({
             });
         });
         pty.onExit(({exitCode}) => {
+            /**
+             * Release before the generation check: a superseded pty still owns an fd, and the
+             * restart that replaced it released only the pty it could still see.
+             */
+            releasePty(pty);
             if (entry.spawnGeneration !== spawnGeneration) {
                 return;
             }
@@ -384,6 +413,7 @@ export function attachPane({
     onExit: (exitCode: number | undefined) => void;
 }>): {
     isNew: boolean;
+    isRunning: boolean;
     scrollback: string;
     setSize: (cols: number, rows: number) => void;
     detach: () => void;
@@ -407,6 +437,11 @@ export function attachPane({
     const scrollback = limitScrollbackLines(entry.scrollbackChunks.join(''), scrollbackLimit);
     return {
         isNew,
+        /**
+         * False when {@link startPty} just failed (the OS refusing another PTY is the common case),
+         * which tells the backend the command it forwarded never actually ran.
+         */
+        isRunning: !!entry.pty,
         scrollback,
         setSize(cols, rows) {
             if (cols < 1 || rows < 1) {
@@ -458,6 +493,7 @@ export function restartPane({
     const entry = ensureEntry(folder, kind, sessionId);
     if (entry.pty) {
         killProcessTree(entry.pty.pid);
+        releasePty(entry.pty);
     }
     entry.pty = undefined;
     entry.exitCode = undefined;
@@ -487,6 +523,7 @@ export function killPaneSession({
     const entry = panes.get(key);
     if (entry?.pty) {
         killProcessTree(entry.pty.pid);
+        releasePty(entry.pty);
         entry.pty = undefined;
     }
     panes.delete(key);
@@ -517,6 +554,7 @@ export function killFolderPanes({folder}: Readonly<{folder: string}>): void {
                 killProcessTree(entry.pty.pid, {
                     processTable,
                 });
+                releasePty(entry.pty);
                 entry.pty = undefined;
             }
             panes.delete(key);
@@ -542,10 +580,55 @@ export function killAllPanes(): void {
                 immediate: true,
                 processTable,
             });
+            releasePty(entry.pty);
             entry.pty = undefined;
         }
     });
     panes.clear();
+}
+
+/** Whether a pid still names a running process. */
+function isProcessAlive(pid: number): boolean {
+    try {
+        /** Signal 0 checks for existence without delivering anything. */
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Release the fd of every pane whose process is gone but whose exit was never reported.
+ *
+ * A pty exit normally arrives as an `onExit` event, which is where {@link releasePty} runs. That
+ * event can go missing — node-pty only fires it once the master stream produces EIO, and on macOS
+ * that stream sometimes stays quiet after the child dies. The pane then sits holding an fd forever
+ * with nothing left to trigger a cleanup, which is how the daemon walks up to the 511-pty limit.
+ * Checking the pid directly needs no cooperation from the stream.
+ *
+ * Subscribers are told the pane exited so a client that has been staring at a dead terminal learns
+ * about it here rather than on its next attach.
+ */
+export function sweepDeadPanes(): void {
+    panes.forEach((entry) => {
+        if (!entry.pty || isProcessAlive(entry.pty.pid)) {
+            return;
+        }
+        reapLog(
+            `${entry.folder}:${entry.kind}:${entry.sessionId} released (pid ${entry.pty.pid} gone)`,
+        );
+        releasePty(entry.pty);
+        entry.pty = undefined;
+        /** Not a real exit status — the code never reached us. */
+        entry.exitCode = -1;
+        const message = `[pty ${entry.kind} for ${entry.folder} is gone]\r\n`;
+        appendScrollback(entry, message);
+        entry.subscribers.forEach((subscriber) => {
+            subscriber.onData(message);
+            subscriber.onExit(-1);
+        });
+    });
 }
 
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {

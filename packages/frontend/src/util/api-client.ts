@@ -25,7 +25,6 @@ import {
     gitStageHunkEndpoint,
     hideRepoEndpoint,
     killPanesEndpoint,
-    resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
     sessionCloseEndpoint,
@@ -252,16 +251,6 @@ export async function getAiAvatar(
 export async function killFolderPanes(params: Readonly<{folder: string}>): Promise<void> {
     await requestApi('POST /panes/kill', () =>
         client.fetch(killPanesEndpoint).POST({
-            requestData: params,
-        }),
-    );
-}
-
-export async function resetAiSession(
-    params: Readonly<{folder: string; sessionId?: string | undefined}>,
-): Promise<void> {
-    await requestApi('POST /panes/reset-ai-session', () =>
-        client.fetch(resetAiSessionEndpoint).POST({
             requestData: params,
         }),
     );

@@ -178,6 +178,12 @@ export type StatusEntry = {
 export type AttachResponse = {
     ok: true;
     isNew: boolean;
+    /**
+     * Whether a PTY is alive for this pane now that the attach is done. Absent from version-1
+     * daemons, which reported nothing about spawn failures; callers treat that as "running" since
+     * that was the old assumption.
+     */
+    isRunning?: boolean | undefined;
 };
 
 export type StatusResponse = {

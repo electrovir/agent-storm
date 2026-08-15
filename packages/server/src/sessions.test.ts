@@ -5,15 +5,16 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {
+    clearFreshAiSession,
     createFolderSession,
     forgetFolderSessions,
     getFolderSessions,
+    isFreshAiSession,
     parseSessionStore,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
-    takeFreshAiSession,
 } from './sessions.js';
 
 /**
@@ -89,8 +90,8 @@ describe(createFolderSession.name, () => {
     });
 });
 
-describe(takeFreshAiSession.name, () => {
-    it('marks only new AI sessions, and only until the first attach', async () => {
+describe(isFreshAiSession.name, () => {
+    it('marks only new AI sessions', async () => {
         await withTempFolder(async (folder) => {
             const sessions = await createFolderSession({
                 folder,
@@ -100,32 +101,61 @@ describe(takeFreshAiSession.name, () => {
                 folder,
                 kind: PaneKind.Shell,
             });
-            const newAiSessionId = assertWrap.isDefined(sessions.ai[1]).id;
 
             assert.isTrue(
-                takeFreshAiSession({
+                isFreshAiSession({
                     folder,
-                    sessionId: newAiSessionId,
-                }),
-            );
-            /** The PTY exists after the first attach, so a re-attach must not restart it fresh. */
-            assert.isFalse(
-                takeFreshAiSession({
-                    folder,
-                    sessionId: newAiSessionId,
+                    sessionId: assertWrap.isDefined(sessions.ai[1]).id,
                 }),
             );
             /** The folder's pre-existing tab is not new, so it keeps the normal AI command. */
             assert.isFalse(
-                takeFreshAiSession({
+                isFreshAiSession({
                     folder,
                     sessionId: assertWrap.isDefined(sessions.ai[0]).id,
                 }),
             );
             assert.isFalse(
-                takeFreshAiSession({
+                isFreshAiSession({
                     folder,
                     sessionId: assertWrap.isDefined(withShell.shell[1]).id,
+                }),
+            );
+        });
+    });
+
+    /**
+     * The whole point of the split between peek and clear: a spawn that fails must leave the tab
+     * still asking for a new session, or the retry silently resumes another tab's conversation.
+     */
+    it('survives repeated checks and only clears explicitly', async () => {
+        await withTempFolder(async (folder) => {
+            const sessions = await createFolderSession({
+                folder,
+                kind: PaneKind.Ai,
+            });
+            const sessionId = assertWrap.isDefined(sessions.ai[1]).id;
+
+            assert.isTrue(
+                isFreshAiSession({
+                    folder,
+                    sessionId,
+                }),
+            );
+            assert.isTrue(
+                isFreshAiSession({
+                    folder,
+                    sessionId,
+                }),
+            );
+            clearFreshAiSession({
+                folder,
+                sessionId,
+            });
+            assert.isFalse(
+                isFreshAiSession({
+                    folder,
+                    sessionId,
                 }),
             );
         });

@@ -22,12 +22,12 @@ import {localStorageClient, scrollbackLimit} from '../../util/local-storage-clie
 /**
  * Config properties that round-trip through `/config` (so the backend can persist them across
  * restarts) but are hidden from the settings form. Reasons vary: `githubPollingAutoDisable` is
- * entirely backend-managed (the user has no business editing it here), while `repos`,
- * `folderAiIds`, and `hiddenAiPane` are per-folder data managed through the sidebar rather than
- * this JSON form (and too large / noisy to belong here). `aiDefinitions` has its own modal, and
- * `defaultAiId` is rendered as the AI picker below rather than as a raw id field. Stripped from
- * both the schema we hand to `ViraJsonForm` and from the form's input/output, then preserved on
- * save so hiding them never blows away their runtime state.
+ * entirely backend-managed (the user has no business editing it here), while `repos` and
+ * `folderAiIds` are per-folder data managed through the sidebar rather than this JSON form (and too
+ * large / noisy to belong here). `aiDefinitions` has its own modal, and `defaultAiId` is rendered
+ * as the AI picker below rather than as a raw id field. Stripped from both the schema we hand to
+ * `ViraJsonForm` and from the form's input/output, then preserved on save so hiding them never
+ * blows away their runtime state.
  */
 const hiddenConfigKeys = [
     'githubPollingAutoDisable',
@@ -35,7 +35,6 @@ const hiddenConfigKeys = [
     'aiDefinitions',
     'defaultAiId',
     'folderAiIds',
-    'hiddenAiPane',
 ] as const satisfies ReadonlyArray<keyof Config>;
 
 const formJsonSchema: ViraJsonSchemaObject = (() => {

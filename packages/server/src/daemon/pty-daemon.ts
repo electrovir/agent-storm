@@ -1,3 +1,5 @@
+// cspell:words ptys
+
 import {type PaneKind} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {existsSync, unlinkSync} from 'node:fs';
@@ -26,6 +28,7 @@ import {
     killPaneSession,
     listAllPaneStatuses,
     restartPane,
+    sweepDeadPanes,
     writeToPane,
 } from './pty-pool.js';
 
@@ -66,7 +69,7 @@ function handleAttach({
         };
         socket.write(encodeControlFrame(notification));
     };
-    const {isNew, scrollback, setSize, detach} = attachPane({
+    const {isNew, isRunning, scrollback, setSize, detach} = attachPane({
         folder,
         kind,
         sessionId,
@@ -78,6 +81,7 @@ function handleAttach({
     const response: AttachResponse = {
         ok: true,
         isNew,
+        isRunning,
     };
     socket.write(encodeControlFrame(response));
     if (scrollback) {
@@ -220,6 +224,13 @@ server.on('error', (error) => {
 server.listen(daemonSocketPath, () => {
     log(`daemon listening on ${daemonSocketPath} (pid ${process.pid})`);
 });
+
+/**
+ * Backstop for panes whose exit event never arrived — see {@link sweepDeadPanes}. A minute is far
+ * shorter than it takes anyone to churn through hundreds of ptys, and the sweep is one
+ * `process.kill` per live pane. `unref` so this timer alone can't hold the daemon open.
+ */
+setInterval(() => sweepDeadPanes(), 60_000).unref();
 
 function shutdown(signal: string): void {
     log(`${signal} received, shutting down`);
