@@ -119,6 +119,8 @@ export async function shutdownDaemon(): Promise<void> {
 
 export type PaneAttachment = {
     isNew: boolean;
+    /** See {@link AttachResponse.isRunning}. */
+    isRunning: boolean;
     write(data: string): void;
     resize(cols: number, rows: number): void;
     close(): void;
@@ -211,6 +213,7 @@ export async function attachPane({
 
     return {
         isNew: handshakeResult.isNew,
+        isRunning: handshakeResult.isRunning ?? true,
         write(data) {
             socket.write(encodeDataFrame(data));
         },

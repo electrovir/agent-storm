@@ -27,7 +27,6 @@ import {
     killPanesEndpoint,
     PaneKind,
     ptyWebSocket,
-    resetAiSessionEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
     sessionCloseEndpoint,
@@ -85,15 +84,16 @@ import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './gith
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
 import {
+    clearFreshAiSession,
     createFolderSession,
     forgetFolderSessions,
     getFolderSessions,
+    isFreshAiSession,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
     setFolderSessionAi,
-    takeFreshAiSession,
 } from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
@@ -507,16 +507,29 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
             kind: requestData.kind,
             sessionId: requestData.sessionId ?? undefined,
         });
+        const aiDefinition = await resolveAiForSession({
+            folder,
+            sessionId,
+        });
+        /**
+         * A tab still carrying its fresh marker has no conversation of its own yet (its first spawn
+         * failed, or the user changed its AI before it spawned), so resuming here would drop it
+         * into another tab's conversation. See {@link isFreshAiSession}.
+         */
+        const isFreshAi =
+            requestData.kind === PaneKind.Ai &&
+            isFreshAiSession({
+                folder,
+                sessionId,
+            });
         await restartPane({
             folder,
             kind: requestData.kind,
             sessionId,
-            aiCmd: (
-                await resolveAiForSession({
-                    folder,
-                    sessionId,
-                })
-            )?.resumeSessionCommand,
+            aiCmd:
+                isFreshAi && aiDefinition?.newSessionCommand
+                    ? aiDefinition.newSessionCommand
+                    : aiDefinition?.resumeSessionCommand,
         });
         return {
             [HttpStatus.Ok]: {
@@ -532,56 +545,10 @@ const killPanesImplementation = implementor.implementEndpoint(killPanesEndpoint,
     async [HttpMethod.Post]({requestData}) {
         await killFolderPanes(requestData);
         /**
-         * "Kill folder panes" means all of them, so the tab lists go too — the folder should come
-         * back with a clean single tab per kind rather than a row of tabs whose PTYs are all dead.
+         * "Kill panes" means all of them, so the tab lists go too — the folder should come back
+         * with a clean single tab per kind rather than a row of tabs whose PTYs are all dead.
          */
         await forgetFolderSessions(requestData.folder);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const resetAiSessionImplementation = implementor.implementEndpoint(resetAiSessionEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        /**
-         * "New AI session" is the same daemon-side action as a regular restart (kill the pty +
-         * spawn a fresh one in the same folder) — the only difference is the command: the resolved
-         * AI's new-session command instead of its resume command. Re-resolve on every call so a
-         * stale frontend still showing the menu item after the user cleared that command just
-         * no-ops instead of running whatever it last saw.
-         */
-        const folder = normalizePath(requestData.folder);
-        const sessionId = await resolveSessionId({
-            folder,
-            kind: PaneKind.Ai,
-            sessionId: requestData.sessionId ?? undefined,
-        });
-        const newSessionCommand = (
-            await resolveAiForSession({
-                folder,
-                sessionId,
-            })
-        )?.newSessionCommand;
-        if (!newSessionCommand) {
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: {
-                        ok: true,
-                    },
-                },
-            };
-        }
-        await restartPane({
-            folder,
-            kind: PaneKind.Ai,
-            sessionId,
-            aiCmd: newSessionCommand,
-        });
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -974,9 +941,9 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
         /**
          * A tab the user just added gets the AI's new-session command, so it opens a new
          * conversation instead of resuming the one the tab they already had is showing. See
-         * {@link takeFreshAiSession}.
+         * {@link isFreshAiSession}.
          */
-        const isFreshAiSession = takeFreshAiSession({
+        const isFreshAi = isFreshAiSession({
             folder,
             sessionId,
         });
@@ -985,7 +952,7 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             kind,
             sessionId,
             aiCmd:
-                isFreshAiSession && aiDefinition?.newSessionCommand
+                isFreshAi && aiDefinition?.newSessionCommand
                     ? aiDefinition.newSessionCommand
                     : aiDefinition?.resumeSessionCommand,
             scrollbackLimit,
@@ -998,6 +965,13 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 }
             },
         });
+        /** Only a spawn that produced a live PTY actually used the new-session command. */
+        if (isFreshAi && attachment.isRunning) {
+            clearFreshAiSession({
+                folder,
+                sessionId,
+            });
+        }
         attachmentsByWebSocket.set(webSocket, {
             attachment,
             folder,
@@ -1064,7 +1038,6 @@ const implementation = implementApi<undefined>()(agentStormService, {
         sessionRenameImplementation,
         sessionCloseImplementation,
         sessionSetAiImplementation,
-        resetAiSessionImplementation,
         aiAvatarUploadImplementation,
         aiAvatarImplementation,
         clientErrorImplementation,

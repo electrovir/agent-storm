@@ -1,7 +1,7 @@
 // cspell:words grabbable
 
 import {PaneKind, type FolderInfo} from '@agent-storm/common';
-import {omitObjectKeys} from '@augment-vir/common';
+import {arrayToObject, getObjectTypedValues, omitObjectKeys} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
@@ -799,12 +799,12 @@ export const VirApp = defineElement()({
                     /**
                      * Key the pane slots by absolute folder path so lit-html identifies elements by
                      * folder rather than by array index. Without this, removing a folder from
-                     * `openedFolders` (e.g. via "Kill folder panes") and then opening a _different_
-                     * folder at the same array position causes lit to reuse the existing
-                     * `VirPaneGroup` / `VirTerminal` elements. Their `init` hooks — which open the
-                     * `/pty` WebSocket with the original folder baked into search params — don't
-                     * re-run when inputs change, so the reused terminal stays attached to the
-                     * previous folder's PTY while the UI claims to be showing the new one.
+                     * `openedFolders` (e.g. via "Kill panes") and then opening a _different_ folder
+                     * at the same array position causes lit to reuse the existing `VirPaneGroup` /
+                     * `VirTerminal` elements. Their `init` hooks — which open the `/pty` WebSocket
+                     * with the original folder baked into search params — don't re-run when inputs
+                     * change, so the reused terminal stays attached to the previous folder's PTY
+                     * while the UI claims to be showing the new one.
                      */
                     (folder) => folder,
                     (folder) => {
@@ -814,12 +814,22 @@ export const VirApp = defineElement()({
                             <div class="pane-slot" ?data-active=${active}>
                                 <${VirPaneGroup.assign({
                                     folder,
-                                    aiHidden: !!info?.aiHidden,
                                     active,
                                     activeTab: tabFromRoute(state.route),
                                     screenSize: state.screenSize,
-                                    aiRestartKey:
-                                        state.paneRestartKeys[`${folder}:${PaneKind.Ai}`] || 0,
+                                    folderRestartKeys: arrayToObject(
+                                        getObjectTypedValues(PaneKind),
+                                        (kind) => {
+                                            return {
+                                                key: kind,
+                                                value:
+                                                    state.paneRestartKeys[`${folder}:${kind}`] || 0,
+                                            };
+                                        },
+                                        {
+                                            useRequired: true,
+                                        },
+                                    ),
                                     aiSessionIndex: sessionIndexFromRoute(state.route, PaneKind.Ai),
                                     shellSessionIndex: sessionIndexFromRoute(
                                         state.route,

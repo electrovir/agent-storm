@@ -318,7 +318,6 @@ type RefreshTarget = {
     parentRepoPath: string | null;
     createdAtMs: number;
     isWorktreeRoot: boolean;
-    aiHidden: boolean;
     /** Resolved AI for this folder, or empty when the user has defined no AI at all. */
     aiId: string;
 };
@@ -350,7 +349,6 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         parentRepoPath: null,
                         createdAtMs,
                         isWorktreeRoot: false,
-                        aiHidden: config.hiddenAiPane.includes(repo.path),
                         aiId:
                             getFolderAiDefinition({
                                 config,
@@ -366,7 +364,6 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                     parentRepoPath: null,
                     createdAtMs,
                     isWorktreeRoot: true,
-                    aiHidden: false,
                     aiId:
                         getFolderAiDefinition({
                             config,
@@ -380,7 +377,6 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                             parentRepoPath: repo.path,
                             createdAtMs: await getCreatedAtMs(child),
                             isWorktreeRoot: false,
-                            aiHidden: config.hiddenAiPane.includes(child),
                             aiId:
                                 getFolderAiDefinition({
                                     config,
@@ -421,7 +417,6 @@ async function buildFolderInfo({
         parentRepoPath: target.parentRepoPath,
         createdAtMs: target.createdAtMs,
         isWorktreeRoot: target.isWorktreeRoot,
-        aiHidden: target.aiHidden,
         aiId: target.aiId,
         branch: git.branch,
         git: {
@@ -474,7 +469,6 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         parentRepoPath: target.parentRepoPath,
         createdAtMs: target.createdAtMs,
         isWorktreeRoot: target.isWorktreeRoot,
-        aiHidden: target.aiHidden,
         aiId: target.aiId,
         branch: null,
         git: {

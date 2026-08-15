@@ -30,7 +30,6 @@ import {
     getConfig,
     getFolderSessions,
     renameSession,
-    resetAiSession,
     restartPane,
     setSessionAi,
 } from '../../util/api-client.js';
@@ -79,7 +78,6 @@ function clampSplit(value: number): number {
 
 export const VirPaneGroup = defineElement<{
     folder: string;
-    aiHidden: boolean;
     /**
      * True when this pane-group is the user's currently focused folder. Forwarded to each
      * `VirTerminal` so they can re-fit and push a fresh size to the server when transitioning to
@@ -103,7 +101,13 @@ export const VirPaneGroup = defineElement<{
      * tab or one each, and the pane-visibility rules. Updates as the user resizes the window.
      */
     screenSize: ScreenSize;
-    aiRestartKey: number;
+    /**
+     * Per-kind counter bumped by `vir-app` whenever something outside this element restarts the
+     * folder's panes (the sidebar's "Change AI" and "Restart panes"). Folded into each terminal's
+     * mount key so the element is recreated — `VirTerminal` opens its socket in `onDomCreated`,
+     * which never re-runs for a reused element.
+     */
+    folderRestartKeys: Readonly<Record<PaneKind, number>>;
     /**
      * 1-based index of the active session tab for each pane, straight from the URL. Two values
      * because desktop shows both panes at once, so each has its own independent selection. An index
@@ -638,15 +642,6 @@ export const VirPaneGroup = defineElement<{
                 .catch(reportSessionError);
         };
 
-        const onResetAiSession = (session: Readonly<SessionMeta>) => {
-            void resetAiSession({
-                folder: inputs.folder,
-                sessionId: session.id,
-            })
-                .then(() => bumpRestartKey(PaneKind.Ai, session.id))
-                .catch(reportSessionError);
-        };
-
         /**
          * Save a tab's AI, then restart it: a running pane keeps whatever command it was spawned
          * with, so without the restart the new avatar would disagree with what's actually running.
@@ -747,12 +742,6 @@ export const VirPaneGroup = defineElement<{
                     content: 'Restart',
                     onClick: () => onRestartSession(kind, session),
                 },
-                kind === PaneKind.Ai && aiForSession(session)?.newSessionCommand
-                    ? {
-                          content: 'New AI session',
-                          onClick: () => onResetAiSession(session),
-                      }
-                    : undefined,
                 kind === PaneKind.Ai
                     ? {
                           content: 'Change AI',
@@ -766,10 +755,6 @@ export const VirPaneGroup = defineElement<{
                               }),
                       }
                     : undefined,
-                {
-                    content: 'New tab',
-                    onClick: () => onAddSession(kind),
-                },
                 /** The last remaining tab can't be closed — a pane with no tabs has nothing to show. */
                 sessionCount > 1
                     ? {
@@ -871,7 +856,14 @@ export const VirPaneGroup = defineElement<{
                                 </span>
                                 <span ${listen('click', (event) => event.stopPropagation())}>
                                     <${ViraMenuTrigger.assign({
-                                        horizontalAnchor: HorizontalAnchor.Right,
+                                        /*
+                                         * Auto, not Right: a right-anchored menu grows leftward,
+                                         * and the first tab sits at the pane's left edge, so the
+                                         * menu ran outside the pane and `overflow: hidden` on
+                                         * `.pane` cut it off. Auto flips to grow rightward when
+                                         * there's no room on the left.
+                                         */
+                                        horizontalAnchor: HorizontalAnchor.Auto,
                                         /*
                                          * Without this the pop-up is capped at the width of the
                                          * overflow container it opens inside, which here is the
@@ -934,7 +926,7 @@ export const VirPaneGroup = defineElement<{
             if (!session) {
                 return '';
             }
-            const folderRestartKey = kind === PaneKind.Ai ? inputs.aiRestartKey : 0;
+            const folderRestartKey = inputs.folderRestartKeys[kind];
             const sessionRestartKey = state.restartKeys[`${kind}:${session.id}`] || 0;
             const mountKey = `${session.id}:${sessionRestartKey + folderRestartKey}`;
             return repeat(
@@ -1024,10 +1016,10 @@ export const VirPaneGroup = defineElement<{
         /**
          * `focusin` bubbles through the shadow boundary (composed events), so xterm's hidden
          * textarea gaining focus reaches this listener via the outer `.pane` div. Default the
-         * highlight to whichever pane is visible first when nothing has been focused yet, so the
-         * initial render doesn't show both panes dimmed.
+         * highlight to the AI pane when nothing has been focused yet, so the initial render doesn't
+         * show both panes dimmed.
          */
-        const focusedKind = state.focusedKind ?? (inputs.aiHidden ? PaneKind.Shell : PaneKind.Ai);
+        const focusedKind = state.focusedKind ?? PaneKind.Ai;
         const aiFocused = focusedKind === PaneKind.Ai;
         const shellFocused = focusedKind === PaneKind.Shell;
 
@@ -1192,44 +1184,40 @@ export const VirPaneGroup = defineElement<{
                       `
                     : ''}
                 <div class="cli-panes" ?data-hidden=${!showCliPanes} ?data-mobile=${isMobile}>
-                    ${inputs.aiHidden
-                        ? ''
-                        : html`
-                              <div
-                                  class="pane ai-pane"
-                                  ?data-hidden=${!showAiPane}
-                                  data-pane-focused=${aiFocused ? 'true' : 'false'}
-                                  ${listen('focusin', () =>
-                                      updateState({
-                                          focusedKind: PaneKind.Ai,
-                                      }),
-                                  )}
-                              >
-                                  ${state.sessions && state.sessions.ai.length > 1
-                                      ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
-                                      : renderFloatingAddSession(PaneKind.Ai)}
-                                  ${state.sessionsError
-                                      ? html`
-                                            <div class="session-error" role="alert">
-                                                ${state.sessionsError}
-                                            </div>
-                                        `
-                                      : ''}
-                                  <div class="pane-body">
-                                      ${mountAiTerminal && state.sessions
-                                          ? renderPaneTerminal(PaneKind.Ai, state.sessions.ai)
-                                          : ''}
+                    <div
+                        class="pane ai-pane"
+                        ?data-hidden=${!showAiPane}
+                        data-pane-focused=${aiFocused ? 'true' : 'false'}
+                        ${listen('focusin', () =>
+                            updateState({
+                                focusedKind: PaneKind.Ai,
+                            }),
+                        )}
+                    >
+                        ${state.sessions && state.sessions.ai.length > 1
+                            ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
+                            : renderFloatingAddSession(PaneKind.Ai)}
+                        ${state.sessionsError
+                            ? html`
+                                  <div class="session-error" role="alert">
+                                      ${state.sessionsError}
                                   </div>
-                              </div>
-                              <div
-                                  class="divider ${state.dragging ? 'dragging' : ''}"
-                                  role="separator"
-                                  aria-orientation="vertical"
-                                  title="Drag to resize. Double-click to reset."
-                                  ${listen('pointerdown', onDividerPointerDown)}
-                                  ${listen('dblclick', onDividerDoubleClick)}
-                              ></div>
-                          `}
+                              `
+                            : ''}
+                        <div class="pane-body">
+                            ${mountAiTerminal && state.sessions
+                                ? renderPaneTerminal(PaneKind.Ai, state.sessions.ai)
+                                : ''}
+                        </div>
+                    </div>
+                    <div
+                        class="divider ${state.dragging ? 'dragging' : ''}"
+                        role="separator"
+                        aria-orientation="vertical"
+                        title="Drag to resize. Double-click to reset."
+                        ${listen('pointerdown', onDividerPointerDown)}
+                        ${listen('dblclick', onDividerDoubleClick)}
+                    ></div>
                     <${VirAiPickerModal.assign({
                         open: !!state.changeAiSession,
                         modalTitle: 'Change AI for this tab',

@@ -25,7 +25,6 @@ function soloRepoTarget() {
         parentRepoPath: null,
         createdAtMs: 0,
         isWorktreeRoot: false,
-        aiHidden: false,
         aiId: '',
     };
 }
@@ -37,7 +36,6 @@ function worktreeTargets() {
             parentRepoPath: null,
             createdAtMs: 0,
             isWorktreeRoot: true,
-            aiHidden: false,
             aiId: '',
         },
         {
@@ -45,7 +43,6 @@ function worktreeTargets() {
             parentRepoPath: rootPath,
             createdAtMs: 0,
             isWorktreeRoot: false,
-            aiHidden: false,
             aiId: '',
         },
     ];
