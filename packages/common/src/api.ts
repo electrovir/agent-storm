@@ -352,6 +352,17 @@ export const configJsonSchema = {
 
 const configShape = mapSchemaToShape(configJsonSchema);
 
+/**
+ * Live status of one session tab. Reported per session rather than only per pane so a pane with
+ * several tabs can show which one is actually working — the folder-level `panes` fields collapse
+ * every session of a kind into one value and would mark every tab busy when any single one is.
+ */
+export const paneSessionStatusShape = defineShape({
+    kind: enumShape(PaneKind),
+    sessionId: '',
+    status: enumShape(PaneStatus),
+});
+
 export const folderInfoShape = defineShape({
     path: '',
     name: '',
@@ -381,6 +392,11 @@ export const folderInfoShape = defineShape({
         ai: enumShape(PaneStatus),
         shell: enumShape(PaneStatus),
     },
+    /**
+     * Per-session statuses behind the reduced `panes` values above, one entry per session the
+     * daemon currently holds a PTY for. A session with no PTY yet has no entry at all.
+     */
+    sessionStatuses: [paneSessionStatusShape],
 });
 
 const foldersResponseShape = defineShape({
@@ -1448,6 +1464,7 @@ export type Config = SchemaShapeToType<typeof configJsonSchema, NonNullable<unkn
 export type RepoConfig = Config['repos'][number];
 export type AiDefinition = Config['aiDefinitions'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
+export type PaneSessionStatus = typeof paneSessionStatusShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
 export type SessionMeta = typeof sessionMetaShape.runtimeType;
 export type FolderSessions = typeof sessionsResponseShape.runtimeType;

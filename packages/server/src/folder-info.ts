@@ -24,7 +24,7 @@ import {
     type PrInfo,
     type RepoSlug,
 } from './git.js';
-import {getPaneStatusLookup} from './pty.js';
+import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
@@ -434,6 +434,8 @@ async function buildFolderInfo({
             ai: statusLookup(target.folder, PaneKind.Ai),
             shell: statusLookup(target.folder, PaneKind.Shell),
         },
+        /** Filled by the live overlay in {@link getCachedFolders}, not baked into the sweep's cache. */
+        sessionStatuses: [],
     };
 }
 
@@ -485,6 +487,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
             ai: PaneStatus.None,
             shell: PaneStatus.None,
         },
+        sessionStatuses: [],
     };
 }
 
@@ -497,6 +500,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
  */
 export async function getCachedFolders(): Promise<FolderInfo[]> {
     const statusLookup = await getPaneStatusLookup();
+    const sessionStatusLookup = await getPaneSessionStatusLookup();
     return refreshState.targets.map((target) => {
         const base = cache.get(target.folder) || placeholderFolderInfo(target);
         return {
@@ -505,6 +509,7 @@ export async function getCachedFolders(): Promise<FolderInfo[]> {
                 ai: statusLookup(target.folder, PaneKind.Ai),
                 shell: statusLookup(target.folder, PaneKind.Shell),
             },
+            sessionStatuses: [...sessionStatusLookup(target.folder)],
         };
     });
 }

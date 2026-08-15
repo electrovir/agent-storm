@@ -1,4 +1,4 @@
-import {PaneStatus, type PaneKind} from '@agent-storm/common';
+import {PaneStatus, type PaneKind, type PaneSessionStatus} from '@agent-storm/common';
 import {fetchPaneStatuses} from './daemon/daemon-client.js';
 import {type StatusEntry} from './daemon/protocol.js';
 
@@ -7,10 +7,12 @@ const cacheTtlMs = 500;
 const cacheState: {
     statuses: Map<string, PaneStatus>;
     sessionIds: Map<string, string[]>;
+    sessionStatuses: Map<string, PaneSessionStatus[]>;
     lastFetchAt: number;
 } = {
     statuses: new Map(),
     sessionIds: new Map(),
+    sessionStatuses: new Map(),
     lastFetchAt: 0,
 };
 
@@ -58,10 +60,39 @@ function collectSessionIds(entries: ReadonlyArray<Readonly<StatusEntry>>): Map<s
     }, new Map<string, string[]>());
 }
 
+/**
+ * Group the raw entries by folder, keeping each session's own status. Entries without a `sessionId`
+ * (a version-1 daemon) are dropped rather than guessed at: the reduced per-folder+kind status above
+ * still covers them, and inventing a session id here would attach the status to a tab that may not
+ * exist.
+ */
+function collectSessionStatuses(
+    entries: ReadonlyArray<Readonly<StatusEntry>>,
+): Map<string, PaneSessionStatus[]> {
+    return entries.reduce((collected, entry) => {
+        if (!entry.sessionId) {
+            return collected;
+        }
+        const existing = collected.get(entry.folder);
+        const status: PaneSessionStatus = {
+            kind: entry.kind,
+            sessionId: entry.sessionId,
+            status: entry.status,
+        };
+        if (existing) {
+            existing.push(status);
+        } else {
+            collected.set(entry.folder, [status]);
+        }
+        return collected;
+    }, new Map<string, PaneSessionStatus[]>());
+}
+
 async function refreshStatuses(): Promise<void> {
     const entries = await fetchPaneStatuses();
     cacheState.statuses = reduceStatuses(entries);
     cacheState.sessionIds = collectSessionIds(entries);
+    cacheState.sessionStatuses = collectSessionStatuses(entries);
     cacheState.lastFetchAt = Date.now();
 }
 
@@ -81,6 +112,17 @@ export async function getPaneStatusLookup(): Promise<
 > {
     await ensureFresh();
     return (folder, kind) => cacheState.statuses.get(statusKey(folder, kind)) || PaneStatus.None;
+}
+
+/**
+ * Companion to {@link getPaneStatusLookup} that keeps each session's own status instead of reducing
+ * them, so a pane's tabs can be annotated individually. Shares the same 500ms snapshot.
+ */
+export async function getPaneSessionStatusLookup(): Promise<
+    (folder: string) => ReadonlyArray<PaneSessionStatus>
+> {
+    await ensureFresh();
+    return (folder) => cacheState.sessionStatuses.get(folder) || [];
 }
 
 /**
