@@ -1,13 +1,14 @@
 import {type AiDefinition} from '@agent-storm/common';
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
-import {ViraButton, ViraColorVariant, ViraEmphasis, ViraModal, viraThemeByKeys} from 'vira';
+import {ViraModal, viraThemeByKeys} from 'vira';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {VirAiAvatar} from './vir-ai-avatar.element.js';
 
 /**
  * "Change AI" for one target: a folder, a repo (which its worktrees inherit), or a single AI tab.
- * Selection is local until Save so a stray tap can't restart a running agent — which is what saving
- * does, since the new command only takes effect on a fresh spawn.
+ * Picking a row applies it immediately — there's no Save step — so the only way out without
+ * changing anything is closing the modal. Applying restarts the target's AI pane, since a new
+ * command only takes effect on a fresh spawn.
  */
 export const VirAiPickerModal = defineElement<{
     open: boolean;
@@ -30,16 +31,6 @@ export const VirAiPickerModal = defineElement<{
         /** Detail is the chosen id, or empty to clear the override and inherit again. */
         aiSaveRequested: defineElementEvent<string>(),
         closeRequested: defineElementEvent<void>(),
-    },
-    state() {
-        return {
-            /**
-             * The row the user has clicked, or undefined when they haven't touched anything yet (in
-             * which case the target's current value is what's highlighted). Cleared when the modal
-             * closes so reopening it never shows a stale pick.
-             */
-            pendingAiId: undefined as string | undefined,
-        };
     },
     styles: css`
         .body {
@@ -104,27 +95,8 @@ export const VirAiPickerModal = defineElement<{
             padding: 8px 2px;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
-
-        .footer {
-            display: flex;
-            justify-content: flex-end;
-            gap: 8px;
-        }
     `,
-    render({inputs, state, updateState, dispatch, events}) {
-        if (!inputs.open && state.pendingAiId != undefined) {
-            updateState({
-                pendingAiId: undefined,
-            });
-        }
-        const selectedAiId = state.pendingAiId ?? inputs.selectedAiId;
-        const close = () => {
-            updateState({
-                pendingAiId: undefined,
-            });
-            dispatch(new events.closeRequested());
-        };
-
+    render({inputs, dispatch, events}) {
         const renderOption = ({
             key,
             name,
@@ -134,13 +106,9 @@ export const VirAiPickerModal = defineElement<{
             <button
                 type="button"
                 class="option"
-                ?data-selected=${selectedAiId === key}
+                ?data-selected=${inputs.selectedAiId === key}
                 ?disabled=${inputs.submitting}
-                ${listen('click', () =>
-                    updateState({
-                        pendingAiId: key,
-                    }),
-                )}
+                ${listen('click', () => dispatch(new events.aiSaveRequested(key)))}
             >
                 <${VirAiAvatar.assign({
                     name,
@@ -159,7 +127,7 @@ export const VirAiPickerModal = defineElement<{
                 open: inputs.open,
                 modalTitle: inputs.modalTitle,
             })}
-                ${listen(ViraModal.events.modalClose, close)}
+                ${listen(ViraModal.events.modalClose, () => dispatch(new events.closeRequested()))}
             >
                 <div class="body">
                     <div class="options">
@@ -190,25 +158,6 @@ export const VirAiPickerModal = defineElement<{
                                   No AI defined yet. Add one from Settings → Define AI.
                               </div>
                           `}
-                    <div class="footer">
-                        <${ViraButton.assign({
-                            text: 'Cancel',
-                            buttonEmphasis: ViraEmphasis.Subtle,
-                            color: ViraColorVariant.Neutral,
-                            isDisabled: inputs.submitting,
-                        })}
-                            ${listen('click', close)}
-                        ></${ViraButton}>
-                        <${ViraButton.assign({
-                            text: inputs.submitting ? 'Saving...' : 'Save',
-                            color: ViraColorVariant.Brand,
-                            isDisabled: inputs.submitting || !inputs.aiDefinitions.length,
-                        })}
-                            ${listen('click', () =>
-                                dispatch(new events.aiSaveRequested(selectedAiId)),
-                            )}
-                        ></${ViraButton}>
-                    </div>
                 </div>
             </${ViraModal}>
         `;

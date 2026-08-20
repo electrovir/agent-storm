@@ -11,10 +11,12 @@ import {
     getFolderSessions,
     isFreshAiSession,
     parseSessionStore,
+    pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
+    setFolderSessionAi,
 } from './sessions.js';
 
 /**
@@ -27,6 +29,7 @@ async function withTempFolder(run: (folder: string) => Promise<void>): Promise<v
     try {
         await run(folder);
     } finally {
+        await forgetFolderSessions(folder);
         await rm(folder, {
             recursive: true,
             force: true,
@@ -220,6 +223,56 @@ describe(removeFolderSession.name, () => {
             assert.isTrue(result.removed);
             assert.isLengthExactly(result.sessions.shell, 1);
             assert.isFalse(result.sessions.shell.some((session) => session.id === doomedId));
+        });
+    });
+});
+
+describe(pruneSessionAiIds.name, () => {
+    it('clears tab AI overrides that point at deleted definitions', async () => {
+        await withTempFolder(async (folder) => {
+            const created = await createFolderSession({
+                folder,
+                kind: PaneKind.Ai,
+            });
+            const firstSession = assertWrap.isDefined(created.ai[0]);
+            const secondSession = assertWrap.isDefined(created.ai[1]);
+            await setFolderSessionAi({
+                folder,
+                kind: PaneKind.Ai,
+                sessionId: firstSession.id,
+                aiId: 'kept-ai',
+            });
+            await setFolderSessionAi({
+                folder,
+                kind: PaneKind.Ai,
+                sessionId: secondSession.id,
+                aiId: 'deleted-ai',
+            });
+
+            await pruneSessionAiIds({
+                validAiIds: ['kept-ai'],
+            });
+
+            const sessions = await getFolderSessions(folder);
+
+            assert.deepEquals(
+                sessions.ai.map((session) => {
+                    return {
+                        id: session.id,
+                        aiId: session.aiId,
+                    };
+                }),
+                [
+                    {
+                        id: firstSession.id,
+                        aiId: 'kept-ai',
+                    },
+                    {
+                        id: secondSession.id,
+                        aiId: '',
+                    },
+                ],
+            );
         });
     });
 });

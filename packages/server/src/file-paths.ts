@@ -40,6 +40,13 @@ export const githubCachePath = resolve(notCommittedDir, 'github-cache.json');
  */
 export const sessionStorePath = resolve(notCommittedDir, 'pane-sessions.json');
 
+/**
+ * Per-folder timestamp of the last keystroke the user sent to one of that folder's panes, backing
+ * the sidebar's "Sort by activity" option. Persisted because the ordering it produces is only
+ * useful if it spans the days the user has been working, not the current server process.
+ */
+export const folderActivityPath = resolve(notCommittedDir, 'folder-activity.json');
+
 /** Unix domain socket the pty daemon listens on for new pane attachments. */
 export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
 

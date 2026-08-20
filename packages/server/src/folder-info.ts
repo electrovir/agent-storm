@@ -13,6 +13,7 @@ import {basename} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
 import {getFolderAiDefinition, loadConfig, saveConfig} from './config.js';
 import {folderInfoCachePath, githubCachePath, notCommittedDir} from './file-paths.js';
+import {getFolderActivityAtMs} from './folder-activity.js';
 import {
     fetchRepoPrs,
     getGitInfo,
@@ -431,6 +432,7 @@ async function buildFolderInfo({
         },
         /** Filled by the live overlay in {@link getCachedFolders}, not baked into the sweep's cache. */
         sessionStatuses: [],
+        lastActivityAtMs: 0,
     };
 }
 
@@ -482,6 +484,7 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
             shell: PaneStatus.None,
         },
         sessionStatuses: [],
+        lastActivityAtMs: 0,
     };
 }
 
@@ -504,6 +507,11 @@ export async function getCachedFolders(): Promise<FolderInfo[]> {
                 shell: statusLookup(target.folder, PaneKind.Shell),
             },
             sessionStatuses: [...sessionStatusLookup(target.folder)],
+            /**
+             * Overlaid like `sessionStatuses` rather than baked into the sweep's cache: a keystroke
+             * has to move the sidebar's activity sort within a poll, not within a 25s sweep.
+             */
+            lastActivityAtMs: getFolderActivityAtMs(target.folder),
         };
     });
 }
