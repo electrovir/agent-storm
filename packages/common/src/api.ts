@@ -262,11 +262,12 @@ export const configJsonSchema = {
             enum: [
                 SidebarSorting.Name,
                 SidebarSorting.Date,
+                SidebarSorting.Activity,
             ],
             default: SidebarSorting.Name,
             title: 'Sidebar sorting',
             description:
-                'How the sidebar orders folders. "name" sorts alphabetically; "date" puts the most recently created repos and worktrees first. Selectable from the filter icon next to the Add button in the sidebar as well.',
+                'How the sidebar orders folders. "name" sorts alphabetically; "date" puts the most recently created repos and worktrees first; "activity" puts the ones you most recently typed into first. Selectable from the filter icon next to the Add button in the sidebar as well.',
         },
         /**
          * Sticky Diff pane layout, written by that pane's own split/inline toggle so the choice
@@ -386,6 +387,12 @@ export const folderInfoShape = defineShape({
      * daemon currently holds a PTY for. A session with no PTY yet has no entry at all.
      */
     sessionStatuses: [paneSessionStatusShape],
+    /**
+     * Milliseconds since epoch of the last keystroke the user sent to any of this folder's panes,
+     * used by the sidebar's "Sort by activity" option. `0` for a folder nobody has typed in since
+     * the activity store was created, which sorts the folder last.
+     */
+    lastActivityAtMs: 0,
 });
 
 const foldersResponseShape = defineShape({

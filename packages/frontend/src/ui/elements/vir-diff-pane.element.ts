@@ -67,6 +67,7 @@ import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
 import {diffSidebarWidth, localStorageClient} from '../../util/local-storage-client.js';
 import {ScreenSize} from '../../util/screen-size.js';
+import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
 import {diffConfig, diffLines} from '../../util/vscode-diff.js';
 
 /**
@@ -313,39 +314,52 @@ const hangingIndentColumns = 4;
  * Shared read-only editor extensions. Deliberately minimal: the point of replacing the embedded VS
  * Code is that a phone shouldn't pay for an IDE to read a diff.
  */
-const baseExtensions: ReadonlyArray<Extension> = [
-    lineNumbers(),
-    highlightActiveLineGutter(),
-    foldGutter(),
-    bracketMatching(),
-    history(),
-    keymap.of([
-        ...defaultKeymap,
-        ...historyKeymap,
-    ]),
-    EditorView.lineWrapping,
-    EditorState.readOnly.of(true),
-    EditorView.theme({
-        '&': {
-            height: '100%',
-            fontSize: '12px',
-        },
-        '.cm-scroller': {
-            fontFamily: '"MesloLGS NF", Menlo, monospace',
-        },
+function baseExtensions(isDark: boolean): ReadonlyArray<Extension> {
+    return [
+        lineNumbers(),
+        highlightActiveLineGutter(),
+        foldGutter(),
+        bracketMatching(),
+        history(),
+        keymap.of([
+            ...defaultKeymap,
+            ...historyKeymap,
+        ]),
+        EditorView.lineWrapping,
+        EditorState.readOnly.of(true),
         /*
-         * The hanging indent is one flat amount for every line, applied in CSS. Matching each
-         * line's own indent instead would take a per-line decoration, and a decoration that changes
-         * how a line wraps changes its height — which is the number the side-by-side layout aligns
-         * its two editors on. When those heights were per line, the aligner drifted and the new
-         * side rendered no text at all.
+         * The `dark` flag is what switches CodeMirror's own base theme — gutter background, active
+         * line, fold markers — between its light and dark rules. It keys off a class the editor
+         * only gets when a registered theme declares itself dark, so without this the gutters stay
+         * the light theme's near-white no matter what the rest of the app is doing.
          */
-        '.cm-line': {
-            paddingLeft: `${hangingIndentColumns}ch`,
-            textIndent: `-${hangingIndentColumns}ch`,
-        },
-    }),
-];
+        EditorView.theme(
+            {
+                '&': {
+                    height: '100%',
+                    fontSize: '12px',
+                },
+                '.cm-scroller': {
+                    fontFamily: '"MesloLGS NF", Menlo, monospace',
+                },
+                /*
+                 * The hanging indent is one flat amount for every line, applied in CSS. Matching
+                 * each line's own indent instead would take a per-line decoration, and a decoration
+                 * that changes how a line wraps changes its height — which is the number the
+                 * side-by-side layout aligns its two editors on. When those heights were per line,
+                 * the aligner drifted and the new side rendered no text at all.
+                 */
+                '.cm-line': {
+                    paddingLeft: `${hangingIndentColumns}ch`,
+                    textIndent: `-${hangingIndentColumns}ch`,
+                },
+            },
+            {
+                dark: isDark,
+            },
+        ),
+    ];
+}
 
 /**
  * CodeMirror's stock merge colors are a few percent of tint and wash out entirely on a bright
@@ -362,10 +376,39 @@ const baseExtensions: ReadonlyArray<Extension> = [
  * deleted chunk — so an alpha that looked right in isolation stacked two or three deep and came out
  * far darker than intended. Opaque colors render as written no matter how they nest.
  */
-const removedLineColor = '#fbe9e9';
-const removedTextColor = '#f5cfcf';
-const addedLineColor = '#e7f7e5';
-const addedTextColor = '#cbeec7';
+type DiffColors = {
+    removedLine: string;
+    removedText: string;
+    removedChunk: string;
+    addedLine: string;
+    addedText: string;
+};
+
+/**
+ * The dark set is the light set's job done from the other end: dark enough that the code on top
+ * keeps its contrast, tinted enough to find by scanning. The pale tints that work on white read as
+ * glowing panels over a dark editor, which is why they aren't simply reused at a lower opacity.
+ */
+const diffColors: Readonly<Record<'light' | 'dark', Readonly<DiffColors>>> = {
+    light: {
+        removedLine: '#fbe9e9',
+        removedText: '#f5cfcf',
+        removedChunk: '#fdf4f4',
+        addedLine: '#e7f7e5',
+        addedText: '#cbeec7',
+    },
+    dark: {
+        removedLine: '#3a2326',
+        removedText: '#5c2f34',
+        removedChunk: '#2a1c1e',
+        addedLine: '#1d3524',
+        addedText: '#2b5334',
+    },
+};
+
+function colorsFor(isDark: boolean): Readonly<DiffColors> {
+    return isDark ? diffColors.dark : diffColors.light;
+}
 
 /**
  * Every within-line rule below has to name its editor's `cm-merge-a` / `cm-merge-b` class and use
@@ -374,50 +417,56 @@ const addedTextColor = '#cbeec7';
  * shorthand, so a two-class `backgroundColor` here loses the cascade and gets reset to transparent
  * by the shorthand.
  */
-const deletionColorTheme = EditorView.theme({
-    '&.cm-merge-a .cm-changedLine': {
-        background: removedLineColor,
-    },
-    '&.cm-merge-a .cm-changedText': {
-        background: removedTextColor,
-    },
-});
+function deletionColorTheme(isDark: boolean): Extension {
+    return EditorView.theme({
+        '&.cm-merge-a .cm-changedLine': {
+            background: colorsFor(isDark).removedLine,
+        },
+        '&.cm-merge-a .cm-changedText': {
+            background: colorsFor(isDark).removedText,
+        },
+    });
+}
 
-const insertionColorTheme = EditorView.theme({
-    '&.cm-merge-b .cm-changedLine': {
-        background: addedLineColor,
-    },
-    '&.cm-merge-b .cm-changedText': {
-        background: addedTextColor,
-    },
-});
+function insertionColorTheme(isDark: boolean): Extension {
+    return EditorView.theme({
+        '&.cm-merge-b .cm-changedLine': {
+            background: colorsFor(isDark).addedLine,
+        },
+        '&.cm-merge-b .cm-changedText': {
+            background: colorsFor(isDark).addedText,
+        },
+    });
+}
 
 /** The unified view stacks both sides in one `cm-merge-b` editor, so it needs both color families. */
-const unifiedColorTheme = EditorView.theme({
-    '& .cm-deletedChunk': {
-        background: '#fdf4f4',
-    },
-    '& .cm-deletedChunk .cm-deletedLine': {
-        background: removedLineColor,
-    },
-    '& .cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText': {
-        background: removedTextColor,
-    },
-    '&.cm-merge-b .cm-insertedLine, &.cm-merge-b .cm-changedLine': {
-        background: addedLineColor,
-    },
-    /**
-     * A chunk small enough for CodeMirror to show old and new text on one line, rather than as
-     * separate deleted and inserted lines. It is a new line carrying its old text inline, so it
-     * takes the added tint and the removed words show through in red.
-     */
-    '&.cm-merge-b .cm-inlineChangedLine': {
-        background: addedLineColor,
-    },
-    '&.cm-merge-b .cm-changedText': {
-        background: addedTextColor,
-    },
-});
+function unifiedColorTheme(isDark: boolean): Extension {
+    return EditorView.theme({
+        '& .cm-deletedChunk': {
+            background: colorsFor(isDark).removedChunk,
+        },
+        '& .cm-deletedChunk .cm-deletedLine': {
+            background: colorsFor(isDark).removedLine,
+        },
+        '& .cm-deletedChunk .cm-deletedText, &.cm-merge-b .cm-deletedText': {
+            background: colorsFor(isDark).removedText,
+        },
+        '&.cm-merge-b .cm-insertedLine, &.cm-merge-b .cm-changedLine': {
+            background: colorsFor(isDark).addedLine,
+        },
+        /**
+         * A chunk small enough for CodeMirror to show old and new text on one line, rather than as
+         * separate deleted and inserted lines. It is a new line carrying its old text inline, so it
+         * takes the added tint and the removed words show through in red.
+         */
+        '&.cm-merge-b .cm-inlineChangedLine': {
+            background: colorsFor(isDark).addedLine,
+        },
+        '&.cm-merge-b .cm-changedText': {
+            background: colorsFor(isDark).addedText,
+        },
+    });
+}
 
 const undoHunkLabel = 'Undo hunk';
 
@@ -471,12 +520,14 @@ function hunkButtonExtension({
     chunks,
     newText,
     label,
+    isDark,
     onStageChunk,
     onUndoChunk,
 }: Readonly<{
     chunks: ReadonlyArray<Chunk>;
     newText: Text;
     label: string;
+    isDark: boolean;
     onStageChunk: (chunk: Readonly<Chunk>) => void;
     /** Undefined for a staged chunk, which shows no undo button. */
     onUndoChunk: ((chunk: Readonly<Chunk>) => void) | undefined;
@@ -517,8 +568,11 @@ function hunkButtonExtension({
                 padding: '2px 8px',
                 cursor: 'pointer',
                 borderRadius: '3px',
-                border: '1px solid rgba(0, 0, 0, 0.2)',
-                background: 'rgba(255, 255, 255, 0.85)',
+                border: isDark
+                    ? '1px solid rgba(255, 255, 255, 0.25)'
+                    : '1px solid rgba(0, 0, 0, 0.2)',
+                background: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(255, 255, 255, 0.85)',
+                color: isDark ? '#e6e6e6' : 'inherit',
             },
         }),
     ];
@@ -544,6 +598,7 @@ function mountDiffEditor({
     newText,
     stageLabel,
     syntaxExtensions,
+    isDark,
     onStageChunk,
     onUndoChunk,
     onGeometryChange,
@@ -562,6 +617,12 @@ function mountDiffEditor({
     stageLabel: string;
     /** Grammar plus highlight style for this file's type, already resolved by the caller. */
     syntaxExtensions: ReadonlyArray<Extension>;
+    /**
+     * Theme mode to build the editor for. A change remounts the editor rather than reconfiguring
+     * it: the merge view holds two editors plus its own gutter, and the mode changes about as often
+     * as the user changes their mind about it.
+     */
+    isDark: boolean;
     onStageChunk: (chunk: Readonly<Chunk>) => void;
     onUndoChunk: ((chunk: Readonly<Chunk>) => void) | undefined;
     /**
@@ -574,6 +635,7 @@ function mountDiffEditor({
         chunks,
         newText,
         label: stageLabel,
+        isDark,
         onStageChunk,
         onUndoChunk,
     });
@@ -589,9 +651,9 @@ function mountDiffEditor({
             root,
             doc: newContent,
             extensions: [
-                ...baseExtensions,
+                ...baseExtensions(isDark),
                 ...syntaxExtensions,
-                unifiedColorTheme,
+                unifiedColorTheme(isDark),
                 hunkButtons,
                 geometryListener,
                 unifiedMergeView({
@@ -613,17 +675,17 @@ function mountDiffEditor({
         a: {
             doc: oldContent,
             extensions: [
-                ...baseExtensions,
+                ...baseExtensions(isDark),
                 ...syntaxExtensions,
-                deletionColorTheme,
+                deletionColorTheme(isDark),
             ],
         },
         b: {
             doc: newContent,
             extensions: [
-                ...baseExtensions,
+                ...baseExtensions(isDark),
                 ...syntaxExtensions,
-                insertionColorTheme,
+                insertionColorTheme(isDark),
                 hunkButtons,
                 geometryListener,
             ],
@@ -749,8 +811,17 @@ export const VirDiffPane = defineElement<{
              * poll from tearing down the editor and throwing away the user's scroll position.
              */
             rendered: undefined as
-                | {value: string; oldContent: string; newContent: string; unified: boolean}
+                | {
+                      value: string;
+                      oldContent: string;
+                      newContent: string;
+                      unified: boolean;
+                      isDark: boolean;
+                  }
                 | undefined,
+            /** Mirrors {@link isDarkMode} so the editor can be rebuilt in the other palette. */
+            isDark: isDarkMode(),
+            stopThemeListener: undefined as (() => void) | undefined,
             chunks: [] as ReadonlyArray<Chunk>,
             rulerMarks: [] as RulerMark[],
             /** Index into `chunks` that the jump buttons move relative to. */
@@ -1229,12 +1300,22 @@ export const VirDiffPane = defineElement<{
     `,
     cleanup({state}) {
         state.editor?.destroy();
+        state.stopThemeListener?.();
         if (state.refreshTimer) {
             clearInterval(state.refreshTimer);
         }
     },
     render({inputs, state, updateState, host}) {
         const isMobile = inputs.screenSize === ScreenSize.Mobile;
+        if (!state.stopThemeListener) {
+            updateState({
+                stopThemeListener: listenToDarkMode((isDark) => {
+                    updateState({
+                        isDark,
+                    });
+                }),
+            });
+        }
         /** One read per mount; the toolbar toggles keep both values current after that. */
         if (!state.diffSettingsRequested) {
             updateState({
@@ -1585,6 +1666,7 @@ export const VirDiffPane = defineElement<{
                 oldContent: displayedOldContent(content),
                 newContent: content.newContent,
                 unified,
+                isDark: state.isDark,
             };
             const previous = state.rendered;
             const changed =
@@ -1592,7 +1674,8 @@ export const VirDiffPane = defineElement<{
                 previous.value !== nextRendered.value ||
                 previous.oldContent !== nextRendered.oldContent ||
                 previous.newContent !== nextRendered.newContent ||
-                previous.unified !== nextRendered.unified;
+                previous.unified !== nextRendered.unified ||
+                previous.isDark !== nextRendered.isDark;
             if (changed) {
                 const oldText = Text.of(nextRendered.oldContent.split('\n'));
                 const newText = Text.of(content.newContent.split('\n'));
@@ -1609,6 +1692,7 @@ export const VirDiffPane = defineElement<{
                     newText,
                     stageLabel: stageLabels[selected?.side ?? GitDiffSide.Unstaged],
                     syntaxExtensions: state.syntaxExtensions,
+                    isDark: state.isDark,
                     onStageChunk,
                     onUndoChunk: selected?.side === GitDiffSide.Staged ? undefined : onUndoChunk,
                     onGeometryChange: (view) => {

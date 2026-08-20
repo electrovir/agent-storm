@@ -186,6 +186,7 @@ type AppState = {
      */
     mobileSidebarOpen: boolean;
     paneRestartKeys: Record<string, number | undefined>;
+    aiConfigRevision: number;
     /**
      * App-wide Vira theme client. Constructed once here (applying the persisted theme + wiring
      * LocalStorage persistence and system color-scheme listening) and passed down to the sidebars
@@ -224,6 +225,7 @@ export const VirApp = defineElement()({
             disconnectVisualViewport: undefined,
             mobileSidebarOpen: false,
             paneRestartKeys: {},
+            aiConfigRevision: 0,
             themeClient: new ViraThemeClient({
                 applyTheme: applyThemeMode,
             }),
@@ -742,7 +744,10 @@ export const VirApp = defineElement()({
                     ...state.paneRestartKeys,
                     [paneKey]: (state.paneRestartKeys[paneKey] || 0) + 1,
                 },
+                aiConfigRevision:
+                    kind === PaneKind.Ai ? state.aiConfigRevision + 1 : state.aiConfigRevision,
             });
+            void refreshFolderInfo(updateState);
         };
 
         return html`
@@ -836,6 +841,8 @@ export const VirApp = defineElement()({
                                         PaneKind.Shell,
                                     ),
                                     folderAiId: info?.aiId || '',
+                                    parentRepoPath: info?.parentRepoPath || '',
+                                    aiConfigRevision: state.aiConfigRevision,
                                     sessionStatuses: info?.sessionStatuses || [],
                                     prUrl: info?.prUrl || '',
                                 })}
@@ -926,6 +933,12 @@ export const VirApp = defineElement()({
                     updateState({
                         aiModalOpen: false,
                     });
+                })}
+                ${listen(VirAiModal.events.configSaved, () => {
+                    updateState({
+                        aiConfigRevision: state.aiConfigRevision + 1,
+                    });
+                    void refreshFolderInfo(updateState);
                 })}
             ></${VirAiModal}>
             <${ViraModal.assign({

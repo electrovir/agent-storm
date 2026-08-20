@@ -114,7 +114,8 @@ const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
 
 const sidebarSortingLabels: Record<SidebarSorting, string> = {
     [SidebarSorting.Name]: 'Sort by name',
-    [SidebarSorting.Date]: 'Sort by date',
+    [SidebarSorting.Date]: 'Sort by created',
+    [SidebarSorting.Activity]: 'Sort by activity',
 };
 
 const paneStatusColor: Record<PaneStatus, string> = {
@@ -329,6 +330,15 @@ export const VirSidebar = defineElement<{
 
         /* The theme switcher sits inside the options menu above the Settings item; give it breathing
            room so it doesn't crowd the menu edges or the item below it. */
+        /* Section break inside a menu pop-up. The pop-up's content is a plain slot, so an <hr>
+           lands between two runs of menu items with no vira support needed. */
+        .menu-divider {
+            border: none;
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            margin: 4px 0;
+            width: 100%;
+        }
+
         .theme-switcher-menu-row {
             display: flex;
             justify-content: center;
@@ -373,6 +383,12 @@ export const VirSidebar = defineElement<{
             justify-content: space-between;
             align-items: center;
             gap: 6px;
+        }
+
+        /* Deliberately outside the header's bold weight so only the repo name reads as a heading. */
+        .worktree-count {
+            font-weight: 400;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
         .row {
@@ -616,9 +632,10 @@ export const VirSidebar = defineElement<{
         const standaloneFolders = visibleFolders
             .filter((folder) => !folder.isWorktreeRoot && !folder.parentRepoPath)
             .toSorted(folderComparator);
+        /** See {@link folderComparators} for why repo headers ignore the selected sorting. */
         const worktreeRoots = visibleFolders
             .filter((folder) => folder.isWorktreeRoot)
-            .toSorted(folderComparator);
+            .toSorted(folderComparators[SidebarSorting.Name]);
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
          * filter against the freshest snapshot without having to ask for a re-read.
@@ -785,14 +802,21 @@ export const VirSidebar = defineElement<{
                             slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
                             title="Filter & group sidebar"
                         ></${ViraButton}>
-                        ${renderMenuItemEntries(
-                            buildFilterMenuEntries({
-                                sidebarGrouping: state.sidebarGrouping,
-                                sidebarSorting: state.sidebarSorting,
-                                onlyShowRecent: state.onlyShowRecent,
-                                updateState,
-                            }),
-                        )}
+                        ${buildFilterMenuSections({
+                            sidebarGrouping: state.sidebarGrouping,
+                            sidebarSorting: state.sidebarSorting,
+                            onlyShowRecent: state.onlyShowRecent,
+                            updateState,
+                        }).map((section, index) => {
+                            return html`
+                                ${index
+                                    ? html`
+                                          <hr class="menu-divider" />
+                                      `
+                                    : ''}
+                                ${renderMenuItemEntries(section)}
+                            `;
+                        })}
                     </${ViraMenuTrigger}>
                     <${ViraMenuTrigger.assign({
                         horizontalAnchor: HorizontalAnchor.Right,
@@ -872,7 +896,16 @@ export const VirSidebar = defineElement<{
                             class="repo-header"
                             ?data-menu-open=${state.openMenuKey === repoMenuKey}
                         >
-                            <span>${root.name}</span>
+                            <span>
+                                ${root.name}
+                                <!-- Counted from the unfiltered list so the number is the repo's real
+                                worktree count, not however many survived the current filters. -->
+                                <span class="worktree-count">
+                                    (${state.folders.filter(
+                                        (folder) => folder.parentRepoPath === root.path,
+                                    ).length})
+                                </span>
+                            </span>
                             <span class="actions">
                                 <${ViraMenuTrigger.assign({
                                     horizontalAnchor: HorizontalAnchor.Right,
@@ -1247,6 +1280,11 @@ function isValidPrUrl(url: string | null | undefined): boolean {
     }
 }
 
+/**
+ * Applies to the standalone list and to the worktrees within each repo. Repo headers themselves
+ * stay alphabetical under every sorting — a header is a place to look things up, so it should sit
+ * where the user last saw it rather than shuffle as its worktrees are worked in.
+ */
 const folderComparators: Record<SidebarSorting, (a: FolderInfo, b: FolderInfo) => number> = {
     [SidebarSorting.Name]: (a, b) =>
         a.name.localeCompare(b.name, undefined, {
@@ -1258,9 +1296,19 @@ const folderComparators: Record<SidebarSorting, (a: FolderInfo, b: FolderInfo) =
      */
     [SidebarSorting.Date]: (a, b) =>
         b.createdAtMs - a.createdAtMs || folderComparators[SidebarSorting.Name](a, b),
+    /**
+     * Most-recently-typed-in first. Folders nobody has typed in carry `0` and land at the end,
+     * where they fall back to the name comparator.
+     */
+    [SidebarSorting.Activity]: (a, b) =>
+        b.lastActivityAtMs - a.lastActivityAtMs || folderComparators[SidebarSorting.Name](a, b),
 };
 
-function buildFilterMenuEntries({
+/**
+ * Grouped rather than flat so the render can draw a divider between each section: grouping, then
+ * sorting, then the standalone filters.
+ */
+function buildFilterMenuSections({
     sidebarGrouping,
     sidebarSorting,
     onlyShowRecent,
@@ -1270,7 +1318,7 @@ function buildFilterMenuEntries({
     sidebarSorting: SidebarSorting | undefined;
     onlyShowRecent: boolean | undefined;
     updateState: SidebarUpdate;
-}>): ReadonlyArray<ViraMenuItemEntry> {
+}>): ReadonlyArray<ReadonlyArray<ViraMenuItemEntry>> {
     const groupingEntries: ReadonlyArray<ViraMenuItemEntry> = [
         SidebarGrouping.Repo,
         SidebarGrouping.Status,
@@ -1292,12 +1340,13 @@ function buildFilterMenuEntries({
         };
     });
     /**
-     * The two sort options are mutually exclusive: picking one writes the single
-     * `config.sidebarSorting` value, which drops the check from the other.
+     * The sort options are mutually exclusive: picking one writes the single
+     * `config.sidebarSorting` value, which drops the check from the others.
      */
     const sortingEntries: ReadonlyArray<ViraMenuItemEntry> = [
         SidebarSorting.Name,
         SidebarSorting.Date,
+        SidebarSorting.Activity,
     ].map((sorting) => {
         return {
             content: sidebarSortingLabels[sorting],
@@ -1312,19 +1361,21 @@ function buildFilterMenuEntries({
         };
     });
     return [
-        ...groupingEntries,
-        ...sortingEntries,
-        {
-            content: 'Hide Inactive',
-            /**
-             * Click toggles the persisted `onlyShowRecent` flag. A check icon shows the current
-             * state — the user can flip it off the same way they turned it on.
-             */
-            iconOverride: onlyShowRecent ? lucideIcons.Check : undefined,
-            onClick: () => {
-                void toggleHideInactive(!onlyShowRecent, updateState);
+        groupingEntries,
+        sortingEntries,
+        [
+            {
+                content: 'Hide Inactive',
+                /**
+                 * Click toggles the persisted `onlyShowRecent` flag. A check icon shows the current
+                 * state — the user can flip it off the same way they turned it on.
+                 */
+                iconOverride: onlyShowRecent ? lucideIcons.Check : undefined,
+                onClick: () => {
+                    void toggleHideInactive(!onlyShowRecent, updateState);
+                },
             },
-        },
+        ],
     ];
 }
 

@@ -4,6 +4,7 @@ import {
     PaneKind,
     PaneStatus,
     type AiDefinition,
+    type Config,
     type FolderSessions,
     type PaneSessionStatus,
     type SessionMeta,
@@ -127,6 +128,8 @@ export const VirPaneGroup = defineElement<{
      * (no PTY yet) reads as not busy.
      */
     sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>;
+    parentRepoPath: string;
+    aiConfigRevision: number;
 }>()({
     tagName: 'vir-pane-group',
     options: {
@@ -185,7 +188,8 @@ export const VirPaneGroup = defineElement<{
              * element is keyed by folder and remounts on a folder switch anyway.
              */
             aiDefinitions: [] as ReadonlyArray<AiDefinition>,
-            aiDefinitionsRequested: false,
+            resolvedFolderAiId: undefined as string | undefined,
+            loadedAiConfigRevision: undefined as number | undefined,
             /** Session the "Change AI" picker is open for, and its kind. Undefined when closed. */
             changeAiSession: undefined as {kind: PaneKind; sessionId: string} | undefined,
             changeAiSubmitting: false,
@@ -523,30 +527,50 @@ export const VirPaneGroup = defineElement<{
             });
         };
 
+        function resolveFolderAiId(config: Readonly<Config>) {
+            const folderOverrideId = config.folderAiIds.find(
+                (entry) => entry.folder === inputs.folder,
+            )?.aiId;
+            const parentOverrideId = inputs.parentRepoPath
+                ? config.folderAiIds.find((entry) => entry.folder === inputs.parentRepoPath)?.aiId
+                : undefined;
+            return (
+                folderOverrideId ||
+                parentOverrideId ||
+                config.defaultAiId ||
+                config.aiDefinitions[0]?.id ||
+                ''
+            );
+        }
+
         const loadAiDefinitions = async () => {
             try {
                 const config = await getConfig();
                 updateState({
                     aiDefinitions: config.aiDefinitions,
+                    resolvedFolderAiId: resolveFolderAiId(config),
                 });
             } catch (error: unknown) {
                 reportSessionError(error);
             }
         };
 
+        const currentFolderAiId = state.resolvedFolderAiId || inputs.folderAiId;
+
         /**
          * The AI a tab runs: its own override, else whatever the folder resolved to. Undefined when
          * the definitions haven't loaded yet or the user has defined no AI.
          */
         const aiForSession = (session: Readonly<SessionMeta>): AiDefinition | undefined => {
-            return state.aiDefinitions.find(
-                (definition) => definition.id === (session.aiId || inputs.folderAiId),
+            return (
+                state.aiDefinitions.find((definition) => definition.id === session.aiId) ||
+                state.aiDefinitions.find((definition) => definition.id === currentFolderAiId)
             );
         };
 
-        if (!state.aiDefinitionsRequested) {
+        if (state.loadedAiConfigRevision !== inputs.aiConfigRevision) {
             updateState({
-                aiDefinitionsRequested: true,
+                loadedAiConfigRevision: inputs.aiConfigRevision,
             });
             void loadAiDefinitions();
         }
@@ -641,6 +665,23 @@ export const VirPaneGroup = defineElement<{
                 .then(() => bumpRestartKey(kind, session.id))
                 .catch(reportSessionError);
         };
+
+        function openSessionAiPicker({
+            kind,
+            sessionId,
+        }: Readonly<{
+            kind: PaneKind;
+            sessionId: string;
+        }>) {
+            updateState({
+                changeAiSession: {
+                    kind,
+                    sessionId,
+                },
+                changeAiSubmitting: false,
+            });
+            void loadAiDefinitions();
+        }
 
         /**
          * Save a tab's AI, then restart it: a running pane keeps whatever command it was spawned
@@ -746,12 +787,9 @@ export const VirPaneGroup = defineElement<{
                     ? {
                           content: 'Change AI',
                           onClick: () =>
-                              updateState({
-                                  changeAiSession: {
-                                      kind,
-                                      sessionId: session.id,
-                                  },
-                                  changeAiSubmitting: false,
+                              openSessionAiPicker({
+                                  kind,
+                                  sessionId: session.id,
                               }),
                       }
                     : undefined,
@@ -1034,7 +1072,7 @@ export const VirPaneGroup = defineElement<{
             : undefined;
         const activeSessionAiOverride = changeAiTargetSession?.aiId || '';
         const folderAiName =
-            state.aiDefinitions.find((definition) => definition.id === inputs.folderAiId)?.name ||
+            state.aiDefinitions.find((definition) => definition.id === currentFolderAiId)?.name ||
             '';
 
         const isDiffTab = inputs.activeTab === 'diff';

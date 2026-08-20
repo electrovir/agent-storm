@@ -68,6 +68,7 @@ import {
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {clientErrorLogPath, serverLogPath} from './file-paths.js';
+import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
     discardAllChanges,
@@ -89,6 +90,7 @@ import {
     forgetFolderSessions,
     getFolderSessions,
     isFreshAiSession,
+    pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
@@ -169,6 +171,8 @@ type SocketAttachment = {
 const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 
 await ensureDaemon();
+
+await loadFolderActivity();
 
 await startFolderInfoRefreshLoop();
 
@@ -274,6 +278,9 @@ const configImplementation = implementor.implementEndpoint(configEndpoint, {
     },
     async [HttpMethod.Put]({requestData}) {
         await saveConfig(requestData);
+        await pruneSessionAiIds({
+            validAiIds: requestData.aiDefinitions.map((definition) => definition.id),
+        });
         /**
          * Re-enumerate folder targets now so a freshly-added repo (or removed one) shows up in
          * `/folders` immediately instead of waiting for the next background sweep cycle.
@@ -284,7 +291,7 @@ const configImplementation = implementor.implementEndpoint(configEndpoint, {
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
-                responseData: requestData,
+                responseData: await loadConfig(),
             },
         };
     },
@@ -366,6 +373,7 @@ const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktre
          * created with the same name inherits this one's named, PTY-less tabs.
          */
         await forgetFolderSessions(requestData.worktreePath);
+        forgetFolderActivity(requestData.worktreePath);
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
@@ -983,6 +991,11 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
         if (!socketAttachment) {
             return;
         } else if (typeof message === 'string') {
+            /**
+             * String frames are keystrokes (and pastes) from the user; binary frames are resizes,
+             * which the browser sends on its own and so say nothing about the user being here.
+             */
+            recordFolderActivity(socketAttachment.folder);
             socketAttachment.attachment.write(message);
             return;
         }
