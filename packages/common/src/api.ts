@@ -48,6 +48,10 @@ const ptyClientMessageShape = defineShape(
  * for fields whose default value is the non-null variant (matching the prior
  * `nullableShape(defaultValue)` behavior), and put `null` first only for `githubPollingAutoDisable`
  * where the absence of an auto-disable is the natural default.
+ *
+ * `additionalProperties` must stay `false` here: `mapSchemaToShape` throws outright on a schema
+ * that defines both `properties` and a permissive `additionalProperties`. The settings form relaxes
+ * it on its own copy instead — see `formJsonSchema` in `vir-settings-modal.element.ts`.
  */
 export const configJsonSchema = {
     type: 'object',

@@ -28,6 +28,7 @@ import {
     HorizontalAnchor,
     LoaderAnimated24Icon,
     lucideIcons,
+    type PopUpManager,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
@@ -187,6 +188,12 @@ type SidebarState = {
      */
     searchQuery: string;
     /**
+     * The search pop-up's own manager, grabbed from its `init` event. `ViraPopUpTrigger` has no
+     * `open` input, so this is the only way to close the pop-up from the outside — needed when
+     * Enter in the search input activates the top result.
+     */
+    searchPopUpManager: PopUpManager | undefined;
+    /**
      * Mirrors `config.repos`. Needed for the hide-inactive filter so we can look up each repo's
      * `lastInteractedAtMs` against the 7-day cutoff. Kept in lockstep with the folders list via
      * `refresh()`.
@@ -275,6 +282,7 @@ export const VirSidebar = defineElement<{
             sidebarSorting: undefined,
             onlyShowRecent: undefined,
             searchQuery: '',
+            searchPopUpManager: undefined,
             repos: [],
             updateStatus: undefined,
         };
@@ -636,6 +644,19 @@ export const VirSidebar = defineElement<{
         const worktreeRoots = visibleFolders
             .filter((folder) => folder.isWorktreeRoot)
             .toSorted(folderComparators[SidebarSorting.Name]);
+        const sortedChildrenOf = (rootPath: string) =>
+            visibleFolders
+                .filter((folder) => folder.parentRepoPath === rootPath)
+                .toSorted(folderComparator);
+        /**
+         * What Enter in the search input opens: the first row of the rendered list, in the same
+         * top-to-bottom order the user sees. Repo headers are skipped because they aren't
+         * activatable — a repo with matching worktrees hands off to its first worktree.
+         */
+        const firstSearchResult = trimmedSearchQuery
+            ? (standaloneFolders[0] ??
+              worktreeRoots.flatMap((root) => sortedChildrenOf(root.path))[0])
+            : undefined;
         /**
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
          * filter against the freshest snapshot without having to ask for a re-read.
@@ -734,6 +755,11 @@ export const VirSidebar = defineElement<{
                                 focusSearchInput(host);
                             }
                         })}
+                        ${listen(ViraPopUpTrigger.events.init, (event) => {
+                            updateState({
+                                searchPopUpManager: event.detail.popUpManager,
+                            });
+                        })}
                     >
                         <${ViraButton.assign({
                             icon: inputs.mobileModal ? mobileSearchIcon : searchIcon,
@@ -766,6 +792,22 @@ export const VirSidebar = defineElement<{
                                     updateState({
                                         searchQuery: event.detail,
                                     });
+                                })}
+                                ${listen('keydown', (event) => {
+                                    if (
+                                        !(event instanceof KeyboardEvent) ||
+                                        event.key !== 'Enter' ||
+                                        !firstSearchResult
+                                    ) {
+                                        return;
+                                    }
+                                    emitFolderActivated(firstSearchResult.path);
+                                    /**
+                                     * `keepOpenAfterInteraction` means picking a result won't close
+                                     * the pop-up on its own, and leaving it floating over a sidebar
+                                     * that just jumped to the new folder is disorienting.
+                                     */
+                                    state.searchPopUpManager?.removePopUp();
                                 })}
                             ></${ViraInput}>
                         </div>
@@ -887,9 +929,7 @@ export const VirSidebar = defineElement<{
                     }),
                 )}
                 ${worktreeRoots.map((root) => {
-                    const children = visibleFolders
-                        .filter((folder) => folder.parentRepoPath === root.path)
-                        .toSorted(folderComparator);
+                    const children = sortedChildrenOf(root.path);
                     const repoMenuKey = `repo:${root.path}`;
                     return html`
                         <div
@@ -1075,7 +1115,17 @@ export const VirSidebar = defineElement<{
                     ></${ViraInput}>
                     <${ViraSelect.assign({
                         label: 'AI',
-                        options: aiSelectOptions(state),
+                        /**
+                         * The repo root's resolved AI, which the new worktree inherits when the
+                         * user leaves this on "Default". `FolderInfo.aiId` already walked the
+                         * override chain on the backend, so there's no config lookup to redo here.
+                         */
+                        options: aiSelectOptions(
+                            state,
+                            state.folders.find(
+                                (folder) => folder.path === state.worktreeModalRepoPath,
+                            )?.aiId,
+                        ),
                         value: state.worktreeAiId,
                         disabled: state.worktreeSubmitting,
                     })}
@@ -1749,10 +1799,19 @@ const defaultAiSelectValue = 'default';
 /**
  * Options for every AI select: the definitions, preceded by a "use the default" entry carrying
  * {@link defaultAiSelectValue}.
+ *
+ * `inheritedAiId` is what the thing being created will actually fall back to, which is not always
+ * the global default — a new worktree inherits its repo root's override. Empty means nothing sits
+ * between the new folder and `config.defaultAiId`.
  */
-function aiSelectOptions(state: Readonly<SidebarState>): ViraSelectOption[] {
+function aiSelectOptions(
+    state: Readonly<SidebarState>,
+    inheritedAiId?: string | undefined,
+): ViraSelectOption[] {
     const defaultName =
-        state.aiDefinitions.find((definition) => definition.id === state.defaultAiId)?.name ||
+        state.aiDefinitions.find(
+            (definition) => definition.id === (inheritedAiId || state.defaultAiId),
+        )?.name ||
         state.aiDefinitions[0]?.name ||
         '';
     return [

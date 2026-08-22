@@ -15,6 +15,7 @@ import {
     HorizontalAnchor,
     LoaderAnimated24Icon,
     lucideIcons,
+    noUserSelect,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
@@ -245,6 +246,7 @@ export const VirPaneGroup = defineElement<{
         }
 
         .tab {
+            ${noUserSelect};
             appearance: none;
             background: transparent;
             border: none;
@@ -359,6 +361,7 @@ export const VirPaneGroup = defineElement<{
         }
 
         .session-tab {
+            ${noUserSelect};
             display: inline-flex;
             align-items: center;
             gap: 2px;
