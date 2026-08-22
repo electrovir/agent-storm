@@ -1708,6 +1708,27 @@ export const VirDiffPane = defineElement<{
                     rulerMarks: toRulerMarks(editor.view, chunks),
                     editor,
                 });
+                /**
+                 * A fresh mount starts at line 1, so a change 800 lines into a file opens onto
+                 * untouched context. Jump to the first chunk instead — the reason the file is in
+                 * the list is what the user came to see.
+                 *
+                 * Only on a new file, not on every rebuild: a poll that picks up an edit the user
+                 * just made in their own editor also rebuilds, and yanking them back to the top of
+                 * the file each time would fight them mid-review.
+                 */
+                const firstChunk = chunks[0];
+                if (firstChunk && (!previous || previous.value !== nextRendered.value)) {
+                    editor.view.dispatch({
+                        effects: EditorView.scrollIntoView(
+                            Math.min(firstChunk.fromB, editor.view.state.doc.length),
+                            {
+                                y: 'start',
+                                yMargin: 24,
+                            },
+                        ),
+                    });
+                }
             }
         }
 

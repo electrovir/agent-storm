@@ -1,5 +1,10 @@
 import {configJsonSchema, defaultConfig, type Config} from '@agent-storm/common';
-import {pickObjectKeys, type JsonValue} from '@augment-vir/common';
+import {
+    getObjectTypedKeys,
+    omitObjectKeys,
+    pickObjectKeys,
+    type JsonValue,
+} from '@augment-vir/common';
 import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
 import {
     ViraButton,
@@ -47,11 +52,21 @@ const formJsonSchema: ViraJsonSchemaObject = (() => {
     return {
         ...configJsonSchema,
         properties,
+        /**
+         * `toJsonValue` already keeps unsupported keys out of the form's value, so the form should
+         * never meet one. This is the backstop: `configJsonSchema` has to keep
+         * `additionalProperties: false` for `mapSchemaToShape`, and inheriting that here would lock
+         * the user out of every setting over a single stray key.
+         */
+        additionalProperties: true,
         required: configJsonSchema.required.filter(
             (key) => !(hiddenConfigKeys as ReadonlyArray<string>).includes(key),
         ),
     };
 })();
+
+/** Exactly the keys the form renders: every schema property that isn't hidden. */
+const formConfigKeys = getObjectTypedKeys(formJsonSchema.properties || {});
 
 /**
  * The AI choices for the default picker. An empty leading option covers a config with no AI defined
@@ -66,26 +81,28 @@ function aiOptions(config: Readonly<Config> | undefined): ViraSelectOption[] {
     });
 }
 
+/**
+ * Pick the form's keys out of the config, which drops both the hidden ones and any key this build
+ * no longer supports (a setting removed in a later version, or one written by a newer build the
+ * user ran earlier). The form renders a row per key present in the value it's given, not per schema
+ * property, so an unsupported key left in here would show up as an editable row.
+ */
 function toJsonValue(config: Readonly<Config>): JsonValue {
-    const visible = {
-        ...config,
-    } as Record<string, unknown>;
-    hiddenConfigKeys.forEach((key) => {
-        delete visible[key];
-    });
+    const visible = pickObjectKeys(config as Readonly<Record<string, unknown>>, formConfigKeys);
     return JSON.parse(JSON.stringify(visible)) as JsonValue;
 }
 
 function fromJsonValue(value: JsonValue, current: Readonly<Config>): Config {
     /**
-     * Preserve the current hidden fields when merging the user-edited form back into a full Config.
-     * Without this, the form's output (which only knows about the visible fields) would lack those
-     * keys and they'd revert to defaults on save.
+     * Everything the form didn't see comes back from the current config: the hidden fields, and the
+     * unsupported keys `toJsonValue` stripped. Without this the form's output would lack those keys
+     * and saving would revert them to defaults — or, for an unsupported key, erase it from the file
+     * of whichever build still uses it.
      */
     return {
         ...defaultConfig,
+        ...omitObjectKeys(current as Readonly<Record<string, unknown>>, formConfigKeys),
         ...(value as Partial<Config>),
-        ...pickObjectKeys(current, hiddenConfigKeys),
     };
 }
 
