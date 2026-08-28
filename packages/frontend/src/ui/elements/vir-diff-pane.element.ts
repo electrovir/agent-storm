@@ -391,18 +391,18 @@ type DiffColors = {
  */
 const diffColors: Readonly<Record<'light' | 'dark', Readonly<DiffColors>>> = {
     light: {
-        removedLine: '#fbe9e9',
-        removedText: '#f5cfcf',
-        removedChunk: '#fdf4f4',
-        addedLine: '#e7f7e5',
-        addedText: '#cbeec7',
+        removedLine: '#fdf2f2',
+        removedText: '#f9dede',
+        removedChunk: '#fefafa',
+        addedLine: '#f1fbf0',
+        addedText: '#ddf3da',
     },
     dark: {
-        removedLine: '#3a2326',
-        removedText: '#5c2f34',
-        removedChunk: '#2a1c1e',
-        addedLine: '#1d3524',
-        addedText: '#2b5334',
+        removedLine: '#2b1a1d',
+        removedText: '#452227',
+        removedChunk: '#201517',
+        addedLine: '#16271b',
+        addedText: '#1f3d27',
     },
 };
 
