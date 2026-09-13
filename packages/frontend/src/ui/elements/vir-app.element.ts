@@ -21,7 +21,10 @@ import {getFolders, touchRepo} from '../../util/api-client.js';
 import {installClientErrorLog, reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient, sidebarWidth} from '../../util/local-storage-client.js';
 import {
+    bareMainTabPaths,
     defaultFrontendTab,
+    MainTab,
+    mainTabFromRoute,
     rememberedSessionIndexForFolder,
     rememberedTabForFolder,
     rememberSessionIndexForFolder,
@@ -38,6 +41,7 @@ import {applyThemeMode} from '../../util/theme-mode.js';
 import {VirAiModal} from './vir-ai-modal.element.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
+import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
@@ -48,9 +52,12 @@ import {VirSidebar} from './vir-sidebar.element.js';
  * - `folder` — the activated `FolderInfo` (standalone repo or worktree child) when the URL points to
  *   a folder we can resolve. Used as the sidebar's `activeFolder` + the visible pane group.
  * - `redirectToRoot` — when the URL is non-trivial but invalid given the current folder list (e.g.
- *   `/<repoName>` where that repo has worktrees, or `/<repoName>/<worktreeName>` where neither
- *   exists). `vir-app` reacts by calling `router.setRoute({paths: []})` to bounce the user back to
- *   `/`. Suppressed when folder info hasn't loaded yet so we don't fight a still-loading page.
+ *   `/write-code/<repoName>` where that repo has worktrees, or
+ *   `/write-code/<repoName>/<worktreeName>` where neither exists). `vir-app` reacts by bouncing the
+ *   user back to the bare `/write-code`. Suppressed when folder info hasn't loaded yet so we don't
+ *   fight a still-loading page.
+ *
+ * Both are computed from the folder segments _after_ the main-tab segment.
  */
 type RouteResolution = {
     folder: FolderInfo | undefined;
@@ -62,10 +69,10 @@ function resolveRoute(
     folderInfo: ReadonlyMap<string, FolderInfo>,
 ): RouteResolution {
     /**
-     * Reserved literal — element-book route doesn't map to a folder. Also bail before folder info
-     * has loaded so we don't redirect a URL that might be perfectly valid once data arrives.
+     * Bail before folder info has loaded so we don't redirect a URL that might be perfectly valid
+     * once data arrives.
      */
-    if (routePaths[0] === 'book' || routePaths.length === 0 || folderInfo.size === 0) {
+    if (routePaths.length === 0 || folderInfo.size === 0) {
         return {
             folder: undefined,
             redirectToRoot: false,
@@ -114,15 +121,15 @@ function resolveRoute(
 }
 
 /**
- * Compute the URL paths that should represent the given folder.
+ * Compute the URL paths that should represent the given folder, always under the Write Code tab.
  *
- * - Standalone repo → `[folder.name]`.
- * - Worktree child → `[parentRepoName, folder.name]` (we resolve the parent's name through
- *   `folderInfo`; falls back to its basename via `parentRepoPath` if for some reason the parent
- *   isn't in the map).
- * - Worktree root → `[folder.name]` (the activation path for worktree-roots is "user clicked a
- *   child", so this branch is mostly defensive; if it ever fires the redirect-to-root logic above
- *   will undo it on the next render).
+ * - Standalone repo → `[write-code, folder.name]`.
+ * - Worktree child → `[write-code, parentRepoName, folder.name]` (we resolve the parent's name
+ *   through `folderInfo`; falls back to its basename via `parentRepoPath` if for some reason the
+ *   parent isn't in the map).
+ * - Worktree root → `[write-code, folder.name]` (the activation path for worktree-roots is "user
+ *   clicked a child", so this branch is mostly defensive; if it ever fires the redirect-to-root
+ *   logic above will undo it on the next render).
  */
 function pathsForFolder(
     folder: FolderInfo,
@@ -132,11 +139,15 @@ function pathsForFolder(
         const parent = folderInfo.get(folder.parentRepoPath);
         const parentName = parent?.name || folder.parentRepoPath.split('/').findLast(Boolean);
         return [
+            MainTab.WriteCode,
             parentName || folder.parentRepoPath,
             folder.name,
         ];
     }
-    return [folder.name];
+    return [
+        MainTab.WriteCode,
+        folder.name,
+    ];
 }
 
 const folderInfoPollMs = 2000;
@@ -163,6 +174,11 @@ type AppState = {
     /** Open state of the "Define AI" modal, raised from the settings modal so the two never stack. */
     aiModalOpen: boolean;
     route: AppRoute;
+    /**
+     * Most recent Write Code route, so switching to Review Code and back restores the repo, pane
+     * tab, and session the user was on instead of dumping them at the bare tab route.
+     */
+    lastWriteCodeRoute: AppRoute | undefined;
     removeRouteListener: (() => void) | undefined;
     sidebarWidth: number;
     sidebarDragging: boolean;
@@ -212,6 +228,7 @@ export const VirApp = defineElement()({
             settingsOpen: false,
             aiModalOpen: false,
             route: router.readCurrentRoute(),
+            lastWriteCodeRoute: undefined,
             removeRouteListener: undefined,
             sidebarWidth: localStorageClient.sidebarWidth.read(),
             sidebarDragging: false,
@@ -263,6 +280,43 @@ export const VirApp = defineElement()({
              * off-screen.
              */
             overflow: hidden;
+        }
+
+        vir-main-tabs {
+            flex-shrink: 0;
+        }
+
+        /*
+         * Mobile drops the docked strip: it reappears as a horizontal row inside the sidebar modal
+         * (and at the top of the review panel, which has no other chrome to get back out of).
+         */
+        :host([data-mobile]) > vir-main-tabs {
+            display: none;
+        }
+
+        .write-code-panel {
+            display: flex;
+            flex-direction: row;
+            flex-grow: 1;
+            min-width: 0;
+            min-height: 0;
+        }
+
+        /*
+         * Hidden rather than unmounted: every mounted pane group holds live /pty WebSocket(s) and
+         * xterm scrollback, so unmounting the whole panel on every tab switch would tear all of them
+         * down and replay every terminal on the way back.
+         */
+        .write-code-panel[data-hidden] {
+            display: none;
+        }
+
+        .review-code-panel {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            min-width: 0;
+            min-height: 0;
         }
 
         vir-sidebar {
@@ -329,8 +383,8 @@ export const VirApp = defineElement()({
          * stage stretches edge-to-edge, and a hamburger button floats top-left to open the
          * sidebar in a ViraModal popup.
          */
-        :host([data-mobile]) > vir-sidebar,
-        :host([data-mobile]) > .sidebar-divider {
+        :host([data-mobile]) .write-code-panel > vir-sidebar,
+        :host([data-mobile]) .write-code-panel > .sidebar-divider {
             display: none;
         }
 
@@ -357,6 +411,7 @@ export const VirApp = defineElement()({
             height: 70dvh;
             max-height: 600px;
             display: flex;
+            flex-direction: column;
         }
 
         .mobile-sidebar-modal-content vir-sidebar {
@@ -372,9 +427,22 @@ export const VirApp = defineElement()({
         const pollHandle = setInterval(() => {
             void refreshFolderInfo(updateState);
         }, folderInfoPollMs);
+        /**
+         * `/` (and any unrecognized URL) sanitizes to the Write Code tab on read, but the window's
+         * URL bar only gets corrected when a location change fires. Write it back once on startup
+         * so the address bar agrees with what's rendered.
+         */
+        router.setRoute(router.readCurrentRoute(), {
+            replace: true,
+        });
         const removeRouteListener = router.listen(true, (route) => {
             updateState({
                 route,
+                ...(route.paths[0] === MainTab.WriteCode
+                    ? {
+                          lastWriteCodeRoute: route,
+                      }
+                    : {}),
             });
         });
         /**
@@ -490,12 +558,13 @@ export const VirApp = defineElement()({
          * can't resolve (mistyped path, repo-with-worktrees + no second segment, etc.) and folder
          * info has actually loaded, bounce the user back to `/` so we don't sit in a broken state.
          */
-        const resolution = resolveRoute(state.route.paths, state.folderInfo);
+        const mainTab = mainTabFromRoute(state.route);
+        const resolution = resolveRoute(state.route.paths.slice(1), state.folderInfo);
         const activeFolder = resolution.folder?.path;
         if (resolution.redirectToRoot) {
             void Promise.resolve().then(() =>
                 router.setRoute({
-                    paths: [],
+                    paths: bareMainTabPaths[MainTab.WriteCode],
                 }),
             );
         }
@@ -710,7 +779,7 @@ export const VirApp = defineElement()({
              */
             if (activeFolder && removed.has(activeFolder)) {
                 router.setRoute({
-                    paths: [],
+                    paths: bareMainTabPaths[MainTab.WriteCode],
                 });
             }
             updateState({
@@ -750,167 +819,223 @@ export const VirApp = defineElement()({
             void refreshFolderInfo(updateState);
         };
 
-        return html`
-            <${VirSidebar.assign({
-                activeFolder,
-                themeClient: state.themeClient,
+        const handleMainTabRequested = (tab: MainTab) => {
+            const routeByMainTab: Record<MainTab, Parameters<typeof router.setRoute>[0]> = {
+                [MainTab.WriteCode]: state.lastWriteCodeRoute ?? {
+                    paths: bareMainTabPaths[MainTab.WriteCode],
+                    search: undefined,
+                },
+                [MainTab.ReviewCode]: {
+                    paths: bareMainTabPaths[MainTab.ReviewCode],
+                    search: undefined,
+                },
+            };
+            router.setRoute(routeByMainTab[tab]);
+        };
+
+        /**
+         * The horizontal copy of the main tabs, for the two places mobile puts them. Switching tab
+         * also dismisses the sidebar modal, since the repo list it holds belongs to Write Code.
+         */
+        const renderMobileMainTabs = () => html`
+            <${VirMainTabs.assign({
+                activeTab: mainTab,
+                isHorizontal: true,
             })}
-                ${listen(VirSidebar.events.folderActivated, (event) =>
-                    handleFolderActivated(event.detail),
-                )}
-                ${listen(VirSidebar.events.foldersRemoved, (event) =>
-                    handleFoldersRemoved(event.detail),
-                )}
-                ${listen(VirSidebar.events.paneRestarted, (event) =>
-                    handlePaneRestarted(event.detail),
-                )}
-                ${listen(VirSidebar.events.openSettingsRequested, () =>
-                    handleOpenSettingsRequested(),
-                )}
-                ${listen(VirSidebar.events.openAiModalRequested, () =>
-                    handleOpenAiModalRequested(),
-                )}
-            ></${VirSidebar}>
-            <div
-                class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
-                role="separator"
-                aria-orientation="vertical"
-                title="Drag to resize. Double-click to reset."
-                ${listen('pointerdown', onDividerPointerDown)}
-                ${listen('dblclick', onDividerDoubleClick)}
-            ></div>
-            <div class="stage">
-                <${ViraButton.assign({
-                    icon: hamburgerIcon,
-                    buttonSize: ViraSize.Small,
-                    buttonEmphasis: ViraEmphasis.Subtle,
-                    color: ViraColorVariant.Neutral,
+                ${listen(VirMainTabs.events.tabRequested, (event) => {
+                    handleMainTabRequested(event.detail);
+                    updateState({
+                        mobileSidebarOpen: false,
+                    });
                 })}
-                    class="mobile-sidebar-trigger"
-                    title="Open repo list"
-                    ${listen('click', () =>
-                        updateState({
-                            mobileSidebarOpen: true,
-                        }),
-                    )}
-                ></${ViraButton}>
-                ${renderedFolders.length === 0
-                    ? html`
-                          <div class="stage-empty">Select a repo to open its panes.</div>
-                      `
-                    : ''}
-                ${repeat(
-                    renderedFolders,
-                    /**
-                     * Key the pane slots by absolute folder path so lit-html identifies elements by
-                     * folder rather than by array index. Without this, removing a folder from
-                     * `openedFolders` (e.g. via "Kill panes") and then opening a _different_ folder
-                     * at the same array position causes lit to reuse the existing `VirPaneGroup` /
-                     * `VirTerminal` elements. Their `init` hooks — which open the `/pty` WebSocket
-                     * with the original folder baked into search params — don't re-run when inputs
-                     * change, so the reused terminal stays attached to the previous folder's PTY
-                     * while the UI claims to be showing the new one.
-                     */
-                    (folder) => folder,
-                    (folder) => {
-                        const info = state.folderInfo.get(folder);
-                        const active = folder === activeFolder;
-                        return html`
-                            <div class="pane-slot" ?data-active=${active}>
-                                <${VirPaneGroup.assign({
-                                    folder,
-                                    active,
-                                    activeTab: tabFromRoute(state.route),
-                                    screenSize: state.screenSize,
-                                    folderRestartKeys: arrayToObject(
-                                        getObjectTypedValues(PaneKind),
-                                        (kind) => {
-                                            return {
-                                                key: kind,
-                                                value:
-                                                    state.paneRestartKeys[`${folder}:${kind}`] || 0,
-                                            };
-                                        },
-                                        {
-                                            useRequired: true,
-                                        },
-                                    ),
-                                    aiSessionIndex: sessionIndexFromRoute(state.route, PaneKind.Ai),
-                                    shellSessionIndex: sessionIndexFromRoute(
-                                        state.route,
-                                        PaneKind.Shell,
-                                    ),
-                                    folderAiId: info?.aiId || '',
-                                    parentRepoPath: info?.parentRepoPath || '',
-                                    aiConfigRevision: state.aiConfigRevision,
-                                    sessionStatuses: info?.sessionStatuses || [],
-                                    prUrl: info?.prUrl || '',
-                                })}
-                                    ${listen(VirPaneGroup.events.sessionRequested, (event) => {
-                                        /**
-                                         * Session selection lives in the URL alongside `tab`, so a
-                                         * reload or a shared link lands on the same session. Index
-                                         * 1 is omitted for the same reason the default tab is: it's
-                                         * what the fallback resolves to anyway.
-                                         */
-                                        const paramName =
-                                            sessionSearchParamByKind[event.detail.kind];
-                                        const existingSearch = state.route.search ?? {};
-                                        rememberSessionIndexForFolder({
-                                            folder,
-                                            kind: event.detail.kind,
-                                            index: event.detail.index,
-                                        });
-                                        router.setRoute({
-                                            paths: state.route.paths,
-                                            /**
-                                             * Index 1 drops the param rather than setting it to
-                                             * `undefined`: the search type marks these optional, so
-                                             * an explicit `undefined` isn't assignable.
-                                             */
-                                            search:
-                                                event.detail.index > 1
-                                                    ? {
-                                                          ...existingSearch,
-                                                          [paramName]: [
-                                                              String(event.detail.index),
-                                                          ],
-                                                      }
-                                                    : omitObjectKeys(existingSearch, [paramName]),
-                                        });
-                                    })}
-                                    ${listen(VirPaneGroup.events.tabRequested, (event) => {
-                                        const requestedTab = event.detail;
-                                        const existingSearch = state.route.search ?? {};
-                                        rememberTabForFolder({
-                                            folder,
-                                            tab: requestedTab,
-                                        });
-                                        router.setRoute({
-                                            paths: state.route.paths,
-                                            /**
-                                             * Omit `?tab` from the URL when the requested tab is
-                                             * the default — keeps URLs short and matches what
-                                             * `tabFromRoute` falls back to anyway. Either branch
-                                             * carries the session params through: switching between
-                                             * CLI and Code shouldn't reset which session each pane
-                                             * is showing.
-                                             */
-                                            search:
-                                                requestedTab === defaultFrontendTab
-                                                    ? omitObjectKeys(existingSearch, ['tab'])
-                                                    : {
-                                                          ...existingSearch,
-                                                          tab: [requestedTab],
-                                                      },
-                                        });
-                                    })}
-                                ></${VirPaneGroup}>
-                            </div>
-                        `;
-                    },
+            ></${VirMainTabs}>
+        `;
+
+        return html`
+            <${VirMainTabs.assign({
+                activeTab: mainTab,
+            })}
+                ${listen(VirMainTabs.events.tabRequested, (event) =>
+                    handleMainTabRequested(event.detail),
                 )}
+            ></${VirMainTabs}>
+            <div class="write-code-panel" ?data-hidden=${mainTab !== MainTab.WriteCode}>
+                <${VirSidebar.assign({
+                    activeFolder,
+                    themeClient: state.themeClient,
+                })}
+                    ${listen(VirSidebar.events.folderActivated, (event) =>
+                        handleFolderActivated(event.detail),
+                    )}
+                    ${listen(VirSidebar.events.foldersRemoved, (event) =>
+                        handleFoldersRemoved(event.detail),
+                    )}
+                    ${listen(VirSidebar.events.paneRestarted, (event) =>
+                        handlePaneRestarted(event.detail),
+                    )}
+                    ${listen(VirSidebar.events.openSettingsRequested, () =>
+                        handleOpenSettingsRequested(),
+                    )}
+                    ${listen(VirSidebar.events.openAiModalRequested, () =>
+                        handleOpenAiModalRequested(),
+                    )}
+                ></${VirSidebar}>
+                <div
+                    class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
+                    role="separator"
+                    aria-orientation="vertical"
+                    title="Drag to resize. Double-click to reset."
+                    ${listen('pointerdown', onDividerPointerDown)}
+                    ${listen('dblclick', onDividerDoubleClick)}
+                ></div>
+                <div class="stage">
+                    <${ViraButton.assign({
+                        icon: hamburgerIcon,
+                        buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        color: ViraColorVariant.Neutral,
+                    })}
+                        class="mobile-sidebar-trigger"
+                        title="Open repo list"
+                        ${listen('click', () =>
+                            updateState({
+                                mobileSidebarOpen: true,
+                            }),
+                        )}
+                    ></${ViraButton}>
+                    ${renderedFolders.length === 0
+                        ? html`
+                              <div class="stage-empty">Select a repo to open its panes.</div>
+                          `
+                        : ''}
+                    ${repeat(
+                        renderedFolders,
+                        /**
+                         * Key the pane slots by absolute folder path so lit-html identifies
+                         * elements by folder rather than by array index. Without this, removing a
+                         * folder from `openedFolders` (e.g. via "Kill panes") and then opening a
+                         * _different_ folder at the same array position causes lit to reuse the
+                         * existing `VirPaneGroup` / `VirTerminal` elements. Their `init` hooks —
+                         * which open the `/pty` WebSocket with the original folder baked into
+                         * search params — don't re-run when inputs change, so the reused terminal
+                         * stays attached to the previous folder's PTY while the UI claims to be
+                         * showing the new one.
+                         */
+                        (folder) => folder,
+                        (folder) => {
+                            const info = state.folderInfo.get(folder);
+                            const active = folder === activeFolder;
+                            return html`
+                                <div class="pane-slot" ?data-active=${active}>
+                                    <${VirPaneGroup.assign({
+                                        folder,
+                                        active,
+                                        activeTab: tabFromRoute(state.route),
+                                        screenSize: state.screenSize,
+                                        folderRestartKeys: arrayToObject(
+                                            getObjectTypedValues(PaneKind),
+                                            (kind) => {
+                                                return {
+                                                    key: kind,
+                                                    value:
+                                                        state.paneRestartKeys[
+                                                            `${folder}:${kind}`
+                                                        ] || 0,
+                                                };
+                                            },
+                                            {
+                                                useRequired: true,
+                                            },
+                                        ),
+                                        aiSessionIndex: sessionIndexFromRoute(
+                                            state.route,
+                                            PaneKind.Ai,
+                                        ),
+                                        shellSessionIndex: sessionIndexFromRoute(
+                                            state.route,
+                                            PaneKind.Shell,
+                                        ),
+                                        folderAiId: info?.aiId || '',
+                                        parentRepoPath: info?.parentRepoPath || '',
+                                        aiConfigRevision: state.aiConfigRevision,
+                                        sessionStatuses: info?.sessionStatuses || [],
+                                        prUrl: info?.prUrl || '',
+                                    })}
+                                        ${listen(VirPaneGroup.events.sessionRequested, (event) => {
+                                            /**
+                                             * Session selection lives in the URL alongside `tab`,
+                                             * so a reload or a shared link lands on the same
+                                             * session. Index 1 is omitted for the same reason the
+                                             * default tab is: it's what the fallback resolves to
+                                             * anyway.
+                                             */
+                                            const paramName =
+                                                sessionSearchParamByKind[event.detail.kind];
+                                            const existingSearch = state.route.search ?? {};
+                                            rememberSessionIndexForFolder({
+                                                folder,
+                                                kind: event.detail.kind,
+                                                index: event.detail.index,
+                                            });
+                                            router.setRoute({
+                                                paths: state.route.paths,
+                                                /**
+                                                 * Index 1 drops the param rather than setting it to
+                                                 * `undefined`: the search type marks these
+                                                 * optional, so an explicit `undefined` isn't
+                                                 * assignable.
+                                                 */
+                                                search:
+                                                    event.detail.index > 1
+                                                        ? {
+                                                              ...existingSearch,
+                                                              [paramName]: [
+                                                                  String(event.detail.index),
+                                                              ],
+                                                          }
+                                                        : omitObjectKeys(existingSearch, [
+                                                              paramName,
+                                                          ]),
+                                            });
+                                        })}
+                                        ${listen(VirPaneGroup.events.tabRequested, (event) => {
+                                            const requestedTab = event.detail;
+                                            const existingSearch = state.route.search ?? {};
+                                            rememberTabForFolder({
+                                                folder,
+                                                tab: requestedTab,
+                                            });
+                                            router.setRoute({
+                                                paths: state.route.paths,
+                                                /**
+                                                 * Omit `?tab` from the URL when the requested tab
+                                                 * is the default — keeps URLs short and matches
+                                                 * what `tabFromRoute` falls back to anyway. Either
+                                                 * branch carries the session params through:
+                                                 * switching between CLI and Code shouldn't reset
+                                                 * which session each pane is showing.
+                                                 */
+                                                search:
+                                                    requestedTab === defaultFrontendTab
+                                                        ? omitObjectKeys(existingSearch, ['tab'])
+                                                        : {
+                                                              ...existingSearch,
+                                                              tab: [requestedTab],
+                                                          },
+                                            });
+                                        })}
+                                    ></${VirPaneGroup}>
+                                </div>
+                            `;
+                        },
+                    )}
+                </div>
             </div>
+            ${mainTab === MainTab.ReviewCode
+                ? html`
+                      <div class="review-code-panel">${isMobile ? renderMobileMainTabs() : ''}</div>
+                  `
+                : ''}
             <${VirSettingsModal.assign({
                 open: state.settingsOpen,
             })}
@@ -954,6 +1079,7 @@ export const VirApp = defineElement()({
                 )}
             >
                 <div class="mobile-sidebar-modal-content">
+                    ${renderMobileMainTabs()}
                     <${VirSidebar.assign({
                         activeFolder,
                         hideBorder: true,

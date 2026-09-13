@@ -151,6 +151,23 @@ log.faint(
         ' (override with BACKEND_PORT / FRONTEND_PORT env vars)',
 );
 
+/**
+ * Wait before restarting a service that exited, so one that fails immediately (a port still held by
+ * a dying process) prints its error at a readable pace instead of scrolling the terminal.
+ */
+const restartDelaySeconds = 2;
+
+/**
+ * Keep a service alive for the life of `npm start`. Both services are servers, so every exit is a
+ * failure — including being killed from outside, which runstorm reports as exit code 0 because a
+ * signaled child closes with a null code and runstorm falls back to 0. The echoed status is the
+ * shell's, where a kill reads as 128 plus the signal number, which is what separates a crash from
+ * something sweeping the process up.
+ */
+function supervised(command: string): string {
+    return `while true; do ${command}; echo "exited with status $?; restarting in ${restartDelaySeconds}s"; sleep ${restartDelaySeconds}; done`;
+}
+
 const child = spawn(
     // eslint-disable-next-line sonarjs/no-os-command-from-path
     'npx',
@@ -160,8 +177,8 @@ const child = spawn(
         'green,blue',
         '--names',
         'backend,frontend',
-        'npm start --workspace @agent-storm/server',
-        'npm start --workspace @agent-storm/frontend',
+        supervised('npm start --workspace @agent-storm/server'),
+        supervised('npm start --workspace @agent-storm/frontend'),
     ],
     {
         stdio: 'inherit',

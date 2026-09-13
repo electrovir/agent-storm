@@ -4,28 +4,63 @@ import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
 import {localStorageClient} from './local-storage-client.js';
 
 /**
+ * Top-level app tab, rendered as the vertical tab strip left of the sidebar and carried as the
+ * first path segment so a tab selection survives a reload or a shared link.
+ */
+export enum MainTab {
+    WriteCode = 'write-code',
+    ReviewCode = 'review-code',
+}
+
+export const defaultMainTab = MainTab.WriteCode;
+
+/** Tab order in the strip, top to bottom. */
+export const orderedMainTabs: ReadonlyArray<MainTab> = [
+    MainTab.WriteCode,
+    MainTab.ReviewCode,
+];
+
+export const mainTabLabels: Record<MainTab, string> = {
+    [MainTab.WriteCode]: 'Write Code',
+    [MainTab.ReviewCode]: 'Review Code',
+};
+
+/**
  * The valid shape of the in-app URL.
  *
- * - `/` — default experience, nothing selected.
- * - `/<repoName>` — a standalone (non-worktree) repo selected. If the segment matches a repo that
- *   _has_ worktrees, the route is invalid; `vir-app` redirects back to `/` once it has folder info
- *   to make that determination.
- * - `/<repoName>/<worktreeName>` — a worktree under a worktree-root repo selected.
- * - `/book/<...>` — the element-book route (preserved from the previous router so deep links keep
- *   working).
+ * - `/write-code` — default experience, nothing selected.
+ * - `/write-code/<repoName>` — a standalone (non-worktree) repo selected. If the segment matches a
+ *   repo that _has_ worktrees, the route is invalid; `vir-app` redirects back to `/write-code` once
+ *   it has folder info to make that determination.
+ * - `/write-code/<repoName>/<worktreeName>` — a worktree under a worktree-root repo selected.
+ * - `/review-code` — the Review Code tab, which has no contents yet.
+ * - `/book/<...>` — the element-book route, deliberately left outside the tab strip: it replaces the
+ *   whole app chrome, so nesting it under a tab would be a lie (and would break existing deep
+ *   links).
  *
  * The `:repo-name` / `:worktree-name` segments are dynamic — sanitization keeps whatever value the
  * user typed and lets `vir-app` resolve it against the live folder list.
  */
 export const frontendPathTree = new PathTree({
-    allowBare: true,
+    /**
+     * A bare `/` isn't a valid route, which is what makes sanitization rewrite it — and any URL
+     * whose first segment isn't recognized, including pre-tab links like `/<repoName>` — to the
+     * first child below, the Write Code tab.
+     */
+    allowBare: false,
     children: {
-        ':repo-name': {
+        [MainTab.WriteCode]: {
             allowBare: true,
             children: {
-                ':worktree-name': {},
+                ':repo-name': {
+                    allowBare: true,
+                    children: {
+                        ':worktree-name': {},
+                    },
+                },
             },
         },
+        [MainTab.ReviewCode]: {},
         book: {
             anyChildren: true,
         },
@@ -57,15 +92,16 @@ const allowedTabValues: ReadonlyArray<FrontendTab> = [
 /**
  * Search params allowed on the URL.
  *
- * - `tab` — `'ai' | 'shell' | 'diff'`. Only kept on repo-selection routes (`/<repoName>` or
- *   `/<repoName>/<worktreeName>`); stripped everywhere else. Absent param ⇒ `ai` (default).
+ * - `tab` — `'ai' | 'shell' | 'diff'`. Only kept on repo-selection routes (`/write-code/<repoName>`
+ *   or `/write-code/<repoName>/<worktreeName>`); stripped everywhere else. Absent param ⇒ `ai`
+ *   (default).
  * - `aiSession` / `shellSession` — 1-based index of the active session tab within that pane. Two
  *   separate params rather than one because desktop renders the AI and Shell panes simultaneously,
  *   so "the active session" is genuinely two independent values. Absent ⇒ session 1.
  *
  * Sessions travel as search params rather than path segments for the same reason, plus a path
- * segment would be ambiguous with `:worktree-name`: `/<repoName>/2` can't be distinguished from a
- * worktree literally named `2`.
+ * segment would be ambiguous with `:worktree-name`: `/write-code/<repoName>/2` can't be
+ * distinguished from a worktree literally named `2`.
  *
  * Stored as `ReadonlyArray<string>` because `URLSearchParams` allows repeats. We always normalize
  * to a single-element array so url-vir serializes as `?tab=ai` (with the `=`).
@@ -87,8 +123,23 @@ export const sessionSearchParamByKind = {
 export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, FrontendSearchParams, undefined>>;
 
 function isRepoSelectionRoute(paths: ReadonlyArray<string>): boolean {
-    return paths.length >= 1 && paths[0] !== 'book';
+    return paths[0] === MainTab.WriteCode && paths.length >= 2;
 }
+
+/**
+ * Which top-level tab the URL selects. Anything that isn't explicitly another tab reads as the
+ * default, so `/book/...` (outside the strip entirely) doesn't leave the strip with nothing
+ * marked.
+ */
+export function mainTabFromRoute(route: AppRoute): MainTab {
+    return route.paths[0] === MainTab.ReviewCode ? MainTab.ReviewCode : defaultMainTab;
+}
+
+/** Bare route for one tab, used when switching tabs with nothing to restore. */
+export const bareMainTabPaths = {
+    [MainTab.WriteCode]: [MainTab.WriteCode],
+    [MainTab.ReviewCode]: [MainTab.ReviewCode],
+} as const satisfies Record<MainTab, FrontendPaths>;
 
 function isFrontendTab(value: string): value is FrontendTab {
     return (allowedTabValues as ReadonlyArray<string>).includes(value);

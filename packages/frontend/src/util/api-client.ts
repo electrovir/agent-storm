@@ -13,9 +13,9 @@ import {
     foldersEndpoint,
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
-    gitDiscardAllEndpoint,
     gitDiscardFileEndpoint,
     gitDiscardHunkEndpoint,
+    gitDiscardUnstagedEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
@@ -367,12 +367,12 @@ export async function discardGitFile(
 }
 
 /**
- * Throw away every changed file's changes, staged and unstaged alike. Cannot be reversed — confirm
- * before calling.
+ * Throw away every unstaged change in the repo, leaving staged changes in place. Cannot be reversed
+ * — confirm before calling.
  */
-export async function discardAllGitChanges(params: Readonly<{folder: string}>): Promise<void> {
-    await requestApi('POST /git/discard/all', () =>
-        client.fetch(gitDiscardAllEndpoint).POST({
+export async function discardUnstagedGitChanges(params: Readonly<{folder: string}>): Promise<void> {
+    await requestApi('POST /git/discard/unstaged', () =>
+        client.fetch(gitDiscardUnstagedEndpoint).POST({
             requestData: params,
         }),
     );

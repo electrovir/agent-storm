@@ -1,4 +1,4 @@
-// cspell:word unstages
+// cspell:words unstages, endobj
 
 import {GitDiffSide} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
@@ -8,7 +8,13 @@ import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {promisify} from 'node:util';
-import {discardAllChanges, discardHunkChanges, getDiffStatus, setSideStaged} from './git-diff.js';
+import {
+    discardHunkChanges,
+    discardUnstagedChanges,
+    getDiffFileContents,
+    getDiffStatus,
+    setSideStaged,
+} from './git-diff.js';
 
 const exec = promisify(execFile);
 
@@ -163,22 +169,34 @@ describe(setSideStaged.name, () => {
     });
 });
 
-describe(discardAllChanges.name, () => {
-    it('restores tracked files and deletes untracked ones, staged or not', async () => {
+describe(discardUnstagedChanges.name, () => {
+    it('restores the working tree from the index and deletes untracked files', async () => {
         const {folder, filePath} = await createRepo();
         try {
             await writeEditAndUntracked({
                 folder,
                 filePath,
             });
-            /** Staged on one side, unstaged on the other, so both branches get exercised at once. */
+            /** Staged, so the discard has something it must leave behind. */
             await exec('git', [
                 '-C',
                 folder,
                 'add',
                 'file.txt',
             ]);
-            await discardAllChanges(folder);
+            /** One more edit on top of what's staged: this is the only part that should go. */
+            await writeFile(
+                filePath,
+                [
+                    'ONE',
+                    'TWO',
+                    'three',
+                    'FOUR',
+                    'five',
+                    '',
+                ].join('\n'),
+            );
+            await discardUnstagedChanges(folder);
             const status = await getDiffStatus(folder);
             assert.deepEquals(
                 {
@@ -191,9 +209,16 @@ describe(discardAllChanges.name, () => {
                     unstaged: status.unstaged.map((file) => file.path),
                 },
                 {
-                    committedFile: `${committedLines.join('\n')}\n`,
+                    committedFile: [
+                        'one',
+                        'TWO',
+                        'three',
+                        'FOUR',
+                        'five',
+                        '',
+                    ].join('\n'),
                     untrackedFileExists: false,
-                    staged: [],
+                    staged: ['file.txt'],
                     unstaged: [],
                 },
             );
@@ -282,6 +307,129 @@ describe(discardHunkChanges.name, () => {
                 {
                     index: expected,
                     worktree: expected,
+                },
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+});
+
+/** Two real 1x1 PNGs, transparent and red, so the two sides differ in bytes as well as in pixels. */
+const transparentPngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=';
+const redPngBase64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
+
+describe(getDiffFileContents.name, () => {
+    it('returns both sides of a modified image as data URLs', async () => {
+        const {folder} = await createRepo();
+        try {
+            const imagePath = join(folder, 'icon.png');
+            await writeFile(imagePath, Buffer.from(transparentPngBase64, 'base64'));
+            await exec('git', [
+                '-C',
+                folder,
+                'add',
+                'icon.png',
+            ]);
+            await exec('git', [
+                '-C',
+                folder,
+                'commit',
+                '-m',
+                'add icon',
+            ]);
+            await writeFile(imagePath, Buffer.from(redPngBase64, 'base64'));
+
+            assert.deepEquals(
+                await getDiffFileContents({
+                    folder,
+                    path: 'icon.png',
+                    oldPath: undefined,
+                    side: GitDiffSide.Unstaged,
+                    allowLarge: false,
+                }),
+                {
+                    oldContent: '',
+                    newContent: '',
+                    isImage: true,
+                    oldImage: `data:image/png;base64,${transparentPngBase64}`,
+                    newImage: `data:image/png;base64,${redPngBase64}`,
+                    tooLargeOrBinary: false,
+                    canShowAnyway: false,
+                },
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+
+    it('withholds a pdf whose bytes contain no NUL', async () => {
+        const {folder} = await createRepo();
+        try {
+            await writeFile(
+                join(folder, 'report.pdf'),
+                [
+                    '%PDF-1.7',
+                    '1 0 obj',
+                    '<< /Type /Catalog >>',
+                    'endobj',
+                    '',
+                ].join('\n'),
+            );
+
+            assert.deepEquals(
+                await getDiffFileContents({
+                    folder,
+                    path: 'report.pdf',
+                    oldPath: undefined,
+                    side: GitDiffSide.Unstaged,
+                    allowLarge: false,
+                }),
+                {
+                    oldContent: '',
+                    newContent: '',
+                    isImage: false,
+                    tooLargeOrBinary: true,
+                    canShowAnyway: false,
+                },
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+
+    it('leaves the missing side of an untracked image undefined', async () => {
+        const {folder} = await createRepo();
+        try {
+            await writeFile(join(folder, 'added.png'), Buffer.from(transparentPngBase64, 'base64'));
+
+            assert.deepEquals(
+                await getDiffFileContents({
+                    folder,
+                    path: 'added.png',
+                    oldPath: undefined,
+                    side: GitDiffSide.Unstaged,
+                    allowLarge: false,
+                }),
+                {
+                    oldContent: '',
+                    newContent: '',
+                    isImage: true,
+                    oldImage: undefined,
+                    newImage: `data:image/png;base64,${transparentPngBase64}`,
+                    tooLargeOrBinary: false,
+                    canShowAnyway: false,
                 },
             );
         } finally {

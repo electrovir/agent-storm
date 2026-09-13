@@ -1,6 +1,7 @@
 // cspell:words unparseable, pids
 
 import {assert, assertWrap, waitUntil} from '@augment-vir/assert';
+import {wait} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {spawn} from 'node:child_process';
 import {collectDescendantPids, killProcessTree, parseProcessTable} from './kill-process-tree.js';
@@ -96,6 +97,7 @@ describe(killProcessTree.name, () => {
         });
 
         killProcessTree(rootPid, {
+            expectedParentPid: process.pid,
             immediate: true,
         });
 
@@ -122,5 +124,31 @@ describe(killProcessTree.name, () => {
                 },
             },
         );
+    });
+
+    it('leaves a process alone when it is not a child of the expected parent', async () => {
+        const stranger = spawn('/bin/bash', [
+            '-c',
+            'sleep 120',
+        ]);
+        const strangerPid = assertWrap.isDefined(stranger.pid);
+        try {
+            assert.isFalse(
+                killProcessTree(strangerPid, {
+                    /** Its real parent is this test process, so pid 1 stands in for a stale one. */
+                    expectedParentPid: 1,
+                    immediate: true,
+                }),
+            );
+            await wait({
+                milliseconds: 100,
+            });
+            process.kill(strangerPid, 0);
+        } finally {
+            killProcessTree(strangerPid, {
+                expectedParentPid: process.pid,
+                immediate: true,
+            });
+        }
     });
 });

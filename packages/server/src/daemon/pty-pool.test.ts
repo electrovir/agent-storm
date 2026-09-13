@@ -10,6 +10,7 @@ import {
     killFolderPanes,
     killPaneSession,
     listAllPaneStatuses,
+    livePtyCount,
     restartPane,
 } from './pty-pool.js';
 
@@ -317,6 +318,65 @@ describe('pane sessions', () => {
             }
         } finally {
             await rm(parent, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+});
+
+describe(livePtyCount.name, () => {
+    it('holds no extra pty after a restart and a kill', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
+        const before = livePtyCount();
+        try {
+            const output: string[] = [];
+            const attachment = attachPane({
+                folder,
+                kind: PaneKind.Ai,
+                aiCmd: persistentAiCommand('counted'),
+                onData(data) {
+                    output.push(data);
+                },
+                onExit() {},
+            });
+
+            try {
+                await waitUntil(() => output.join('').includes('counted'), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: {
+                        seconds: 3,
+                    },
+                });
+
+                restartPane({
+                    folder,
+                    kind: PaneKind.Ai,
+                    aiCmd: persistentAiCommand('counted-again'),
+                });
+                await waitUntil(() => output.join('').includes('counted-again'), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: {
+                        seconds: 3,
+                    },
+                });
+
+                /** The superseded pty is released, not stranded, so a restart is net zero. */
+                assert.strictEquals(livePtyCount(), before + 1);
+            } finally {
+                attachment.detach();
+                killFolderPanes({
+                    folder,
+                });
+            }
+
+            assert.strictEquals(livePtyCount(), before);
+        } finally {
+            await rm(folder, {
                 recursive: true,
                 force: true,
             });

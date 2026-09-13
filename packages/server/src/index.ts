@@ -13,9 +13,9 @@ import {
     foldersEndpoint,
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
-    gitDiscardAllEndpoint,
     gitDiscardFileEndpoint,
     gitDiscardHunkEndpoint,
+    gitDiscardUnstagedEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
@@ -71,9 +71,9 @@ import {clientErrorLogPath, serverLogPath} from './file-paths.js';
 import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
-    discardAllChanges,
     discardFileChanges,
     discardHunkChanges,
+    discardUnstagedChanges,
     getDiffFileContents,
     getDiffStatus,
     moveHunkAcrossIndex,
@@ -845,9 +845,9 @@ const gitDiscardFileImplementation = implementor.implementEndpoint(gitDiscardFil
     },
 });
 
-const gitDiscardAllImplementation = implementor.implementEndpoint(gitDiscardAllEndpoint, {
+const gitDiscardUnstagedImplementation = implementor.implementEndpoint(gitDiscardUnstagedEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        await discardAllChanges(normalizePath(requestData.folder));
+        await discardUnstagedChanges(normalizePath(requestData.folder));
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -1066,7 +1066,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         gitStageAllImplementation,
         gitStageHunkImplementation,
         gitDiscardFileImplementation,
-        gitDiscardAllImplementation,
+        gitDiscardUnstagedImplementation,
         gitDiscardHunkImplementation,
         gitHubPrImplementation,
         gitHubCommentImplementation,

@@ -1,14 +1,16 @@
-// cspell:words numstat, unstaging, nowarn, unidiff
+// cspell:words numstat, unstaging, nowarn, unidiff, apng
+// cspell:words docx, dylib, flac, heic, heif, mkv, odp, ods, odt, pptx, pyc, sqlite, tgz, tiff, ttf, woff, xlsx
 
 import {
     GitDiffSide,
     GitFileChange,
     maxDiffFileBytes,
     maxDiffFileLines,
+    maxDiffImageBytes,
     type GitDiffFile,
     type GitDiffStatus,
 } from '@agent-storm/common';
-import {arrayToObject, awaitedForEach, removeDuplicates} from '@augment-vir/common';
+import {arrayToObject, awaitedForEach, extractExtension} from '@augment-vir/common';
 import {execFile} from 'node:child_process';
 import {readFile, rm} from 'node:fs/promises';
 import {isAbsolute, relative, resolve} from 'node:path';
@@ -401,6 +403,93 @@ function countLines(buffer: Readonly<Buffer>): number {
     return buffer.reduce((count, byte) => (byte === newlineByte ? count + 1 : count), 1);
 }
 
+/**
+ * Formats the Diff pane shows as pictures. Deliberately raster-only: an SVG diffs usefully as text,
+ * and `looksBinary` already lets it through as one.
+ */
+const imageMimeTypes: Readonly<Record<string, string>> = {
+    '.apng': 'image/apng',
+    '.avif': 'image/avif',
+    '.bmp': 'image/bmp',
+    '.gif': 'image/gif',
+    '.ico': 'image/x-icon',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+};
+
+/**
+ * Formats that are binary even when their leading {@link binarySniffBytes} bytes contain no NUL, so
+ * the sniff alone would hand the pane megabytes of garbled text to render. PDF is the case that
+ * motivated the list: it opens with an ASCII header and object table, and a small one can be NUL-
+ * free from end to end. Raster formats no browser will render (TIFF, HEIC) belong here too rather
+ * than in {@link imageMimeTypes}.
+ */
+const binaryExtensions: ReadonlyArray<string> = [
+    '.7z',
+    '.avi',
+    '.bin',
+    '.bz2',
+    '.class',
+    '.dll',
+    '.dmg',
+    '.doc',
+    '.docx',
+    '.dylib',
+    '.eot',
+    '.exe',
+    '.flac',
+    '.gz',
+    '.heic',
+    '.heif',
+    '.iso',
+    '.jar',
+    '.mkv',
+    '.mov',
+    '.mp3',
+    '.mp4',
+    '.node',
+    '.odp',
+    '.ods',
+    '.odt',
+    '.ogg',
+    '.otf',
+    '.pdf',
+    '.ppt',
+    '.pptx',
+    '.psd',
+    '.pyc',
+    '.rar',
+    '.so',
+    '.sqlite',
+    '.tar',
+    '.tgz',
+    '.tif',
+    '.tiff',
+    '.ttf',
+    '.wav',
+    '.webm',
+    '.woff',
+    '.woff2',
+    '.xls',
+    '.xlsx',
+    '.xz',
+    '.zip',
+];
+
+/**
+ * Inlined as a `data:` URL rather than served from an endpoint: the old side is a git blob, which
+ * has no path a browser could request it from. Empty means the side doesn't exist — an added image
+ * has no old blob, a deleted one has no new file.
+ */
+function toImageDataUrl({
+    buffer,
+    mimeType,
+}: Readonly<{buffer: Readonly<Buffer>; mimeType: string}>): string | undefined {
+    return buffer.byteLength ? `data:${mimeType};base64,${buffer.toString('base64')}` : undefined;
+}
+
 export async function getDiffFileContents(
     params: Readonly<{
         folder: string;
@@ -412,7 +501,33 @@ export async function getDiffFileContents(
 ) {
     const {oldBuffer, newBuffer} = await readSideBuffers(params);
 
-    const binary = looksBinary(oldBuffer) || looksBinary(newBuffer);
+    const extension = extractExtension(params.path).extension.toLowerCase();
+    const imageMimeType = imageMimeTypes[extension];
+    if (
+        imageMimeType &&
+        oldBuffer.byteLength <= maxDiffImageBytes &&
+        newBuffer.byteLength <= maxDiffImageBytes
+    ) {
+        return {
+            oldContent: '',
+            newContent: '',
+            isImage: true,
+            oldImage: toImageDataUrl({
+                buffer: oldBuffer,
+                mimeType: imageMimeType,
+            }),
+            newImage: toImageDataUrl({
+                buffer: newBuffer,
+                mimeType: imageMimeType,
+            }),
+            tooLargeOrBinary: false,
+            /** Nothing is being withheld, so there is nothing to re-request. */
+            canShowAnyway: false,
+        };
+    }
+
+    const binary =
+        binaryExtensions.includes(extension) || looksBinary(oldBuffer) || looksBinary(newBuffer);
     const tooLarge =
         oldBuffer.byteLength > maxDiffFileBytes ||
         newBuffer.byteLength > maxDiffFileBytes ||
@@ -423,6 +538,7 @@ export async function getDiffFileContents(
     return {
         oldContent: withheld ? '' : oldBuffer.toString('utf8'),
         newContent: withheld ? '' : newBuffer.toString('utf8'),
+        isImage: false,
         tooLargeOrBinary: withheld,
         canShowAnyway: withheld && !binary,
     };
@@ -545,20 +661,50 @@ export async function setSideStaged({
 }
 
 /**
- * {@link discardFileChanges} for every changed file. Paths are collected from both sides and
- * deduped: a partially-staged file is reported on each, and the second discard would throw on the
- * file the first one already deleted.
+ * Throw away one file's unstaged changes, leaving anything staged for it in place. The index entry
+ * is the state to return to when there is one; without it — an untracked file, or one whose
+ * deletion is already staged — there is nothing to restore, so the file goes.
  */
-export async function discardAllChanges(folder: string): Promise<void> {
-    const status = await getDiffStatus(folder);
-    const paths = removeDuplicates([
-        ...status.staged.map((file) => file.path),
-        ...status.unstaged.map((file) => file.path),
-    ]);
-    await awaitedForEach(paths, async (path) => {
-        await discardFileChanges({
+async function discardUnstagedFileChanges({
+    folder,
+    path,
+}: Readonly<{folder: string; path: string}>): Promise<void> {
+    const absolutePath = resolveRepoPath({
+        folder,
+        repoRelativePath: path,
+    });
+    if (!absolutePath) {
+        throw new Error('Refusing to discard a path outside the repo.');
+    } else if (
+        await blobExists({
             folder,
+            spec: `:${path}`,
+        })
+    ) {
+        await runGitOrThrow(folder, [
+            'restore',
+            '--worktree',
+            '--',
             path,
+        ]);
+        return;
+    }
+    await rm(absolutePath, {
+        force: true,
+        recursive: true,
+    });
+}
+
+/**
+ * {@link discardUnstagedFileChanges} for every file `git status` reports as unstaged. Sequential for
+ * the same `index.lock` reason {@link setSideStaged} is.
+ */
+export async function discardUnstagedChanges(folder: string): Promise<void> {
+    const status = await getDiffStatus(folder);
+    await awaitedForEach(status.unstaged, async (file) => {
+        await discardUnstagedFileChanges({
+            folder,
+            path: file.path,
         });
     });
 }

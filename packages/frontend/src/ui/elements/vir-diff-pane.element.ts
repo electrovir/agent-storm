@@ -1,4 +1,4 @@
-// cspell:words keymap, Meslo, Menlo, Pilcrow, unstaging, desaturated
+// cspell:words keymap, Meslo, Menlo, Pilcrow, Prec, unstages, unstaging, desaturated
 
 import {
     DiffLayout,
@@ -9,19 +9,22 @@ import {
     type GitDiffFileContents,
     type GitDiffStatus,
 } from '@agent-storm/common';
-import {extractExtension} from '@augment-vir/common';
+import {check} from '@augment-vir/assert';
+import {awaitedForEach, createArray, extractExtension, omitObjectKeys} from '@augment-vir/common';
 import {defaultKeymap, history, historyKeymap} from '@codemirror/commands';
 import {bracketMatching, foldGutter} from '@codemirror/language';
 import {Chunk, MergeView, unifiedMergeView} from '@codemirror/merge';
-import {EditorState, Text, type Extension} from '@codemirror/state';
+import {EditorState, Prec, RangeSet, Text, type Extension, type Line} from '@codemirror/state';
 import {
     Decoration,
     EditorView,
-    WidgetType,
+    GutterMarker,
+    ViewPlugin,
+    gutter,
     highlightActiveLineGutter,
     keymap,
     lineNumbers,
-    type DecorationSet,
+    type ViewUpdate,
 } from '@codemirror/view';
 import {colorCss} from '@electrovir/color';
 import {
@@ -47,13 +50,14 @@ import {
     ViraSize,
     createSizedIcon,
     lucideIcons,
+    viraShadows,
     viraThemeByKeys,
     type ViraIconSvg,
 } from 'vira';
 import {
-    discardAllGitChanges,
     discardGitFile,
     discardGitHunk,
+    discardUnstagedGitChanges,
     getConfig,
     getGitDiffFile,
     getGitDiffStatus,
@@ -63,12 +67,15 @@ import {
     setGitSideStaged,
 } from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
+import {colorsFor} from '../../util/diff-colors.js';
+import {foldWhitespaceOnlyChanges} from '../../util/diff-hunks.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
 import {diffSidebarWidth, localStorageClient} from '../../util/local-storage-client.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
-import {diffConfig, diffLines} from '../../util/vscode-diff.js';
+import {diffConfig} from '../../util/vscode-diff.js';
+import {VirDiffReview} from './vir-diff-review.element.js';
 
 /**
  * How often the pane re-reads `git status` and the open file while it's visible. Two seconds is
@@ -102,6 +109,9 @@ const caretIcon = createSizedIcon(lucideIcons.ChevronDown, 14);
 
 const revertIcon = createSizedIcon(lucideIcons.Undo2, 14);
 
+/** Opens the whole side's changes as one scrollable review instead of one file at a time. */
+const reviewIcon = createSizedIcon(lucideIcons.FileStack, 14);
+
 /** Toolbar toggles read as settings rather than actions, so they sit a size below the nav arrows. */
 const splitLayoutIcon = createSizedIcon(lucideIcons.Columns2, 12);
 const inlineLayoutIcon = createSizedIcon(lucideIcons.Rows2, 12);
@@ -112,6 +122,22 @@ const stageActionIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
     [GitDiffSide.Staged]: createSizedIcon(lucideIcons.Minus, 14),
     [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 14),
 };
+
+/** The same icons a size down, for the buttons stacked in the diff's own gutter. */
+const hunkStageIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
+    [GitDiffSide.Staged]: createSizedIcon(lucideIcons.Minus, 11),
+    [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 11),
+};
+
+/** The gutter pair again at thumb size, for the touch layout's bigger tap targets. */
+const mobileHunkStageIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
+    [GitDiffSide.Staged]: createSizedIcon(lucideIcons.Minus, 16),
+    [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 16),
+};
+
+const hunkUndoIcon = createSizedIcon(lucideIcons.Undo2, 11);
+
+const mobileHunkUndoIcon = createSizedIcon(lucideIcons.Undo2, 16);
 
 /** A path's final segment, which is all the file rows show — the full path is their `title`. */
 function basename(path: string): string {
@@ -130,11 +156,39 @@ const stageActionLabels: Readonly<Record<GitDiffSide, string>> = {
     [GitDiffSide.Unstaged]: 'Stage',
 };
 
-/** Same wording, scoped to a single chunk, for the button rendered above each one. */
+/** Same wording, scoped to a single chunk, for the button that floats over each one. */
 const stageLabels: Readonly<Record<GitDiffSide, string>> = {
     [GitDiffSide.Staged]: 'Unstage hunk',
     [GitDiffSide.Unstaged]: 'Stage hunk',
 };
+
+/**
+ * What a menu entry or confirmation will act on, so the scope is visible before the click. Counted
+ * in lines rather than hunks when the selection narrowed every chunk it covers, because lines are
+ * then what actually moves.
+ */
+function stageScopeLabel(selections: ReadonlyArray<SelectedChunk>): {
+    text: string;
+    /** True when the label names a single thing, so a sentence can pick `this` over `these`. */
+    isSingular: boolean;
+} {
+    if (selections.some((selection) => !selection.newLines)) {
+        return {
+            text: selections.length === 1 ? 'hunk' : `${selections.length} hunks`,
+            isSingular: selections.length === 1,
+        };
+    } else {
+        const lineCount = selections.reduce(
+            (total, selection) =>
+                total + (selection.newLines ? selection.newLines.to - selection.newLines.from : 0),
+            0,
+        );
+        return {
+            text: lineCount === 1 ? 'line' : `${lineCount} lines`,
+            isSingular: lineCount === 1,
+        };
+    }
+}
 
 /**
  * Dropdown values have to be plain strings, so a file's identity (which side it's on plus its path)
@@ -210,6 +264,53 @@ function reselectValue(
     );
 }
 
+/**
+ * The file to open after moving `selected` across the index: the neighbor that slides into its
+ * place in that side's list, so a run of Stage clicks walks the list rather than following each
+ * file over to the other side. Undefined when it was that side's only file, where
+ * {@link reselectValue}'s follow-across is all that's left to do.
+ */
+function nextSideValue(
+    status: Readonly<GitDiffStatus> | undefined,
+    selected: Readonly<SelectedFile>,
+): string | undefined {
+    const files = selected.side === GitDiffSide.Staged ? status?.staged : status?.unstaged;
+    if (!files) {
+        return undefined;
+    }
+    const index = files.findIndex((file) => file.path === selected.file.path);
+    const remaining = files.filter((file) => file.path !== selected.file.path);
+    const next = remaining[Math.min(index, remaining.length - 1)];
+    return next && toSelectValue(selected.side, next.path);
+}
+
+/**
+ * The file the folder's pane was last showing, so leaving for another pane or folder and coming
+ * back lands on it again. Only a hint: it is fed through {@link reselectValue} against the freshly
+ * read status, which drops it for the first file when that path no longer has a diff.
+ */
+function rememberedFileForFolder(folder: string): string | undefined {
+    return localStorageClient.diffFileByFolder.read()[folder];
+}
+
+function rememberFileForFolder({
+    folder,
+    value,
+}: Readonly<{
+    folder: string;
+    value: string | undefined;
+}>): void {
+    const stored = localStorageClient.diffFileByFolder.read();
+    localStorageClient.diffFileByFolder.write(
+        value
+            ? {
+                  ...stored,
+                  [folder]: value,
+              }
+            : omitObjectKeys(stored, [folder]),
+    );
+}
+
 /** One section of the file menu. Empty sides are dropped before rendering. */
 type FileMenuGroup = {
     side: GitDiffSide;
@@ -233,6 +334,54 @@ function toMenuGroups(status: Readonly<GitDiffStatus> | undefined): FileMenuGrou
 }
 
 /**
+ * An image file shown as pictures rather than as a text diff. The new version comes first and the
+ * previous one sits under it, in both layouts: the new image is what the user came to look at, and
+ * scrolling down to the old one is a cheaper comparison than two half-width columns.
+ *
+ * A side with no image still gets its frame, saying why: an added image has no before and a deleted
+ * one has no after, and a missing frame is indistinguishable from a pane that failed to show it.
+ */
+function renderImageDiff({content}: Readonly<{content: Readonly<GitDiffFileContents>}>) {
+    const sides = [
+        {
+            label: 'After',
+            image: content.newImage,
+            emptyNote: 'Deleted — no current version.',
+        },
+        {
+            label: 'Before',
+            image: content.oldImage,
+            emptyNote: 'New file — no previous version.',
+        },
+    ];
+    if (!sides.some((side) => check.isString(side.image))) {
+        return html`
+            <div class="placeholder">Empty image on both sides.</div>
+        `;
+    }
+    return html`
+        <div class="image-diff">
+            ${sides.map(
+                (side) => html`
+                    <div class="image-side">
+                        <span class="image-side-label">${side.label}</span>
+                        <div class="image-frame" ?data-empty=${!side.image}>
+                            ${side.image
+                                ? html`
+                                      <img src=${side.image} alt=${side.label} />
+                                  `
+                                : html`
+                                      <span class="image-empty-note">${side.emptyNote}</span>
+                                  `}
+                        </div>
+                    </div>
+                `,
+            )}
+        </div>
+    `;
+}
+
+/**
  * One file's row contents, shared by the desktop sidebar and the mobile dropdown. The badge comes
  * last so it sits at the row's right edge, just inside the hover-revealed row actions. The full
  * path is still reachable: it's the row's `title`.
@@ -240,7 +389,9 @@ function toMenuGroups(status: Readonly<GitDiffStatus> | undefined): FileMenuGrou
 function fileRowContents(file: Readonly<GitDiffFile>) {
     return html`
         <img class="file-icon" src=${toFileIconUrl(file.path)} alt="" />
-        <span class="file-basename">${basename(file.path)}</span>
+        <span class="file-basename" ?data-deleted=${file.change === GitFileChange.Deleted}>
+            ${basename(file.path)}
+        </span>
         <span
             class="badge"
             style=${css`
@@ -253,58 +404,6 @@ function fileRowContents(file: Readonly<GitDiffFile>) {
 }
 
 /**
- * The old side of the diff with whitespace-only differences erased, matching `git diff -w`.
- *
- * Every old line that pairs with a new line differing only in spacing is replaced by that new
- * line's exact text, so CodeMirror's own diff finds nothing to mark there. Rewriting the text is
- * what makes this work everywhere at once — the marks, the change count, the jump buttons, and the
- * ruler all derive from that diff, so none of them need to know about the setting. Line count is
- * untouched, which keeps hunk staging's line math valid.
- */
-function foldWhitespaceOnlyChanges({
-    oldContent,
-    newContent,
-}: Readonly<{
-    oldContent: string;
-    newContent: string;
-}>): string {
-    const oldLines = oldContent.split('\n');
-    const newLines = newContent.split('\n');
-    const normalize = (line: string) => line.replace(/\s+/g, '');
-    const changes = diffLines({
-        aLines: oldLines.map(normalize),
-        bLines: newLines.map(normalize),
-    });
-    /**
-     * The diff reports what changed, so the aligned-and-equal runs are the gaps between its
-     * changes, plus the tail after the last one.
-     */
-    const alignedRuns = [
-        ...changes,
-        undefined,
-    ].map((change, index) => {
-        const previous = changes[index - 1];
-        const fromA = previous?.toA ?? 0;
-        return {
-            fromA,
-            fromB: previous?.toB ?? 0,
-            length: (change?.fromA ?? oldLines.length) - fromA,
-        };
-    });
-    const foldedByLine = new Map<number, string>(
-        alignedRuns.flatMap(({fromA, fromB, length}) =>
-            newLines.slice(fromB, fromB + length).map((line, offset) => {
-                return [
-                    fromA + offset,
-                    line,
-                ] as const;
-            }),
-        ),
-    );
-    return oldLines.map((line, index) => foldedByLine.get(index) ?? line).join('\n');
-}
-
-/**
  * Columns a wrapped row hangs by, so a continuation reads as part of the line above it rather than
  * as a new statement at column zero.
  */
@@ -314,7 +413,10 @@ const hangingIndentColumns = 4;
  * Shared read-only editor extensions. Deliberately minimal: the point of replacing the embedded VS
  * Code is that a phone shouldn't pay for an IDE to read a diff.
  */
-function baseExtensions(isDark: boolean): ReadonlyArray<Extension> {
+function baseExtensions({
+    isDark,
+    isMobile,
+}: Readonly<{isDark: boolean; isMobile: boolean}>): ReadonlyArray<Extension> {
     return [
         lineNumbers(),
         highlightActiveLineGutter(),
@@ -325,7 +427,12 @@ function baseExtensions(isDark: boolean): ReadonlyArray<Extension> {
             ...defaultKeymap,
             ...historyKeymap,
         ]),
-        EditorView.lineWrapping,
+        /*
+         * Touch reads code by scrolling the pane sideways instead of wrapping it: a wrapped diff on
+         * a narrow screen turns every long line into a paragraph, and the change that matters is
+         * usually at the end of it.
+         */
+        ...(isMobile ? [] : [EditorView.lineWrapping]),
         EditorState.readOnly.of(true),
         /*
          * The `dark` flag is what switches CodeMirror's own base theme — gutter background, active
@@ -335,24 +442,60 @@ function baseExtensions(isDark: boolean): ReadonlyArray<Extension> {
          */
         EditorView.theme(
             {
+                /* Font and colors are the user's VS Code editor settings + Vir Colors theme. */
                 '&': {
                     height: '100%',
-                    fontSize: '12px',
+                    fontSize: '10px',
+                    backgroundColor: editorSurfaceColors(isDark).background,
+                    color: editorSurfaceColors(isDark).foreground,
                 },
                 '.cm-scroller': {
-                    fontFamily: '"MesloLGS NF", Menlo, monospace',
+                    fontFamily: 'Menlo, monospace',
                 },
                 /*
-                 * The hanging indent is one flat amount for every line, applied in CSS. Matching
-                 * each line's own indent instead would take a per-line decoration, and a decoration
-                 * that changes how a line wraps changes its height — which is the number the
-                 * side-by-side layout aligns its two editors on. When those heights were per line,
-                 * the aligner drifted and the new side rendered no text at all.
+                 * VS Code draws line numbers straight onto the editor background with no divider,
+                 * where CodeMirror's light base theme gives the gutter its own grey fill and a
+                 * border.
                  */
-                '.cm-line': {
-                    paddingLeft: `${hangingIndentColumns}ch`,
-                    textIndent: `-${hangingIndentColumns}ch`,
+                '.cm-gutters': {
+                    backgroundColor: editorSurfaceColors(isDark).background,
+                    color: editorSurfaceColors(isDark).lineNumber,
+                    border: 'none',
                 },
+                /*
+                 * The chunk's own 6px of left padding is dropped because a normal line's text
+                 * starts flush against the content edge, and 6px is enough to read as a stray extra
+                 * indent level.
+                 */
+                '.cm-deletedChunk': {
+                    paddingLeft: '0',
+                },
+                /* A hanging indent is only visible on a line that wraps, which touch lines don't. */
+                ...(isMobile
+                    ? {}
+                    : {
+                          /*
+                           * The hanging indent is one flat amount for every line, applied in CSS.
+                           * Matching each line's own indent instead would take a per-line
+                           * decoration, and a decoration that changes how a line wraps changes its
+                           * height — which is the number the side-by-side layout aligns its two
+                           * editors on. When those heights were per line, the aligner drifted and
+                           * the new side rendered no text at all.
+                           */
+                          '.cm-line': {
+                              paddingLeft: `${hangingIndentColumns}ch`,
+                              textIndent: `-${hangingIndentColumns}ch`,
+                          },
+                          /*
+                           * A removed line in the inline layout is not a `.cm-line` — it is a div
+                           * inside the deleted-chunk widget — so it needs the same indent stated
+                           * again.
+                           */
+                          '.cm-deletedChunk > .cm-deletedLine': {
+                              paddingLeft: `${hangingIndentColumns}ch`,
+                              textIndent: `-${hangingIndentColumns}ch`,
+                          },
+                      }),
             },
             {
                 dark: isDark,
@@ -362,52 +505,185 @@ function baseExtensions(isDark: boolean): ReadonlyArray<Extension> {
 }
 
 /**
- * CodeMirror's stock merge colors are a few percent of tint and wash out entirely on a bright
- * screen. These are strong enough to find by scanning, and the side-by-side and inline layouts use
- * the same four values so a file looks the same either way.
- *
- * Two layers: every changed line gets a pale tint so the extent of the change is visible at a
- * glance, and the words CodeMirror narrowed the edit down to sit on top in a darker shade. Both are
- * desaturated versions of Claude Code's own diff colors, which read as too vivid over a full screen
- * of code.
- *
- * All four are opaque on purpose. A translucent tint composites once per element that carries it,
- * and CodeMirror nests a changed-text span inside a changed line inside (in the unified view) a
- * deleted chunk — so an alpha that looked right in isolation stacked two or three deep and came out
- * far darker than intended. Opaque colors render as written no matter how they nest.
+ * The editor's own surface, unchanged code included. Light comes from the Vir Colors VS Code theme
+ * (`editor.background`, `editor.foreground`) plus VS Code's built-in light default for line
+ * numbers, which that theme leaves unset. Dark defers to the app around it, since a `transparent`
+ * background and an inherited foreground track whatever the surrounding theme is doing.
  */
-type DiffColors = {
-    removedLine: string;
-    removedText: string;
-    removedChunk: string;
-    addedLine: string;
-    addedText: string;
-};
-
-/**
- * The dark set is the light set's job done from the other end: dark enough that the code on top
- * keeps its contrast, tinted enough to find by scanning. The pale tints that work on white read as
- * glowing panels over a dark editor, which is why they aren't simply reused at a lower opacity.
- */
-const diffColors: Readonly<Record<'light' | 'dark', Readonly<DiffColors>>> = {
+const editorColors: Readonly<
+    Record<
+        'light' | 'dark',
+        Readonly<{
+            background: string;
+            foreground: string;
+            lineNumber: string;
+        }>
+    >
+> = {
     light: {
-        removedLine: '#fdf2f2',
-        removedText: '#f9dede',
-        removedChunk: '#fefafa',
-        addedLine: '#f1fbf0',
-        addedText: '#ddf3da',
+        background: '#fafafa',
+        foreground: '#383a42',
+        lineNumber: '#237893',
     },
     dark: {
-        removedLine: '#2b1a1d',
-        removedText: '#452227',
-        removedChunk: '#201517',
-        addedLine: '#16271b',
-        addedText: '#1f3d27',
+        background: 'transparent',
+        foreground: 'inherit',
+        lineNumber: '#858585',
     },
 };
 
-function colorsFor(isDark: boolean): Readonly<DiffColors> {
-    return isDark ? diffColors.dark : diffColors.light;
+function editorSurfaceColors(isDark: boolean) {
+    return isDark ? editorColors.dark : editorColors.light;
+}
+
+/**
+ * Marks a line whose word-level highlight already covers everything on it. There the darker shade
+ * says nothing the pale line tint doesn't, and a whole row of it reads as a second, louder
+ * highlight, so the theme rules below flatten those lines back to the line tint alone.
+ */
+const wholeLineChangedClass = 'agent-storm-whole-line-changed';
+
+/**
+ * Whether every word on `line` sits inside `ranges`. Leading and trailing whitespace is ignored:
+ * the word highlight usually starts after shared indentation, and a tint over blank columns is not
+ * what makes a row look doubly highlighted.
+ */
+function isLineFullyChanged({
+    line,
+    ranges,
+}: Readonly<{
+    line: Readonly<Line>;
+    ranges: ReadonlyArray<Readonly<{from: number; to: number}>>;
+}>): boolean {
+    const leading = line.text.length - line.text.trimStart().length;
+    const trailing = line.text.trimEnd().length;
+    /** A blank line carries no words to highlight, so there is nothing to flatten. */
+    if (trailing <= leading) {
+        return false;
+    }
+    /** Chunk changes come sorted and disjoint, so full coverage means chaining across with no gap. */
+    return (
+        ranges.reduce(
+            (covered, range) => (range.from <= covered && range.to > covered ? range.to : covered),
+            line.from + leading,
+        ) >=
+        line.from + trailing
+    );
+}
+
+/** Start offsets of the chunk's fully-changed lines, on whichever side this editor shows. */
+function wholeLineChangedStarts({
+    chunk,
+    text,
+    isOldSide,
+}: Readonly<{chunk: Readonly<Chunk>; text: Text; isOldSide: boolean}>): number[] {
+    const base = isOldSide ? chunk.fromA : chunk.fromB;
+    const end = isOldSide ? chunk.toA : chunk.toB;
+    /** The chunk covers no lines on this side: a pure insertion has nothing in A, and vice versa. */
+    if (base >= end) {
+        return [];
+    }
+    const ranges = chunk.changes.map((change) => {
+        return {
+            from: base + (isOldSide ? change.fromA : change.fromB),
+            to: base + (isOldSide ? change.toA : change.toB),
+        };
+    });
+    /** `toA`/`toB` land one past the last line's break, which already belongs to the next line. */
+    const firstLineNumber = text.lineAt(Math.min(base, text.length)).number;
+    const lastLineNumber = text.lineAt(Math.min(Math.max(base, end - 1), text.length)).number;
+    return createArray(lastLineNumber - firstLineNumber + 1, (index) =>
+        text.line(firstLineNumber + index),
+    )
+        .filter((line) =>
+            isLineFullyChanged({
+                line,
+                ranges,
+            }),
+        )
+        .map((line) => line.from);
+}
+
+/**
+ * Read off the chunks rather than off the rendered spans, which is the only version of this that
+ * holds: CodeMirror rebuilds a line's DOM whenever the highlighter catches up or the viewport
+ * moves, and a class poked onto the element from outside the decoration system goes with it.
+ */
+function wholeLineChangedExtension({
+    chunks,
+    text,
+    isOldSide,
+}: Readonly<{
+    chunks: ReadonlyArray<Chunk>;
+    text: Text;
+    isOldSide: boolean;
+}>): Extension {
+    const lineDecoration = Decoration.line({
+        class: wholeLineChangedClass,
+    });
+    return EditorView.decorations.of(
+        Decoration.set(
+            chunks
+                .flatMap((chunk) =>
+                    wholeLineChangedStarts({
+                        chunk,
+                        text,
+                        isOldSide,
+                    }),
+                )
+                .map((from) => lineDecoration.range(from)),
+            true,
+        ),
+    );
+}
+
+/**
+ * The same flattening for the inline layout's removed lines, which no decoration can reach: they
+ * live inside a widget CodeMirror builds itself. Reading the DOM is sound here in a way it is not
+ * for real lines — a deletion widget's element is built once per chunk and cached, so no redraw
+ * drops the class.
+ */
+function deletedLineFlattenExtension(): Extension {
+    return ViewPlugin.fromClass(
+        class {
+            constructor(view: EditorView) {
+                this.markLines(view);
+            }
+
+            public update(update: ViewUpdate) {
+                if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+                    this.markLines(update.view);
+                }
+            }
+
+            protected markLines(view: EditorView) {
+                view.requestMeasure({
+                    read: () =>
+                        Array.from(
+                            view.contentDOM.querySelectorAll('.cm-deletedChunk > .cm-deletedLine'),
+                        ).map((line) => {
+                            const withoutDeletedText = line.cloneNode(true) as Element;
+                            withoutDeletedText
+                                .querySelectorAll('.cm-deletedText')
+                                .forEach((element) => {
+                                    element.remove();
+                                });
+                            return {
+                                line,
+                                isWhole:
+                                    line.querySelector('.cm-deletedText') != undefined &&
+                                    !withoutDeletedText.textContent.trim(),
+                            };
+                        }),
+                    write: (lines) => {
+                        lines.forEach(({line, isWhole}) => {
+                            line.classList.toggle(wholeLineChangedClass, isWhole);
+                        });
+                    },
+                });
+            }
+        },
+    );
 }
 
 /**
@@ -425,6 +701,9 @@ function deletionColorTheme(isDark: boolean): Extension {
         '&.cm-merge-a .cm-changedText': {
             background: colorsFor(isDark).removedText,
         },
+        [`&.cm-merge-a .cm-changedLine.${wholeLineChangedClass} .cm-changedText`]: {
+            background: colorsFor(isDark).removedLine,
+        },
     });
 }
 
@@ -435,6 +714,9 @@ function insertionColorTheme(isDark: boolean): Extension {
         },
         '&.cm-merge-b .cm-changedText': {
             background: colorsFor(isDark).addedText,
+        },
+        [`&.cm-merge-b .cm-changedLine.${wholeLineChangedClass} .cm-changedText`]: {
+            background: colorsFor(isDark).addedLine,
         },
     });
 }
@@ -465,27 +747,61 @@ function unifiedColorTheme(isDark: boolean): Extension {
         '&.cm-merge-b .cm-changedText': {
             background: colorsFor(isDark).addedText,
         },
+        [`& .cm-deletedChunk .cm-deletedLine.${wholeLineChangedClass} .cm-deletedText`]: {
+            background: colorsFor(isDark).removedLine,
+        },
+        [`&.cm-merge-b .cm-changedLine.${wholeLineChangedClass} .cm-changedText`]: {
+            background: colorsFor(isDark).addedLine,
+        },
     });
 }
 
 const undoHunkLabel = 'Undo hunk';
 
+/** Icon-only, so each button states its action through its `title` instead. */
+function buildHunkButton({
+    label,
+    icon,
+    onClick,
+}: Readonly<{label: string; icon: ViraIconSvg; onClick: () => void}>): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const iconElement = new ViraIcon();
+    iconElement.assignInputs({
+        icon,
+    });
+    button.append(iconElement);
+    button.addEventListener('click', (event) => {
+        event.preventDefault();
+        onClick();
+    });
+    return button;
+}
+
 /**
- * The buttons rendered above a chunk: move that chunk across the index, and — only for a chunk that
- * isn't staged yet — throw it away. A staged chunk gets no undo button because unstaging it is the
- * reversible way back to the same place, and the destructive one is a click away from there.
+ * The buttons in the left gutter beside a chunk's first line: move that chunk across the index, and
+ * — only for a chunk that isn't staged yet — throw it away. A staged chunk gets no undo button
+ * because unstaging it is the reversible way back to the same place, and the destructive one is a
+ * click away from there.
  */
-class HunkStageWidget extends WidgetType {
+class HunkActionMarker extends GutterMarker {
     constructor(
-        protected readonly label: string,
+        protected readonly side: GitDiffSide,
+        protected readonly isMobile: boolean,
         protected readonly onStage: () => void,
         protected readonly onUndo: (() => void) | undefined,
     ) {
         super();
     }
 
-    public override eq(other: HunkStageWidget): boolean {
-        return other.label === this.label;
+    public override eq(other: HunkActionMarker): boolean {
+        return (
+            other.side === this.side &&
+            other.isMobile === this.isMobile &&
+            (other.onUndo == undefined) === (this.onUndo == undefined)
+        );
     }
 
     public override toDOM(): HTMLElement {
@@ -493,79 +809,136 @@ class HunkStageWidget extends WidgetType {
         wrapper.className = 'agent-storm-hunk-actions';
         const onUndo = this.onUndo;
         wrapper.append(
-            ...(onUndo ? [this.buildButton(undoHunkLabel, onUndo)] : []),
-            this.buildButton(this.label, this.onStage),
+            /** Stage on top, where it lines up with the chunk's first line. */
+            buildHunkButton({
+                label: stageLabels[this.side],
+                icon: this.isMobile ? mobileHunkStageIcons[this.side] : hunkStageIcons[this.side],
+                onClick: this.onStage,
+            }),
+            ...(onUndo
+                ? [
+                      buildHunkButton({
+                          label: undoHunkLabel,
+                          icon: this.isMobile ? mobileHunkUndoIcon : hunkUndoIcon,
+                          onClick: onUndo,
+                      }),
+                  ]
+                : []),
         );
         return wrapper;
-    }
-
-    protected buildButton(label: string, onClick: () => void): HTMLButtonElement {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = label;
-        button.addEventListener('click', (event) => {
-            event.preventDefault();
-            onClick();
-        });
-        return button;
-    }
-
-    /** Without this the editor swallows the click before the button's own listener sees it. */
-    public override ignoreEvent(): boolean {
-        return false;
     }
 }
 
 function hunkButtonExtension({
     chunks,
     newText,
-    label,
+    side,
     isDark,
+    isMobile,
     onStageChunk,
     onUndoChunk,
 }: Readonly<{
     chunks: ReadonlyArray<Chunk>;
     newText: Text;
-    label: string;
+    /** Which side the open file is on, which decides what the stage button does and looks like. */
+    side: GitDiffSide;
     isDark: boolean;
+    /**
+     * Sizes the buttons for a thumb and keeps them visible, since touch has no hover to reveal them
+     * with.
+     */
+    isMobile: boolean;
     onStageChunk: (chunk: Readonly<Chunk>) => void;
     /** Undefined for a staged chunk, which shows no undo button. */
     onUndoChunk: ((chunk: Readonly<Chunk>) => void) | undefined;
 }>): Extension {
-    const decorations: DecorationSet = Decoration.set(
+    const markers = RangeSet.of(
         chunks.map((chunk) => {
             /**
              * Anchor at the start of the chunk's first line in the new document. A pure deletion
-             * has no lines there, in which case `fromB` is the join point and the button lands
+             * has no lines there, in which case `fromB` is the join point and the buttons land
              * where the removed text would have been.
              */
             const position = newText.lineAt(Math.min(chunk.fromB, newText.length)).from;
-            return Decoration.widget({
-                widget: new HunkStageWidget(
-                    label,
-                    () => onStageChunk(chunk),
-                    onUndoChunk && (() => onUndoChunk(chunk)),
-                ),
-                side: -1,
-                block: true,
-            }).range(position);
+            return new HunkActionMarker(
+                side,
+                isMobile,
+                () => onStageChunk(chunk),
+                onUndoChunk && (() => onUndoChunk(chunk)),
+            ).range(position);
         }),
         true,
     );
     return [
-        EditorView.decorations.of(decorations),
+        /**
+         * Gutters render in facet order, and the line number gutter registers at default
+         * precedence, so raising this one puts it at the far left edge.
+         */
+        Prec.high(
+            gutter({
+                class: 'agent-storm-hunk-gutter',
+                markers: () => markers,
+            }),
+        ),
         EditorView.theme({
-            '.agent-storm-hunk-actions': {
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: '4px',
-                padding: '1px 6px',
+            /** One button wide, held there so it can't shift as chunks scroll into view. */
+            '.agent-storm-hunk-gutter': {
+                minWidth: isMobile ? '24px' : '14px',
+                padding: '0',
             },
+            /**
+             * Positioning context for the stack, which is taller than the one line its gutter
+             * element occupies. Left in the flow it would push every gutter element below it down
+             * and take the line numbers out of step with the code.
+             */
+            '.agent-storm-hunk-gutter .cm-gutterElement': {
+                padding: '0',
+                position: 'relative',
+            },
+            '.agent-storm-hunk-actions': {
+                position: 'absolute',
+                top: '0',
+                right: '0',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: isMobile ? '4px' : '2px',
+                alignItems: 'flex-end',
+                zIndex: '2',
+                ...(isMobile
+                    ? {
+                          /* Touch has no hover to reveal them with, so they stay out. */
+                          opacity: '0.85',
+                      }
+                    : {
+                          /*
+                           * Out of sight until the pointer is over the editor, then faint until the pointer is
+                           * over the buttons themselves. Hovering a single chunk can't be expressed in CSS —
+                           * the lines of a chunk are siblings, not a container — so the trade is that entering
+                           * the editor reveals every chunk's buttons at once.
+                           */
+                          opacity: '0',
+                          pointerEvents: 'none',
+                          transition: 'opacity 120ms ease',
+                      }),
+            },
+            ...(isMobile
+                ? {}
+                : {
+                      '.cm-scroller:hover .agent-storm-hunk-actions': {
+                          opacity: '0.6',
+                          pointerEvents: 'auto',
+                      },
+                      '.agent-storm-hunk-actions:hover, .agent-storm-hunk-actions:focus-within': {
+                          opacity: '1',
+                      },
+                  }),
             '.agent-storm-hunk-actions button': {
-                font: 'inherit',
-                fontSize: '10px',
-                lineHeight: '1',
-                padding: '2px 8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: isMobile ? '22px' : '14px',
+                height: isMobile ? '22px' : '14px',
+                padding: '0',
                 cursor: 'pointer',
                 borderRadius: '3px',
                 border: isDark
@@ -595,10 +968,12 @@ function mountDiffEditor({
     newContent,
     unified,
     chunks,
+    oldText,
     newText,
-    stageLabel,
+    side,
     syntaxExtensions,
     isDark,
+    isMobile,
     onStageChunk,
     onUndoChunk,
     onGeometryChange,
@@ -613,8 +988,11 @@ function mountDiffEditor({
     newContent: string;
     unified: boolean;
     chunks: ReadonlyArray<Chunk>;
+    /** Both sides as {@link Text}, which the caller already built to diff them. */
+    oldText: Text;
     newText: Text;
-    stageLabel: string;
+    /** Which side the open file is on, which decides what the hunk buttons do. */
+    side: GitDiffSide;
     /** Grammar plus highlight style for this file's type, already resolved by the caller. */
     syntaxExtensions: ReadonlyArray<Extension>;
     /**
@@ -623,6 +1001,11 @@ function mountDiffEditor({
      * as the user changes their mind about it.
      */
     isDark: boolean;
+    /**
+     * Touch layout: bigger hunk buttons, and a horizontally scrolling code pane instead of wrapped
+     * lines. Independent of `unified`, which the user can force on either screen size.
+     */
+    isMobile: boolean;
     onStageChunk: (chunk: Readonly<Chunk>) => void;
     onUndoChunk: ((chunk: Readonly<Chunk>) => void) | undefined;
     /**
@@ -634,8 +1017,9 @@ function mountDiffEditor({
     const hunkButtons = hunkButtonExtension({
         chunks,
         newText,
-        label: stageLabel,
+        side,
         isDark,
+        isMobile,
         onStageChunk,
         onUndoChunk,
     });
@@ -651,9 +1035,18 @@ function mountDiffEditor({
             root,
             doc: newContent,
             extensions: [
-                ...baseExtensions(isDark),
+                ...baseExtensions({
+                    isDark,
+                    isMobile,
+                }),
                 ...syntaxExtensions,
                 unifiedColorTheme(isDark),
+                wholeLineChangedExtension({
+                    chunks,
+                    text: newText,
+                    isOldSide: false,
+                }),
+                deletedLineFlattenExtension(),
                 hunkButtons,
                 geometryListener,
                 unifiedMergeView({
@@ -675,17 +1068,33 @@ function mountDiffEditor({
         a: {
             doc: oldContent,
             extensions: [
-                ...baseExtensions(isDark),
+                ...baseExtensions({
+                    isDark,
+                    isMobile,
+                }),
                 ...syntaxExtensions,
                 deletionColorTheme(isDark),
+                wholeLineChangedExtension({
+                    chunks,
+                    text: oldText,
+                    isOldSide: true,
+                }),
             ],
         },
         b: {
             doc: newContent,
             extensions: [
-                ...baseExtensions(isDark),
+                ...baseExtensions({
+                    isDark,
+                    isMobile,
+                }),
                 ...syntaxExtensions,
                 insertionColorTheme(isDark),
+                wholeLineChangedExtension({
+                    chunks,
+                    text: newText,
+                    isOldSide: false,
+                }),
                 hunkButtons,
                 geometryListener,
             ],
@@ -722,6 +1131,102 @@ function toLineRange({text, from, to}: Readonly<{text: Text; from: number; to: n
     };
 }
 
+/**
+ * The 0-based, half-open line range a character range covers. Unlike a chunk's range a selection
+ * can stop anywhere, so the line it ends in counts as covered — except when it stops at that line's
+ * very first column, since dragging down to the start of the next line is how a user selects the
+ * lines above it.
+ */
+function selectionLineRange({text, from, to}: Readonly<{text: Text; from: number; to: number}>): {
+    from: number;
+    to: number;
+} {
+    const startLine = text.lineAt(Math.min(from, text.length));
+    const endLine = text.lineAt(Math.min(to, text.length));
+    return {
+        from: startLine.number - 1,
+        to: to > from && endLine.from === to ? endLine.number - 1 : endLine.number,
+    };
+}
+
+/**
+ * One change to move across the index, and how much of it to move. `newLines` is a 0-based,
+ * half-open range of the new document covering fewer lines than the chunk itself; undefined means
+ * the whole chunk.
+ */
+type SelectedChunk = {
+    chunk: Chunk;
+    newLines:
+        | Readonly<{
+              from: number;
+              to: number;
+          }>
+        | undefined;
+};
+
+/**
+ * Everything a range of the new document touches, which is what turns a text selection into
+ * something stageable.
+ *
+ * A selection inside an addition moves only the lines it covers. Anything else moves its whole
+ * chunk, because the removed lines that chunk also describes cannot be selected: in the inline
+ * layout they are widgets rather than document text, and in the side-by-side one they live in the
+ * other editor. Staging a replacement's additions without its removals would leave the index
+ * holding both copies of those lines, so the removals come along. VS Code narrows the same cases
+ * and no others.
+ *
+ * A pure deletion covers no new-side text: it is a single point where the removed lines used to be,
+ * so it counts as touched when the range reaches that point. Everything else has to genuinely
+ * overlap, or a selection ending exactly where the next chunk starts would drag that chunk in too.
+ */
+function selectedChunksInRange({
+    chunks,
+    text,
+    from,
+    to,
+}: Readonly<{
+    chunks: ReadonlyArray<Chunk>;
+    /** The new document, which both the offsets and the narrowed line range are against. */
+    text: Text;
+    from: number;
+    to: number;
+}>): SelectedChunk[] {
+    const selectedLines = selectionLineRange({
+        text,
+        from,
+        to,
+    });
+    return chunks
+        .filter((chunk) => {
+            if (chunk.fromB === chunk.toB) {
+                return chunk.fromB >= from && chunk.fromB <= to;
+            }
+            return from === to
+                ? chunk.fromB <= from && from <= chunk.toB
+                : chunk.fromB < to && chunk.toB > from;
+        })
+        .map((chunk) => {
+            const chunkLines = toLineRange({
+                text,
+                from: chunk.fromB,
+                to: chunk.toB,
+            });
+            const narrowed = {
+                from: Math.max(chunkLines.from, selectedLines.from),
+                to: Math.min(chunkLines.to, selectedLines.to),
+            };
+            /**
+             * An empty range is a right-click with nothing selected, which acts on the chunk under
+             * the pointer as a whole — the same thing the hover button does.
+             */
+            const isNarrowable = from !== to && chunk.fromA === chunk.toA;
+            return {
+                chunk,
+                newLines: isNarrowable && narrowed.to > narrowed.from ? narrowed : undefined,
+            };
+        });
+}
+
 /** One mark on the overview ruler: where a chunk sits in the file and what kind of change it is. */
 type RulerMark = {
     topPercent: number;
@@ -730,16 +1235,15 @@ type RulerMark = {
 };
 
 /**
- * Ruler marks reuse the diff body's red and green so the overview reads as the same information at
- * a smaller scale. A replacement is both a removal and an addition, so its mark is split rather
- * than given a third color that has to be learned.
+ * VS Code's overview ruler colors: `editorGutter.addedBackground` (`#48985D`) and
+ * `editorGutter.deletedBackground` (which falls through to `editorError.foreground`, `#E51400`),
+ * each at the 0.6 alpha the ruler applies. A replacement is both a removal and an addition, so its
+ * mark is split rather than given a third color that has to be learned.
  */
 const rulerColors = {
-    inserted: unsafeCSS('rgba(106, 194, 43, 0.85)'),
-    deleted: unsafeCSS('rgba(248, 81, 73, 0.85)'),
-    modified: unsafeCSS(
-        'linear-gradient(rgba(248, 81, 73, 0.85) 50%, rgba(106, 194, 43, 0.85) 50%)',
-    ),
+    inserted: unsafeCSS('rgba(72, 152, 93, 0.6)'),
+    deleted: unsafeCSS('rgba(229, 20, 0, 0.6)'),
+    modified: unsafeCSS('linear-gradient(rgba(229, 20, 0, 0.6) 50%, rgba(72, 152, 93, 0.6) 50%)'),
 };
 
 /** Smallest visible ruler mark, so a one-line change in a huge file is still clickable. */
@@ -790,6 +1294,16 @@ export const VirDiffPane = defineElement<{
             status: undefined as GitDiffStatus | undefined,
             statusError: undefined as string | undefined,
             selectedValue: undefined as string | undefined,
+            /**
+             * Files picked out with cmd/ctrl or shift click, for acting on several at once.
+             * Separate from `selectedValue` on purpose: marking files leaves the open diff alone,
+             * so the user can keep reading one file while collecting the set to stage.
+             *
+             * Empty means no multi-selection, and every row button acts on its own row.
+             */
+            markedValues: [] as ReadonlyArray<string>,
+            /** Row a shift click measures its range from: the last row clicked without shift. */
+            selectionAnchor: undefined as string | undefined,
             /** Old/new text for the selected file, or undefined while it loads. */
             diffContent: undefined as GitDiffFileContents | undefined,
             /**
@@ -817,6 +1331,7 @@ export const VirDiffPane = defineElement<{
                       newContent: string;
                       unified: boolean;
                       isDark: boolean;
+                      isMobile: boolean;
                   }
                 | undefined,
             /** Mirrors {@link isDarkMode} so the editor can be rebuilt in the other palette. */
@@ -826,6 +1341,17 @@ export const VirDiffPane = defineElement<{
             rulerMarks: [] as RulerMark[],
             /** Index into `chunks` that the jump buttons move relative to. */
             activeChunkIndex: 0,
+            /**
+             * Open right-click menu: where the pointer was, in viewport coordinates, and what the
+             * selection under it covers. Undefined when no menu is open.
+             */
+            hunkMenu: undefined as
+                | Readonly<{
+                      x: number;
+                      y: number;
+                      selections: ReadonlyArray<SelectedChunk>;
+                  }>
+                | undefined,
             /**
              * Layout choice from the server config, so it survives a reload and follows the user
              * across browsers. `Auto` (and the moment before the config lands) follows the screen
@@ -865,6 +1391,12 @@ export const VirDiffPane = defineElement<{
             } as Readonly<Record<GitDiffSide, boolean>>,
             sidebarWidth: localStorageClient.diffSidebarWidth.read(),
             draggingSidebar: false,
+            /**
+             * Side whose files are being read as one stacked review, or undefined for the normal
+             * one-file diff. The open file is left selected underneath, so leaving the review lands
+             * back on it.
+             */
+            reviewSide: undefined as GitDiffSide | undefined,
         };
     },
     styles: css`
@@ -1025,6 +1557,10 @@ export const VirDiffPane = defineElement<{
             overflow: hidden;
             white-space: nowrap;
             text-overflow: ellipsis;
+
+            &[data-deleted] {
+                text-decoration: line-through;
+            }
         }
 
         /*
@@ -1128,8 +1664,21 @@ export const VirDiffPane = defineElement<{
             background-color: ${viraThemeByKeys.grey['behind-bg'].invisible.background.value};
         }
 
+        /*
+         * Marked rows read as a group without competing with the open file, which keeps its
+         * stronger blue. Declared first so the open file wins when it is also marked.
+         */
+        .sidebar-row[data-marked] {
+            background-color: ${viraThemeByKeys.blue['behind-bg'].invisible.background.value};
+        }
+
         .sidebar-row[data-selected] {
             background-color: ${viraThemeByKeys.blue['behind-bg'].decoration.background.value};
+        }
+
+        /* Marking files is pointless if the buttons that act on them need a hover to appear. */
+        .sidebar-row[data-marked] .row-actions {
+            visibility: visible;
         }
 
         .sidebar-row-open {
@@ -1200,6 +1749,11 @@ export const VirDiffPane = defineElement<{
             opacity: 0.4;
         }
 
+        /* Lit up while its side's review is the thing on screen. */
+        .row-action[data-active] {
+            color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+        }
+
         /*
          * Staged files have nothing to discard — unstaging is the only move — but the button keeps
          * its space so the stage buttons line up down the whole list.
@@ -1225,15 +1779,65 @@ export const VirDiffPane = defineElement<{
             min-width: 0;
         }
 
+        /*
+         * Sideways scrolling belongs to the code pane alone: the editor's own scroller takes it when
+         * line wrapping is off, and this host clipping instead of scrolling is what keeps the toolbar,
+         * the sidebar, and the ruler from sliding off with it.
+         */
         .editor-host {
             flex-grow: 1;
             min-width: 0;
             min-height: 0;
-            overflow: auto;
+            overflow-x: hidden;
+            overflow-y: auto;
         }
 
         .editor-host[data-hidden] {
             display: none;
+        }
+
+        /*
+         * Catches the click that dismisses the right-click menu, wherever it lands. Fixed rather
+         * than inset in .body so a click outside the pane closes the menu too.
+         */
+        .menu-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 3;
+        }
+
+        /*
+         * Positioned in viewport coordinates from the pointer that opened it, which is why it is
+         * fixed: the pane scrolls and the editor is a scroll container of its own, so anchoring to
+         * either would need the offsets recomputed on every scroll.
+         */
+        .hunk-menu {
+            position: fixed;
+            z-index: 4;
+            display: flex;
+            flex-direction: column;
+            min-width: 160px;
+            padding: 3px;
+            border-radius: 5px;
+            border: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            ${viraShadows.menuShadow}
+            ${colorCss(viraThemeByKeys.grey['behind-fg'].body)};
+        }
+
+        .hunk-menu button {
+            appearance: none;
+            border: none;
+            background: none;
+            padding: 5px 8px;
+            border-radius: 3px;
+            text-align: left;
+            cursor: pointer;
+            font: inherit;
+            color: inherit;
+        }
+
+        .hunk-menu button:hover {
+            ${colorCss(viraThemeByKeys.blue.foreground.body)};
         }
 
         /*
@@ -1280,6 +1884,93 @@ export const VirDiffPane = defineElement<{
         .ruler-mark:hover {
             left: 0;
             right: 0;
+        }
+
+        .image-diff {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            flex-grow: 1;
+            min-width: 0;
+            padding: 12px;
+            box-sizing: border-box;
+            overflow: auto;
+        }
+
+        /*
+         * Sized to its own image rather than to a share of the pane: stacked, two grown sides split
+         * the height between them and shrink both images for no reason, since the column scrolls.
+         */
+        .image-side {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            flex-grow: 0;
+            flex-shrink: 0;
+            min-width: 0;
+        }
+
+        .image-side-label {
+            font-size: 10px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+        }
+
+        /*
+         * Checkerboard, the way every image editor draws it: a transparent PNG is otherwise
+         * indistinguishable from a white or black one, which is exactly the change most worth
+         * seeing in an icon diff.
+         */
+        .image-frame {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+            border-radius: 4px;
+            border: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+            background-image: linear-gradient(
+                    45deg,
+                    rgba(128, 128, 128, 0.22) 25%,
+                    transparent 25%,
+                    transparent 75%,
+                    rgba(128, 128, 128, 0.22) 75%
+                ),
+                linear-gradient(
+                    45deg,
+                    rgba(128, 128, 128, 0.22) 25%,
+                    transparent 25%,
+                    transparent 75%,
+                    rgba(128, 128, 128, 0.22) 75%
+                );
+            background-size: 16px 16px;
+            background-position:
+                0 0,
+                8px 8px;
+        }
+
+        /* Nothing to see through, so the checkerboard would only read as a second empty image. */
+        .image-frame[data-empty] {
+            background-image: none;
+        }
+
+        .image-empty-note {
+            padding: 8px;
+            font-size: 11px;
+            color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
+        }
+
+        /*
+         * Scaled down to fit but never up: a 16px favicon blown across the pane says nothing about
+         * what changed in it.
+         */
+        .image-frame img {
+            max-width: 100%;
+            max-height: 60vh;
+            object-fit: contain;
         }
 
         .placeholder {
@@ -1394,7 +2085,23 @@ export const VirDiffPane = defineElement<{
                 status,
                 statusError: undefined,
                 selectedValue,
+                /**
+                 * A marked file that just got staged, discarded, or committed is gone from the list
+                 * under its old value, and keeping it marked would aim the next bulk click at a
+                 * file the user can no longer see.
+                 */
+                markedValues: state.markedValues.filter((value) => values.includes(value)),
             });
+            /**
+             * Every path to a new selection ends in a refresh, so this one write covers them all —
+             * including the poll that finds the remembered file gone and picks another.
+             */
+            if (selectedValue !== rememberedFileForFolder(folder)) {
+                rememberFileForFolder({
+                    folder,
+                    value: selectedValue,
+                });
+            }
 
             const nextSelected = findSelected(status, selectedValue);
             if (!nextSelected) {
@@ -1434,14 +2141,21 @@ export const VirDiffPane = defineElement<{
                         void refresh();
                     }
                 }, refreshIntervalMs),
+                /**
+                 * The refresh below resolves this against the folder's real file list, so a
+                 * remembered file that is gone falls back to the first one there.
+                 */
+                selectedValue: rememberedFileForFolder(inputs.folder),
                 /** A different folder's file list and diff must not linger through the reload. */
                 ...(state.armedFolder === undefined
                     ? {}
                     : {
                           status: undefined,
-                          selectedValue: undefined,
                           diffContent: undefined,
                           allowLargeValues: [],
+                          markedValues: [],
+                          selectionAnchor: undefined,
+                          reviewSide: undefined,
                       }),
             });
             void refresh();
@@ -1474,13 +2188,88 @@ export const VirDiffPane = defineElement<{
         };
 
         const selectFile = (value: string) => {
+            /**
+             * Re-clicking the open file would otherwise clear its content and re-read it, which
+             * remounts the editor and throws away the scroll position the user was reading at.
+             */
+            if (value === state.selectedValue) {
+                /** Leaving the review is still the point of the click when it's already open. */
+                updateState({
+                    reviewSide: undefined,
+                });
+                return;
+            }
             updateState({
                 selectedValue: value,
                 diffContent: undefined,
                 diffError: undefined,
                 activeChunkIndex: 0,
+                reviewSide: undefined,
             });
             void refresh();
+        };
+
+        /**
+         * A row click, with the modifier conventions of any other file list: plain opens the file,
+         * cmd/ctrl adds or removes one file from the marked set, shift marks everything between the
+         * anchor and this row. Only the plain click opens a diff — the whole point of marking files
+         * is to line up an action without losing the file being read.
+         */
+        const onRowClick = ({event, value}: Readonly<{event: MouseEvent; value: string}>) => {
+            if (event.shiftKey) {
+                const values = allSelectValues(state.status);
+                const clickedIndex = values.indexOf(value);
+                if (clickedIndex < 0) {
+                    return;
+                }
+                const anchorIndex = values.indexOf(
+                    state.selectionAnchor ?? state.selectedValue ?? '',
+                );
+                /**
+                 * Shift dragging out a range leaves the anchor where it was, so widening and
+                 * narrowing the range walks from the same end each time.
+                 */
+                const from = anchorIndex < 0 ? clickedIndex : Math.min(anchorIndex, clickedIndex);
+                const to = anchorIndex < 0 ? clickedIndex : Math.max(anchorIndex, clickedIndex);
+                /** Shift click also extends the document's text selection, across whole rows. */
+                window.getSelection()?.removeAllRanges();
+                updateState({
+                    markedValues: values.slice(from, to + 1),
+                });
+            } else if (event.metaKey || event.ctrlKey) {
+                /** The first cmd click marks the open file too, since that is the set on screen. */
+                const current = state.markedValues.length
+                    ? state.markedValues
+                    : state.selectedValue
+                      ? [state.selectedValue]
+                      : [];
+                updateState({
+                    markedValues: current.includes(value)
+                        ? current.filter((marked) => marked !== value)
+                        : [
+                              ...current,
+                              value,
+                          ],
+                    selectionAnchor: value,
+                });
+            } else {
+                updateState({
+                    markedValues: [],
+                    selectionAnchor: value,
+                });
+                selectFile(value);
+            }
+        };
+
+        /**
+         * Files a row's action button applies to: the whole marked set when that row is part of it,
+         * and otherwise just that row. Clicking a button on an unmarked row is how the user acts on
+         * one file without having to clear the marks first.
+         */
+        const actionTargets = (value: string): SelectedFile[] => {
+            return (state.markedValues.includes(value) ? state.markedValues : [value])
+                .map((target) => findSelected(state.status, target))
+                .filter(check.isTruthy);
         };
 
         /** Run an index write, then immediately re-read so the pane reflects it without waiting. */
@@ -1502,12 +2291,21 @@ export const VirDiffPane = defineElement<{
             }
         };
 
-        const onStageWholeFile = ({path, side}: Readonly<{path: string; side: GitDiffSide}>) => {
+        /**
+         * Each file moves in the direction its own side implies, so a marked set spanning both
+         * sides stages the unstaged half and unstages the staged half in one click.
+         *
+         * Sequential: git takes `index.lock` for the duration of each write, and parallel calls
+         * would lose all but one of them to a lock error.
+         */
+        const onStageWholeFiles = (targets: ReadonlyArray<SelectedFile>) => {
             void runIndexWrite(async () => {
-                await setGitFileStaged({
-                    folder: inputs.folder,
-                    path,
-                    side,
+                await awaitedForEach(targets, async (target) => {
+                    await setGitFileStaged({
+                        folder: inputs.folder,
+                        path: target.file.path,
+                        side: target.side,
+                    });
                 });
             });
         };
@@ -1521,31 +2319,46 @@ export const VirDiffPane = defineElement<{
             });
         };
 
-        /** Confirmed for the same reason {@link onDiscardFile} is, and over more files. */
-        const onDiscardAll = () => {
+        /** Confirmed for the same reason {@link onDiscardFiles} is, and over more files. */
+        const onDiscardUnstaged = () => {
             if (
                 !window.confirm(
                     [
-                        'Discard every change in this repo?',
-                        'This throws away both staged and unstaged changes to every changed file and cannot be undone.',
+                        'Discard every unstaged change in this repo?',
+                        'This throws away every change that is not staged, deletes untracked files, and cannot be undone. Staged changes are left alone.',
                     ].join('\n\n'),
                 )
             ) {
                 return;
             }
             void runIndexWrite(async () => {
-                await discardAllGitChanges({
+                await discardUnstagedGitChanges({
                     folder: inputs.folder,
                 });
             });
         };
 
-        /** Confirmed, because unlike everything else in this pane it can't be undone from git. */
-        const onDiscardFile = (path: string) => {
+        /**
+         * Confirmed, because unlike everything else in this pane it can't be undone from git. The
+         * prompt names every file, since a bulk discard is the one action here where a stray marked
+         * row costs the user work they can't get back.
+         *
+         * Paths are deduplicated: discarding throws away both halves of a file, so a file marked on
+         * both sides is one discard, not two.
+         */
+        const onDiscardFiles = (targets: ReadonlyArray<SelectedFile>) => {
+            const paths = Array.from(new Set(targets.map((target) => target.file.path)));
+            const firstPath = paths[0];
             if (
+                !firstPath ||
                 !window.confirm(
                     [
-                        `Discard all changes to ${path}?`,
+                        paths.length === 1
+                            ? `Discard all changes to ${firstPath}?`
+                            : [
+                                  `Discard all changes to these ${paths.length} files?`,
+                                  ...paths,
+                              ].join('\n'),
                         'This throws away both staged and unstaged changes and cannot be undone.',
                     ].join('\n\n'),
                 )
@@ -1553,9 +2366,12 @@ export const VirDiffPane = defineElement<{
                 return;
             }
             void runIndexWrite(async () => {
-                await discardGitFile({
-                    folder: inputs.folder,
-                    path,
+                /** Sequential for the same `index.lock` reason {@link onStageWholeFiles} is. */
+                await awaitedForEach(paths, async (path) => {
+                    await discardGitFile({
+                        folder: inputs.folder,
+                        path,
+                    });
                 });
             });
         };
@@ -1567,8 +2383,12 @@ export const VirDiffPane = defineElement<{
          * the same diff. The old side has to be the same text the chunks were built from — folding
          * whitespace rewrites line contents, so character offsets only line up against the folded
          * copy.
+         *
+         * A narrowed selection replaces the new side's range and leaves the old side's alone. That
+         * only ever happens for a pure insertion, whose old side is the single point the lines go
+         * in at — the same point whichever of them the user picked.
          */
-        const toHunkRequest = (chunk: Readonly<Chunk>) => {
+        const toHunkRequest = (selection: Readonly<SelectedChunk>) => {
             const target = findSelected(state.status, state.selectedValue);
             const content = state.diffContent;
             if (!target || !content) {
@@ -1576,14 +2396,16 @@ export const VirDiffPane = defineElement<{
             }
             const oldLines = toLineRange({
                 text: Text.of(displayedOldContent(content).split('\n')),
-                from: chunk.fromA,
-                to: chunk.toA,
+                from: selection.chunk.fromA,
+                to: selection.chunk.toA,
             });
-            const newLines = toLineRange({
-                text: Text.of(content.newContent.split('\n')),
-                from: chunk.fromB,
-                to: chunk.toB,
-            });
+            const newLines =
+                selection.newLines ??
+                toLineRange({
+                    text: Text.of(content.newContent.split('\n')),
+                    from: selection.chunk.fromB,
+                    to: selection.chunk.toB,
+                });
             return {
                 folder: inputs.folder,
                 path: target.file.path,
@@ -1596,13 +2418,29 @@ export const VirDiffPane = defineElement<{
             };
         };
 
-        const onStageChunk = (chunk: Readonly<Chunk>) => {
-            const request = toHunkRequest(chunk);
-            if (!request) {
+        /**
+         * One request per chunk, bottom of the file upwards. Each request's line numbers were
+         * computed against the file as it is now, and writing a chunk shifts every line below it —
+         * so working upwards leaves the ranges still to be written untouched, where working
+         * downwards would apply the second patch at the wrong offset.
+         *
+         * Sequential for the same `index.lock` reason {@link onStageWholeFiles} is.
+         */
+        const toHunkRequests = (selections: ReadonlyArray<SelectedChunk>) =>
+            selections
+                .toSorted((first, second) => second.chunk.fromB - first.chunk.fromB)
+                .map((selection) => toHunkRequest(selection))
+                .filter(check.isTruthy);
+
+        const onStageChunks = (selections: ReadonlyArray<SelectedChunk>) => {
+            const requests = toHunkRequests(selections);
+            if (!requests.length) {
                 return;
             }
             void runIndexWrite(async () => {
-                await setGitHunkStaged(request);
+                await awaitedForEach(requests, async (request) => {
+                    await setGitHunkStaged(request);
+                });
                 /** Landing back on the first chunk avoids pointing at a chunk that just moved. */
                 updateState({
                     activeChunkIndex: 0,
@@ -1611,13 +2449,14 @@ export const VirDiffPane = defineElement<{
         };
 
         /** Confirmed, because unlike staging this throws the change away for good. */
-        const onUndoChunk = (chunk: Readonly<Chunk>) => {
-            const request = toHunkRequest(chunk);
+        const onUndoChunks = (selections: ReadonlyArray<SelectedChunk>) => {
+            const requests = toHunkRequests(selections);
+            const scope = stageScopeLabel(selections);
             if (
-                !request ||
+                !check.isLengthAtLeast(requests, 1) ||
                 !window.confirm(
                     [
-                        `Undo this hunk in ${request.path}?`,
+                        `Undo ${scope.isSingular ? 'this' : 'these'} ${scope.text} in ${requests[0].path}?`,
                         'This throws the change away and cannot be undone.',
                     ].join('\n\n'),
                 )
@@ -1625,10 +2464,66 @@ export const VirDiffPane = defineElement<{
                 return;
             }
             void runIndexWrite(async () => {
-                await discardGitHunk(request);
+                await awaitedForEach(requests, async (request) => {
+                    await discardGitHunk(request);
+                });
                 updateState({
                     activeChunkIndex: 0,
                 });
+            });
+        };
+
+        const closeHunkMenu = () => {
+            updateState({
+                hunkMenu: undefined,
+            });
+        };
+
+        /**
+         * Right-click staging, the way VS Code does it: select any amount of the diff, right-click,
+         * and move exactly what the selection covers across the index at once — down to individual
+         * added lines, per {@link selectedChunksInRange}.
+         *
+         * With nothing selected the chunk under the pointer is used rather than the one under the
+         * caret, since a right-click doesn't move the caret in every browser — the menu has to act
+         * on what the user actually pointed at. A right-click on unchanged code opens the browser's
+         * own menu instead, because there is nothing here to offer.
+         */
+        const onEditorContextMenu = (event: MouseEvent) => {
+            const view = state.editor?.view;
+            if (!view || state.busy) {
+                return;
+            }
+            const selection = view.state.selection.main;
+            const pointerPosition = view.posAtCoords({
+                x: event.clientX,
+                y: event.clientY,
+            });
+            const range =
+                selection.empty && pointerPosition != undefined
+                    ? {
+                          from: pointerPosition,
+                          to: pointerPosition,
+                      }
+                    : {
+                          from: selection.from,
+                          to: selection.to,
+                      };
+            const selections = selectedChunksInRange({
+                chunks: state.chunks,
+                text: view.state.doc,
+                ...range,
+            });
+            if (!selections.length) {
+                return;
+            }
+            event.preventDefault();
+            updateState({
+                hunkMenu: {
+                    x: event.clientX,
+                    y: event.clientY,
+                    selections,
+                },
             });
         };
 
@@ -1654,10 +2549,24 @@ export const VirDiffPane = defineElement<{
                 });
         }
 
+        /**
+         * An image has no hunks, so the last text file's chunks would otherwise stay armed: the
+         * jump buttons would scroll a hidden editor and the ruler would mark a file nobody is
+         * looking at. Dropping `rendered` also forces a fresh mount when a text file comes back.
+         */
+        if (content?.isImage && (state.chunks.length || state.rendered)) {
+            updateState({
+                chunks: [],
+                rulerMarks: [],
+                rendered: undefined,
+            });
+        }
+
         if (
             state.editorParent &&
             content &&
             !content.tooLargeOrBinary &&
+            !content.isImage &&
             state.selectedValue &&
             state.syntaxPath === selectedPath
         ) {
@@ -1667,6 +2576,7 @@ export const VirDiffPane = defineElement<{
                 newContent: content.newContent,
                 unified,
                 isDark: state.isDark,
+                isMobile,
             };
             const previous = state.rendered;
             const changed =
@@ -1675,7 +2585,8 @@ export const VirDiffPane = defineElement<{
                 previous.oldContent !== nextRendered.oldContent ||
                 previous.newContent !== nextRendered.newContent ||
                 previous.unified !== nextRendered.unified ||
-                previous.isDark !== nextRendered.isDark;
+                previous.isDark !== nextRendered.isDark ||
+                previous.isMobile !== nextRendered.isMobile;
             if (changed) {
                 const oldText = Text.of(nextRendered.oldContent.split('\n'));
                 const newText = Text.of(content.newContent.split('\n'));
@@ -1689,12 +2600,29 @@ export const VirDiffPane = defineElement<{
                     newContent: content.newContent,
                     unified,
                     chunks,
+                    oldText,
                     newText,
-                    stageLabel: stageLabels[selected?.side ?? GitDiffSide.Unstaged],
+                    side: selected?.side ?? GitDiffSide.Unstaged,
                     syntaxExtensions: state.syntaxExtensions,
                     isDark: state.isDark,
-                    onStageChunk,
-                    onUndoChunk: selected?.side === GitDiffSide.Staged ? undefined : onUndoChunk,
+                    isMobile,
+                    onStageChunk: (chunk) =>
+                        onStageChunks([
+                            {
+                                chunk,
+                                newLines: undefined,
+                            },
+                        ]),
+                    onUndoChunk:
+                        selected?.side === GitDiffSide.Staged
+                            ? undefined
+                            : (chunk) =>
+                                  onUndoChunks([
+                                      {
+                                          chunk,
+                                          newLines: undefined,
+                                      },
+                                  ]),
                     onGeometryChange: (view) => {
                         updateState({
                             rulerMarks: toRulerMarks(view, chunks),
@@ -1841,19 +2769,19 @@ export const VirDiffPane = defineElement<{
         /**
          * Bulk buttons in each section's header. `stopPropagation` keeps the click from reaching
          * the collapsible's header, which would otherwise fold the section the button just emptied.
-         * The staged side gets no discard-all: discarding is not per-side (it always throws away
-         * both halves), so one copy of it, on the side that also holds untracked files, is enough.
+         * The staged side gets no discard-all: unstaging is the way back out of the index, and it
+         * loses nothing, so the only bulk discard is the unstaged side's.
          */
         const sideHeaderActions: Readonly<Record<GitDiffSide, () => HtmlInterpolation>> = {
             [GitDiffSide.Unstaged]: () => html`
                 <button
                     type="button"
                     class="row-action"
-                    title="Discard all changes in this repo"
+                    title="Discard all unstaged changes"
                     ?disabled=${state.busy}
                     ${listen('click', (event) => {
                         event.stopPropagation();
-                        onDiscardAll();
+                        onDiscardUnstaged();
                     })}
                 >
                     <${ViraIcon.assign({
@@ -1893,6 +2821,33 @@ export const VirDiffPane = defineElement<{
             `,
         };
 
+        const toggleReview = (side: GitDiffSide) => {
+            updateState({
+                reviewSide: state.reviewSide === side ? undefined : side,
+            });
+        };
+
+        const reviewButtonTitle = (side: GitDiffSide) =>
+            state.reviewSide === side
+                ? 'Back to the single-file diff'
+                : `Read every ${sideLabels[side].toLowerCase()} file's changes in one scroll`;
+
+        const renderReview = (side: GitDiffSide) => html`
+            <${VirDiffReview.assign({
+                folder: inputs.folder,
+                side,
+                files:
+                    (side === GitDiffSide.Staged ? state.status?.staged : state.status?.unstaged) ??
+                    [],
+                hideWhitespace: state.hideWhitespace,
+                isDark: state.isDark,
+            })}
+                ${listen(VirDiffReview.events.fileSelected, (event) => {
+                    selectFile(toSelectValue(side, event.detail));
+                })}
+            ></${VirDiffReview}>
+        `;
+
         const renderSidebarSection = (side: GitDiffSide) => {
             const files =
                 side === GitDiffSide.Staged ? state.status?.staged : state.status?.unstaged;
@@ -1920,20 +2875,43 @@ export const VirDiffPane = defineElement<{
                         <span class="sidebar-header-label">
                             ${sideLabels[side]} (${files.length})
                         </span>
-                        <div class="header-actions">${sideHeaderActions[side]()}</div>
+                        <div class="header-actions">
+                            <button
+                                type="button"
+                                class="row-action"
+                                ?data-active=${state.reviewSide === side}
+                                title=${reviewButtonTitle(side)}
+                                ${listen('click', (event) => {
+                                    event.stopPropagation();
+                                    toggleReview(side);
+                                })}
+                            >
+                                <${ViraIcon.assign({
+                                    icon: reviewIcon,
+                                })}></${ViraIcon}>
+                            </button>
+                            ${sideHeaderActions[side]()}
+                        </div>
                     </div>
                     ${files.map((file) => {
                         const value = toSelectValue(side, file.path);
+                        const rowTargets = actionTargets(value);
                         return html`
                             <div
                                 class="sidebar-row"
                                 ?data-selected=${value === state.selectedValue}
+                                ?data-marked=${state.markedValues.includes(value)}
                             >
                                 <button
                                     type="button"
                                     class="sidebar-row-open"
                                     title=${file.path}
-                                    ${listen('click', () => selectFile(value))}
+                                    ${listen('click', (event) =>
+                                        onRowClick({
+                                            event,
+                                            value,
+                                        }),
+                                    )}
                                 >
                                     ${fileRowContents(file)}
                                 </button>
@@ -1941,10 +2919,12 @@ export const VirDiffPane = defineElement<{
                                     <button
                                         type="button"
                                         class="row-action"
-                                        title="Discard all changes to this file"
+                                        title=${rowTargets.length > 1
+                                            ? `Discard all changes to the ${rowTargets.length} selected files`
+                                            : 'Discard all changes to this file'}
                                         ?data-hidden=${side === GitDiffSide.Staged}
                                         ?disabled=${state.busy || side === GitDiffSide.Staged}
-                                        ${listen('click', () => onDiscardFile(file.path))}
+                                        ${listen('click', () => onDiscardFiles(rowTargets))}
                                     >
                                         <${ViraIcon.assign({
                                             icon: revertIcon,
@@ -1953,14 +2933,11 @@ export const VirDiffPane = defineElement<{
                                     <button
                                         type="button"
                                         class="row-action"
-                                        title=${stageActionLabels[side]}
+                                        title=${rowTargets.length > 1
+                                            ? `${stageActionLabels[side]} the ${rowTargets.length} selected files`
+                                            : stageActionLabels[side]}
                                         ?disabled=${state.busy}
-                                        ${listen('click', () =>
-                                            onStageWholeFile({
-                                                path: file.path,
-                                                side,
-                                            }),
-                                        )}
+                                        ${listen('click', () => onStageWholeFiles(rowTargets))}
                                     >
                                         <${ViraIcon.assign({
                                             icon: stageActionIcons[side],
@@ -2028,6 +3005,25 @@ export const VirDiffPane = defineElement<{
                                       <div class="menu-group-header">
                                           ${sideLabels[group.side]} (${group.files.length})
                                       </div>
+                                      <${ViraMenuItem.assign({
+                                          selected: state.reviewSide === group.side,
+                                      })}
+                                          ${listen(ViraMenuItem.events.activate, () =>
+                                              toggleReview(group.side),
+                                          )}
+                                      >
+                                          <div
+                                              class="menu-row"
+                                              title=${reviewButtonTitle(group.side)}
+                                          >
+                                              <${ViraIcon.assign({
+                                                  icon: reviewIcon,
+                                              })}></${ViraIcon}>
+                                              <span class="file-basename">
+                                                  Review all ${group.files.length}
+                                              </span>
+                                          </div>
+                                      </${ViraMenuItem}>
                                       ${group.files.map((file) => {
                                           const value = toSelectValue(group.side, file.path);
                                           return html`
@@ -2136,17 +3132,32 @@ export const VirDiffPane = defineElement<{
                     })}
                         title="Move the whole file across the index"
                         ${listen('click', () => {
-                            if (selected) {
-                                onStageWholeFile({
-                                    path: selected.file.path,
-                                    side: selected.side,
+                            if (!selected) {
+                                return;
+                            }
+                            /**
+                             * Moved before the write, whose own refresh then carries this selection
+                             * forward. Reading the current status first is what makes the next file
+                             * findable — a moment later the file being staged is gone from this
+                             * side.
+                             */
+                            const nextValue = nextSideValue(state.status, selected);
+                            if (nextValue) {
+                                updateState({
+                                    selectedValue: nextValue,
+                                    diffContent: undefined,
+                                    diffError: undefined,
+                                    activeChunkIndex: 0,
                                 });
                             }
+                            onStageWholeFiles([
+                                selected,
+                            ]);
                         })}
                     ></${ViraButton}>
                 </div>
             </div>
-            ${selected
+            ${selected && !state.reviewSide
                 ? html`
                       <div class="selected-path" title=${selected.file.path}>
                           ${selected.file.path}
@@ -2154,43 +3165,53 @@ export const VirDiffPane = defineElement<{
                   `
                 : ''}
             <div class="body">
-                ${state.statusError || state.diffError
-                    ? html`
-                          <div class="placeholder error">
-                              ${state.statusError || state.diffError}
-                          </div>
-                      `
-                    : hasFiles
-                      ? selected
-                          ? content?.tooLargeOrBinary
-                              ? html`
-                                    <div class="placeholder">
-                                        ${content.canShowAnyway
-                                            ? `Over ${maxDiffFileLines} lines — diffing it can lock the page up for a while.`
-                                            : 'Binary or oversized file — no diff shown.'}
-                                        ${content.canShowAnyway
-                                            ? html`
-                                                  <${ViraButton.assign({
-                                                      text: 'Show diff anyway',
-                                                      buttonSize: ViraSize.Small,
-                                                      color: ViraColorVariant.Neutral,
-                                                  })}
-                                                      ${listen('click', showLargeDiffAnyway)}
-                                                  ></${ViraButton}>
-                                              `
-                                            : ''}
-                                    </div>
-                                `
-                              : ''
-                          : html`
-                                <div class="placeholder">Select a file to see its diff.</div>
-                            `
-                      : html`
-                            <div class="placeholder">No changes in this folder.</div>
-                        `}
+                ${state.reviewSide
+                    ? renderReview(state.reviewSide)
+                    : state.statusError || state.diffError
+                      ? html`
+                            <div class="placeholder error">
+                                ${state.statusError || state.diffError}
+                            </div>
+                        `
+                      : hasFiles
+                        ? selected
+                            ? content?.tooLargeOrBinary
+                                ? html`
+                                      <div class="placeholder">
+                                          ${content.canShowAnyway
+                                              ? `Over ${maxDiffFileLines} lines — diffing it can lock the page up for a while.`
+                                              : 'Binary or oversized file — no diff shown.'}
+                                          ${content.canShowAnyway
+                                              ? html`
+                                                    <${ViraButton.assign({
+                                                        text: 'Show diff anyway',
+                                                        buttonSize: ViraSize.Small,
+                                                        color: ViraColorVariant.Neutral,
+                                                    })}
+                                                        ${listen('click', showLargeDiffAnyway)}
+                                                    ></${ViraButton}>
+                                                `
+                                              : ''}
+                                      </div>
+                                  `
+                                : content?.isImage
+                                  ? renderImageDiff({
+                                        content,
+                                    })
+                                  : ''
+                            : html`
+                                  <div class="placeholder">Select a file to see its diff.</div>
+                              `
+                        : html`
+                              <div class="placeholder">No changes in this folder.</div>
+                          `}
                 <div
                     class="editor-host"
-                    ?data-hidden=${!selected || content?.tooLargeOrBinary}
+                    ?data-hidden=${!!state.reviewSide ||
+                    !selected ||
+                    content?.tooLargeOrBinary ||
+                    content?.isImage}
+                    ${listen('contextmenu', onEditorContextMenu)}
                     ${onDomCreated((element) => {
                         if (element instanceof HTMLElement && !state.editorParent) {
                             updateState({
@@ -2199,7 +3220,52 @@ export const VirDiffPane = defineElement<{
                         }
                     })}
                 ></div>
-                ${selected && !content && !state.diffError
+                ${state.hunkMenu && selected
+                    ? html`
+                          <div
+                              class="menu-backdrop"
+                              ${listen('pointerdown', closeHunkMenu)}
+                              ${listen('contextmenu', (event) => {
+                                  event.preventDefault();
+                                  closeHunkMenu();
+                              })}
+                          ></div>
+                          <div
+                              class="hunk-menu"
+                              style=${css`
+                                  left: ${state.hunkMenu.x}px;
+                                  top: ${state.hunkMenu.y}px;
+                              `}
+                          >
+                              <button
+                                  type="button"
+                                  ${listen('click', () => {
+                                      const selections = state.hunkMenu?.selections ?? [];
+                                      closeHunkMenu();
+                                      onStageChunks(selections);
+                                  })}
+                              >
+                                  ${stageActionLabels[selected.side]}
+                                  ${stageScopeLabel(state.hunkMenu.selections).text}
+                              </button>
+                              ${selected.side === GitDiffSide.Unstaged
+                                  ? html`
+                                        <button
+                                            type="button"
+                                            ${listen('click', () => {
+                                                const selections = state.hunkMenu?.selections ?? [];
+                                                closeHunkMenu();
+                                                onUndoChunks(selections);
+                                            })}
+                                        >
+                                            Undo ${stageScopeLabel(state.hunkMenu.selections).text}
+                                        </button>
+                                    `
+                                  : ''}
+                          </div>
+                      `
+                    : ''}
+                ${selected && !content && !state.diffError && !state.reviewSide
                     ? html`
                           <div class="loading-overlay">
                               <${ViraIcon.assign({
@@ -2208,7 +3274,11 @@ export const VirDiffPane = defineElement<{
                           </div>
                       `
                     : ''}
-                ${state.rulerMarks.length && content && !content.tooLargeOrBinary
+                ${state.rulerMarks.length &&
+                content &&
+                !content.tooLargeOrBinary &&
+                !content.isImage &&
+                !state.reviewSide
                     ? html`
                           <div class="ruler">
                               ${state.rulerMarks.map(

@@ -26,6 +26,8 @@ const languageLoaders: Readonly<Record<string, () => Promise<LanguageSupport>>> 
         (await import('@codemirror/lang-javascript')).javascript({
             typescript: true,
         }),
+    /** Local, so this one is a plain resolve rather than a network fetch. */
+    '.prisma': async () => (await import('./prisma-language.js')).prismaLanguageSupport,
     '.py': async () => (await import('@codemirror/lang-python')).python(),
     '.scss': async () => (await import('@codemirror/lang-css')).css(),
     '.ts': async () =>
@@ -47,6 +49,11 @@ const languageLoaders: Readonly<Record<string, () => Promise<LanguageSupport>>> 
  * tags, so where several scopes collapse onto one tag the more common language wins. Tags with no
  * entry inherit the editor's foreground, which is what the theme does for plain identifiers (its
  * `Variables` rule is commented out deliberately).
+ *
+ * Property names are one of those deliberate omissions. The theme's `Properties` rule scopes
+ * `meta.function-call.arguments`, which VS Code's TypeScript grammar never emits — so properties
+ * are plain foreground there, and mapping the rule onto `tags.propertyName` here would color every
+ * `key:` red in a file VS Code leaves alone.
  */
 const virColorsHighlightStyle = HighlightStyle.define([
     {
@@ -55,8 +62,20 @@ const virColorsHighlightStyle = HighlightStyle.define([
         fontStyle: 'italic',
         fontWeight: '700',
     },
+    /**
+     * The theme's darker green is scoped to `comment.block.documentation`, which in VS Code means a
+     * `/** *\/` block. Lezer has no such distinction — every `/* *\/` comment is a `blockComment`
+     * and `docComment` is never produced by the JavaScript grammar — so the whole block-comment tag
+     * takes the documentation color. In a codebase whose block comments are all JSDoc that lands on
+     * VS Code's rendering; a plain `/* *\/` aside is the rare miss. Bold italic carries over from
+     * the `comment` rule above, which is how VS Code resolves it too: font style and foreground are
+     * matched independently, so the more specific rule setting only a color keeps the emphasis.
+     */
     {
-        tag: tags.docComment,
+        tag: [
+            tags.blockComment,
+            tags.docComment,
+        ],
         color: '#448C27',
     },
     {
@@ -95,12 +114,13 @@ const virColorsHighlightStyle = HighlightStyle.define([
             tags.function(tags.variableName),
             tags.function(tags.propertyName),
             tags.function(tags.definition(tags.variableName)),
+            /**
+             * Prisma's `@id` / `@@unique` attributes, which the VS Code extension scopes as
+             * `entity.name.function` — the theme's methods rule, so they take the same blue.
+             */
+            tags.annotation,
         ],
         color: '#4078f2',
-    },
-    {
-        tag: tags.propertyName,
-        color: '#e45649',
     },
     {
         tag: [

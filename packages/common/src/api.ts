@@ -613,6 +613,19 @@ const gitDiffFileResponseShape = defineShape({
     /** Contents in the index (staged side) or the working tree (unstaged side). */
     newContent: '',
     /**
+     * True for a file in one of the raster image formats the pane renders as a picture instead of
+     * as text. Both content fields are empty and the image fields carry the two sides. SVG is not
+     * one of them: it is text, and its diff says more than a re-render would.
+     */
+    isImage: false,
+    /**
+     * The two sides as `data:` URLs, only set when `isImage` is true, and each only when that side
+     * exists — an added image has no old side and a deleted one has no new side. Inlined rather
+     * than served from a URL because the old side is a git blob with no path to fetch it from.
+     */
+    oldImage: nullableShape(''),
+    newImage: nullableShape(''),
+    /**
      * True when either side is binary or past {@link maxDiffFileBytes} / {@link maxDiffFileLines}.
      * Both content fields are empty in that case and the pane shows a placeholder instead of a
      * diff.
@@ -900,12 +913,14 @@ export const gitStageAllEndpoint = defineEndpoint({
 });
 
 /**
- * {@link gitDiscardFileEndpoint} for every changed file at once, staged and unstaged alike. Scoped
- * to the reported status for the same reason {@link gitStageAllEndpoint} is, and irreversible, so
- * the frontend confirms before calling it.
+ * Throws away every unstaged change in the repo: each tracked file's working tree copy goes back to
+ * whatever its index entry holds, and untracked files are deleted. Staged changes survive, which is
+ * what separates this from {@link gitDiscardFileEndpoint}. Scoped to the reported status for the
+ * same reason {@link gitStageAllEndpoint} is, and irreversible, so the frontend confirms before
+ * calling it.
  */
-export const gitDiscardAllEndpoint = defineEndpoint({
-    path: '/git/discard/all',
+export const gitDiscardUnstagedEndpoint = defineEndpoint({
+    path: '/git/discard/unstaged',
     requests: {
         [HttpMethod.Post]: {
             requestData: folderActionRequestShape,
@@ -1028,6 +1043,13 @@ export const maxDiffFileBytes = 2 * 1024 * 1024;
  * for the cases where the wait is worth it.
  */
 export const maxDiffFileLines = 20_000;
+
+/**
+ * Size ceiling per side for an image diff, well under the buffer the server's `git show` runs with.
+ * Base64 inflates a blob by a third on its way through the JSON response, so this is about 5.5 MB
+ * on the wire for the largest image that still renders.
+ */
+export const maxDiffImageBytes = 4 * 1024 * 1024;
 
 export const configEndpoint = defineEndpoint({
     path: '/config',
@@ -1418,7 +1440,7 @@ export const agentStormService = defineApi({
         gitStageAllEndpoint,
         gitStageHunkEndpoint,
         gitDiscardFileEndpoint,
-        gitDiscardAllEndpoint,
+        gitDiscardUnstagedEndpoint,
         gitDiscardHunkEndpoint,
         gitHubPrEndpoint,
         gitHubCommentEndpoint,

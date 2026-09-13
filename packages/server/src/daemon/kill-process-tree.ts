@@ -89,20 +89,41 @@ function signalPid(pid: number, signal: NodeJS.Signals): void {
  * `immediate` on daemon shutdown, where the event loop is about to stop and a deferred SIGKILL
  * would never fire. Pass `processTable` from {@link snapshotProcessTable} when killing many panes at
  * once so the `ps` subprocess runs once for the batch instead of once per pane.
+ *
+ * Returns whether anything was signalled: a root that fails the `expectedParentPid` check is left
+ * alone.
  */
 export function killProcessTree(
     rootPid: number,
     {
+        expectedParentPid,
         immediate = false,
         processTable,
     }: Readonly<{
+        /**
+         * The pid that must currently own `rootPid`, or nothing is killed.
+         *
+         * A pane's pid is stored for as long as the pane exists, but the process behind it can be
+         * gone long before any teardown runs — node-pty's exit event only fires once the master
+         * stream produces EIO, and on macOS that stream sometimes stays quiet (the same gap
+         * `sweepDeadPanes` exists to cover). macOS then hands that pid to something else, and
+         * killing it walks the tree of an unrelated process and takes its children with it. Every
+         * pane's shell is forked directly by the daemon, so requiring the daemon as the parent
+         * distinguishes the real pane from a stranger wearing its pid.
+         */
+        expectedParentPid: number;
         immediate?: boolean | undefined;
         processTable?: string | undefined;
-    }> = {},
-): void {
+    }>,
+): boolean {
+    const table = processTable ?? snapshotProcessTable();
+    const root = parseProcessTable(table).find((row) => row.pid === rootPid);
+    if (root?.ppid !== expectedParentPid) {
+        return false;
+    }
     const pids = [
         rootPid,
-        ...collectDescendantPids(processTable ?? snapshotProcessTable(), rootPid),
+        ...collectDescendantPids(table, rootPid),
     ];
     pids.forEach((pid) => signalPid(pid, 'SIGHUP'));
     if (immediate) {
@@ -110,4 +131,5 @@ export function killProcessTree(
     } else {
         setTimeout(() => pids.forEach((pid) => signalPid(pid, 'SIGKILL')), 250);
     }
+    return true;
 }

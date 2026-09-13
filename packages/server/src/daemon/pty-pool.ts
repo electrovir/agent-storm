@@ -1,6 +1,7 @@
 // cspell:words subshell, backgrounded, ptmx, ptys, spawnp
 
 import {PaneKind, PaneStatus} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {spawn, type IPty} from 'node-pty';
 import {homedir} from 'node:os';
@@ -141,6 +142,31 @@ function clearScrollback(entry: PaneEntry): void {
 }
 
 const panes = new Map<string, PaneEntry>();
+
+/**
+ * Every pty the daemon has spawned and not yet released.
+ *
+ * {@link panes} cannot serve this role. An entry that is deleted, or that has its `pty` cleared
+ * without a release, leaves the pty referenced by nothing — and an fd nothing references can never
+ * be closed, by cleanup code or by GC, which is how the daemon once reached macOS's 511-pty ceiling
+ * while holding only 147 panes. Membership here is the invariant that makes a missed release
+ * recoverable: a pty enters in {@link startPty} and leaves only in {@link releasePty}, after its fd
+ * is closed, so {@link sweepOrphanedPtys} can always find one that fell out of the map.
+ */
+const livePtys = new Set<IPty>();
+
+/**
+ * Ceiling on ptys held at once, well under `kern.tty.ptmx_max` (511 by default) — a limit shared
+ * with every other process on the machine, not a per-process budget. Crossing it fails the one pane
+ * being spawned, with a message in that pane, instead of letting the daemon take every
+ * `posix_spawnp` on the machine down with it.
+ */
+const maxLivePtys = 400;
+
+/** Diagnostic counterpart to {@link livePtys}, for the reap log and its tests. */
+export function livePtyCount(): number {
+    return livePtys.size;
+}
 
 function normalizePath(path: string): string {
     const expanded =
@@ -297,6 +323,40 @@ function releasePty(pty: IPty): void {
     } catch {
         /* the fd may already be closed — nothing left to release */
     }
+    livePtys.delete(pty);
+}
+
+/**
+ * Kill a pane's process tree, release its fd, and clear the entry's pty. Every teardown path goes
+ * through here so none of them can forget the parent check that keeps a recycled pid from taking an
+ * unrelated process tree down with it.
+ */
+function teardownPaneProcess(
+    entry: PaneEntry,
+    {
+        immediate,
+        processTable,
+    }: Readonly<{
+        immediate?: boolean | undefined;
+        processTable?: string | undefined;
+    }> = {},
+): void {
+    const pty = entry.pty;
+    if (!pty) {
+        return;
+    }
+    const killed = killProcessTree(pty.pid, {
+        expectedParentPid: process.pid,
+        immediate,
+        processTable,
+    });
+    if (!killed) {
+        reapLog(
+            `${entry.folder}:${entry.kind}:${entry.sessionId} not killed (pid ${pty.pid} is no longer ours)`,
+        );
+    }
+    releasePty(pty);
+    entry.pty = undefined;
 }
 
 function startPty({
@@ -321,6 +381,13 @@ function startPty({
     }
     const cwd = normalizePath(folder);
     try {
+        if (livePtys.size >= maxLivePtys) {
+            /**
+             * Thrown rather than returned so the catch below reports it in the pane like any other
+             * spawn failure.
+             */
+            throw new Error(`daemon already holds ${livePtys.size} ptys (limit ${maxLivePtys})`);
+        }
         const pty = spawn(command, args, {
             name: 'xterm-256color',
             cols: 120,
@@ -328,6 +395,7 @@ function startPty({
             cwd,
             env: spawnEnv() as Record<string, string>,
         });
+        livePtys.add(pty);
         entry.pty = pty;
         entry.exitCode = undefined;
         entry.lastOutputAt = Date.now();
@@ -491,11 +559,7 @@ export function restartPane({
     aiCmd?: string | undefined;
 }>): void {
     const entry = ensureEntry(folder, kind, sessionId);
-    if (entry.pty) {
-        killProcessTree(entry.pty.pid);
-        releasePty(entry.pty);
-    }
-    entry.pty = undefined;
+    teardownPaneProcess(entry);
     entry.exitCode = undefined;
     clearScrollback(entry);
     startPty({
@@ -521,10 +585,8 @@ export function killPaneSession({
 }>): void {
     const key = paneKey(folder, kind, sessionId);
     const entry = panes.get(key);
-    if (entry?.pty) {
-        killProcessTree(entry.pty.pid);
-        releasePty(entry.pty);
-        entry.pty = undefined;
+    if (entry) {
+        teardownPaneProcess(entry);
     }
     panes.delete(key);
 }
@@ -550,13 +612,9 @@ export function killFolderPanes({folder}: Readonly<{folder: string}>): void {
             key,
             entry,
         ]) => {
-            if (entry.pty) {
-                killProcessTree(entry.pty.pid, {
-                    processTable,
-                });
-                releasePty(entry.pty);
-                entry.pty = undefined;
-            }
+            teardownPaneProcess(entry, {
+                processTable,
+            });
             panes.delete(key);
         },
     );
@@ -575,14 +633,10 @@ export function killAllPanes(): void {
      */
     const processTable = snapshotProcessTable();
     panes.forEach((entry) => {
-        if (entry.pty) {
-            killProcessTree(entry.pty.pid, {
-                immediate: true,
-                processTable,
-            });
-            releasePty(entry.pty);
-            entry.pty = undefined;
-        }
+        teardownPaneProcess(entry, {
+            immediate: true,
+            processTable,
+        });
     });
     panes.clear();
 }
@@ -629,6 +683,39 @@ export function sweepDeadPanes(): void {
             subscriber.onExit(-1);
         });
     });
+    sweepOrphanedPtys();
+}
+
+/**
+ * Release every pty that no pane points at any more and whose process is gone.
+ *
+ * The loop above can only reach ptys the pane map still references, which makes it blind to exactly
+ * the ones that strand an fd — see {@link livePtys}. This is the half that recovers them.
+ *
+ * A pty that fell out of the map while its process is still running is left alone: releasing it
+ * SIGHUPs that process, and killing something on nothing more than a bookkeeping mismatch is worse
+ * than holding one fd. The drift log below is how that case surfaces instead.
+ */
+function sweepOrphanedPtys(): void {
+    const referenced = new Set(
+        Array.from(panes.values(), (entry) => entry.pty).filter(check.isDefined),
+    );
+    livePtys.forEach((pty) => {
+        if (referenced.has(pty) || isProcessAlive(pty.pid)) {
+            return;
+        }
+        reapLog(`orphaned pty released (pid ${pty.pid})`);
+        releasePty(pty);
+    });
+    /**
+     * Anything still held but unreferenced is a live-process orphan the sweep above declined to
+     * touch. Logging it every pass is deliberate: this is the signal that used to be invisible
+     * right up until the daemon poisoned every spawn on the machine.
+     */
+    const stranded = livePtys.size - referenced.size;
+    if (stranded > 0) {
+        reapLog(`${livePtys.size} live ptys vs ${referenced.size} held by panes`);
+    }
 }
 
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {

@@ -108,11 +108,10 @@ function clamp({
 }
 
 /**
- * Which tab each folder was last on, keyed by absolute folder path. Persisted so switching away
- * from a folder and back returns to the pane you were using there, rather than resetting to AI.
- * Unknown or malformed entries are dropped on read; the caller falls back to the default tab.
+ * A string per folder, keyed by absolute folder path. Non-string entries are dropped on read, so a
+ * hand-edited or stale value falls back to the caller's default rather than being trusted.
  */
-function parseTabByFolder(raw: string): Record<string, string> {
+function parseStringByFolder(raw: string): Record<string, string> {
     try {
         const parsed: unknown = JSON.parse(raw);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -212,10 +211,25 @@ export const localStorageClient = {
             }),
         serialize: (value) => String(value),
     }),
+    /**
+     * Which tab each folder was last on. Persisted so switching away from a folder and back returns
+     * to the pane you were using there, rather than resetting to AI.
+     */
     tabByFolder: defineSetting<Record<string, string>>({
         key: 'agent-storm:tab-by-folder',
         defaultValue: {},
-        parse: parseTabByFolder,
+        parse: parseStringByFolder,
+        serialize: (value) => JSON.stringify(value),
+    }),
+    /**
+     * Which file each folder's diff pane was last showing, as that pane's own side-plus-path select
+     * value. A value naming a file that no longer has a diff is discarded when the pane next reads
+     * git status.
+     */
+    diffFileByFolder: defineSetting<Record<string, string>>({
+        key: 'agent-storm:diff-file-by-folder',
+        defaultValue: {},
+        parse: parseStringByFolder,
         serialize: (value) => JSON.stringify(value),
     }),
     sessionIndexByFolder: defineSetting<Record<string, Record<string, number>>>({
