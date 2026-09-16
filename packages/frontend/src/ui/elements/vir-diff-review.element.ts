@@ -19,6 +19,7 @@ import {
     type DiffHunkLine,
 } from '../../util/diff-hunks.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
+import {imageDiffStyles, renderImageDiff} from './image-diff.js';
 
 /**
  * Rendered lines one file contributes before the rest is cut off. A file rewritten end to end is a
@@ -220,6 +221,8 @@ export const VirDiffReview = defineElement<{
             justify-content: center;
             padding: 16px;
         }
+
+        ${imageDiffStyles}
     `,
     render({inputs, state, updateState, host, dispatch, events}) {
         host.style.setProperty('--diff-added-line', colorsFor(inputs.isDark).addedLine);
@@ -275,9 +278,9 @@ export const VirDiffReview = defineElement<{
                     </div>
                 `;
             } else if (content.isImage) {
-                return html`
-                    <div class="note">Image change — open the file to see it.</div>
-                `;
+                return renderImageDiff({
+                    content,
+                });
             } else if (content.tooLargeOrBinary) {
                 return html`
                     <div class="note">Binary or oversized file — no diff shown.</div>
