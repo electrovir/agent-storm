@@ -1,4 +1,4 @@
-// cspell:words Hyperlegible, upserted
+// cspell:words hyperlegible upserted
 
 import {
     type AiDefinition,
@@ -644,10 +644,11 @@ export const VirSidebar = defineElement<{
         const worktreeRoots = visibleFolders
             .filter((folder) => folder.isWorktreeRoot)
             .toSorted(folderComparators[SidebarSorting.Name]);
-        const sortedChildrenOf = (rootPath: string) =>
-            visibleFolders
+        function sortedChildrenOf(rootPath: string) {
+            return visibleFolders
                 .filter((folder) => folder.parentRepoPath === rootPath)
                 .toSorted(folderComparator);
+        }
         /**
          * What Enter in the search input opens: the first row of the rendered list, in the same
          * top-to-bottom order the user sees. Repo headers are skipped because they aren't
@@ -661,20 +662,24 @@ export const VirSidebar = defineElement<{
          * Closes over `state.folders` from the latest render so the optimistic-delete handler can
          * filter against the freshest snapshot without having to ask for a re-read.
          */
-        const removeFolderLocally = (path: string) => {
+        function removeFolderLocally(path: string) {
             updateState({
                 folders: state.folders.filter((folder) => folder.path !== path),
             });
-        };
+        }
         /**
          * Fire the `foldersRemoved` event so the parent can drop `activeFolder` / `openedFolders`
          * entries pointing at the gone folders. Used by the delete-worktree and remove-repo flows
          * after the user confirms but before the API trip.
          */
-        const emitFoldersRemoved = (paths: ReadonlyArray<string>) => {
-            dispatch(new events.foldersRemoved(paths));
-        };
-        const emitFolderActivated = (path: string) => {
+        function emitFoldersRemoved(paths: ReadonlyArray<string>) {
+            dispatch(
+                new events.foldersRemoved({
+                    detail: paths,
+                }),
+            );
+        }
+        function emitFolderActivated(path: string) {
             /**
              * Optimistically bump the owning repo's `lastInteractedAtMs` in the local repos mirror
              * so the hide-inactive filter keeps the repo visible the instant the search query is
@@ -693,50 +698,58 @@ export const VirSidebar = defineElement<{
                  * were looking for, so the sidebar reverts to its normal (hide-inactive) view.
                  */
                 searchQuery: '',
-                repos: state.repos.map((repo) =>
-                    repo.path === owningRepoPath
+                repos: state.repos.map((repo) => {
+                    return repo.path === owningRepoPath
                         ? {
                               ...repo,
                               lastInteractedAtMs: now,
                           }
-                        : repo,
-                ),
+                        : repo;
+                }),
             });
-            dispatch(new events.folderActivated(path));
-        };
-        const emitPaneRestarted = (detail: PaneRestartedEvent) => {
-            dispatch(new events.paneRestarted(detail));
-        };
-        const closeRepoModal = () => {
+            dispatch(
+                new events.folderActivated({
+                    detail: path,
+                }),
+            );
+        }
+        function emitPaneRestarted(detail: PaneRestartedEvent) {
+            dispatch(
+                new events.paneRestarted({
+                    detail,
+                }),
+            );
+        }
+        function closeRepoModal() {
             updateState({
                 repoModalOpen: false,
                 repoPath: '',
                 repoAiId: defaultAiSelectValue,
                 repoSubmitting: false,
             });
-        };
-        const submitRepo = () => {
+        }
+        function submitRepo() {
             void submitAddRepo({
                 state,
                 updateState,
                 notifyActivated: emitFolderActivated,
             });
-        };
-        const closeWorktreeModal = () => {
+        }
+        function closeWorktreeModal() {
             updateState({
                 worktreeModalRepoPath: undefined,
                 worktreeName: '',
                 worktreeAiId: defaultAiSelectValue,
                 worktreeSubmitting: false,
             });
-        };
-        const submitWorktree = () => {
+        }
+        function submitWorktree() {
             void submitAddWorktree({
                 state,
                 updateState,
                 onActivate: emitFolderActivated,
             });
-        };
+        }
 
         return html`
             <div class="header">
@@ -886,14 +899,22 @@ export const VirSidebar = defineElement<{
                         ${renderMenuItemEntries([
                             {
                                 content: 'Define AI',
-                                onClick: () => {
-                                    dispatch(new events.openAiModalRequested());
+                                onClick() {
+                                    dispatch(
+                                        new events.openAiModalRequested({
+                                            detail: undefined,
+                                        }),
+                                    );
                                 },
                             },
                             {
                                 content: 'Settings',
-                                onClick: () => {
-                                    dispatch(new events.openSettingsRequested());
+                                onClick() {
+                                    dispatch(
+                                        new events.openSettingsRequested({
+                                            detail: undefined,
+                                        }),
+                                    );
                                 },
                             },
                         ])}
@@ -915,8 +936,8 @@ export const VirSidebar = defineElement<{
                           </div>
                       `
                     : ''}
-                ${standaloneFolders.map((folder) =>
-                    renderRow({
+                ${standaloneFolders.map((folder) => {
+                    return renderRow({
                         folder,
                         indented: false,
                         activeFolder: inputs.activeFolder,
@@ -926,8 +947,8 @@ export const VirSidebar = defineElement<{
                         emitFoldersRemoved,
                         emitPaneRestarted,
                         updateState,
-                    }),
-                )}
+                    });
+                })}
                 ${worktreeRoots.map((root) => {
                     const children = sortedChildrenOf(root.path);
                     const repoMenuKey = `repo:${root.path}`;
@@ -971,7 +992,7 @@ export const VirSidebar = defineElement<{
                                         {
                                             content: 'Add worktree',
                                             iconOverride: lucideIcons.GitBranchPlus,
-                                            onClick: () => {
+                                            onClick() {
                                                 void openAddWorktreeModal(root.path, updateState);
                                             },
                                         },
@@ -984,19 +1005,23 @@ export const VirSidebar = defineElement<{
                                              */
                                             content: 'Change AI',
                                             iconOverride: menuEditCommandsIcon,
-                                            onClick: () => {
+                                            onClick() {
                                                 void openChangeAiModal(root, updateState);
                                             },
                                         },
                                         {
                                             content: 'Remove repo',
                                             iconOverride: lucideIcons.X,
-                                            onClick: () => {
-                                                void confirmRemoveRepo(root.path, updateState, () =>
-                                                    emitFoldersRemoved([
-                                                        root.path,
-                                                        ...children.map((child) => child.path),
-                                                    ]),
+                                            onClick() {
+                                                void confirmRemoveRepo(
+                                                    root.path,
+                                                    updateState,
+                                                    () => {
+                                                        return emitFoldersRemoved([
+                                                            root.path,
+                                                            ...children.map((child) => child.path),
+                                                        ]);
+                                                    },
                                                 );
                                             },
                                         },
@@ -1004,8 +1029,8 @@ export const VirSidebar = defineElement<{
                                 </${ViraMenuTrigger}>
                             </span>
                         </div>
-                        ${children.map((child) =>
-                            renderRow({
+                        ${children.map((child) => {
+                            return renderRow({
                                 folder: child,
                                 indented: true,
                                 activeFolder: inputs.activeFolder,
@@ -1015,8 +1040,8 @@ export const VirSidebar = defineElement<{
                                 emitFoldersRemoved,
                                 emitPaneRestarted,
                                 updateState,
-                            }),
-                        )}
+                            });
+                        })}
                     `;
                 })}
             </div>
@@ -1164,9 +1189,9 @@ export const VirSidebar = defineElement<{
                 inheritedName: state.changeAiInheritedName,
                 submitting: state.changeAiSubmitting,
             })}
-                ${listen(VirAiPickerModal.events.closeRequested, () =>
-                    updateState(closedChangeAiState),
-                )}
+                ${listen(VirAiPickerModal.events.closeRequested, () => {
+                    return updateState(closedChangeAiState);
+                })}
                 ${listen(VirAiPickerModal.events.aiSaveRequested, (event) => {
                     void submitChangeAi({
                         aiId: event.detail,
@@ -1336,22 +1361,27 @@ function isValidPrUrl(url: string | null | undefined): boolean {
  * where the user last saw it rather than shuffle as its worktrees are worked in.
  */
 const folderComparators: Record<SidebarSorting, (a: FolderInfo, b: FolderInfo) => number> = {
-    [SidebarSorting.Name]: (a, b) =>
-        a.name.localeCompare(b.name, undefined, {
+    [SidebarSorting.Name](a, b) {
+        return a.name.localeCompare(b.name, undefined, {
             sensitivity: 'base',
-        }),
+        });
+    },
     /**
      * Newest-created first. Folders the backend couldn't stat carry `createdAtMs: 0` and land at
      * the end, where they fall back to the name comparator.
      */
-    [SidebarSorting.Date]: (a, b) =>
-        b.createdAtMs - a.createdAtMs || folderComparators[SidebarSorting.Name](a, b),
+    [SidebarSorting.Date](a, b) {
+        return b.createdAtMs - a.createdAtMs || folderComparators[SidebarSorting.Name](a, b);
+    },
     /**
      * Most-recently-typed-in first. Folders nobody has typed in carry `0` and land at the end,
      * where they fall back to the name comparator.
      */
-    [SidebarSorting.Activity]: (a, b) =>
-        b.lastActivityAtMs - a.lastActivityAtMs || folderComparators[SidebarSorting.Name](a, b),
+    [SidebarSorting.Activity](a, b) {
+        return (
+            b.lastActivityAtMs - a.lastActivityAtMs || folderComparators[SidebarSorting.Name](a, b)
+        );
+    },
 };
 
 /**
@@ -1381,7 +1411,7 @@ function buildFilterMenuSections({
              * keeps the labels visually aligned across rows.
              */
             iconOverride: sidebarGrouping === grouping ? lucideIcons.Check : undefined,
-            onClick: () => {
+            onClick() {
                 if (sidebarGrouping === grouping) {
                     return;
                 }
@@ -1402,7 +1432,7 @@ function buildFilterMenuSections({
             content: sidebarSortingLabels[sorting],
             iconOverride:
                 (sidebarSorting ?? SidebarSorting.Name) === sorting ? lucideIcons.Check : undefined,
-            onClick: () => {
+            onClick() {
                 if ((sidebarSorting ?? SidebarSorting.Name) === sorting) {
                     return;
                 }
@@ -1421,7 +1451,7 @@ function buildFilterMenuSections({
                  * state — the user can flip it off the same way they turned it on.
                  */
                 iconOverride: onlyShowRecent ? lucideIcons.Check : undefined,
-                onClick: () => {
+                onClick() {
                     void toggleHideInactive(!onlyShowRecent, updateState);
                 },
             },
@@ -1502,14 +1532,14 @@ function buildRowMenuEntries({
         {
             content: 'Change AI',
             iconOverride: menuEditCommandsIcon,
-            onClick: () => {
+            onClick() {
                 void openChangeAiModal(folder, updateState);
             },
         },
         {
             content: 'Restart panes',
             iconOverride: menuRestartPanesIcon,
-            onClick: () => {
+            onClick() {
                 void restartFolderPanes({
                     folder: folder.path,
                     updateState,
@@ -1520,7 +1550,7 @@ function buildRowMenuEntries({
         {
             content: 'Kill panes',
             iconOverride: menuKillPanesIcon,
-            onClick: () => {
+            onClick() {
                 void (async () => {
                     try {
                         await killFolderPanes({
@@ -1557,7 +1587,7 @@ function buildRowMenuEntries({
         !folder.parentRepoPath && {
             content: 'Hide repo',
             iconOverride: menuHideRepoIcon,
-            onClick: () => {
+            onClick() {
                 void (async () => {
                     try {
                         await hideRepo({
@@ -1581,22 +1611,24 @@ function buildRowMenuEntries({
             ? {
                   content: 'Delete worktree',
                   iconOverride: menuDeleteWorktreeIcon,
-                  onClick: () => {
+                  onClick() {
                       void confirmDeleteWorktree({
                           worktreePath: folder.path,
                           updateState,
                           removeFolderLocally,
-                          notifyRemoved: () => emitFoldersRemoved([folder.path]),
+                          notifyRemoved() {
+                              return emitFoldersRemoved([folder.path]);
+                          },
                       });
                   },
               }
             : {
                   content: 'Remove repo',
                   iconOverride: menuRemoveRepoIcon,
-                  onClick: () => {
-                      void confirmRemoveRepo(folder.path, updateState, () =>
-                          emitFoldersRemoved([folder.path]),
-                      );
+                  onClick() {
+                      void confirmRemoveRepo(folder.path, updateState, () => {
+                          return emitFoldersRemoved([folder.path]);
+                      });
                   },
               },
     ].filter(check.isTruthy);
@@ -1729,24 +1761,26 @@ function filterByRecency(
     const cutoff = calculateRelativeDate(getNowInUtcTimezone(), recencyWindow);
     const recentRepoPaths = new Set(
         repos
-            .filter(
-                (repo) =>
+            .filter((repo) => {
+                return (
                     repo.lastInteractedAtMs != undefined &&
                     isDateAfter({
                         fullDate: createUtcFullDate(repo.lastInteractedAtMs),
                         relativeTo: cutoff,
-                    }),
-            )
+                    })
+                );
+            })
             .map((repo) => repo.path),
     );
-    return folders.filter(
-        (folder) =>
+    return folders.filter((folder) => {
+        return (
             folder.isWorktreeRoot ||
             !!folder.parentRepoPath ||
             recentRepoPaths.has(folder.path) ||
             isPaneRunning(folder.panes.ai) ||
-            isPaneRunning(folder.panes.shell),
-    );
+            isPaneRunning(folder.panes.shell)
+        );
+    });
 }
 
 /**
@@ -1761,7 +1795,9 @@ function filterByRecency(
  */
 function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): FolderInfo[] {
     const needle = query.trim().toLowerCase();
-    const nameMatches = (folder: FolderInfo): boolean => folder.name.toLowerCase().includes(needle);
+    function nameMatches(folder: FolderInfo): boolean {
+        return folder.name.toLowerCase().includes(needle);
+    }
     const matchingRootPaths = new Set(
         folders
             .filter((folder) => folder.isWorktreeRoot && nameMatches(folder))
@@ -1771,8 +1807,9 @@ function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): Fold
         filterMap(
             folders,
             (folder) => folder.parentRepoPath,
-            (parentRepoPath, folder): parentRepoPath is string =>
-                !!parentRepoPath && nameMatches(folder),
+            (parentRepoPath, folder): parentRepoPath is string => {
+                return !!parentRepoPath && nameMatches(folder);
+            },
         ),
     );
     return folders.filter((folder) => {

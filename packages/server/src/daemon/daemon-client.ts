@@ -173,7 +173,7 @@ export async function attachPane({
     };
 
     const handshakeResult = await new Promise<AttachResponse>((resolve, reject) => {
-        const handler = (chunk: Buffer | string) => {
+        function handler(chunk: Buffer | string) {
             const frames = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
             frames.forEach((frame) => {
                 if (handshakeState.resolved) {
@@ -191,15 +191,15 @@ export async function attachPane({
                     }
                 }
             });
-        };
-        const routeFrame = (frame: {type: FrameType; payload: Buffer}) => {
+        }
+        function routeFrame(frame: {type: FrameType; payload: Buffer}) {
             if (frame.type === FrameType.Data) {
                 onData(frame.payload.toString('utf-8'));
                 return;
             }
             const parsed = JSON.parse(frame.payload.toString('utf-8')) as ExitNotification;
             onExit(parsed.exitCode);
-        };
+        }
         socket.on('data', handler);
         socket.once('error', reject);
         socket.once('close', () => {

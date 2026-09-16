@@ -40,10 +40,12 @@ export function collectDescendantPids(processTable: string, rootPid: number): nu
     const childrenByParent = groupArrayBy(parseProcessTable(processTable), (row) => row.ppid);
 
     function walk(parentPid: number): number[] {
-        return (childrenByParent[parentPid] ?? []).flatMap((row) => [
-            row.pid,
-            ...walk(row.pid),
-        ]);
+        return (childrenByParent[parentPid] ?? []).flatMap((row) => {
+            return [
+                row.pid,
+                ...walk(row.pid),
+            ];
+        });
     }
 
     return walk(rootPid);

@@ -629,13 +629,15 @@ function persistGithubCache(): void {
             ([
                 key,
                 entry,
-            ]) => [
-                key,
-                {
-                    fetchedAt: entry.fetchedAt,
-                    prs: Array.from(entry.prsByBranch.entries()),
-                },
-            ],
+            ]) => {
+                return [
+                    key,
+                    {
+                        fetchedAt: entry.fetchedAt,
+                        prs: Array.from(entry.prsByBranch.entries()),
+                    },
+                ];
+            },
         ),
         everHadPr: Array.from(everHadPrRepoPaths),
     };
@@ -787,11 +789,12 @@ export function computeRepoPrRefreshTtlByRepo({
     return new Map(
         groupKeys.map((key) => {
             const groupTargets = targets.filter((target) => repoActivityKey(target) === key);
-            const hasLivePane = groupTargets.some(
-                (target) =>
+            const hasLivePane = groupTargets.some((target) => {
+                return (
                     isLivePaneStatus(statusLookup(target.folder, PaneKind.Ai)) ||
-                    isLivePaneStatus(statusLookup(target.folder, PaneKind.Shell)),
-            );
+                    isLivePaneStatus(statusLookup(target.folder, PaneKind.Shell))
+                );
+            });
             const isWorktreeGroup = groupTargets.some(
                 (target) => target.isWorktreeRoot || !!target.parentRepoPath,
             );

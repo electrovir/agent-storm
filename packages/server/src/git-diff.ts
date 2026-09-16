@@ -1,5 +1,4 @@
-// cspell:words numstat, unstaging, nowarn, unidiff, apng
-// cspell:words docx, dylib, flac, heic, heif, mkv, odp, ods, odt, pptx, pyc, sqlite, tgz, tiff, ttf, woff, xlsx
+// cspell:words numstat unstaging nowarn unidiff apng docx dylib flac heic heif mkv odp ods odt pptx pyc sqlite tgz tiff ttf woff xlsx
 
 import {
     GitDiffSide,
@@ -245,14 +244,18 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
     return {
         staged: entries
             .filter((entry) => entry.stagedChange)
-            .map((entry) =>
-                toFile(entry, entry.stagedChange ?? GitFileChange.Modified, stagedCounts),
-            ),
+            .map((entry) => {
+                return toFile(entry, entry.stagedChange ?? GitFileChange.Modified, stagedCounts);
+            }),
         unstaged: entries
             .filter((entry) => entry.unstagedChange)
-            .map((entry) =>
-                toFile(entry, entry.unstagedChange ?? GitFileChange.Modified, unstagedCounts),
-            ),
+            .map((entry) => {
+                return toFile(
+                    entry,
+                    entry.unstagedChange ?? GitFileChange.Modified,
+                    unstagedCounts,
+                );
+            }),
     };
 }
 

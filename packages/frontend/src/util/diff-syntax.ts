@@ -10,37 +10,67 @@ import {tags} from '@lezer/highlight';
  * dropping the embedded editor.
  */
 const languageLoaders: Readonly<Record<string, () => Promise<LanguageSupport>>> = {
-    '.cjs': async () => (await import('@codemirror/lang-javascript')).javascript(),
-    '.css': async () => (await import('@codemirror/lang-css')).css(),
-    '.htm': async () => (await import('@codemirror/lang-html')).html(),
-    '.html': async () => (await import('@codemirror/lang-html')).html(),
-    '.js': async () => (await import('@codemirror/lang-javascript')).javascript(),
-    '.json': async () => (await import('@codemirror/lang-json')).json(),
-    '.jsx': async () =>
-        (await import('@codemirror/lang-javascript')).javascript({
+    async '.cjs'() {
+        return (await import('@codemirror/lang-javascript')).javascript();
+    },
+    async '.css'() {
+        return (await import('@codemirror/lang-css')).css();
+    },
+    async '.htm'() {
+        return (await import('@codemirror/lang-html')).html();
+    },
+    async '.html'() {
+        return (await import('@codemirror/lang-html')).html();
+    },
+    async '.js'() {
+        return (await import('@codemirror/lang-javascript')).javascript();
+    },
+    async '.json'() {
+        return (await import('@codemirror/lang-json')).json();
+    },
+    async '.jsx'() {
+        return (await import('@codemirror/lang-javascript')).javascript({
             jsx: true,
-        }),
-    '.md': async () => (await import('@codemirror/lang-markdown')).markdown(),
-    '.mjs': async () => (await import('@codemirror/lang-javascript')).javascript(),
-    '.mts': async () =>
-        (await import('@codemirror/lang-javascript')).javascript({
+        });
+    },
+    async '.md'() {
+        return (await import('@codemirror/lang-markdown')).markdown();
+    },
+    async '.mjs'() {
+        return (await import('@codemirror/lang-javascript')).javascript();
+    },
+    async '.mts'() {
+        return (await import('@codemirror/lang-javascript')).javascript({
             typescript: true,
-        }),
+        });
+    },
     /** Local, so this one is a plain resolve rather than a network fetch. */
-    '.prisma': async () => (await import('./prisma-language.js')).prismaLanguageSupport,
-    '.py': async () => (await import('@codemirror/lang-python')).python(),
-    '.scss': async () => (await import('@codemirror/lang-css')).css(),
-    '.ts': async () =>
-        (await import('@codemirror/lang-javascript')).javascript({
+    async '.prisma'() {
+        return (await import('./prisma-language.js')).prismaLanguageSupport;
+    },
+    async '.py'() {
+        return (await import('@codemirror/lang-python')).python();
+    },
+    async '.scss'() {
+        return (await import('@codemirror/lang-css')).css();
+    },
+    async '.ts'() {
+        return (await import('@codemirror/lang-javascript')).javascript({
             typescript: true,
-        }),
-    '.tsx': async () =>
-        (await import('@codemirror/lang-javascript')).javascript({
+        });
+    },
+    async '.tsx'() {
+        return (await import('@codemirror/lang-javascript')).javascript({
             jsx: true,
             typescript: true,
-        }),
-    '.yaml': async () => (await import('@codemirror/lang-yaml')).yaml(),
-    '.yml': async () => (await import('@codemirror/lang-yaml')).yaml(),
+        });
+    },
+    async '.yaml'() {
+        return (await import('@codemirror/lang-yaml')).yaml();
+    },
+    async '.yml'() {
+        return (await import('@codemirror/lang-yaml')).yaml();
+    },
 };
 
 /**

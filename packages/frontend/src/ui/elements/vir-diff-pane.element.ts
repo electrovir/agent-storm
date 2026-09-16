@@ -1,4 +1,4 @@
-// cspell:words keymap, Meslo, Menlo, Pilcrow, Prec, unstages, unstaging, desaturated
+// cspell:words keymap meslo menlo pilcrow prec unstages unstaging desaturated
 
 import {
     DiffLayout,
@@ -179,11 +179,11 @@ function stageScopeLabel(selections: ReadonlyArray<SelectedChunk>): {
             isSingular: selections.length === 1,
         };
     } else {
-        const lineCount = selections.reduce(
-            (total, selection) =>
-                total + (selection.newLines ? selection.newLines.to - selection.newLines.from : 0),
-            0,
-        );
+        const lineCount = selections.reduce((total, selection) => {
+            return (
+                total + (selection.newLines ? selection.newLines.to - selection.newLines.from : 0)
+            );
+        }, 0);
         return {
             text: lineCount === 1 ? 'line' : `${lineCount} lines`,
             isSingular: lineCount === 1,
@@ -545,15 +545,15 @@ function wholeLineChangedStarts({
     /** `toA`/`toB` land one past the last line's break, which already belongs to the next line. */
     const firstLineNumber = text.lineAt(Math.min(base, text.length)).number;
     const lastLineNumber = text.lineAt(Math.min(Math.max(base, end - 1), text.length)).number;
-    return createArray(lastLineNumber - firstLineNumber + 1, (index) =>
-        text.line(firstLineNumber + index),
-    )
-        .filter((line) =>
-            isLineFullyChanged({
+    return createArray(lastLineNumber - firstLineNumber + 1, (index) => {
+        return text.line(firstLineNumber + index);
+    })
+        .filter((line) => {
+            return isLineFullyChanged({
                 line,
                 ranges,
-            }),
-        )
+            });
+        })
         .map((line) => line.from);
 }
 
@@ -577,13 +577,13 @@ function wholeLineChangedExtension({
     return EditorView.decorations.of(
         Decoration.set(
             chunks
-                .flatMap((chunk) =>
-                    wholeLineChangedStarts({
+                .flatMap((chunk) => {
+                    return wholeLineChangedStarts({
                         chunk,
                         text,
                         isOldSide,
-                    }),
-                )
+                    });
+                })
                 .map((from) => lineDecoration.range(from)),
             true,
         ),
@@ -611,8 +611,8 @@ function deletedLineFlattenExtension(): Extension {
 
             protected markLines(view: EditorView) {
                 view.requestMeasure({
-                    read: () =>
-                        Array.from(
+                    read() {
+                        return Array.from(
                             view.contentDOM.querySelectorAll('.cm-deletedChunk > .cm-deletedLine'),
                         ).map((line) => {
                             const withoutDeletedText = line.cloneNode(true) as Element;
@@ -627,8 +627,9 @@ function deletedLineFlattenExtension(): Extension {
                                     line.querySelector('.cm-deletedText') != undefined &&
                                     !withoutDeletedText.textContent.trim(),
                             };
-                        }),
-                    write: (lines) => {
+                        });
+                    },
+                    write(lines) {
                         lines.forEach(({line, isWhole}) => {
                             line.classList.toggle(wholeLineChangedClass, isWhole);
                         });
@@ -830,7 +831,9 @@ function hunkButtonExtension({
         Prec.high(
             gutter({
                 class: 'agent-storm-hunk-gutter',
-                markers: () => markers,
+                markers() {
+                    return markers;
+                },
             }),
         ),
         EditorView.theme({
@@ -1012,7 +1015,9 @@ function mountDiffEditor({
         });
         return {
             view,
-            destroy: () => view.destroy(),
+            destroy() {
+                return view.destroy();
+            },
         };
     }
     const merge = new MergeView({
@@ -1057,7 +1062,9 @@ function mountDiffEditor({
     });
     return {
         view: merge.b,
-        destroy: () => merge.destroy(),
+        destroy() {
+            return merge.destroy();
+        },
     };
 }
 
@@ -1897,44 +1904,43 @@ export const VirDiffPane = defineElement<{
         const selected = findSelected(state.status, state.selectedValue);
 
         /** The old side as the editor should diff it, which is not the file's real old text. */
-        const displayedOldContent = (
-            content: Readonly<{oldContent: string; newContent: string}>,
-        ) =>
-            state.hideWhitespace
+        function displayedOldContent(content: Readonly<{oldContent: string; newContent: string}>) {
+            return state.hideWhitespace
                 ? foldWhitespaceOnlyChanges({
                       oldContent: content.oldContent,
                       newContent: content.newContent,
                   })
                 : content.oldContent;
+        }
 
         /**
          * Writes the config so the choice sticks across reloads, and updates the local copy without
          * waiting on the round trip so the toolbar responds immediately.
          */
-        const saveDiffSettings = (
+        function saveDiffSettings(
             nextSettings: Readonly<{diffLayout?: DiffLayout; hideWhitespace?: boolean}>,
-        ) => {
+        ) {
             updateState(nextSettings);
             void getConfig()
-                .then((config) =>
-                    putConfig({
+                .then((config) => {
+                    return putConfig({
                         ...config,
                         diffLayout: nextSettings.diffLayout ?? state.diffLayout,
                         diffHideWhitespace: nextSettings.hideWhitespace ?? state.hideWhitespace,
-                    }),
-                )
+                    });
+                })
                 .catch((error: unknown) => {
                     updateState({
                         statusError: error instanceof Error ? error.message : String(error),
                     });
                 });
-        };
+        }
 
         /**
          * Re-read status and, if a file is open, its contents. Both writes go through the same
          * content comparison the editor rebuild uses, so a poll that finds nothing new is inert.
          */
-        const refresh = async (): Promise<void> => {
+        async function refresh(): Promise<void> {
             const folder = inputs.folder;
             const status = await getGitDiffStatus({
                 folder,
@@ -1996,7 +2002,7 @@ export const VirDiffPane = defineElement<{
                     diffError: undefined,
                 });
             }
-        };
+        }
 
         if (inputs.active && state.armedFolder !== inputs.folder) {
             if (state.refreshTimer) {
@@ -2015,7 +2021,7 @@ export const VirDiffPane = defineElement<{
                  */
                 selectedValue: rememberedFileForFolder(inputs.folder),
                 /** A different folder's file list and diff must not linger through the reload. */
-                ...(state.armedFolder === undefined
+                ...(state.armedFolder == undefined
                     ? {}
                     : {
                           status: undefined,
@@ -2027,7 +2033,7 @@ export const VirDiffPane = defineElement<{
                       }),
             });
             void refresh();
-        } else if (!inputs.active && state.armedFolder !== undefined) {
+        } else if (!inputs.active && state.armedFolder != undefined) {
             if (state.refreshTimer) {
                 clearInterval(state.refreshTimer);
             }
@@ -2041,7 +2047,7 @@ export const VirDiffPane = defineElement<{
          * Opt this one file out of the size guard and re-read it. The refresh loop passes
          * `allowLarge` for anything in this list, so the diff also survives the next poll.
          */
-        const showLargeDiffAnyway = () => {
+        function showLargeDiffAnyway() {
             if (!state.selectedValue) {
                 return;
             }
@@ -2053,9 +2059,9 @@ export const VirDiffPane = defineElement<{
                 diffContent: undefined,
             });
             void refresh();
-        };
+        }
 
-        const selectFile = (value: string) => {
+        function selectFile(value: string) {
             /**
              * Re-clicking the open file would otherwise clear its content and re-read it, which
              * remounts the editor and throws away the scroll position the user was reading at.
@@ -2075,7 +2081,7 @@ export const VirDiffPane = defineElement<{
                 reviewSide: undefined,
             });
             void refresh();
-        };
+        }
 
         /**
          * A row click, with the modifier conventions of any other file list: plain opens the file,
@@ -2083,7 +2089,7 @@ export const VirDiffPane = defineElement<{
          * anchor and this row. Only the plain click opens a diff — the whole point of marking files
          * is to line up an action without losing the file being read.
          */
-        const onRowClick = ({event, value}: Readonly<{event: MouseEvent; value: string}>) => {
+        function onRowClick({event, value}: Readonly<{event: MouseEvent; value: string}>) {
             if (event.shiftKey) {
                 const values = allSelectValues(state.status);
                 const clickedIndex = values.indexOf(value);
@@ -2127,21 +2133,21 @@ export const VirDiffPane = defineElement<{
                 });
                 selectFile(value);
             }
-        };
+        }
 
         /**
          * Files a row's action button applies to: the whole marked set when that row is part of it,
          * and otherwise just that row. Clicking a button on an unmarked row is how the user acts on
          * one file without having to clear the marks first.
          */
-        const actionTargets = (value: string): SelectedFile[] => {
+        function actionTargets(value: string): SelectedFile[] {
             return (state.markedValues.includes(value) ? state.markedValues : [value])
                 .map((target) => findSelected(state.status, target))
                 .filter(check.isTruthy);
-        };
+        }
 
         /** Run an index write, then immediately re-read so the pane reflects it without waiting. */
-        const runIndexWrite = async (write: () => Promise<void>): Promise<void> => {
+        async function runIndexWrite(write: () => Promise<void>): Promise<void> {
             updateState({
                 busy: true,
             });
@@ -2157,7 +2163,7 @@ export const VirDiffPane = defineElement<{
                     busy: false,
                 });
             }
-        };
+        }
 
         /**
          * Each file moves in the direction its own side implies, so a marked set spanning both
@@ -2166,7 +2172,7 @@ export const VirDiffPane = defineElement<{
          * Sequential: git takes `index.lock` for the duration of each write, and parallel calls
          * would lose all but one of them to a lock error.
          */
-        const onStageWholeFiles = (targets: ReadonlyArray<SelectedFile>) => {
+        function onStageWholeFiles(targets: ReadonlyArray<SelectedFile>) {
             void runIndexWrite(async () => {
                 await awaitedForEach(targets, async (target) => {
                     await setGitFileStaged({
@@ -2176,19 +2182,19 @@ export const VirDiffPane = defineElement<{
                     });
                 });
             });
-        };
+        }
 
-        const onStageWholeSide = (side: GitDiffSide) => {
+        function onStageWholeSide(side: GitDiffSide) {
             void runIndexWrite(async () => {
                 await setGitSideStaged({
                     folder: inputs.folder,
                     side,
                 });
             });
-        };
+        }
 
         /** Confirmed for the same reason {@link onDiscardFiles} is, and over more files. */
-        const onDiscardUnstaged = () => {
+        function onDiscardUnstaged() {
             if (
                 !window.confirm(
                     [
@@ -2204,7 +2210,7 @@ export const VirDiffPane = defineElement<{
                     folder: inputs.folder,
                 });
             });
-        };
+        }
 
         /**
          * Confirmed, because unlike everything else in this pane it can't be undone from git. The
@@ -2214,7 +2220,7 @@ export const VirDiffPane = defineElement<{
          * Paths are deduplicated: discarding throws away both halves of a file, so a file marked on
          * both sides is one discard, not two.
          */
-        const onDiscardFiles = (targets: ReadonlyArray<SelectedFile>) => {
+        function onDiscardFiles(targets: ReadonlyArray<SelectedFile>) {
             const paths = Array.from(new Set(targets.map((target) => target.file.path)));
             const firstPath = paths[0];
             if (
@@ -2242,7 +2248,7 @@ export const VirDiffPane = defineElement<{
                     });
                 });
             });
-        };
+        }
 
         /**
          * The arguments both hunk endpoints take, or undefined when the pane no longer has the file
@@ -2256,7 +2262,7 @@ export const VirDiffPane = defineElement<{
          * only ever happens for a pure insertion, whose old side is the single point the lines go
          * in at — the same point whichever of them the user picked.
          */
-        const toHunkRequest = (selection: Readonly<SelectedChunk>) => {
+        function toHunkRequest(selection: Readonly<SelectedChunk>) {
             const target = findSelected(state.status, state.selectedValue);
             const content = state.diffContent;
             if (!target || !content) {
@@ -2284,7 +2290,7 @@ export const VirDiffPane = defineElement<{
                 fromNewLine: newLines.from,
                 toNewLine: newLines.to,
             };
-        };
+        }
 
         /**
          * One request per chunk, bottom of the file upwards. Each request's line numbers were
@@ -2294,13 +2300,14 @@ export const VirDiffPane = defineElement<{
          *
          * Sequential for the same `index.lock` reason {@link onStageWholeFiles} is.
          */
-        const toHunkRequests = (selections: ReadonlyArray<SelectedChunk>) =>
-            selections
+        function toHunkRequests(selections: ReadonlyArray<SelectedChunk>) {
+            return selections
                 .toSorted((first, second) => second.chunk.fromB - first.chunk.fromB)
                 .map((selection) => toHunkRequest(selection))
                 .filter(check.isTruthy);
+        }
 
-        const onStageChunks = (selections: ReadonlyArray<SelectedChunk>) => {
+        function onStageChunks(selections: ReadonlyArray<SelectedChunk>) {
             const requests = toHunkRequests(selections);
             if (!requests.length) {
                 return;
@@ -2314,10 +2321,10 @@ export const VirDiffPane = defineElement<{
                     activeChunkIndex: 0,
                 });
             });
-        };
+        }
 
         /** Confirmed, because unlike staging this throws the change away for good. */
-        const onUndoChunks = (selections: ReadonlyArray<SelectedChunk>) => {
+        function onUndoChunks(selections: ReadonlyArray<SelectedChunk>) {
             const requests = toHunkRequests(selections);
             const scope = stageScopeLabel(selections);
             if (
@@ -2339,13 +2346,13 @@ export const VirDiffPane = defineElement<{
                     activeChunkIndex: 0,
                 });
             });
-        };
+        }
 
-        const closeHunkMenu = () => {
+        function closeHunkMenu() {
             updateState({
                 hunkMenu: undefined,
             });
-        };
+        }
 
         /**
          * Right-click staging, the way VS Code does it: select any amount of the diff, right-click,
@@ -2357,7 +2364,7 @@ export const VirDiffPane = defineElement<{
          * on what the user actually pointed at. A right-click on unchanged code opens the browser's
          * own menu instead, because there is nothing here to offer.
          */
-        const onEditorContextMenu = (event: MouseEvent) => {
+        function onEditorContextMenu(event: MouseEvent) {
             const view = state.editor?.view;
             if (!view || state.busy) {
                 return;
@@ -2393,7 +2400,7 @@ export const VirDiffPane = defineElement<{
                     selections,
                 },
             });
-        };
+        }
 
         /**
          * Rebuild the editor only when what it should display actually changed. Everything else — a
@@ -2474,24 +2481,26 @@ export const VirDiffPane = defineElement<{
                     syntaxExtensions: state.syntaxExtensions,
                     isDark: state.isDark,
                     isMobile,
-                    onStageChunk: (chunk) =>
-                        onStageChunks([
+                    onStageChunk(chunk) {
+                        return onStageChunks([
                             {
                                 chunk,
                                 newLines: undefined,
                             },
-                        ]),
+                        ]);
+                    },
                     onUndoChunk:
                         selected?.side === GitDiffSide.Staged
                             ? undefined
-                            : (chunk) =>
-                                  onUndoChunks([
+                            : (chunk) => {
+                                  return onUndoChunks([
                                       {
                                           chunk,
                                           newLines: undefined,
                                       },
-                                  ]),
-                    onGeometryChange: (view) => {
+                                  ]);
+                              },
+                    onGeometryChange(view) {
                         updateState({
                             rulerMarks: toRulerMarks(view, chunks),
                         });
@@ -2529,7 +2538,7 @@ export const VirDiffPane = defineElement<{
         }
 
         /** Scroll the editor so the given chunk sits at the top of the viewport. */
-        const scrollToChunk = (index: number) => {
+        function scrollToChunk(index: number) {
             const chunk = state.chunks[index];
             const view = state.editor?.view;
             if (!chunk || !view) {
@@ -2544,9 +2553,9 @@ export const VirDiffPane = defineElement<{
                     yMargin: 24,
                 }),
             });
-        };
+        }
 
-        const stepChunk = (delta: number) => {
+        function stepChunk(delta: number) {
             if (!state.chunks.length) {
                 return;
             }
@@ -2555,16 +2564,16 @@ export const VirDiffPane = defineElement<{
                 Math.max(0, state.activeChunkIndex + delta),
             );
             scrollToChunk(next);
-        };
+        }
 
-        const stepFile = (delta: number) => {
+        function stepFile(delta: number) {
             const values = allSelectValues(state.status);
             const current = state.selectedValue ? values.indexOf(state.selectedValue) : -1;
             const next = values[Math.min(values.length - 1, Math.max(0, current + delta))];
             if (next && next !== state.selectedValue) {
                 selectFile(next);
             }
-        };
+        }
 
         const hasFiles = allSelectValues(state.status).length > 0;
         /** Touch targets need the room; a mouse pointer does not. */
@@ -2576,7 +2585,7 @@ export const VirDiffPane = defineElement<{
          * Sidebar resize, the same pointer-capture drag the CLI panes use. Width is measured from
          * the host's right edge, since the sidebar is what's being sized and it's anchored there.
          */
-        const onDividerPointerDown = (event: PointerEvent) => {
+        function onDividerPointerDown(event: PointerEvent) {
             event.preventDefault();
             const divider = event.currentTarget;
             if (divider instanceof Element) {
@@ -2595,7 +2604,7 @@ export const VirDiffPane = defineElement<{
                 draggingSidebar: true,
             });
 
-            const onMove = (moveEvent: PointerEvent) => {
+            function onMove(moveEvent: PointerEvent) {
                 if (moveEvent.pointerId !== event.pointerId) {
                     return;
                 }
@@ -2607,9 +2616,9 @@ export const VirDiffPane = defineElement<{
                 updateState({
                     sidebarWidth: latestWidth.value,
                 });
-            };
+            }
 
-            const onUp = (upEvent: PointerEvent) => {
+            function onUp(upEvent: PointerEvent) {
                 if (upEvent.pointerId !== event.pointerId) {
                     return;
                 }
@@ -2622,12 +2631,12 @@ export const VirDiffPane = defineElement<{
                     draggingSidebar: false,
                 });
                 localStorageClient.diffSidebarWidth.write(latestWidth.value);
-            };
+            }
 
             window.addEventListener('pointermove', onMove);
             window.addEventListener('pointerup', onUp);
             window.addEventListener('pointercancel', onUp);
-        };
+        }
 
         /**
          * One collapsible sidebar section. Each side gets its own fixed slot in the parent template
@@ -2641,82 +2650,90 @@ export const VirDiffPane = defineElement<{
          * loses nothing, so the only bulk discard is the unstaged side's.
          */
         const sideHeaderActions: Readonly<Record<GitDiffSide, () => HtmlInterpolation>> = {
-            [GitDiffSide.Unstaged]: () => html`
-                <button
-                    type="button"
-                    class="row-action"
-                    title="Discard all unstaged changes"
-                    ?disabled=${state.busy}
-                    ${listen('click', (event) => {
-                        event.stopPropagation();
-                        onDiscardUnstaged();
-                    })}
-                >
-                    <${ViraIcon.assign({
-                        icon: revertIcon,
-                    })}></${ViraIcon}>
-                </button>
-                <button
-                    type="button"
-                    class="row-action"
-                    title="Stage all changes"
-                    ?disabled=${state.busy}
-                    ${listen('click', (event) => {
-                        event.stopPropagation();
-                        onStageWholeSide(GitDiffSide.Unstaged);
-                    })}
-                >
-                    <${ViraIcon.assign({
-                        icon: stageActionIcons[GitDiffSide.Unstaged],
-                    })}></${ViraIcon}>
-                </button>
-            `,
-            [GitDiffSide.Staged]: () => html`
-                <button
-                    type="button"
-                    class="row-action"
-                    title="Unstage all changes"
-                    ?disabled=${state.busy}
-                    ${listen('click', (event) => {
-                        event.stopPropagation();
-                        onStageWholeSide(GitDiffSide.Staged);
-                    })}
-                >
-                    <${ViraIcon.assign({
-                        icon: stageActionIcons[GitDiffSide.Staged],
-                    })}></${ViraIcon}>
-                </button>
-            `,
+            [GitDiffSide.Unstaged]() {
+                return html`
+                    <button
+                        type="button"
+                        class="row-action"
+                        title="Discard all unstaged changes"
+                        ?disabled=${state.busy}
+                        ${listen('click', (event) => {
+                            event.stopPropagation();
+                            onDiscardUnstaged();
+                        })}
+                    >
+                        <${ViraIcon.assign({
+                            icon: revertIcon,
+                        })}></${ViraIcon}>
+                    </button>
+                    <button
+                        type="button"
+                        class="row-action"
+                        title="Stage all changes"
+                        ?disabled=${state.busy}
+                        ${listen('click', (event) => {
+                            event.stopPropagation();
+                            onStageWholeSide(GitDiffSide.Unstaged);
+                        })}
+                    >
+                        <${ViraIcon.assign({
+                            icon: stageActionIcons[GitDiffSide.Unstaged],
+                        })}></${ViraIcon}>
+                    </button>
+                `;
+            },
+            [GitDiffSide.Staged]() {
+                return html`
+                    <button
+                        type="button"
+                        class="row-action"
+                        title="Unstage all changes"
+                        ?disabled=${state.busy}
+                        ${listen('click', (event) => {
+                            event.stopPropagation();
+                            onStageWholeSide(GitDiffSide.Staged);
+                        })}
+                    >
+                        <${ViraIcon.assign({
+                            icon: stageActionIcons[GitDiffSide.Staged],
+                        })}></${ViraIcon}>
+                    </button>
+                `;
+            },
         };
 
-        const toggleReview = (side: GitDiffSide) => {
+        function toggleReview(side: GitDiffSide) {
             updateState({
                 reviewSide: state.reviewSide === side ? undefined : side,
             });
-        };
+        }
 
-        const reviewButtonTitle = (side: GitDiffSide) =>
-            state.reviewSide === side
+        function reviewButtonTitle(side: GitDiffSide) {
+            return state.reviewSide === side
                 ? 'Back to the single-file diff'
                 : `Read every ${sideLabels[side].toLowerCase()} file's changes in one scroll`;
+        }
 
-        const renderReview = (side: GitDiffSide) => html`
-            <${VirDiffReview.assign({
-                folder: inputs.folder,
-                side,
-                files:
-                    (side === GitDiffSide.Staged ? state.status?.staged : state.status?.unstaged) ??
-                    [],
-                hideWhitespace: state.hideWhitespace,
-                isDark: state.isDark,
-            })}
-                ${listen(VirDiffReview.events.fileSelected, (event) => {
-                    selectFile(toSelectValue(side, event.detail));
+        function renderReview(side: GitDiffSide) {
+            return html`
+                <${VirDiffReview.assign({
+                    folder: inputs.folder,
+                    side,
+                    files:
+                        (side === GitDiffSide.Staged
+                            ? state.status?.staged
+                            : state.status?.unstaged) ?? [],
+                    hideWhitespace: state.hideWhitespace,
+                    isDark: state.isDark,
                 })}
-            ></${VirDiffReview}>
-        `;
+                    ${listen(VirDiffReview.events.fileSelected, (event) => {
+                        selectFile(toSelectValue(side, event.detail));
+                    })}
+                ></${VirDiffReview}>
+            `;
+        }
 
-        const renderSidebarSection = (side: GitDiffSide) => {
+        function renderSidebarSection(side: GitDiffSide) {
             const files =
                 side === GitDiffSide.Staged ? state.status?.staged : state.status?.unstaged;
             if (!files?.length) {
@@ -2774,12 +2791,12 @@ export const VirDiffPane = defineElement<{
                                     type="button"
                                     class="sidebar-row-open"
                                     title=${file.path}
-                                    ${listen('click', (event) =>
-                                        onRowClick({
+                                    ${listen('click', (event) => {
+                                        return onRowClick({
                                             event,
                                             value,
-                                        }),
-                                    )}
+                                        });
+                                    })}
                                 >
                                     ${fileRowContents(file)}
                                 </button>
@@ -2817,7 +2834,7 @@ export const VirDiffPane = defineElement<{
                     })}
                 </${ViraCollapsibleCard}>
             `;
-        };
+        }
 
         return html`
             <div class="toolbar" ?data-mobile=${isMobile}>
@@ -2868,17 +2885,17 @@ export const VirDiffPane = defineElement<{
                                       class="trigger-caret"
                                   ></${ViraIcon}>
                               </button>
-                              ${toMenuGroups(state.status).map(
-                                  (group) => html`
+                              ${toMenuGroups(state.status).map((group) => {
+                                  return html`
                                       <div class="menu-group-header">
                                           ${sideLabels[group.side]} (${group.files.length})
                                       </div>
                                       <${ViraMenuItem.assign({
                                           selected: state.reviewSide === group.side,
                                       })}
-                                          ${listen(ViraMenuItem.events.activate, () =>
-                                              toggleReview(group.side),
-                                          )}
+                                          ${listen(ViraMenuItem.events.activate, () => {
+                                              return toggleReview(group.side);
+                                          })}
                                       >
                                           <div
                                               class="menu-row"
@@ -2898,9 +2915,9 @@ export const VirDiffPane = defineElement<{
                                               <${ViraMenuItem.assign({
                                                   selected: value === state.selectedValue,
                                               })}
-                                                  ${listen(ViraMenuItem.events.activate, () =>
-                                                      selectFile(value),
-                                                  )}
+                                                  ${listen(ViraMenuItem.events.activate, () => {
+                                                      return selectFile(value);
+                                                  })}
                                               >
                                                   <div class="menu-row" title=${file.path}>
                                                       ${fileRowContents(file)}
@@ -2908,8 +2925,8 @@ export const VirDiffPane = defineElement<{
                                               </${ViraMenuItem}>
                                           `;
                                       })}
-                                  `,
-                              )}
+                                  `;
+                              })}
                           </${ViraMenuTrigger}>
                       `
                     : ''}
@@ -2965,11 +2982,11 @@ export const VirDiffPane = defineElement<{
                         color: ViraColorVariant.Plain,
                     })}
                         title=${unified ? 'Switch to side-by-side' : 'Switch to inline'}
-                        ${listen('click', () =>
-                            saveDiffSettings({
+                        ${listen('click', () => {
+                            return saveDiffSettings({
                                 diffLayout: unified ? DiffLayout.Split : DiffLayout.Inline,
-                            }),
-                        )}
+                            });
+                        })}
                     ></${ViraButton}>
                     <${ViraButton.assign({
                         icon: whitespaceIcon,
@@ -2986,11 +3003,11 @@ export const VirDiffPane = defineElement<{
                         title=${state.hideWhitespace
                             ? 'Whitespace-only changes are hidden. Click to show them.'
                             : 'Whitespace-only changes are shown. Click to hide them.'}
-                        ${listen('click', () =>
-                            saveDiffSettings({
+                        ${listen('click', () => {
+                            return saveDiffSettings({
                                 hideWhitespace: !state.hideWhitespace,
-                            }),
-                        )}
+                            });
+                        })}
                     ></${ViraButton}>
                     <${ViraButton.assign({
                         text: selected ? stageActionLabels[selected.side] : 'Stage',
@@ -3149,8 +3166,8 @@ export const VirDiffPane = defineElement<{
                 !state.reviewSide
                     ? html`
                           <div class="ruler">
-                              ${state.rulerMarks.map(
-                                  (mark, index) => html`
+                              ${state.rulerMarks.map((mark, index) => {
+                                  return html`
                                       <button
                                           type="button"
                                           class="ruler-mark"
@@ -3162,8 +3179,8 @@ export const VirDiffPane = defineElement<{
                                           `}
                                           ${listen('click', () => scrollToChunk(index))}
                                       ></button>
-                                  `,
-                              )}
+                                  `;
+                              })}
                           </div>
                       `
                     : ''}

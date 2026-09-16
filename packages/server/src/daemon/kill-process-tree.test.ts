@@ -106,15 +106,16 @@ describe(killProcessTree.name, () => {
             ...childPids,
         ];
         await waitUntil(
-            () =>
-                allPids.every((pid) => {
+            () => {
+                return allPids.every((pid) => {
                     try {
                         process.kill(pid, 0);
                         return false;
                     } catch {
                         return true;
                     }
-                }),
+                });
+            },
             {
                 interval: {
                     milliseconds: 20,

@@ -25,13 +25,14 @@ const storeState: {
 function isSessionMetaArray(value: unknown): value is SessionMeta[] {
     return (
         Array.isArray(value) &&
-        value.every(
-            (entry) =>
+        value.every((entry) => {
+            return (
                 !!entry &&
                 typeof entry === 'object' &&
                 typeof (entry as SessionMeta).id === 'string' &&
-                !!(entry as SessionMeta).id,
-        )
+                !!(entry as SessionMeta).id
+            );
+        })
     );
 }
 
@@ -240,15 +241,15 @@ export async function renameFolderSession({
     const current = await getFolderSessions(folder);
     const updated: FolderSessions = {
         ...current,
-        [kind]: current[kind].map((session) =>
-            session.id === sessionId
+        [kind]: current[kind].map((session) => {
+            return session.id === sessionId
                 ? {
                       ...session,
                       /** Empty reverts the label to the tab's 1-based index. */
                       name: name.trim(),
                   }
-                : session,
-        ),
+                : session;
+        }),
     };
     writeFolder(folder, updated);
     return updated;
@@ -273,14 +274,14 @@ export async function setFolderSessionAi({
     const current = await getFolderSessions(folder);
     const updated: FolderSessions = {
         ...current,
-        [kind]: current[kind].map((session) =>
-            session.id === sessionId
+        [kind]: current[kind].map((session) => {
+            return session.id === sessionId
                 ? {
                       ...session,
                       aiId,
                   }
-                : session,
-        ),
+                : session;
+        }),
     };
     writeFolder(folder, updated);
     return updated;
@@ -293,14 +294,14 @@ function pruneSessionListAiIds({
     sessions: ReadonlyArray<SessionMeta>;
     validAiIds: ReadonlyArray<string>;
 }>) {
-    return sessions.map((session) =>
-        session.aiId && !validAiIds.includes(session.aiId)
+    return sessions.map((session) => {
+        return session.aiId && !validAiIds.includes(session.aiId)
             ? {
                   ...session,
                   aiId: '',
               }
-            : session,
-    );
+            : session;
+    });
 }
 
 export async function pruneSessionAiIds({

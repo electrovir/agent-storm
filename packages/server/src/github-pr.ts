@@ -1,4 +1,4 @@
-// cspell:words HOORAY, unresolve
+// cspell:words hooray unresolve
 
 import {
     GitHubCheckState,
@@ -159,10 +159,12 @@ async function runGraphql(
             ([
                 key,
                 value,
-            ]) => [
-                '-f',
-                `${key}=${value}`,
-            ],
+            ]) => {
+                return [
+                    '-f',
+                    `${key}=${value}`,
+                ];
+            },
         ),
     ]);
     const parsed: GraphqlResponse = result.stdout

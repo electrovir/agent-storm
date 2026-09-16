@@ -198,13 +198,13 @@ describe(migrateAiConfig.name, () => {
 
         assert.deepEquals(
             {
-                definitions: migrated.aiDefinitions.map((definition) =>
-                    selectFrom(definition, {
+                definitions: migrated.aiDefinitions.map((definition) => {
+                    return selectFrom(definition, {
                         name: true,
                         resumeSessionCommand: true,
                         newSessionCommand: true,
-                    }),
-                ),
+                    });
+                }),
                 overriddenFolders: migrated.folderAiIds.map((entry) => entry.folder),
                 defaultIsGlobalPair:
                     migrated.aiDefinitions.find(
@@ -234,12 +234,12 @@ describe(migrateAiConfig.name, () => {
         const migrated = migrateAiConfig(defaultConfig);
 
         assert.deepEquals(
-            migrated.aiDefinitions.map((definition) =>
-                selectFrom(definition, {
+            migrated.aiDefinitions.map((definition) => {
+                return selectFrom(definition, {
                     name: true,
                     resumeSessionCommand: true,
-                }),
-            ),
+                });
+            }),
             [
                 {
                     name: 'Claude',

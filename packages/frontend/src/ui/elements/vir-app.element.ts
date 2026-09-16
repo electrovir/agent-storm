@@ -89,10 +89,9 @@ function resolveRoute(
          * repo. Worktree-root matches are explicitly invalid per the route spec — the user must
          * pick a worktree segment.
          */
-        const standalone = folders.find(
-            (folder) =>
-                folder.name === repoName && !folder.isWorktreeRoot && !folder.parentRepoPath,
-        );
+        const standalone = folders.find((folder) => {
+            return folder.name === repoName && !folder.isWorktreeRoot && !folder.parentRepoPath;
+        });
         if (standalone) {
             return {
                 folder: standalone,
@@ -483,7 +482,7 @@ export const VirApp = defineElement()({
          */
         const viewport =
             typeof window === 'undefined' ? undefined : (window.visualViewport ?? undefined);
-        const updateViewportHeight = () => {
+        function updateViewportHeight() {
             const measured = viewport?.height;
             if (typeof measured !== 'number' || measured <= 0) {
                 return;
@@ -499,7 +498,7 @@ export const VirApp = defineElement()({
              */
             host.style.setProperty('--app-viewport-height', value);
             document.documentElement.style.setProperty('--app-viewport-height', value);
-        };
+        }
         if (viewport) {
             updateViewportHeight();
             viewport.addEventListener('resize', updateViewportHeight);
@@ -515,7 +514,9 @@ export const VirApp = defineElement()({
             pollHandle,
             removeRouteListener,
             screenSize: trackedScreenSize,
-            disconnectScreenSizeObserver: () => resizeObserver.disconnect(),
+            disconnectScreenSizeObserver() {
+                return resizeObserver.disconnect();
+            },
             disconnectVisualViewport,
         });
     },
@@ -562,11 +563,11 @@ export const VirApp = defineElement()({
         const resolution = resolveRoute(state.route.paths.slice(1), state.folderInfo);
         const activeFolder = resolution.folder?.path;
         if (resolution.redirectToRoot) {
-            void Promise.resolve().then(() =>
-                router.setRoute({
+            void Promise.resolve().then(() => {
+                return router.setRoute({
                     paths: bareMainTabPaths[MainTab.WriteCode],
-                }),
-            );
+                });
+            });
         }
 
         /**
@@ -602,7 +603,7 @@ export const VirApp = defineElement()({
             ? state.openedFolders.filter((folder) => folder === activeFolder)
             : state.openedFolders;
 
-        const onDividerPointerDown = (event: PointerEvent) => {
+        function onDividerPointerDown(event: PointerEvent) {
             event.preventDefault();
             /**
              * Pointer Events unify mouse, touch, and pen so the same handler covers desktop and
@@ -627,7 +628,7 @@ export const VirApp = defineElement()({
                 sidebarDragging: true,
             });
 
-            const onMove = (moveEvent: PointerEvent) => {
+            function onMove(moveEvent: PointerEvent) {
                 if (moveEvent.pointerId !== event.pointerId) {
                     return;
                 }
@@ -639,9 +640,9 @@ export const VirApp = defineElement()({
                 updateState({
                     sidebarWidth: latestWidth,
                 });
-            };
+            }
 
-            const onUp = (upEvent: PointerEvent) => {
+            function onUp(upEvent: PointerEvent) {
                 if (upEvent.pointerId !== event.pointerId) {
                     return;
                 }
@@ -654,26 +655,26 @@ export const VirApp = defineElement()({
                     sidebarDragging: false,
                 });
                 localStorageClient.sidebarWidth.write(latestWidth);
-            };
+            }
 
             window.addEventListener('pointermove', onMove);
             window.addEventListener('pointerup', onUp);
             window.addEventListener('pointercancel', onUp);
-        };
+        }
 
-        const onDividerDoubleClick = () => {
+        function onDividerDoubleClick() {
             updateState({
                 sidebarWidth: sidebarWidth.default,
             });
             localStorageClient.sidebarWidth.write(sidebarWidth.default);
-        };
+        }
 
         /**
          * Sidebar event handlers extracted so both the docked sidebar (desktop) and the modal
          * sidebar (mobile) can share them. `folderActivated` also closes the mobile sidebar modal —
          * a no-op on desktop because the modal isn't open there anyway.
          */
-        const handleFolderActivated = (folderPath: string) => {
+        function handleFolderActivated(folderPath: string) {
             /**
              * Synchronous activation path: the folder is already in vir-app's `folderInfo` cache,
              * so we can set the route immediately. Most clicks hit this branch.
@@ -686,10 +687,10 @@ export const VirApp = defineElement()({
              * if it still isn't there, the activation is genuinely against a stale path and we just
              * keep the entry in `openedFolders` for the eventual poll to catch up.
              */
-            const setRouteForFolder = (
+            function setRouteForFolder(
                 folder: FolderInfo,
                 folderInfo: ReadonlyMap<string, FolderInfo>,
-            ): void => {
+            ): void {
                 /**
                  * Restore whichever tab and session tabs this folder was last on rather than
                  * carrying the previous folder's params across (landing on another repo's Diff tab,
@@ -722,7 +723,7 @@ export const VirApp = defineElement()({
                     paths: pathsForFolder(folder, folderInfo),
                     search: Object.keys(search).length ? search : undefined,
                 });
-            };
+            }
             const known = state.folderInfo.get(folderPath);
             if (known) {
                 setRouteForFolder(known, state.folderInfo);
@@ -768,9 +769,9 @@ export const VirApp = defineElement()({
                     mobileSidebarOpen: false,
                 });
             }
-        };
+        }
 
-        const handleFoldersRemoved = (paths: ReadonlyArray<string>) => {
+        function handleFoldersRemoved(paths: ReadonlyArray<string>) {
             const removed = new Set(paths);
             /**
              * If the URL pointed at one of the gone folders, bounce to root so we don't sit on a
@@ -785,28 +786,28 @@ export const VirApp = defineElement()({
             updateState({
                 openedFolders: state.openedFolders.filter((folder) => !removed.has(folder)),
             });
-        };
+        }
 
-        const handleOpenSettingsRequested = () => {
+        function handleOpenSettingsRequested() {
             updateState({
                 settingsOpen: true,
             });
-        };
+        }
 
-        const handleOpenAiModalRequested = () => {
+        function handleOpenAiModalRequested() {
             updateState({
                 mobileSidebarOpen: false,
                 aiModalOpen: true,
             });
-        };
+        }
 
-        const handlePaneRestarted = ({
+        function handlePaneRestarted({
             folder,
             kind,
         }: Readonly<{
             folder: string;
             kind: PaneKind;
-        }>) => {
+        }>) {
             const paneKey = `${folder}:${kind}`;
             updateState({
                 paneRestartKeys: {
@@ -817,9 +818,9 @@ export const VirApp = defineElement()({
                     kind === PaneKind.Ai ? state.aiConfigRevision + 1 : state.aiConfigRevision,
             });
             void refreshFolderInfo(updateState);
-        };
+        }
 
-        const handleMainTabRequested = (tab: MainTab) => {
+        function handleMainTabRequested(tab: MainTab) {
             const routeByMainTab: Record<MainTab, Parameters<typeof router.setRoute>[0]> = {
                 [MainTab.WriteCode]: state.lastWriteCodeRoute ?? {
                     paths: bareMainTabPaths[MainTab.WriteCode],
@@ -831,54 +832,56 @@ export const VirApp = defineElement()({
                 },
             };
             router.setRoute(routeByMainTab[tab]);
-        };
+        }
 
         /**
          * The horizontal copy of the main tabs, for the two places mobile puts them. Switching tab
          * also dismisses the sidebar modal, since the repo list it holds belongs to Write Code.
          */
-        const renderMobileMainTabs = () => html`
-            <${VirMainTabs.assign({
-                activeTab: mainTab,
-                isHorizontal: true,
-            })}
-                ${listen(VirMainTabs.events.tabRequested, (event) => {
-                    handleMainTabRequested(event.detail);
-                    updateState({
-                        mobileSidebarOpen: false,
-                    });
+        function renderMobileMainTabs() {
+            return html`
+                <${VirMainTabs.assign({
+                    activeTab: mainTab,
+                    isHorizontal: true,
                 })}
-            ></${VirMainTabs}>
-        `;
+                    ${listen(VirMainTabs.events.tabRequested, (event) => {
+                        handleMainTabRequested(event.detail);
+                        updateState({
+                            mobileSidebarOpen: false,
+                        });
+                    })}
+                ></${VirMainTabs}>
+            `;
+        }
 
         return html`
             <${VirMainTabs.assign({
                 activeTab: mainTab,
             })}
-                ${listen(VirMainTabs.events.tabRequested, (event) =>
-                    handleMainTabRequested(event.detail),
-                )}
+                ${listen(VirMainTabs.events.tabRequested, (event) => {
+                    return handleMainTabRequested(event.detail);
+                })}
             ></${VirMainTabs}>
             <div class="write-code-panel" ?data-hidden=${mainTab !== MainTab.WriteCode}>
                 <${VirSidebar.assign({
                     activeFolder,
                     themeClient: state.themeClient,
                 })}
-                    ${listen(VirSidebar.events.folderActivated, (event) =>
-                        handleFolderActivated(event.detail),
-                    )}
-                    ${listen(VirSidebar.events.foldersRemoved, (event) =>
-                        handleFoldersRemoved(event.detail),
-                    )}
-                    ${listen(VirSidebar.events.paneRestarted, (event) =>
-                        handlePaneRestarted(event.detail),
-                    )}
-                    ${listen(VirSidebar.events.openSettingsRequested, () =>
-                        handleOpenSettingsRequested(),
-                    )}
-                    ${listen(VirSidebar.events.openAiModalRequested, () =>
-                        handleOpenAiModalRequested(),
-                    )}
+                    ${listen(VirSidebar.events.folderActivated, (event) => {
+                        return handleFolderActivated(event.detail);
+                    })}
+                    ${listen(VirSidebar.events.foldersRemoved, (event) => {
+                        return handleFoldersRemoved(event.detail);
+                    })}
+                    ${listen(VirSidebar.events.paneRestarted, (event) => {
+                        return handlePaneRestarted(event.detail);
+                    })}
+                    ${listen(VirSidebar.events.openSettingsRequested, () => {
+                        return handleOpenSettingsRequested();
+                    })}
+                    ${listen(VirSidebar.events.openAiModalRequested, () => {
+                        return handleOpenAiModalRequested();
+                    })}
                 ></${VirSidebar}>
                 <div
                     class="sidebar-divider ${state.sidebarDragging ? 'dragging' : ''}"
@@ -897,11 +900,11 @@ export const VirApp = defineElement()({
                     })}
                         class="mobile-sidebar-trigger"
                         title="Open repo list"
-                        ${listen('click', () =>
-                            updateState({
+                        ${listen('click', () => {
+                            return updateState({
                                 mobileSidebarOpen: true,
-                            }),
-                        )}
+                            });
+                        })}
                     ></${ViraButton}>
                     ${renderedFolders.length === 0
                         ? html`
@@ -1072,11 +1075,11 @@ export const VirApp = defineElement()({
                 isMobileSize: true,
                 noContentPadding: true,
             })}
-                ${listen(ViraModal.events.modalClose, () =>
-                    updateState({
+                ${listen(ViraModal.events.modalClose, () => {
+                    return updateState({
                         mobileSidebarOpen: false,
-                    }),
-                )}
+                    });
+                })}
             >
                 <div class="mobile-sidebar-modal-content">
                     ${renderMobileMainTabs()}
@@ -1086,21 +1089,21 @@ export const VirApp = defineElement()({
                         mobileModal: true,
                         themeClient: state.themeClient,
                     })}
-                        ${listen(VirSidebar.events.folderActivated, (event) =>
-                            handleFolderActivated(event.detail),
-                        )}
-                        ${listen(VirSidebar.events.foldersRemoved, (event) =>
-                            handleFoldersRemoved(event.detail),
-                        )}
-                        ${listen(VirSidebar.events.paneRestarted, (event) =>
-                            handlePaneRestarted(event.detail),
-                        )}
-                        ${listen(VirSidebar.events.openSettingsRequested, () =>
-                            handleOpenSettingsRequested(),
-                        )}
-                        ${listen(VirSidebar.events.openAiModalRequested, () =>
-                            handleOpenAiModalRequested(),
-                        )}
+                        ${listen(VirSidebar.events.folderActivated, (event) => {
+                            return handleFolderActivated(event.detail);
+                        })}
+                        ${listen(VirSidebar.events.foldersRemoved, (event) => {
+                            return handleFoldersRemoved(event.detail);
+                        })}
+                        ${listen(VirSidebar.events.paneRestarted, (event) => {
+                            return handlePaneRestarted(event.detail);
+                        })}
+                        ${listen(VirSidebar.events.openSettingsRequested, () => {
+                            return handleOpenSettingsRequested();
+                        })}
+                        ${listen(VirSidebar.events.openAiModalRequested, () => {
+                            return handleOpenAiModalRequested();
+                        })}
                     ></${VirSidebar}>
                 </div>
             </${ViraModal}>

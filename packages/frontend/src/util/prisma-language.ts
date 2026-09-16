@@ -48,7 +48,7 @@ const identifierRoles: Record<
         next: NextIdentifier;
     }
 > = {
-    [NextIdentifier.Name]: (text) => {
+    [NextIdentifier.Name](text) {
         return blockKeywords.includes(text)
             ? {
                   token: 'keyword',
@@ -59,19 +59,19 @@ const identifierRoles: Record<
                   next: NextIdentifier.Type,
               };
     },
-    [NextIdentifier.DeclarationName]: () => {
+    [NextIdentifier.DeclarationName]() {
         return {
             token: 'className',
             next: NextIdentifier.Plain,
         };
     },
-    [NextIdentifier.Type]: () => {
+    [NextIdentifier.Type]() {
         return {
             token: 'typeName',
             next: NextIdentifier.Plain,
         };
     },
-    [NextIdentifier.Plain]: () => {
+    [NextIdentifier.Plain]() {
         return {
             token: undefined,
             next: NextIdentifier.Plain,

@@ -17,9 +17,9 @@ export type Setting<T> = {
 
 function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
     const listeners = new Set<Listener<T>>();
-    const notify = (value: T) => {
+    function notify(value: T) {
         listeners.forEach((fn) => fn(value));
-    };
+    }
     return {
         key: config.key,
         read() {
@@ -178,38 +178,51 @@ export const localStorageClient = {
     authSecret: defineSetting<string | undefined>({
         key: 'agent-storm-auth-secret',
         defaultValue: undefined,
-        parse: (raw) => raw || undefined,
-        serialize: (value) => value || undefined,
+        parse(raw) {
+            return raw || undefined;
+        },
+        serialize(value) {
+            return value || undefined;
+        },
     }),
     sidebarWidth: defineSetting<number>({
         key: 'agent-storm:sidebar-width',
         defaultValue: sidebarWidth.default,
-        parse: (raw) =>
-            clamp({
+        parse(raw) {
+            return clamp({
                 value: Number.parseFloat(raw),
                 bounds: sidebarWidth,
-            }),
-        serialize: (value) => String(value),
+            });
+        },
+        serialize(value) {
+            return String(value);
+        },
     }),
     diffSidebarWidth: defineSetting<number>({
         key: 'agent-storm:diff-sidebar-width',
         defaultValue: diffSidebarWidth.default,
-        parse: (raw) =>
-            clamp({
+        parse(raw) {
+            return clamp({
                 value: Number.parseFloat(raw),
                 bounds: diffSidebarWidth,
-            }),
-        serialize: (value) => String(value),
+            });
+        },
+        serialize(value) {
+            return String(value);
+        },
     }),
     paneSplit: defineSetting<number>({
         key: 'agent-storm:pane-split',
         defaultValue: paneSplit.default,
-        parse: (raw) =>
-            clamp({
+        parse(raw) {
+            return clamp({
                 value: Number.parseFloat(raw),
                 bounds: paneSplit,
-            }),
-        serialize: (value) => String(value),
+            });
+        },
+        serialize(value) {
+            return String(value);
+        },
     }),
     /**
      * Which tab each folder was last on. Persisted so switching away from a folder and back returns
@@ -219,7 +232,9 @@ export const localStorageClient = {
         key: 'agent-storm:tab-by-folder',
         defaultValue: {},
         parse: parseStringByFolder,
-        serialize: (value) => JSON.stringify(value),
+        serialize(value) {
+            return JSON.stringify(value);
+        },
     }),
     /**
      * Which file each folder's diff pane was last showing, as that pane's own side-plus-path select
@@ -230,22 +245,29 @@ export const localStorageClient = {
         key: 'agent-storm:diff-file-by-folder',
         defaultValue: {},
         parse: parseStringByFolder,
-        serialize: (value) => JSON.stringify(value),
+        serialize(value) {
+            return JSON.stringify(value);
+        },
     }),
     sessionIndexByFolder: defineSetting<Record<string, Record<string, number>>>({
         key: 'agent-storm:session-index-by-folder',
         defaultValue: {},
         parse: parseSessionIndexByFolder,
-        serialize: (value) => JSON.stringify(value),
+        serialize(value) {
+            return JSON.stringify(value);
+        },
     }),
     scrollbackLimit: defineSetting<number>({
         key: 'agent-storm:scrollback-limit',
         defaultValue: scrollbackLimit.default,
-        parse: (raw) =>
-            clamp({
+        parse(raw) {
+            return clamp({
                 value: Math.round(Number.parseFloat(raw)),
                 bounds: scrollbackLimit,
-            }),
-        serialize: (value) => String(value),
+            });
+        },
+        serialize(value) {
+            return String(value);
+        },
     }),
 };

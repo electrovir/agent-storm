@@ -1,4 +1,4 @@
-// cspell:words Meslo, Menlo, keymap, Toggleable
+// cspell:words meslo menlo keymap toggleable
 
 import {PaneKind, ptyWebSocket} from '@agent-storm/common';
 import {wait} from '@augment-vir/common';
@@ -50,9 +50,9 @@ function fileToBase64(file: File): Promise<string> {
             const comma = result.indexOf(',');
             resolve(comma >= 0 ? result.slice(comma + 1) : '');
         });
-        reader.addEventListener('error', () =>
-            reject(reader.error ?? new Error('FileReader failed.')),
-        );
+        reader.addEventListener('error', () => {
+            return reject(reader.error ?? new Error('FileReader failed.'));
+        });
         reader.readAsDataURL(file);
     });
 }
@@ -371,117 +371,123 @@ export const VirTerminal = defineElement<{
         };
     },
     hostClasses: {
-        'vir-terminal-dark': ({state}) => state.useDarkTheme,
+        'vir-terminal-dark'({state}) {
+            return state.useDarkTheme;
+        },
     },
-    styles: ({hostClasses}) => css`
-        :host {
-            display: flex;
-            flex-direction: column;
-            position: relative;
-            width: 100%;
-            height: 100%;
-            box-sizing: border-box;
-            /* Matches xterm's own background so the strip left over when the terminal doesn't
+    styles({hostClasses}) {
+        return css`
+            :host {
+                display: flex;
+                flex-direction: column;
+                position: relative;
+                width: 100%;
+                height: 100%;
+                box-sizing: border-box;
+                /* Matches xterm's own background so the strip left over when the terminal doesn't
                divide evenly into cells doesn't show a different color than the cells above it. */
-            background: ${unsafeCSS(terminalThemes.light.background || 'transparent')};
-        }
+                background: ${unsafeCSS(terminalThemes.light.background || 'transparent')};
+            }
 
-        ${hostClasses['vir-terminal-dark'].selector} {
-            background: ${unsafeCSS(terminalThemes.dark.background || 'transparent')};
-        }
+            ${hostClasses['vir-terminal-dark'].selector} {
+                background: ${unsafeCSS(terminalThemes.dark.background || 'transparent')};
+            }
 
-        .terminal-host {
-            width: 100%;
-            /* Fill the column above the accessory bar. min-height: 0 lets the flex item shrink below
+            .terminal-host {
+                width: 100%;
+                /* Fill the column above the accessory bar. min-height: 0 lets the flex item shrink below
                its content height so xterm can fit to whatever space is left. */
-            flex-grow: 1;
-            flex-shrink: 1;
-            min-height: 0;
-            /* We translate touch drags into terminal.scrollLines ourselves, so tell iOS to keep
+                flex-grow: 1;
+                flex-shrink: 1;
+                min-height: 0;
+                /* We translate touch drags into terminal.scrollLines ourselves, so tell iOS to keep
                its hands off the gesture entirely. pan-y would still let the browser try a
                vertical pan — when xterm has nothing more to scroll, that pan chains up to the page
                and triggers the rubber-band / scroll-past behavior. none blocks that and also
                disables iOS double-tap zoom on the canvas. */
-            touch-action: none;
-            overscroll-behavior: contain;
-        }
+                touch-action: none;
+                overscroll-behavior: contain;
+            }
 
-        ${defaultXtermStyles}
+            ${defaultXtermStyles}
 
-        /* xterm.css sets cursor: default on the viewport, which sits on top of the canvas, AND
+            /* xterm.css sets cursor: default on the viewport, which sits on top of the canvas, AND
            the WebGL renderer addon adds extra canvas / link layers with their own cursor styles
            — so as the pointer hits different child elements in the same pixel area, the cursor
            flickers between i-beam and default every frame. Force i-beam everywhere inside the
            terminal via a descendant rule so no inner layer can override it. */
         .xterm,
         .xterm * {
-            cursor: text;
-        }
+                cursor: text;
+            }
 
-        .upload-error {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            max-width: 70%;
-            padding: 6px 10px;
-            border-radius: 6px;
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 12px;
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
-            background: ${viraThemeByKeys.red['behind-bg'].body.background.value};
-            border: 1px solid ${viraThemeByKeys.red.foreground.decoration.foreground.value};
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            pointer-events: none;
-            white-space: pre-wrap;
-        }
+            .upload-error {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                max-width: 70%;
+                padding: 6px 10px;
+                border-radius: 6px;
+                font-family: ui-sans-serif, system-ui, sans-serif;
+                font-size: 12px;
+                color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+                background: ${viraThemeByKeys.red['behind-bg'].body.background.value};
+                border: 1px solid ${viraThemeByKeys.red.foreground.decoration.foreground.value};
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+                pointer-events: none;
+                white-space: pre-wrap;
+            }
 
-        /* Touch accessory key bar. In normal flow as the last flex-column child so it can't overlap
+            /* Touch accessory key bar. In normal flow as the last flex-column child so it can't overlap
            the terminal. vir-app already shrinks the whole app to the keyboard-free area (its
            --app-viewport-height tracks window.visualViewport), so this just sits at the bottom of
            the visible pane — above the keyboard — with no positioning math of its own. Colors come from
            the Vira theme so the bar follows the app's light/dark selection. */
-        .accessory-bar {
-            flex-grow: 0;
-            flex-shrink: 0;
-            display: flex;
-            gap: 6px;
-            padding: 6px;
-            box-sizing: border-box;
-            background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
-            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            /* Sit inside the iPhone home-indicator safe area when the keyboard is closed. */
-            padding-bottom: max(6px, env(safe-area-inset-bottom));
-
-            .accessory-key {
+            .accessory-bar {
+                flex-grow: 0;
+                flex-shrink: 0;
                 display: flex;
-                align-items: center;
-                justify-content: center;
-                flex-grow: 1;
-                flex-shrink: 1;
-                min-width: 0;
-                min-height: 40px;
-                padding: 0 4px;
-                border: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-                border-radius: 6px;
-                font-family: ui-sans-serif, system-ui, sans-serif;
-                font-size: 16px;
-                color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-                background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
-                cursor: pointer;
-                touch-action: manipulation;
-                user-select: none;
+                gap: 6px;
+                padding: 6px;
+                box-sizing: border-box;
+                background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
+                border-top: 1px solid
+                    ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+                /* Sit inside the iPhone home-indicator safe area when the keyboard is closed. */
+                padding-bottom: max(6px, env(safe-area-inset-bottom));
 
-                &:active {
-                    background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
-                }
+                .accessory-key {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    flex-grow: 1;
+                    flex-shrink: 1;
+                    min-width: 0;
+                    min-height: 40px;
+                    padding: 0 4px;
+                    border: 1px solid
+                        ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+                    border-radius: 6px;
+                    font-family: ui-sans-serif, system-ui, sans-serif;
+                    font-size: 16px;
+                    color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+                    background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
+                    cursor: pointer;
+                    touch-action: manipulation;
+                    user-select: none;
 
-                &[data-armed] {
-                    ${colorCss(viraThemeByKeys.blue.foreground.body)};
-                    border-color: ${viraThemeByKeys.blue.foreground.body.background.value};
+                    &:active {
+                        background: ${viraThemeByKeys.grey['behind-bg'].body.background.value};
+                    }
+
+                    &[data-armed] {
+                        ${colorCss(viraThemeByKeys.blue.foreground.body)};
+                        border-color: ${viraThemeByKeys.blue.foreground.body.background.value};
+                    }
                 }
             }
-        }
-    `,
+        `;
+    },
     cleanup({state, updateState}) {
         updateState({
             unmounted: true,
@@ -528,10 +534,15 @@ export const VirTerminal = defineElement<{
                 : ''}
             <div
                 class="terminal-host"
-                ${onDomCreated(async (element) => {
-                    if (state.terminal || !(element instanceof HTMLElement)) {
+                ${onDomCreated(async (createdElement) => {
+                    if (state.terminal || !(createdElement instanceof HTMLElement)) {
                         return;
                     }
+                    /**
+                     * Held as its own `const` so the narrowing survives into the hoisted function
+                     * declarations below, which don't inherit a narrowed parameter.
+                     */
+                    const element = createdElement;
 
                     // Wait for the bundled MesloLGS NF to load before xterm measures cell
                     // widths against the fallback (Menlo) and ends up with wrong column metrics.
@@ -654,7 +665,9 @@ export const VirTerminal = defineElement<{
                      * fall through to the default handler so apps that legitimately want to change
                      * palette colors can.
                      */
-                    const swallowColorQuery = (data: string): boolean => data.startsWith('?');
+                    function swallowColorQuery(data: string): boolean {
+                        return data.startsWith('?');
+                    }
                     [
                         10,
                         11,
@@ -688,7 +701,9 @@ export const VirTerminal = defineElement<{
                      * below. It genuinely flips when `cleanup` runs partway through this setup,
                      * which is exactly what the checks are here to catch.
                      */
-                    const isUnmounted = () => state.unmounted;
+                    function isUnmounted() {
+                        return state.unmounted;
+                    }
 
                     const secret = await ensureSecret();
                     /**
@@ -715,7 +730,7 @@ export const VirTerminal = defineElement<{
                         ready: false,
                         pending: [] as string[],
                     };
-                    const writeToTerminal = (data: string) => {
+                    function writeToTerminal(data: string) {
                         if (writeGate.ready) {
                             terminal.write(data);
                         } else {
@@ -724,8 +739,8 @@ export const VirTerminal = defineElement<{
                                 data,
                             ];
                         }
-                    };
-                    const openWriteGate = () => {
+                    }
+                    function openWriteGate() {
                         if (writeGate.ready) {
                             return;
                         }
@@ -733,7 +748,7 @@ export const VirTerminal = defineElement<{
                         const queued = writeGate.pending;
                         writeGate.pending = [];
                         queued.forEach((data) => terminal.write(data));
-                    };
+                    }
 
                     const socket = await client.connectWebSocket(ptyWebSocket, {
                         searchParams: {
@@ -764,14 +779,14 @@ export const VirTerminal = defineElement<{
                         return;
                     }
 
-                    const sendResize = () => {
+                    function sendResize() {
                         socket.send({
                             resize: {
                                 cols: terminal.cols,
                                 rows: terminal.rows,
                             },
                         });
-                    };
+                    }
 
                     /**
                      * Sticky Ctrl state for the mobile accessory bar. Kept as a closure object
@@ -899,11 +914,11 @@ export const VirTerminal = defineElement<{
                             passive: true,
                         },
                     );
-                    const endTouchScroll = (event: PointerEvent) => {
+                    function endTouchScroll(event: PointerEvent) {
                         if (event.pointerId === touchScrollState.pointerId) {
                             touchScrollState.pointerId = undefined;
                         }
-                    };
+                    }
                     element.addEventListener('pointerup', endTouchScroll, {
                         passive: true,
                     });
@@ -966,10 +981,9 @@ export const VirTerminal = defineElement<{
                                 return;
                             }
                             const imageFiles = Array.from(event.clipboardData.items)
-                                .filter(
-                                    (item) =>
-                                        item.kind === 'file' && item.type.startsWith('image/'),
-                                )
+                                .filter((item) => {
+                                    return item.kind === 'file' && item.type.startsWith('image/');
+                                })
                                 .map((item) => item.getAsFile())
                                 .filter((file): file is File => !!file);
                             if (imageFiles.length === 0) {
@@ -1003,10 +1017,10 @@ export const VirTerminal = defineElement<{
                      * Dragging the divider used to be the only thing that fixed it, because a
                      * resize rebuilds the atlas as a side effect.
                      */
-                    const repaintGlyphs = () => {
+                    function repaintGlyphs() {
                         terminal.clearTextureAtlas();
                         terminal.refresh(0, terminal.rows - 1);
-                    };
+                    }
 
                     /**
                      * Do what dragging the pane divider does, because that is the only thing that
@@ -1026,7 +1040,7 @@ export const VirTerminal = defineElement<{
                      * first and left two renderings overlaid on the same cells, because the redraw
                      * landed in a buffer that had already been resized out from under it.
                      */
-                    const nudgePtySize = async () => {
+                    async function nudgePtySize() {
                         if (terminal.cols < 2) {
                             return;
                         }
@@ -1038,7 +1052,7 @@ export const VirTerminal = defineElement<{
                         });
                         terminal.resize(restoreCols, terminal.rows);
                         sendResize();
-                    };
+                    }
 
                     /**
                      * Which settle chain is the live one. Every entry point bumps it, so an older
@@ -1066,7 +1080,7 @@ export const VirTerminal = defineElement<{
                      *
                      * Recursion is why this carries a return-type annotation.
                      */
-                    const fitWhenSettled = ({
+                    function fitWhenSettled({
                         generation,
                         remainingFrames,
                         previous,
@@ -1078,7 +1092,7 @@ export const VirTerminal = defineElement<{
                         previous: Readonly<{cols: number; rows: number}> | undefined;
                         stableFrames: number;
                         requiredStableFrames: number;
-                    }>): void => {
+                    }>): void {
                         /**
                          * A superseded generation is abandoned outright. So is a pane with no real
                          * layout — `display: none` because the user switched folders. Fitting that
@@ -1094,20 +1108,20 @@ export const VirTerminal = defineElement<{
                         ) {
                             return;
                         }
-                        const retry = (
+                        function retry(
                             nextPrevious: Readonly<{cols: number; rows: number}> | undefined,
                             nextStableFrames: number,
-                        ) => {
-                            requestAnimationFrame(() =>
-                                fitWhenSettled({
+                        ) {
+                            requestAnimationFrame(() => {
+                                return fitWhenSettled({
                                     generation,
                                     remainingFrames: remainingFrames - 1,
                                     previous: nextPrevious,
                                     stableFrames: nextStableFrames,
                                     requiredStableFrames,
-                                }),
-                            );
-                        };
+                                });
+                            });
+                        }
                         const proposed = fitAddon.proposeDimensions();
                         if (
                             !proposed ||
@@ -1151,14 +1165,14 @@ export const VirTerminal = defineElement<{
                          * fixed that, and running it unconditionally costs one extra repaint.
                          */
                         void nudgePtySize();
-                    };
+                    }
 
                     /**
                      * Sole entry point for resizing. Supersedes any chain already in flight, which
                      * also debounces a divider drag: each entry restarts the wait, so the pty hears
                      * one size a few frames after the drag stops instead of one per pointer move.
                      */
-                    const fitAndResend = (requiredStableFrames: number) => {
+                    function fitAndResend(requiredStableFrames: number) {
                         fitGeneration.current += 1;
                         fitWhenSettled({
                             generation: fitGeneration.current,
@@ -1167,7 +1181,7 @@ export const VirTerminal = defineElement<{
                             stableFrames: 0,
                             requiredStableFrames,
                         });
-                    };
+                    }
 
                     /*
                      * The one fit that must not wait. A freshly `open()`ed terminal in a visible
@@ -1190,9 +1204,9 @@ export const VirTerminal = defineElement<{
                      * produces no observer entry, and that is the case that used to come back
                      * wrapped at a stale width.
                      */
-                    const onActivate = () => {
+                    function onActivate() {
                         fitAndResend(stableFitFrames);
-                    };
+                    }
 
                     /**
                      * A palette swap only reaches the cells that get drawn afterwards — everything
@@ -1213,14 +1227,16 @@ export const VirTerminal = defineElement<{
                         resizeObserver,
                         onActivate,
                         stopThemeListener,
-                        sendBytes: (bytes) => socket.send(bytes),
-                        toggleCtrl: () => {
+                        sendBytes(bytes) {
+                            return socket.send(bytes);
+                        },
+                        toggleCtrl() {
                             ctrlModifier.armed = !ctrlModifier.armed;
                             updateState({
                                 ctrlArmed: ctrlModifier.armed,
                             });
                         },
-                        disconnect: () => {
+                        disconnect() {
                             void socket.close();
                         },
                     });
@@ -1258,8 +1274,8 @@ export const VirTerminal = defineElement<{
                           >
                               ctrl
                           </button>
-                          ${accessoryKeys.map(
-                              (key) => html`
+                          ${accessoryKeys.map((key) => {
+                              return html`
                                   <button
                                       type="button"
                                       class="accessory-key"
@@ -1271,8 +1287,8 @@ export const VirTerminal = defineElement<{
                                   >
                                       ${key.label}
                                   </button>
-                              `,
-                          )}
+                              `;
+                          })}
                       </div>
                   `
                 : ''}

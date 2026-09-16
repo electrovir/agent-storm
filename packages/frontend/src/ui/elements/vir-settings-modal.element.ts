@@ -204,7 +204,7 @@ export const VirSettingsModal = defineElement<{
         }
     `,
     render({inputs, state, updateState, dispatch, events}) {
-        const reset = () => {
+        function reset() {
             updateState({
                 pending: undefined,
                 loaded: undefined,
@@ -216,9 +216,9 @@ export const VirSettingsModal = defineElement<{
                 restartingDaemon: false,
                 daemonRestartError: undefined,
             });
-        };
+        }
 
-        const restartDaemonAction = async () => {
+        async function restartDaemonAction() {
             if (
                 !window.confirm(
                     'Restart the PTY daemon? All running terminal sessions will be killed.',
@@ -241,9 +241,9 @@ export const VirSettingsModal = defineElement<{
                     daemonRestartError: error instanceof Error ? error.message : String(error),
                 });
             }
-        };
+        }
 
-        const load = async () => {
+        async function load() {
             try {
                 const config = await getConfig();
                 updateState({
@@ -259,9 +259,9 @@ export const VirSettingsModal = defineElement<{
                     loadError: error instanceof Error ? error.message : String(error),
                 });
             }
-        };
+        }
 
-        const save = async () => {
+        async function save() {
             if (!state.pending || state.saving) {
                 return;
             }
@@ -282,10 +282,13 @@ export const VirSettingsModal = defineElement<{
                 };
                 await putConfig(next);
                 const nextUseWebgl = next.useWebgl;
-                const webglChanged =
-                    state.useWebgl !== undefined && state.useWebgl !== nextUseWebgl;
+                const webglChanged = state.useWebgl != undefined && state.useWebgl !== nextUseWebgl;
                 reset();
-                dispatch(new events.closeRequested());
+                dispatch(
+                    new events.closeRequested({
+                        detail: undefined,
+                    }),
+                );
                 if (webglChanged) {
                     // Existing terminals only read useWebgl at construction; reload so the
                     // new renderer choice applies everywhere.
@@ -297,7 +300,7 @@ export const VirSettingsModal = defineElement<{
                     saveError: error instanceof Error ? error.message : String(error),
                 });
             }
-        };
+        }
 
         return html`
             <${ViraModal.assign({
@@ -306,7 +309,11 @@ export const VirSettingsModal = defineElement<{
             })}
                 ${listen(ViraModal.events.modalClose, () => {
                     reset();
-                    dispatch(new events.closeRequested());
+                    dispatch(
+                        new events.closeRequested({
+                            detail: undefined,
+                        }),
+                    );
                 })}
             >
                 ${inputs.open
@@ -356,11 +363,11 @@ export const VirSettingsModal = defineElement<{
                                       value: state.defaultAiId || '',
                                       disabled: state.saving || !state.loaded,
                                   })}
-                                      ${listen(ViraSelect.events.valueChange, (event) =>
-                                          updateState({
+                                      ${listen(ViraSelect.events.valueChange, (event) => {
+                                          return updateState({
                                               defaultAiId: event.detail,
-                                          }),
-                                      )}
+                                          });
+                                      })}
                                   ></${ViraSelect}>
                                   <${ViraButton.assign({
                                       text: 'Define AI',
@@ -368,9 +375,13 @@ export const VirSettingsModal = defineElement<{
                                       color: ViraColorVariant.Neutral,
                                       isDisabled: state.saving,
                                   })}
-                                      ${listen('click', () =>
-                                          dispatch(new events.defineAiRequested()),
-                                      )}
+                                      ${listen('click', () => {
+                                          return dispatch(
+                                              new events.defineAiRequested({
+                                                  detail: undefined,
+                                              }),
+                                          );
+                                      })}
                                   ></${ViraButton}>
                               </div>
                               <hr class="section-divider" />
@@ -426,7 +437,11 @@ export const VirSettingsModal = defineElement<{
                                   })}
                                       ${listen('click', () => {
                                           reset();
-                                          dispatch(new events.closeRequested());
+                                          dispatch(
+                                              new events.closeRequested({
+                                                  detail: undefined,
+                                              }),
+                                          );
                                       })}
                                   ></${ViraButton}>
                                   <${ViraButton.assign({

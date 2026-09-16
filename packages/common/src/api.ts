@@ -2,7 +2,12 @@
 
 import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from '@rest-vir/api';
 import {defineShape, enumShape, nullableShape, unionShape} from 'object-shape-tester';
-import {mapSchemaToShape, type JSONSchema, type SchemaShapeToType} from 'schema-vir';
+import {
+    mapSchemaToShape,
+    type FromSchemaDefaultOptions,
+    type JSONSchema,
+    type SchemaShapeToType,
+} from 'schema-vir';
 import {
     DiffLayout,
     GitDiffSide,
@@ -1456,7 +1461,10 @@ export const defaultConfig = configShape.default;
  * Derived directly from {@link configJsonSchema} via `json-schema-to-ts` so the runtime shape, the
  * settings modal's form schema, and this TypeScript type are all driven from the same definition.
  */
-export type Config = SchemaShapeToType<typeof configJsonSchema, NonNullable<unknown>>;
+export type Config = SchemaShapeToType<
+    typeof configJsonSchema,
+    Omit<FromSchemaDefaultOptions, 'keepDefaultedPropertiesOptional'>
+>;
 export type RepoConfig = Config['repos'][number];
 export type AiDefinition = Config['aiDefinitions'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;

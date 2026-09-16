@@ -123,17 +123,17 @@ export function startConfigBackupLoop(): void {
         return;
     }
     loopState.started = true;
-    const runPass = async (): Promise<void> => {
+    async function runPass(): Promise<void> {
         try {
             await ensureTodaysBackup();
             await pruneOldBackups();
         } catch (error) {
             log.warning(`Config backup pass failed: ${String(error)}`);
         }
-    };
+    }
     void runPass();
-    const scheduleNext = (): void => {
+    function scheduleNext(): void {
         void wait(checkInterval).then(runPass).finally(scheduleNext);
-    };
+    }
     scheduleNext();
 }

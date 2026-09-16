@@ -41,23 +41,22 @@ describe(toPr.name, () => {
         const states = [
             'FAILURE',
             'ERROR',
-        ].map(
-            (state) =>
-                toPr({
-                    ...baseRawPr,
-                    commits: {
-                        nodes: [
-                            {
-                                commit: {
-                                    statusCheckRollup: {
-                                        state,
-                                    },
+        ].map((state) => {
+            return toPr({
+                ...baseRawPr,
+                commits: {
+                    nodes: [
+                        {
+                            commit: {
+                                statusCheckRollup: {
+                                    state,
                                 },
                             },
-                        ],
-                    },
-                }).checks,
-        );
+                        },
+                    ],
+                },
+            }).checks;
+        });
         assert.deepEquals(states, [
             GitHubCheckState.Failure,
             GitHubCheckState.Failure,
@@ -256,12 +255,12 @@ describe(toPr.name, () => {
             },
         });
         assert.deepEquals(
-            pr.checkRuns.map((checkRun) =>
-                selectFrom(checkRun, {
+            pr.checkRuns.map((checkRun) => {
+                return selectFrom(checkRun, {
                     name: true,
                     state: true,
-                }),
-            ),
+                });
+            }),
             [
                 {
                     name: 'lint',

@@ -61,7 +61,7 @@ export async function waitForDaemonGone(timeoutMs: number): Promise<boolean> {
  */
 async function replaceOutdatedDaemon(): Promise<boolean> {
     const runningVersion = await fetchDaemonProtocolVersion().catch(() => undefined);
-    if (runningVersion === undefined) {
+    if (runningVersion == undefined) {
         /**
          * The daemon answered the socket ping but not the status probe. Treat it as unusable and
          * replace it — leaving it running would fail every subsequent attach anyway.

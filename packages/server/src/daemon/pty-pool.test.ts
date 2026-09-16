@@ -172,9 +172,12 @@ describe('pane sessions', () => {
 
             try {
                 await waitUntil(
-                    () =>
-                        firstOutput.join('').includes('from-session-one') &&
-                        secondOutput.join('').includes('from-session-two'),
+                    () => {
+                        return (
+                            firstOutput.join('').includes('from-session-one') &&
+                            secondOutput.join('').includes('from-session-two')
+                        );
+                    },
                     {
                         interval: {
                             milliseconds: 20,
@@ -236,10 +239,11 @@ describe('pane sessions', () => {
                 });
 
                 await waitUntil(
-                    () =>
-                        !listAllPaneStatuses().some(
+                    () => {
+                        return !listAllPaneStatuses().some(
                             (entry) => entry.folder === folder && entry.sessionId === 'doomed',
-                        ),
+                        );
+                    },
                     {
                         interval: {
                             milliseconds: 20,

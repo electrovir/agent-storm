@@ -1,4 +1,7 @@
-import {defineEslintConfig} from '@virmator/lint/configs/eslint.config.base.js';
+import {
+    defaultAllowedFileExtensions,
+    defineEslintConfig,
+} from '@virmator/lint/configs/eslint.config.base.js';
 import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -17,6 +20,16 @@ export default [
              * Turn off or on specific rules. See {@link defineEslintConfig} for which plugins are
              * already enabled.
              */
+            '@virmator/allowed-file-extensions': [
+                'error',
+                {
+                    extensions: [
+                        ...defaultAllowedFileExtensions,
+                        /** Code generation output, such as `file-icon-map.generated.ts`. */
+                        '.generated.ts',
+                    ],
+                },
+            ],
         },
     },
 ];

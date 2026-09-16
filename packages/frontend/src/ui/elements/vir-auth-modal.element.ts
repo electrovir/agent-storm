@@ -83,7 +83,7 @@ export const VirAuthModal = defineElement()({
         state.unsubscribe?.();
     },
     render({state, updateState}) {
-        const submit = () => {
+        function submit() {
             const trimmed = state.pending.trim();
             if (!trimmed) {
                 return;
@@ -92,7 +92,7 @@ export const VirAuthModal = defineElement()({
             updateState({
                 pending: '',
             });
-        };
+        }
 
         return html`
             <${ViraModal.assign({
@@ -112,11 +112,11 @@ export const VirAuthModal = defineElement()({
                         placeholder: 'auth secret',
                         showClearButton: true,
                     })}
-                        ${listen(ViraInput.events.valueChange, (event) =>
-                            updateState({
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            return updateState({
                                 pending: event.detail,
-                            }),
-                        )}
+                            });
+                        })}
                         ${listen('keydown', (event) => {
                             if (event instanceof KeyboardEvent && event.key === 'Enter') {
                                 submit();

@@ -1,4 +1,4 @@
-// cspell:words Meslo, Menlo
+// cspell:words meslo menlo
 
 import {
     GitFileChange,
@@ -41,14 +41,14 @@ const linePrefixes: Readonly<Record<DiffLineType, string>> = {
  */
 function toContentKey(files: ReadonlyArray<GitDiffFile>): string {
     return files
-        .map((file) =>
-            [
+        .map((file) => {
+            return [
                 file.path,
                 file.change,
                 file.insertions,
                 file.deletions,
-            ].join(':'),
-        )
+            ].join(':');
+        })
         .join('\n');
 }
 
@@ -261,15 +261,17 @@ export const VirDiffReview = defineElement<{
             });
         }
 
-        const renderLine = (line: Readonly<DiffHunkLine>) => html`
-            <div class="line" data-type=${line.type}>
-                <span class="line-number">${line.oldLineNumber ?? ''}</span>
-                <span class="line-number">${line.newLineNumber ?? ''}</span>
-                <span class="line-text">${linePrefixes[line.type]}${line.text}</span>
-            </div>
-        `;
+        function renderLine(line: Readonly<DiffHunkLine>) {
+            return html`
+                <div class="line" data-type=${line.type}>
+                    <span class="line-number">${line.oldLineNumber ?? ''}</span>
+                    <span class="line-number">${line.newLineNumber ?? ''}</span>
+                    <span class="line-text">${linePrefixes[line.type]}${line.text}</span>
+                </div>
+            `;
+        }
 
-        const renderFileBody = (file: Readonly<GitDiffFile>) => {
+        function renderFileBody(file: Readonly<GitDiffFile>) {
             const content = state.contents[file.path];
             if (!content) {
                 return html`
@@ -294,12 +296,14 @@ export const VirDiffReview = defineElement<{
                       })
                     : content.oldContent,
                 newContent: content.newContent,
-            }).flatMap((hunk) => [
-                {
-                    header: hunk.header,
-                },
-                ...hunk.lines,
-            ]);
+            }).flatMap((hunk) => {
+                return [
+                    {
+                        header: hunk.header,
+                    },
+                    ...hunk.lines,
+                ];
+            });
             if (!lines.length) {
                 return html`
                     <div class="note">Only whitespace changed.</div>
@@ -307,13 +311,13 @@ export const VirDiffReview = defineElement<{
             }
             return html`
                 <div class="hunks">
-                    ${lines.slice(0, maxRenderedLinesPerFile).map((line) =>
-                        'header' in line
+                    ${lines.slice(0, maxRenderedLinesPerFile).map((line) => {
+                        return 'header' in line
                             ? html`
                                   <div class="hunk-header">${line.header}</div>
                               `
-                            : renderLine(line),
-                    )}
+                            : renderLine(line);
+                    })}
                 </div>
                 ${lines.length > maxRenderedLinesPerFile
                     ? html`
@@ -324,7 +328,7 @@ export const VirDiffReview = defineElement<{
                       `
                     : ''}
             `;
-        };
+        }
 
         if (!inputs.files.length) {
             return html`
@@ -333,15 +337,19 @@ export const VirDiffReview = defineElement<{
         }
 
         return html`
-            ${inputs.files.map(
-                (file) => html`
+            ${inputs.files.map((file) => {
+                return html`
                     <div class="file">
                         <button
                             type="button"
                             class="file-header"
                             title=${`Open ${file.path}`}
                             ${listen('click', () => {
-                                dispatch(new events.fileSelected(file.path));
+                                dispatch(
+                                    new events.fileSelected({
+                                        detail: file.path,
+                                    }),
+                                );
                             })}
                         >
                             <img class="file-icon" src=${toFileIconUrl(file.path)} alt="" />
@@ -358,8 +366,8 @@ export const VirDiffReview = defineElement<{
                         </button>
                         ${renderFileBody(file)}
                     </div>
-                `,
-            )}
+                `;
+            })}
             ${state.loading
                 ? html`
                       <div class="loading">

@@ -188,7 +188,7 @@ export const VirAiModal = defineElement<{
         }
     `,
     render({inputs, state, updateState, dispatch, events}) {
-        const reset = () => {
+        function reset() {
             updateState({
                 loaded: undefined,
                 requested: false,
@@ -197,9 +197,9 @@ export const VirAiModal = defineElement<{
                 saving: false,
                 error: undefined,
             });
-        };
+        }
 
-        const load = async () => {
+        async function load() {
             try {
                 updateState({
                     loaded: await getConfig(),
@@ -210,14 +210,14 @@ export const VirAiModal = defineElement<{
                     error: error instanceof Error ? error.message : String(error),
                 });
             }
-        };
+        }
 
         /**
          * Persist a new definition list. Re-reads config first so a save can't clobber changes made
          * elsewhere (the sidebar writes config for folder overrides and view options) between the
          * modal opening and the user hitting Save.
          */
-        const saveDefinitions = async (aiDefinitions: ReadonlyArray<Readonly<AiDefinition>>) => {
+        async function saveDefinitions(aiDefinitions: ReadonlyArray<Readonly<AiDefinition>>) {
             updateState({
                 saving: true,
                 error: undefined,
@@ -235,16 +235,20 @@ export const VirAiModal = defineElement<{
                     draft: undefined,
                     saving: false,
                 });
-                dispatch(new events.configSaved());
+                dispatch(
+                    new events.configSaved({
+                        detail: undefined,
+                    }),
+                );
             } catch (error: unknown) {
                 updateState({
                     saving: false,
                     error: error instanceof Error ? error.message : String(error),
                 });
             }
-        };
+        }
 
-        const submitDraft = () => {
+        function submitDraft() {
             const draft = state.draft;
             if (!draft || state.saving) {
                 return;
@@ -277,9 +281,9 @@ export const VirAiModal = defineElement<{
                           definition,
                       ],
             );
-        };
+        }
 
-        const deleteDefinition = (definition: Readonly<AiDefinition>) => {
+        function deleteDefinition(definition: Readonly<AiDefinition>) {
             if (
                 !window.confirm(
                     `Delete "${definition.name}"? Folders and tabs using it fall back to the default AI.`,
@@ -290,9 +294,9 @@ export const VirAiModal = defineElement<{
             void saveDefinitions(
                 (state.loaded?.aiDefinitions || []).filter((entry) => entry.id !== definition.id),
             );
-        };
+        }
 
-        const applyAvatarFile = async (file: Readonly<Blob> | undefined) => {
+        async function applyAvatarFile(file: Readonly<Blob> | undefined) {
             if (!file || !state.draft) {
                 return;
             }
@@ -309,16 +313,16 @@ export const VirAiModal = defineElement<{
                     error: error instanceof Error ? error.message : String(error),
                 });
             }
-        };
+        }
 
-        const updateDraft = (changes: Readonly<Partial<AiDraft>>) => {
+        function updateDraft(changes: Readonly<Partial<AiDraft>>) {
             updateState({
                 draft: state.draft && {
                     ...state.draft,
                     ...changes,
                 },
             });
-        };
+        }
 
         /**
          * Other AIs whose avatar this draft can borrow, so a second `claude` variant doesn't need
@@ -332,12 +336,13 @@ export const VirAiModal = defineElement<{
                 label: 'Pick an AI...',
             },
             ...(state.loaded?.aiDefinitions || [])
-                .filter(
-                    (definition) =>
+                .filter((definition) => {
+                    return (
                         definition.avatarFile &&
                         definition.id !== state.draft?.id &&
-                        definition.avatarFile !== state.draft?.avatarFile,
-                )
+                        definition.avatarFile !== state.draft?.avatarFile
+                    );
+                })
                 .map((definition) => {
                     return {
                         value: definition.id,
@@ -346,220 +351,228 @@ export const VirAiModal = defineElement<{
                 }),
         ];
 
-        const renderEditor = (draft: Readonly<AiDraft>) => html`
-            <div class="editor">
-                <${ViraInput.assign({
-                    label: 'Name',
-                    value: draft.name,
-                    placeholder: 'Claude',
-                    showClearButton: true,
-                    disabled: state.saving,
-                })}
-                    ${listen(ViraInput.events.valueChange, (event) =>
-                        updateDraft({
-                            name: event.detail,
-                        }),
-                    )}
-                ></${ViraInput}>
-                <${ViraInput.assign({
-                    label: 'Resume session command',
-                    value: draft.resumeSessionCommand,
-                    placeholder: 'claude --continue',
-                    showClearButton: true,
-                    disableBrowserHelps: true,
-                    disabled: state.saving,
-                })}
-                    ${listen(ViraInput.events.valueChange, (event) =>
-                        updateDraft({
-                            resumeSessionCommand: event.detail,
-                        }),
-                    )}
-                ></${ViraInput}>
-                <${ViraInput.assign({
-                    label: 'New session command',
-                    value: draft.newSessionCommand,
-                    placeholder: 'claude',
-                    showClearButton: true,
-                    disableBrowserHelps: true,
-                    disabled: state.saving,
-                })}
-                    ${listen(ViraInput.events.valueChange, (event) =>
-                        updateDraft({
-                            newSessionCommand: event.detail,
-                        }),
-                    )}
-                ></${ViraInput}>
-                <div class="avatar-row">
-                    <${VirAiAvatar.assign({
-                        name: draft.name,
-                        avatarFile: draft.avatarFile,
-                        sizePx: 48,
-                    })}></${VirAiAvatar}>
-                    <div
-                        class="drop-zone"
-                        ?data-dragging=${state.dragging}
-                        ${listen('dragover', (event) => {
-                            event.preventDefault();
-                            if (!state.dragging) {
-                                updateState({
-                                    dragging: true,
-                                });
-                            }
+        function renderEditor(draft: Readonly<AiDraft>) {
+            return html`
+                <div class="editor">
+                    <${ViraInput.assign({
+                        label: 'Name',
+                        value: draft.name,
+                        placeholder: 'Claude',
+                        showClearButton: true,
+                        disabled: state.saving,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            return updateDraft({
+                                name: event.detail,
+                            });
                         })}
-                        ${listen('dragleave', () =>
-                            updateState({
-                                dragging: false,
-                            }),
-                        )}
-                        ${listen('drop', (event) => {
-                            event.preventDefault();
-                            void applyAvatarFile(event.dataTransfer?.files[0]);
+                    ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'Resume session command',
+                        value: draft.resumeSessionCommand,
+                        placeholder: 'claude --continue',
+                        showClearButton: true,
+                        disableBrowserHelps: true,
+                        disabled: state.saving,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            return updateDraft({
+                                resumeSessionCommand: event.detail,
+                            });
                         })}
-                    >
-                        <span>Drop an image here for the avatar</span>
-                        <input
-                            type="file"
-                            accept="image/*"
-                            ?disabled=${state.saving}
-                            ${listen('change', (event) => {
-                                const input = extractEventTarget(event, HTMLInputElement);
-                                void applyAvatarFile(input.files?.[0]);
+                    ></${ViraInput}>
+                    <${ViraInput.assign({
+                        label: 'New session command',
+                        value: draft.newSessionCommand,
+                        placeholder: 'claude',
+                        showClearButton: true,
+                        disableBrowserHelps: true,
+                        disabled: state.saving,
+                    })}
+                        ${listen(ViraInput.events.valueChange, (event) => {
+                            return updateDraft({
+                                newSessionCommand: event.detail,
+                            });
+                        })}
+                    ></${ViraInput}>
+                    <div class="avatar-row">
+                        <${VirAiAvatar.assign({
+                            name: draft.name,
+                            avatarFile: draft.avatarFile,
+                            sizePx: 48,
+                        })}></${VirAiAvatar}>
+                        <div
+                            class="drop-zone"
+                            ?data-dragging=${state.dragging}
+                            ${listen('dragover', (event) => {
+                                event.preventDefault();
+                                if (!state.dragging) {
+                                    updateState({
+                                        dragging: true,
+                                    });
+                                }
                             })}
-                        />
+                            ${listen('dragleave', () => {
+                                return updateState({
+                                    dragging: false,
+                                });
+                            })}
+                            ${listen('drop', (event) => {
+                                event.preventDefault();
+                                void applyAvatarFile(event.dataTransfer?.files[0]);
+                            })}
+                        >
+                            <span>Drop an image here for the avatar</span>
+                            <input
+                                type="file"
+                                accept="image/*"
+                                ?disabled=${state.saving}
+                                ${listen('change', (event) => {
+                                    const input = extractEventTarget(event, HTMLInputElement);
+                                    void applyAvatarFile(input.files?.[0]);
+                                })}
+                            />
+                        </div>
+                        ${draft.avatarFile
+                            ? html`
+                                  <${ViraButton.assign({
+                                      text: 'Remove',
+                                      buttonSize: ViraSize.Small,
+                                      buttonEmphasis: ViraEmphasis.Subtle,
+                                      color: ViraColorVariant.Neutral,
+                                      isDisabled: state.saving,
+                                  })}
+                                      ${listen('click', () => {
+                                          return updateDraft({
+                                              avatarFile: '',
+                                          });
+                                      })}
+                                  ></${ViraButton}>
+                              `
+                            : ''}
                     </div>
-                    ${draft.avatarFile
+                    ${avatarSourceOptions.length > 1
                         ? html`
-                              <${ViraButton.assign({
-                                  text: 'Remove',
-                                  buttonSize: ViraSize.Small,
-                                  buttonEmphasis: ViraEmphasis.Subtle,
-                                  color: ViraColorVariant.Neutral,
-                                  isDisabled: state.saving,
+                              <${ViraSelect.assign({
+                                  label: 'Copy avatar from',
+                                  options: avatarSourceOptions,
+                                  /**
+                                   * Always shows the placeholder: picking an entry is an action that
+                                   * copies its image onto this draft, not a value this draft holds.
+                                   */
+                                  value: '',
+                                  disabled: state.saving,
                               })}
-                                  ${listen('click', () =>
-                                      updateDraft({
-                                          avatarFile: '',
-                                      }),
-                                  )}
-                              ></${ViraButton}>
+                                  ${listen(ViraSelect.events.valueChange, (event) => {
+                                      const source = (state.loaded?.aiDefinitions || []).find(
+                                          (definition) => definition.id === event.detail,
+                                      );
+                                      if (source?.avatarFile) {
+                                          updateDraft({
+                                              avatarFile: source.avatarFile,
+                                          });
+                                      }
+                                  })}
+                              ></${ViraSelect}>
                           `
                         : ''}
+                    <div class="footer">
+                        <${ViraButton.assign({
+                            text: 'Cancel',
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                            isDisabled: state.saving,
+                        })}
+                            ${listen('click', () => {
+                                return updateState({
+                                    draft: undefined,
+                                    error: undefined,
+                                });
+                            })}
+                        ></${ViraButton}>
+                        <${ViraButton.assign({
+                            text: state.saving ? 'Saving...' : 'Save',
+                            color: ViraColorVariant.Brand,
+                            isDisabled: state.saving,
+                        })}
+                            ${listen('click', submitDraft)}
+                        ></${ViraButton}>
+                    </div>
                 </div>
-                ${avatarSourceOptions.length > 1
-                    ? html`
-                          <${ViraSelect.assign({
-                              label: 'Copy avatar from',
-                              options: avatarSourceOptions,
-                              /**
-                               * Always shows the placeholder: picking an entry is an action that
-                               * copies its image onto this draft, not a value this draft holds.
-                               */
-                              value: '',
-                              disabled: state.saving,
-                          })}
-                              ${listen(ViraSelect.events.valueChange, (event) => {
-                                  const source = (state.loaded?.aiDefinitions || []).find(
-                                      (definition) => definition.id === event.detail,
-                                  );
-                                  if (source?.avatarFile) {
-                                      updateDraft({
-                                          avatarFile: source.avatarFile,
-                                      });
-                                  }
-                              })}
-                          ></${ViraSelect}>
-                      `
-                    : ''}
+            `;
+        }
+
+        function renderList(definitions: ReadonlyArray<Readonly<AiDefinition>>) {
+            return html`
+                <div class="list">
+                    ${repeat(
+                        definitions,
+                        (definition) => definition.id,
+                        (definition) => {
+                            return html`
+                                <div class="row">
+                                    <${VirAiAvatar.assign({
+                                        name: definition.name,
+                                        avatarFile: definition.avatarFile || '',
+                                        sizePx: 28,
+                                    })}></${VirAiAvatar}>
+                                    <span class="row-text">
+                                        <span class="row-name">${definition.name}</span>
+                                        <span class="row-command">
+                                            ${definition.resumeSessionCommand}
+                                        </span>
+                                    </span>
+                                    <span class="row-actions">
+                                        <${ViraButton.assign({
+                                            text: 'Edit',
+                                            buttonSize: ViraSize.Small,
+                                            buttonEmphasis: ViraEmphasis.Subtle,
+                                            color: ViraColorVariant.Neutral,
+                                            isDisabled: state.saving,
+                                        })}
+                                            ${listen('click', () => {
+                                                return updateState({
+                                                    draft: toDraft(definition),
+                                                    error: undefined,
+                                                });
+                                            })}
+                                        ></${ViraButton}>
+                                        <${ViraButton.assign({
+                                            text: 'Delete',
+                                            buttonSize: ViraSize.Small,
+                                            buttonEmphasis: ViraEmphasis.Subtle,
+                                            color: ViraColorVariant.Danger,
+                                            isDisabled: state.saving,
+                                        })}
+                                            ${listen('click', () => deleteDefinition(definition))}
+                                        ></${ViraButton}>
+                                    </span>
+                                </div>
+                            `;
+                        },
+                    )}
+                </div>
+                ${definitions.length
+                    ? ''
+                    : html`
+                          <div class="empty">No AI defined yet.</div>
+                      `}
                 <div class="footer">
                     <${ViraButton.assign({
-                        text: 'Cancel',
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
-                        isDisabled: state.saving,
-                    })}
-                        ${listen('click', () =>
-                            updateState({
-                                draft: undefined,
-                                error: undefined,
-                            }),
-                        )}
-                    ></${ViraButton}>
-                    <${ViraButton.assign({
-                        text: state.saving ? 'Saving...' : 'Save',
+                        text: 'Add AI',
                         color: ViraColorVariant.Brand,
                         isDisabled: state.saving,
                     })}
-                        ${listen('click', submitDraft)}
+                        ${listen('click', () => {
+                            return updateState({
+                                draft: emptyDraft(),
+                                error: undefined,
+                            });
+                        })}
                     ></${ViraButton}>
                 </div>
-            </div>
-        `;
-
-        const renderList = (definitions: ReadonlyArray<Readonly<AiDefinition>>) => html`
-            <div class="list">
-                ${repeat(
-                    definitions,
-                    (definition) => definition.id,
-                    (definition) => html`
-                        <div class="row">
-                            <${VirAiAvatar.assign({
-                                name: definition.name,
-                                avatarFile: definition.avatarFile || '',
-                                sizePx: 28,
-                            })}></${VirAiAvatar}>
-                            <span class="row-text">
-                                <span class="row-name">${definition.name}</span>
-                                <span class="row-command">${definition.resumeSessionCommand}</span>
-                            </span>
-                            <span class="row-actions">
-                                <${ViraButton.assign({
-                                    text: 'Edit',
-                                    buttonSize: ViraSize.Small,
-                                    buttonEmphasis: ViraEmphasis.Subtle,
-                                    color: ViraColorVariant.Neutral,
-                                    isDisabled: state.saving,
-                                })}
-                                    ${listen('click', () =>
-                                        updateState({
-                                            draft: toDraft(definition),
-                                            error: undefined,
-                                        }),
-                                    )}
-                                ></${ViraButton}>
-                                <${ViraButton.assign({
-                                    text: 'Delete',
-                                    buttonSize: ViraSize.Small,
-                                    buttonEmphasis: ViraEmphasis.Subtle,
-                                    color: ViraColorVariant.Danger,
-                                    isDisabled: state.saving,
-                                })}
-                                    ${listen('click', () => deleteDefinition(definition))}
-                                ></${ViraButton}>
-                            </span>
-                        </div>
-                    `,
-                )}
-            </div>
-            ${definitions.length
-                ? ''
-                : html`
-                      <div class="empty">No AI defined yet.</div>
-                  `}
-            <div class="footer">
-                <${ViraButton.assign({
-                    text: 'Add AI',
-                    color: ViraColorVariant.Brand,
-                    isDisabled: state.saving,
-                })}
-                    ${listen('click', () =>
-                        updateState({
-                            draft: emptyDraft(),
-                            error: undefined,
-                        }),
-                    )}
-                ></${ViraButton}>
-            </div>
-        `;
+            `;
+        }
 
         return html`
             <${ViraModal.assign({
@@ -568,7 +581,11 @@ export const VirAiModal = defineElement<{
             })}
                 ${listen(ViraModal.events.modalClose, () => {
                     reset();
-                    dispatch(new events.closeRequested());
+                    dispatch(
+                        new events.closeRequested({
+                            detail: undefined,
+                        }),
+                    );
                 })}
             >
                 ${inputs.open

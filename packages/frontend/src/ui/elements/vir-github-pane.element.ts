@@ -1,4 +1,4 @@
-// cspell:words hooray, Meslo, Menlo, unresolve
+// cspell:words hooray meslo menlo unresolve
 
 import {
     GitHubCheckState,
@@ -746,7 +746,7 @@ export const VirGithubPane = defineElement<{
          * opening the tab is a local round trip. `forceRefresh` is for the refresh button and for
          * the reload after a mutation, where stale data would look like the write didn't land.
          */
-        const loadPr = (folder: string, forceRefresh = false) => {
+        function loadPr(folder: string, forceRefresh = false) {
             updateState({
                 refreshing: true,
             });
@@ -770,7 +770,7 @@ export const VirGithubPane = defineElement<{
                         refreshing: false,
                     });
                 });
-        };
+        }
 
         /**
          * Arm the poll when the pane becomes visible, re-arm it on a folder switch, and tear it
@@ -800,7 +800,7 @@ export const VirGithubPane = defineElement<{
         }
 
         /** Every mutation ends in a reload, so the pane never has to patch its own copy of the PR. */
-        const runMutation = (mutate: () => Promise<void>) => {
+        function runMutation(mutate: () => Promise<void>) {
             updateState({
                 busy: true,
             });
@@ -829,24 +829,24 @@ export const VirGithubPane = defineElement<{
                         busy: false,
                     });
                 });
-        };
+        }
 
-        const onToggleReaction = (comment: Readonly<GitHubComment>, reaction: GitHubReaction) => {
+        function onToggleReaction(comment: Readonly<GitHubComment>, reaction: GitHubReaction) {
             const existing = comment.reactions.find((group) => group.reaction === reaction);
-            runMutation(() =>
-                setGitHubReaction({
+            runMutation(() => {
+                return setGitHubReaction({
                     subjectId: comment.id,
                     reaction,
                     add: !existing?.viewerHasReacted,
-                }),
-            );
-        };
+                });
+            });
+        }
 
-        const onSubmitReply = (
+        function onSubmitReply(
             event: Readonly<SubmitEvent>,
             target: GitHubCommentTarget,
             subjectId: string,
-        ) => {
+        ) {
             event.preventDefault();
             const form = event.currentTarget;
             if (!(form instanceof HTMLFormElement)) {
@@ -857,70 +857,73 @@ export const VirGithubPane = defineElement<{
                 return;
             }
             form.reset();
-            runMutation(() =>
-                postGitHubComment({
+            runMutation(() => {
+                return postGitHubComment({
                     target,
                     subjectId,
                     body,
-                }),
-            );
-        };
+                });
+            });
+        }
 
         /**
          * Fall back to the raw markdown when GitHub didn't send a rendered body (an older cached
          * response, or a body that renders to nothing), so a comment is never silently blank.
          */
-        const renderMarkdown = ({
-            bodyHtml,
-            body,
-        }: Readonly<{bodyHtml: string; body: string}>) => html`
-            <div class="markdown">
-                ${bodyHtml ? unsafeHTML(sanitizeGitHubHtml(bodyHtml)) : body}
-            </div>
-        `;
+        function renderMarkdown({bodyHtml, body}: Readonly<{bodyHtml: string; body: string}>) {
+            return html`
+                <div class="markdown">
+                    ${bodyHtml ? unsafeHTML(sanitizeGitHubHtml(bodyHtml)) : body}
+                </div>
+            `;
+        }
 
-        const renderReactions = (comment: Readonly<GitHubComment>) => html`
-            <div class="reactions">
-                ${comment.reactions.map(
-                    (group) => html`
-                        <button
-                            type="button"
-                            class="reaction"
-                            ?data-mine=${group.viewerHasReacted}
-                            ?disabled=${state.busy}
-                            title=${group.viewerHasReacted ? 'Remove your reaction' : 'React'}
-                            ${listen('click', () => onToggleReaction(comment, group.reaction))}
-                        >
-                            ${reactionEmoji[group.reaction]} ${group.count}
-                        </button>
-                    `,
-                )}
-                <${ViraMenuTrigger.assign({
-                    horizontalAnchor: HorizontalAnchor.Left,
-                })}>
-                    <${ViraButton.assign({
-                        buttonSize: ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
-                        text: '+',
-                        isDisabled: state.busy,
+        function renderReactions(comment: Readonly<GitHubComment>) {
+            return html`
+                <div class="reactions">
+                    ${comment.reactions.map((group) => {
+                        return html`
+                            <button
+                                type="button"
+                                class="reaction"
+                                ?data-mine=${group.viewerHasReacted}
+                                ?disabled=${state.busy}
+                                title=${group.viewerHasReacted ? 'Remove your reaction' : 'React'}
+                                ${listen('click', () => onToggleReaction(comment, group.reaction))}
+                            >
+                                ${reactionEmoji[group.reaction]} ${group.count}
+                            </button>
+                        `;
                     })}
-                        slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                        title="Add a reaction"
-                    ></${ViraButton}>
-                    ${renderMenuItemEntries(
-                        allReactions.map((reaction) => {
-                            return {
-                                content: `${reactionEmoji[reaction]} ${reactionNames[reaction]}`,
-                                onClick: () => onToggleReaction(comment, reaction),
-                            };
-                        }),
-                    )}
-                </${ViraMenuTrigger}>
-            </div>
-        `;
+                    <${ViraMenuTrigger.assign({
+                        horizontalAnchor: HorizontalAnchor.Left,
+                    })}>
+                        <${ViraButton.assign({
+                            buttonSize: ViraSize.Small,
+                            buttonEmphasis: ViraEmphasis.Subtle,
+                            color: ViraColorVariant.Neutral,
+                            text: '+',
+                            isDisabled: state.busy,
+                        })}
+                            slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                            title="Add a reaction"
+                        ></${ViraButton}>
+                        ${renderMenuItemEntries(
+                            allReactions.map((reaction) => {
+                                return {
+                                    content: `${reactionEmoji[reaction]} ${reactionNames[reaction]}`,
+                                    onClick() {
+                                        return onToggleReaction(comment, reaction);
+                                    },
+                                };
+                            }),
+                        )}
+                    </${ViraMenuTrigger}>
+                </div>
+            `;
+        }
 
-        const renderCommentHeader = ({
+        function renderCommentHeader({
             author,
             authorAvatarUrl,
             createdAt,
@@ -928,30 +931,34 @@ export const VirGithubPane = defineElement<{
             author: string;
             authorAvatarUrl: string;
             createdAt: string;
-        }>) => html`
-            <div class="comment-header">
-                ${authorAvatarUrl
-                    ? html`
-                          <img class="avatar" src=${authorAvatarUrl} alt="" />
-                      `
-                    : ''}
-                <span class="comment-author">${author}</span>
-                <span>${relativeTime(createdAt)}</span>
-            </div>
-        `;
+        }>) {
+            return html`
+                <div class="comment-header">
+                    ${authorAvatarUrl
+                        ? html`
+                              <img class="avatar" src=${authorAvatarUrl} alt="" />
+                          `
+                        : ''}
+                    <span class="comment-author">${author}</span>
+                    <span>${relativeTime(createdAt)}</span>
+                </div>
+            `;
+        }
 
-        const renderComment = (comment: Readonly<GitHubComment>) => html`
-            <div class="comment">
-                ${renderCommentHeader(comment)} ${renderMarkdown(comment)}
-                ${renderReactions(comment)}
-            </div>
-        `;
+        function renderComment(comment: Readonly<GitHubComment>) {
+            return html`
+                <div class="comment">
+                    ${renderCommentHeader(comment)} ${renderMarkdown(comment)}
+                    ${renderReactions(comment)}
+                </div>
+            `;
+        }
 
         /**
          * `leadingAction` sits to the submit button's left in the actions row — that's where a
          * thread's resolve control goes, so the two things you'd do to a thread are side by side.
          */
-        const renderReplyForm = ({
+        function renderReplyForm({
             target,
             subjectId,
             placeholder,
@@ -963,102 +970,108 @@ export const VirGithubPane = defineElement<{
             placeholder: string;
             submitLabel: string;
             leadingAction?: HtmlInterpolation | undefined;
-        }>) => html`
-            <form
-                class="reply-form"
-                ${listen('submit', (event) => onSubmitReply(event, target, subjectId))}
-            >
-                <textarea
-                    name=${replyFieldName}
-                    placeholder=${placeholder}
-                    ?disabled=${state.busy}
-                ></textarea>
-                <div class="reply-actions">
-                    ${leadingAction || ''}
-                    <${ViraButton.assign({
-                        buttonSize: ViraSize.Small,
-                        color: ViraColorVariant.Info,
-                        text: submitLabel,
-                        isDisabled: state.busy,
-                    })}
-                        type="submit"
-                    ></${ViraButton}>
-                </div>
-            </form>
-        `;
-
-        const renderThread = (thread: Readonly<GitHubReviewThread>) => html`
-            <div class="card" ?data-resolved=${thread.isResolved}>
-                <div class="thread-header">
-                    <span class="thread-path">
-                        ${thread.path}${thread.line == undefined ? '' : `:${thread.line}`}
-                    </span>
-                    ${thread.isOutdated
-                        ? html`
-                              <span class="chip">Outdated</span>
-                          `
-                        : ''}
-                </div>
-                ${thread.diffHunk
-                    ? html`
-                          <pre class="diff-hunk">${thread.diffHunk}</pre>
-                      `
-                    : ''}
-                ${thread.comments.map((comment) => renderComment(comment))}
-                ${renderReplyForm({
-                    target: GitHubCommentTarget.Thread,
-                    subjectId: thread.id,
-                    placeholder: 'Reply…',
-                    submitLabel: 'Reply',
-                    leadingAction: html`
+        }>) {
+            return html`
+                <form
+                    class="reply-form"
+                    ${listen('submit', (event) => onSubmitReply(event, target, subjectId))}
+                >
+                    <textarea
+                        name=${replyFieldName}
+                        placeholder=${placeholder}
+                        ?disabled=${state.busy}
+                    ></textarea>
+                    <div class="reply-actions">
+                        ${leadingAction || ''}
                         <${ViraButton.assign({
                             buttonSize: ViraSize.Small,
-                            buttonEmphasis: ViraEmphasis.Subtle,
-                            color: thread.isResolved
-                                ? ViraColorVariant.Neutral
-                                : ViraColorVariant.Info,
-                            text: thread.isResolved ? 'Unresolve' : 'Resolve',
-                            isDisabled: state.busy || !thread.viewerCanResolve,
+                            color: ViraColorVariant.Info,
+                            text: submitLabel,
+                            isDisabled: state.busy,
                         })}
-                            ${listen('click', () =>
-                                runMutation(() =>
-                                    setGitHubThreadResolved({
-                                        threadId: thread.id,
-                                        resolved: !thread.isResolved,
-                                    }),
-                                ),
-                            )}
+                            type="submit"
                         ></${ViraButton}>
-                    `,
-                })}
-            </div>
-        `;
+                    </div>
+                </form>
+            `;
+        }
 
-        const renderCheck = (checkRun: Readonly<GitHubCheck>) => html`
-            <a
-                class="check-row"
-                href=${checkRun.url || undefined}
-                target="_blank"
-                rel="noopener noreferrer"
-                title=${checkRun.description || checkRun.name}
-            >
-                <${ViraIcon.assign({
-                    icon: checkIcons[checkRun.state],
-                })}
-                    style=${css`
-                        color: ${checkColors[checkRun.state]};
-                    `}
-                ></${ViraIcon}>
-                <span class="check-name">
-                    ${checkRun.workflow
+        function renderThread(thread: Readonly<GitHubReviewThread>) {
+            return html`
+                <div class="card" ?data-resolved=${thread.isResolved}>
+                    <div class="thread-header">
+                        <span class="thread-path">
+                            ${thread.path}${thread.line == undefined ? '' : `:${thread.line}`}
+                        </span>
+                        ${thread.isOutdated
+                            ? html`
+                                  <span class="chip">Outdated</span>
+                              `
+                            : ''}
+                    </div>
+                    ${thread.diffHunk
                         ? html`
-                              <span class="check-workflow">${checkRun.workflow} /</span>
+                              <pre class="diff-hunk">${thread.diffHunk}</pre>
                           `
                         : ''}
-                    ${checkRun.name}
-                </span>
-            </a>
-        `;
+                    ${thread.comments.map((comment) => renderComment(comment))}
+                    ${renderReplyForm({
+                        target: GitHubCommentTarget.Thread,
+                        subjectId: thread.id,
+                        placeholder: 'Reply…',
+                        submitLabel: 'Reply',
+                        leadingAction: html`
+                            <${ViraButton.assign({
+                                buttonSize: ViraSize.Small,
+                                buttonEmphasis: ViraEmphasis.Subtle,
+                                color: thread.isResolved
+                                    ? ViraColorVariant.Neutral
+                                    : ViraColorVariant.Info,
+                                text: thread.isResolved ? 'Unresolve' : 'Resolve',
+                                isDisabled: state.busy || !thread.viewerCanResolve,
+                            })}
+                                ${listen('click', () => {
+                                    return runMutation(() => {
+                                        return setGitHubThreadResolved({
+                                            threadId: thread.id,
+                                            resolved: !thread.isResolved,
+                                        });
+                                    });
+                                })}
+                            ></${ViraButton}>
+                        `,
+                    })}
+                </div>
+            `;
+        }
+
+        function renderCheck(checkRun: Readonly<GitHubCheck>) {
+            return html`
+                <a
+                    class="check-row"
+                    href=${checkRun.url || undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title=${checkRun.description || checkRun.name}
+                >
+                    <${ViraIcon.assign({
+                        icon: checkIcons[checkRun.state],
+                    })}
+                        style=${css`
+                            color: ${checkColors[checkRun.state]};
+                        `}
+                    ></${ViraIcon}>
+                    <span class="check-name">
+                        ${checkRun.workflow
+                            ? html`
+                                  <span class="check-workflow">${checkRun.workflow} /</span>
+                              `
+                            : ''}
+                        ${checkRun.name}
+                    </span>
+                </a>
+            `;
+        }
 
         if (state.error) {
             return html`
@@ -1068,7 +1081,7 @@ export const VirGithubPane = defineElement<{
             return html`
                 <div class="message">Loading pull request…</div>
             `;
-        } else if (state.pr === null) {
+        } else if (state.pr == null) {
             return html`
                 <div class="message">This branch has no pull request.</div>
             `;
@@ -1093,10 +1106,9 @@ export const VirGithubPane = defineElement<{
                 };
             }),
             ...pr.reviews
-                .filter(
-                    (review) =>
-                        !pr.reviewRequests.some((request) => request.reviewer === review.author),
-                )
+                .filter((review) => {
+                    return !pr.reviewRequests.some((request) => request.reviewer === review.author);
+                })
                 .map((review) => {
                     return {
                         reviewer: review.author,
@@ -1201,11 +1213,11 @@ export const VirGithubPane = defineElement<{
                                               ? `Hide ${resolvedCount} resolved`
                                               : `Show ${resolvedCount} resolved`,
                                       })}
-                                          ${listen('click', () =>
-                                              updateState({
+                                          ${listen('click', () => {
+                                              return updateState({
                                                   showResolved: !state.showResolved,
-                                              }),
-                                          )}
+                                              });
+                                          })}
                                       ></${ViraButton}>
                                   `
                                 : ''}
@@ -1220,9 +1232,11 @@ export const VirGithubPane = defineElement<{
                             ? repeat(
                                   pr.comments,
                                   (comment) => comment.id,
-                                  (comment) => html`
-                                      <div class="card">${renderComment(comment)}</div>
-                                  `,
+                                  (comment) => {
+                                      return html`
+                                          <div class="card">${renderComment(comment)}</div>
+                                      `;
+                                  },
                               )
                             : html`
                                   <div class="message">No comments yet.</div>
@@ -1240,8 +1254,8 @@ export const VirGithubPane = defineElement<{
                 <div class="reviews-column">
                     <div class="section-header">Reviews</div>
                     ${reviewRows.length
-                        ? reviewRows.map(
-                              ({reviewer, avatarUrl, reviewState}) => html`
+                        ? reviewRows.map(({reviewer, avatarUrl, reviewState}) => {
+                              return html`
                                   <div
                                       class="reviewer"
                                       title=${`${reviewer} ${reviewLabels[reviewState]}`}
@@ -1263,8 +1277,8 @@ export const VirGithubPane = defineElement<{
                                           : ''}
                                       <span class="reviewer-name">${reviewer}</span>
                                   </div>
-                              `,
-                          )
+                              `;
+                          })
                         : html`
                               <div class="message">No reviews yet.</div>
                           `}
@@ -1280,11 +1294,11 @@ export const VirGithubPane = defineElement<{
                                           ? `Hide ${passingChecks.length} passing`
                                           : `Show ${passingChecks.length} passing`,
                                   })}
-                                      ${listen('click', () =>
-                                          updateState({
+                                      ${listen('click', () => {
+                                          return updateState({
                                               showPassingChecks: !state.showPassingChecks,
-                                          }),
-                                      )}
+                                          });
+                                      })}
                                   ></${ViraButton}>
                               `
                             : ''}
@@ -1292,8 +1306,8 @@ export const VirGithubPane = defineElement<{
                     ${sortedChecks.length
                         ? html`
                               <div class="check-summary">
-                                  ${checkCounts.map(
-                                      ({checkState, count}) => html`
+                                  ${checkCounts.map(({checkState, count}) => {
+                                      return html`
                                           <span
                                               class="reviewer-state"
                                               style=${css`
@@ -1305,8 +1319,8 @@ export const VirGithubPane = defineElement<{
                                               })}></${ViraIcon}>
                                               ${count} ${checkLabels[checkState].toLowerCase()}
                                           </span>
-                                      `,
-                                  )}
+                                      `;
+                                  })}
                               </div>
                               ${visibleChecks.map((checkRun) => renderCheck(checkRun))}
                           `

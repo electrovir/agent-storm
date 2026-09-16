@@ -62,10 +62,12 @@ export function diffLines({
 /** Character offset each 1-based line number starts at, including the trailing entry past the end. */
 function toLineStarts(lines: ReadonlyArray<string>): number[] {
     return lines.reduce<number[]>(
-        (starts, line) => [
-            ...starts,
-            (starts.at(-1) ?? 0) + line.length + 1,
-        ],
+        (starts, line) => {
+            return [
+                ...starts,
+                (starts.at(-1) ?? 0) + line.length + 1,
+            ];
+        },
         [0],
     );
 }
@@ -108,31 +110,30 @@ function toCodeMirrorChanges(a: string, b: string): readonly Change[] {
         bLines,
     }).flatMap((change) => {
         if (change.innerChanges?.length) {
-            return change.innerChanges.map(
-                (inner) =>
-                    new Change(
-                        toOffset({
-                            lineStarts: aStarts,
-                            lineNumber: inner.originalRange.startLineNumber,
-                            column: inner.originalRange.startColumn,
-                        }),
-                        toOffset({
-                            lineStarts: aStarts,
-                            lineNumber: inner.originalRange.endLineNumber,
-                            column: inner.originalRange.endColumn,
-                        }),
-                        toOffset({
-                            lineStarts: bStarts,
-                            lineNumber: inner.modifiedRange.startLineNumber,
-                            column: inner.modifiedRange.startColumn,
-                        }),
-                        toOffset({
-                            lineStarts: bStarts,
-                            lineNumber: inner.modifiedRange.endLineNumber,
-                            column: inner.modifiedRange.endColumn,
-                        }),
-                    ),
-            );
+            return change.innerChanges.map((inner) => {
+                return new Change(
+                    toOffset({
+                        lineStarts: aStarts,
+                        lineNumber: inner.originalRange.startLineNumber,
+                        column: inner.originalRange.startColumn,
+                    }),
+                    toOffset({
+                        lineStarts: aStarts,
+                        lineNumber: inner.originalRange.endLineNumber,
+                        column: inner.originalRange.endColumn,
+                    }),
+                    toOffset({
+                        lineStarts: bStarts,
+                        lineNumber: inner.modifiedRange.startLineNumber,
+                        column: inner.modifiedRange.startColumn,
+                    }),
+                    toOffset({
+                        lineStarts: bStarts,
+                        lineNumber: inner.modifiedRange.endLineNumber,
+                        column: inner.modifiedRange.endColumn,
+                    }),
+                );
+            });
         }
         return [
             new Change(

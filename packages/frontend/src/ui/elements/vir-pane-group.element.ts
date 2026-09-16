@@ -517,18 +517,18 @@ export const VirPaneGroup = defineElement<{
         }
 
         /** Replace the local list after any mutation so tab order and names match the server. */
-        const applySessions = (sessions: FolderSessions) => {
+        function applySessions(sessions: FolderSessions) {
             updateState({
                 sessions,
                 sessionsError: undefined,
             });
-        };
+        }
 
-        const reportSessionError = (error: unknown) => {
+        function reportSessionError(error: unknown) {
             updateState({
                 sessionsError: error instanceof Error ? error.message : String(error),
             });
-        };
+        }
 
         function resolveFolderAiId(config: Readonly<Config>) {
             const folderOverrideId = config.folderAiIds.find(
@@ -546,7 +546,7 @@ export const VirPaneGroup = defineElement<{
             );
         }
 
-        const loadAiDefinitions = async () => {
+        async function loadAiDefinitions() {
             try {
                 const config = await getConfig();
                 updateState({
@@ -556,7 +556,7 @@ export const VirPaneGroup = defineElement<{
             } catch (error: unknown) {
                 reportSessionError(error);
             }
-        };
+        }
 
         const currentFolderAiId = state.resolvedFolderAiId || inputs.folderAiId;
 
@@ -564,12 +564,12 @@ export const VirPaneGroup = defineElement<{
          * The AI a tab runs: its own override, else whatever the folder resolved to. Undefined when
          * the definitions haven't loaded yet or the user has defined no AI.
          */
-        const aiForSession = (session: Readonly<SessionMeta>): AiDefinition | undefined => {
+        function aiForSession(session: Readonly<SessionMeta>): AiDefinition | undefined {
             return (
                 state.aiDefinitions.find((definition) => definition.id === session.aiId) ||
                 state.aiDefinitions.find((definition) => definition.id === currentFolderAiId)
             );
-        };
+        }
 
         if (state.loadedAiConfigRevision !== inputs.aiConfigRevision) {
             updateState({
@@ -578,7 +578,7 @@ export const VirPaneGroup = defineElement<{
             void loadAiDefinitions();
         }
 
-        const bumpRestartKey = (kind: PaneKind, sessionId: string) => {
+        function bumpRestartKey(kind: PaneKind, sessionId: string) {
             const key = `${kind}:${sessionId}`;
             updateState({
                 restartKeys: {
@@ -586,10 +586,11 @@ export const VirPaneGroup = defineElement<{
                     [key]: (state.restartKeys[key] || 0) + 1,
                 },
             });
-        };
+        }
 
-        const sessionIndexFor = (kind: PaneKind): number =>
-            kind === PaneKind.Ai ? inputs.aiSessionIndex : inputs.shellSessionIndex;
+        function sessionIndexFor(kind: PaneKind): number {
+            return kind === PaneKind.Ai ? inputs.aiSessionIndex : inputs.shellSessionIndex;
+        }
 
         /**
          * The incoming index is a hint — it comes from the URL, which in turn comes from what this
@@ -603,22 +604,25 @@ export const VirPaneGroup = defineElement<{
             const staleKinds = [
                 PaneKind.Ai,
                 PaneKind.Shell,
-            ].filter(
-                (kind) =>
+            ].filter((kind) => {
+                return (
                     sessionIndexFor(kind) > 1 &&
-                    sessionIndexFor(kind) > (state.sessions?.[kind].length ?? 0),
-            );
+                    sessionIndexFor(kind) > (state.sessions?.[kind].length ?? 0)
+                );
+            });
             staleKinds.forEach((kind) => {
                 dispatch(
                     new events.sessionRequested({
-                        kind,
-                        index: 1,
+                        detail: {
+                            kind,
+                            index: 1,
+                        },
                     }),
                 );
             });
         }
 
-        const onAddSession = (kind: PaneKind) => {
+        function onAddSession(kind: PaneKind) {
             void createSession({
                 folder: inputs.folder,
                 kind,
@@ -628,15 +632,17 @@ export const VirPaneGroup = defineElement<{
                     /** Jump to the session just created — it's appended, so it's the last one. */
                     dispatch(
                         new events.sessionRequested({
-                            kind,
-                            index: sessions[kind].length,
+                            detail: {
+                                kind,
+                                index: sessions[kind].length,
+                            },
                         }),
                     );
                 })
                 .catch(reportSessionError);
-        };
+        }
 
-        const onRenameSession = (kind: PaneKind, session: Readonly<SessionMeta>, index: number) => {
+        function onRenameSession(kind: PaneKind, session: Readonly<SessionMeta>, index: number) {
             /**
              * A native prompt rather than a modal: it's the smallest thing that does the job, and
              * `vir-terminal` already uses `window.prompt` for its paste fallback. Worth upgrading
@@ -657,9 +663,9 @@ export const VirPaneGroup = defineElement<{
             })
                 .then(applySessions)
                 .catch(reportSessionError);
-        };
+        }
 
-        const onRestartSession = (kind: PaneKind, session: Readonly<SessionMeta>) => {
+        function onRestartSession(kind: PaneKind, session: Readonly<SessionMeta>) {
             void restartPane({
                 folder: inputs.folder,
                 kind,
@@ -667,7 +673,7 @@ export const VirPaneGroup = defineElement<{
             })
                 .then(() => bumpRestartKey(kind, session.id))
                 .catch(reportSessionError);
-        };
+        }
 
         function openSessionAiPicker({
             kind,
@@ -690,7 +696,7 @@ export const VirPaneGroup = defineElement<{
          * Save a tab's AI, then restart it: a running pane keeps whatever command it was spawned
          * with, so without the restart the new avatar would disagree with what's actually running.
          */
-        const onChangeSessionAi = (aiId: string) => {
+        function onChangeSessionAi(aiId: string) {
             const target = state.changeAiSession;
             if (!target || state.changeAiSubmitting) {
                 return;
@@ -723,9 +729,9 @@ export const VirPaneGroup = defineElement<{
                     });
                     reportSessionError(error);
                 });
-        };
+        }
 
-        const onCloseSession = (kind: PaneKind, session: Readonly<SessionMeta>, index: number) => {
+        function onCloseSession(kind: PaneKind, session: Readonly<SessionMeta>, index: number) {
             void closeSession({
                 folder: inputs.folder,
                 kind,
@@ -748,20 +754,22 @@ export const VirPaneGroup = defineElement<{
                     );
                     dispatch(
                         new events.sessionRequested({
-                            kind,
-                            index: nextIndex,
+                            detail: {
+                                kind,
+                                index: nextIndex,
+                            },
                         }),
                     );
                 })
                 .catch(reportSessionError);
-        };
+        }
 
         /**
          * Per-tab menu. Restart / reset live here rather than on the folder's sidebar row because
          * with several sessions per pane, "restart the AI" is only meaningful against a specific
          * one.
          */
-        const buildSessionMenuEntries = ({
+        function buildSessionMenuEntries({
             kind,
             session,
             index,
@@ -771,7 +779,7 @@ export const VirPaneGroup = defineElement<{
             session: Readonly<SessionMeta>;
             index: number;
             sessionCount: number;
-        }>): ReadonlyArray<ViraMenuItemEntry> => {
+        }>): ReadonlyArray<ViraMenuItemEntry> {
             /**
              * Annotated so each literal widens to `ViraMenuItemEntry` (whose `content` is an
              * `HtmlInterpolation`, not a `string`) before the conditional entries are filtered
@@ -780,39 +788,46 @@ export const VirPaneGroup = defineElement<{
             const entries: ReadonlyArray<ViraMenuItemEntry | undefined> = [
                 {
                     content: 'Rename',
-                    onClick: () => onRenameSession(kind, session, index),
+                    onClick() {
+                        return onRenameSession(kind, session, index);
+                    },
                 },
                 {
                     content: 'Restart',
-                    onClick: () => onRestartSession(kind, session),
+                    onClick() {
+                        return onRestartSession(kind, session);
+                    },
                 },
                 kind === PaneKind.Ai
                     ? {
                           content: 'Change AI',
-                          onClick: () =>
-                              openSessionAiPicker({
+                          onClick() {
+                              return openSessionAiPicker({
                                   kind,
                                   sessionId: session.id,
-                              }),
+                              });
+                          },
                       }
                     : undefined,
                 /** The last remaining tab can't be closed — a pane with no tabs has nothing to show. */
                 sessionCount > 1
                     ? {
                           content: 'Close',
-                          onClick: () => onCloseSession(kind, session, index),
+                          onClick() {
+                              return onCloseSession(kind, session, index);
+                          },
                       }
                     : undefined,
             ];
             return entries.filter((entry): entry is ViraMenuItemEntry => !!entry);
-        };
+        }
 
         /**
          * Activity slot for one tab: a spinner while the pane's process is producing output, empty
          * space otherwise. The element is always rendered so the tab doesn't change width when
          * activity starts. `floating` picks the placement for a pane with no tab strip to hold it.
          */
-        const renderActivitySpinner = (kind: PaneKind, session: Readonly<SessionMeta>) => {
+        function renderActivitySpinner(kind: PaneKind, session: Readonly<SessionMeta>) {
             const isBusy =
                 inputs.sessionStatuses.find(
                     (entry) => entry.kind === kind && entry.sessionId === session.id,
@@ -828,28 +843,30 @@ export const VirPaneGroup = defineElement<{
                     })}></${ViraIcon}>
                 </span>
             `;
-        };
+        }
 
         /**
          * Sole "new session" affordance for a pane showing one session, where the tab strip (and so
          * its `+`) is hidden.
          */
-        const renderFloatingAddSession = (kind: PaneKind) => html`
-            <span class="session-add-floating">
-                <${ViraButton.assign({
-                    buttonSize: ViraSize.Small,
-                    buttonEmphasis: ViraEmphasis.Subtle,
-                    color: ViraColorVariant.Neutral,
-                    text: '+',
-                })}
-                    title="New session"
-                    ${listen('click', () => onAddSession(kind))}
-                ></${ViraButton}>
-            </span>
-        `;
+        function renderFloatingAddSession(kind: PaneKind) {
+            return html`
+                <span class="session-add-floating">
+                    <${ViraButton.assign({
+                        buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        color: ViraColorVariant.Neutral,
+                        text: '+',
+                    })}
+                        title="New session"
+                        ${listen('click', () => onAddSession(kind))}
+                    ></${ViraButton}>
+                </span>
+            `;
+        }
 
         /** Nothing renders until the definitions load, which keeps the strip from jumping around. */
-        const renderSessionAvatar = (session: Readonly<SessionMeta>, sizePx: number) => {
+        function renderSessionAvatar(session: Readonly<SessionMeta>, sizePx: number) {
             const definition = aiForSession(session);
             return definition
                 ? html`
@@ -862,80 +879,81 @@ export const VirPaneGroup = defineElement<{
                       ></${VirAiAvatar}>
                   `
                 : '';
-        };
+        }
 
-        const renderSessionBar = (
-            kind: PaneKind,
-            sessions: ReadonlyArray<Readonly<SessionMeta>>,
-        ) => {
+        function renderSessionBar(kind: PaneKind, sessions: ReadonlyArray<Readonly<SessionMeta>>) {
             const activeSession = sessionAtIndex(sessions, sessionIndexFor(kind));
             return html`
                 <div class="session-bar" role="tablist" aria-label="Sessions">
                     ${repeat(
                         sessions,
                         (session) => session.id,
-                        (session, index) => html`
-                            <div
-                                class="session-tab"
-                                role="tab"
-                                ?data-selected=${session.id === activeSession?.id}
-                                aria-selected=${session.id === activeSession?.id}
-                                title=${session.name || `Session ${index + 1}`}
-                                ${listen('click', () =>
-                                    dispatch(
-                                        new events.sessionRequested({
-                                            kind,
-                                            index: index + 1,
-                                        }),
-                                    ),
-                                )}
-                            >
-                                ${renderActivitySpinner(kind, session)}
-                                ${kind === PaneKind.Ai ? renderSessionAvatar(session, 12) : ''}
-                                <span class="session-tab-label">
-                                    ${sessionLabel(session, index)}
-                                </span>
-                                <span ${listen('click', (event) => event.stopPropagation())}>
-                                    <${ViraMenuTrigger.assign({
-                                        /*
-                                         * Auto, not Right: a right-anchored menu grows leftward,
-                                         * and the first tab sits at the pane's left edge, so the
-                                         * menu ran outside the pane and `overflow: hidden` on
-                                         * `.pane` cut it off. Auto flips to grow rightward when
-                                         * there's no room on the left.
-                                         */
-                                        horizontalAnchor: HorizontalAnchor.Auto,
-                                        /*
-                                         * Without this the pop-up is capped at the width of the
-                                         * overflow container it opens inside, which here is the
-                                         * one-character-wide session tab — every label came out
-                                         * clipped to its first letter.
-                                         */
-                                        ignoreMaxWidth: true,
-                                    })}>
-                                        <${ViraButton.assign({
-                                            buttonSize: ViraSize.Small,
-                                            buttonEmphasis: ViraEmphasis.Subtle,
-                                            color: ViraColorVariant.Neutral,
-                                            icon: sessionMenuIcon,
-                                        })}
-                                            slot=${ViraMenuTrigger.slotNames[
-                                                'vira-menu-trigger-trigger'
-                                            ]}
-                                            title="Session actions"
-                                        ></${ViraButton}>
-                                        ${renderMenuItemEntries(
-                                            buildSessionMenuEntries({
-                                                kind,
-                                                session,
-                                                index,
-                                                sessionCount: sessions.length,
+                        (session, index) => {
+                            return html`
+                                <div
+                                    class="session-tab"
+                                    role="tab"
+                                    ?data-selected=${session.id === activeSession?.id}
+                                    aria-selected=${session.id === activeSession?.id}
+                                    title=${session.name || `Session ${index + 1}`}
+                                    ${listen('click', () => {
+                                        return dispatch(
+                                            new events.sessionRequested({
+                                                detail: {
+                                                    kind,
+                                                    index: index + 1,
+                                                },
                                             }),
-                                        )}
-                                    </${ViraMenuTrigger}>
-                                </span>
-                            </div>
-                        `,
+                                        );
+                                    })}
+                                >
+                                    ${renderActivitySpinner(kind, session)}
+                                    ${kind === PaneKind.Ai ? renderSessionAvatar(session, 12) : ''}
+                                    <span class="session-tab-label">
+                                        ${sessionLabel(session, index)}
+                                    </span>
+                                    <span ${listen('click', (event) => event.stopPropagation())}>
+                                        <${ViraMenuTrigger.assign({
+                                            /*
+                                             * Auto, not Right: a right-anchored menu grows leftward,
+                                             * and the first tab sits at the pane's left edge, so the
+                                             * menu ran outside the pane and `overflow: hidden` on
+                                             * `.pane` cut it off. Auto flips to grow rightward when
+                                             * there's no room on the left.
+                                             */
+                                            horizontalAnchor: HorizontalAnchor.Auto,
+                                            /*
+                                             * Without this the pop-up is capped at the width of the
+                                             * overflow container it opens inside, which here is the
+                                             * one-character-wide session tab — every label came out
+                                             * clipped to its first letter.
+                                             */
+                                            ignoreMaxWidth: true,
+                                        })}>
+                                            <${ViraButton.assign({
+                                                buttonSize: ViraSize.Small,
+                                                buttonEmphasis: ViraEmphasis.Subtle,
+                                                color: ViraColorVariant.Neutral,
+                                                icon: sessionMenuIcon,
+                                            })}
+                                                slot=${ViraMenuTrigger.slotNames[
+                                                    'vira-menu-trigger-trigger'
+                                                ]}
+                                                title="Session actions"
+                                            ></${ViraButton}>
+                                            ${renderMenuItemEntries(
+                                                buildSessionMenuEntries({
+                                                    kind,
+                                                    session,
+                                                    index,
+                                                    sessionCount: sessions.length,
+                                                }),
+                                            )}
+                                        </${ViraMenuTrigger}>
+                                    </span>
+                                </div>
+                            `;
+                        },
                     )}
                     <${ViraButton.assign({
                         buttonSize: ViraSize.Small,
@@ -949,7 +967,7 @@ export const VirPaneGroup = defineElement<{
                     ></${ViraButton}>
                 </div>
             `;
-        };
+        }
 
         /**
          * Mount exactly one terminal per pane: the active session's. Inactive sessions keep their
@@ -959,10 +977,10 @@ export const VirPaneGroup = defineElement<{
          * `VirTerminal` opens its socket in `onDomCreated`, which never re-runs for a reused
          * element.
          */
-        const renderPaneTerminal = (
+        function renderPaneTerminal(
             kind: PaneKind,
             sessions: ReadonlyArray<Readonly<SessionMeta>>,
-        ) => {
+        ) {
             const session = sessionAtIndex(sessions, sessionIndexFor(kind));
             if (!session) {
                 return '';
@@ -973,23 +991,25 @@ export const VirPaneGroup = defineElement<{
             return repeat(
                 [mountKey],
                 (key) => key,
-                () => html`
-                    <${VirTerminal.assign({
-                        folder: inputs.folder,
-                        kind,
-                        sessionId: session.id,
-                        active: inputs.active,
-                        showAccessoryKeys: inputs.screenSize === ScreenSize.Mobile,
-                    })}></${VirTerminal}>
-                `,
+                () => {
+                    return html`
+                        <${VirTerminal.assign({
+                            folder: inputs.folder,
+                            kind,
+                            sessionId: session.id,
+                            active: inputs.active,
+                            showAccessoryKeys: inputs.screenSize === ScreenSize.Mobile,
+                        })}></${VirTerminal}>
+                    `;
+                },
             );
-        };
+        }
 
         const split = clampSplit(state.split);
         host.style.setProperty('--ai-grow', String(split));
         host.style.setProperty('--shell-grow', String(1 - split));
 
-        const onDividerPointerDown = (event: PointerEvent) => {
+        function onDividerPointerDown(event: PointerEvent) {
             event.preventDefault();
             /**
              * Pointer Events unify mouse, touch, and pen so the same handler covers desktop and
@@ -1013,7 +1033,7 @@ export const VirPaneGroup = defineElement<{
                 dragging: true,
             });
 
-            const onMove = (moveEvent: PointerEvent) => {
+            function onMove(moveEvent: PointerEvent) {
                 if (moveEvent.pointerId !== event.pointerId) {
                     return;
                 }
@@ -1025,9 +1045,9 @@ export const VirPaneGroup = defineElement<{
                 updateState({
                     split: latestSplit,
                 });
-            };
+            }
 
-            const onUp = (upEvent: PointerEvent) => {
+            function onUp(upEvent: PointerEvent) {
                 if (upEvent.pointerId !== event.pointerId) {
                     return;
                 }
@@ -1040,19 +1060,19 @@ export const VirPaneGroup = defineElement<{
                     dragging: false,
                 });
                 localStorageClient.paneSplit.write(latestSplit);
-            };
+            }
 
             window.addEventListener('pointermove', onMove);
             window.addEventListener('pointerup', onUp);
             window.addEventListener('pointercancel', onUp);
-        };
+        }
 
-        const onDividerDoubleClick = () => {
+        function onDividerDoubleClick() {
             updateState({
                 split: paneSplit.default,
             });
             localStorageClient.paneSplit.write(paneSplit.default);
-        };
+        }
 
         /**
          * `focusin` bubbles through the shadow boundary (composed events), so xterm's hidden
@@ -1173,9 +1193,13 @@ export const VirPaneGroup = defineElement<{
             ...githubTabButtons,
         ];
 
-        const requestTab = (tab: FrontendTab) => {
-            dispatch(new events.tabRequested(tab));
-        };
+        function requestTab(tab: FrontendTab) {
+            dispatch(
+                new events.tabRequested({
+                    detail: tab,
+                }),
+            );
+        }
 
         return html`
             ${isMobile
@@ -1186,8 +1210,8 @@ export const VirPaneGroup = defineElement<{
                   `
                 : ''}
             <div class="tab-bar" role="tablist" ?data-mobile=${isMobile}>
-                ${tabButtons.map(
-                    ({label, tab, isActive}) => html`
+                ${tabButtons.map(({label, tab, isActive}) => {
+                    return html`
                         <button
                             type="button"
                             class="tab"
@@ -1198,8 +1222,8 @@ export const VirPaneGroup = defineElement<{
                         >
                             ${label}
                         </button>
-                    `,
-                )}
+                    `;
+                })}
             </div>
             <div class="body">
                 ${state.diffMounted
@@ -1229,11 +1253,11 @@ export const VirPaneGroup = defineElement<{
                         class="pane ai-pane"
                         ?data-hidden=${!showAiPane}
                         data-pane-focused=${aiFocused ? 'true' : 'false'}
-                        ${listen('focusin', () =>
-                            updateState({
+                        ${listen('focusin', () => {
+                            return updateState({
                                 focusedKind: PaneKind.Ai,
-                            }),
-                        )}
+                            });
+                        })}
                     >
                         ${state.sessions && state.sessions.ai.length > 1
                             ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
@@ -1267,25 +1291,25 @@ export const VirPaneGroup = defineElement<{
                         inheritedName: folderAiName,
                         submitting: state.changeAiSubmitting,
                     })}
-                        ${listen(VirAiPickerModal.events.closeRequested, () =>
-                            updateState({
+                        ${listen(VirAiPickerModal.events.closeRequested, () => {
+                            return updateState({
                                 changeAiSession: undefined,
                                 changeAiSubmitting: false,
-                            }),
-                        )}
-                        ${listen(VirAiPickerModal.events.aiSaveRequested, (event) =>
-                            onChangeSessionAi(event.detail),
-                        )}
+                            });
+                        })}
+                        ${listen(VirAiPickerModal.events.aiSaveRequested, (event) => {
+                            return onChangeSessionAi(event.detail);
+                        })}
                     ></${VirAiPickerModal}>
                     <div
                         class="pane shell-pane"
                         ?data-hidden=${!showShellPane}
                         data-pane-focused=${shellFocused ? 'true' : 'false'}
-                        ${listen('focusin', () =>
-                            updateState({
+                        ${listen('focusin', () => {
+                            return updateState({
                                 focusedKind: PaneKind.Shell,
-                            }),
-                        )}
+                            });
+                        })}
                     >
                         ${state.sessions && state.sessions.shell.length > 1
                             ? renderSessionBar(PaneKind.Shell, state.sessions.shell)

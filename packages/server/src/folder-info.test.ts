@@ -15,7 +15,9 @@ const rootPath = '/repos/root';
 const worktreePath = '/repos/root/branch-a';
 
 /** No pane anywhere, which is the interesting case: every decision falls to config. */
-const noLivePanes = () => PaneStatus.None;
+function noLivePanes() {
+    return PaneStatus.None;
+}
 
 const noPrHistory: ReadonlySet<string> = new Set();
 
@@ -87,8 +89,11 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
     it('polls a never-PR repo while it is active, so a first PR can be discovered', () => {
         const ttlByRepo = computeRepoPrRefreshTtlByRepo({
             targets: [soloRepoTarget()],
-            statusLookup: (folder, kind) =>
-                folder === repoPath && kind === PaneKind.Ai ? PaneStatus.Idle : PaneStatus.None,
+            statusLookup(folder, kind) {
+                return folder === repoPath && kind === PaneKind.Ai
+                    ? PaneStatus.Idle
+                    : PaneStatus.None;
+            },
             repos: [staleRepoConfig],
             onlyShowRecent: false,
             everHadPrPaths: noPrHistory,
@@ -129,7 +134,9 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
     it('makes a whole worktree group hot when any one of its folders is live', () => {
         const ttlByRepo = computeRepoPrRefreshTtlByRepo({
             targets: worktreeTargets(),
-            statusLookup: (folder) => (folder === worktreePath ? PaneStatus.Busy : PaneStatus.None),
+            statusLookup(folder) {
+                return folder === worktreePath ? PaneStatus.Busy : PaneStatus.None;
+            },
             repos: [],
             onlyShowRecent: false,
             everHadPrPaths: noPrHistory,

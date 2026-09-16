@@ -20,7 +20,9 @@ export function foldWhitespaceOnlyChanges({
 }>): string {
     const oldLines = oldContent.split('\n');
     const newLines = newContent.split('\n');
-    const normalize = (line: string) => line.replace(/\s+/g, '');
+    function normalize(line: string) {
+        return line.replace(/\s+/g, '');
+    }
     const changes = diffLines({
         aLines: oldLines.map(normalize),
         bLines: newLines.map(normalize),
@@ -42,14 +44,14 @@ export function foldWhitespaceOnlyChanges({
         };
     });
     const foldedByLine = new Map<number, string>(
-        alignedRuns.flatMap(({fromA, fromB, length}) =>
-            newLines.slice(fromB, fromB + length).map((line, offset) => {
+        alignedRuns.flatMap(({fromA, fromB, length}) => {
+            return newLines.slice(fromB, fromB + length).map((line, offset) => {
                 return [
                     fromA + offset,
                     line,
                 ] as const;
-            }),
-        ),
+            });
+        }),
     );
     return oldLines.map((line, index) => foldedByLine.get(index) ?? line).join('\n');
 }
@@ -208,12 +210,12 @@ export function toDiffHunks({
             bLines: newLines,
         }),
     )
-        .map((group) =>
-            toHunk({
+        .map((group) => {
+            return toHunk({
                 group,
                 oldLines,
                 newLines,
-            }),
-        )
+            });
+        })
         .filter(check.isTruthy);
 }

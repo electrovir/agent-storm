@@ -181,11 +181,12 @@ export function migrateAiConfig(config: Readonly<Config & LegacyAiConfig>): Conf
         }),
     ];
     const definitions = legacyPairs.reduce<AiDefinition[]>((kept, pair) => {
-        const alreadyKept = kept.some(
-            (definition) =>
+        const alreadyKept = kept.some((definition) => {
+            return (
                 definition.resumeSessionCommand === pair.resumeSessionCommand &&
-                definition.newSessionCommand === pair.newSessionCommand,
-        );
+                definition.newSessionCommand === pair.newSessionCommand
+            );
+        });
         if (alreadyKept) {
             return kept;
         }
@@ -202,12 +203,16 @@ export function migrateAiConfig(config: Readonly<Config & LegacyAiConfig>): Conf
             },
         ];
     }, []);
-    const findPairId = (pair: Readonly<Omit<AiDefinition, 'id' | 'name'>>): string =>
-        definitions.find(
-            (definition) =>
-                definition.resumeSessionCommand === pair.resumeSessionCommand &&
-                definition.newSessionCommand === pair.newSessionCommand,
-        )?.id || '';
+    function findPairId(pair: Readonly<Omit<AiDefinition, 'id' | 'name'>>): string {
+        return (
+            definitions.find((definition) => {
+                return (
+                    definition.resumeSessionCommand === pair.resumeSessionCommand &&
+                    definition.newSessionCommand === pair.newSessionCommand
+                );
+            })?.id || ''
+        );
+    }
     const defaultAiId = findPairId({
         resumeSessionCommand: globalResume,
         newSessionCommand: globalNewSession,

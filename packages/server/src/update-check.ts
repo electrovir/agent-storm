@@ -1,4 +1,4 @@
-// cspell:words ASKPASS
+// cspell:words askpass
 
 import {type UpdateStatus} from '@agent-storm/common';
 import {execFile} from 'node:child_process';

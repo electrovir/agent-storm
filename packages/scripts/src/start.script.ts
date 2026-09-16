@@ -1,4 +1,4 @@
-// cspell:words libexec, logd, Pids
+// cspell:words libexec logd pids
 
 /**
  * Sweeps up orphan processes from any prior `npm start` (see {@link killPriorInstances}), then
@@ -86,12 +86,15 @@ function killPriorInstances(): void {
                 command: trimmed.slice(separatorIndex + 1).trimStart(),
             };
         },
-        (entry): entry is {pid: number; command: string} =>
-            entry != undefined &&
-            entry.pid !== process.pid &&
-            entry.command.includes(monorepoRoot) &&
-            orphanIndicators.some((indicator) => entry.command.includes(indicator)) &&
-            !orphanExclusions.some((exclusion) => entry.command.includes(exclusion)),
+        (entry): entry is {pid: number; command: string} => {
+            return (
+                entry != undefined &&
+                entry.pid !== process.pid &&
+                entry.command.includes(monorepoRoot) &&
+                orphanIndicators.some((indicator) => entry.command.includes(indicator)) &&
+                !orphanExclusions.some((exclusion) => entry.command.includes(exclusion))
+            );
+        },
     ).map((entry) => entry.pid);
 
     if (orphanPids.length === 0) {

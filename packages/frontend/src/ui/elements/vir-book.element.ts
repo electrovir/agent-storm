@@ -1,7 +1,7 @@
 import {BookMainRoute, ElementBookApp} from 'element-book';
 import {css, defineElement, html, listen} from 'element-vir';
 import {router} from '../../util/router.js';
-import {buttonsPage} from './buttons.book-page.js';
+import {buttonsPage} from './buttons.book.js';
 
 export const VirBook = defineElement<{
     subPaths: ReadonlyArray<string>;

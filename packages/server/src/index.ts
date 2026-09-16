@@ -149,7 +149,7 @@ const frontendPort = Number(process.env.FRONTEND_PORT) || undefined;
  * which accepts any origin (the auth secret is still the real boundary).
  */
 const clientOriginRequirement: OriginRequirement | undefined =
-    frontendPort === undefined
+    frontendPort == undefined
         ? undefined
         : (origin) => {
               if (!origin) {
@@ -631,14 +631,14 @@ const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint,
         const config = await loadConfig().catch(() => undefined);
         const repoIndex = config?.repos.findIndex((repo) => repo.path === repoPath) ?? -1;
         if (config && repoIndex !== -1) {
-            const updatedRepos = config.repos.map((repo, index) =>
-                index === repoIndex
+            const updatedRepos = config.repos.map((repo, index) => {
+                return index === repoIndex
                     ? {
                           ...repo,
                           lastInteractedAtMs: Date.now(),
                       }
-                    : repo,
-            );
+                    : repo;
+            });
             await saveConfig({
                 ...config,
                 repos: updatedRepos,
@@ -670,9 +670,9 @@ const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
         const config = await loadConfig().catch(() => undefined);
         const repoIndex = config?.repos.findIndex((repo) => repo.path === repoPath) ?? -1;
         if (config && repoIndex !== -1) {
-            const updatedRepos = config.repos.map((repo, index) =>
-                index === repoIndex ? omitObjectKeys(repo, ['lastInteractedAtMs']) : repo,
-            );
+            const updatedRepos = config.repos.map((repo, index) => {
+                return index === repoIndex ? omitObjectKeys(repo, ['lastInteractedAtMs']) : repo;
+            });
             await saveConfig({
                 ...config,
                 repos: updatedRepos,

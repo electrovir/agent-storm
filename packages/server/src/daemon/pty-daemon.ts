@@ -59,16 +59,16 @@ function handleAttach({
     aiCmd: string | undefined;
     scrollbackLimit: number | undefined;
 }>): void {
-    const onData = (data: string) => {
+    function onData(data: string) {
         socket.write(encodeDataFrame(data));
-    };
-    const onExit = (exitCode: number | undefined) => {
+    }
+    function onExit(exitCode: number | undefined) {
         const notification: ExitNotification = {
             type: 'exit',
             exitCode,
         };
         socket.write(encodeControlFrame(notification));
-    };
+    }
     const {isNew, isRunning, scrollback, setSize, detach} = attachPane({
         folder,
         kind,
@@ -102,9 +102,9 @@ function handleAttach({
             setSize(parsed.cols, parsed.rows);
         });
     });
-    const cleanup = () => {
+    function cleanup() {
         detach();
-    };
+    }
     socket.on('close', cleanup);
     socket.on('error', (error) => {
         log(`socket error on attach: ${error.message}`);
@@ -120,7 +120,7 @@ const server = createServer((socket) => {
         log(`socket error: ${error.message}`);
     });
 
-    const handshakeHandler = (chunk: Buffer | string) => {
+    function handshakeHandler(chunk: Buffer | string) {
         const frames = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         const controlFrame = frames.find((frame) => frame.type === FrameType.Control);
         if (!controlFrame || handshakeSeen) {
@@ -212,7 +212,7 @@ const server = createServer((socket) => {
              */
             setTimeout(() => forceShutdown('shutdown command'), 100);
         }
-    };
+    }
 
     socket.on('data', handshakeHandler);
 });

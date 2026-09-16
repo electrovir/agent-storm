@@ -112,7 +112,11 @@ export const VirMainTabs = defineElement<{
                             ?data-selected=${isActive}
                             aria-selected=${isActive}
                             ${listen('click', () => {
-                                dispatch(new events.tabRequested(tab));
+                                dispatch(
+                                    new events.tabRequested({
+                                        detail: tab,
+                                    }),
+                                );
                             })}
                         >
                             <span class="label">${mainTabLabels[tab]}</span>

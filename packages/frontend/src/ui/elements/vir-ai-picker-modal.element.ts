@@ -97,37 +97,51 @@ export const VirAiPickerModal = defineElement<{
         }
     `,
     render({inputs, dispatch, events}) {
-        const renderOption = ({
+        function renderOption({
             key,
             name,
             detail,
             avatarFile,
-        }: Readonly<{key: string; name: string; detail: string; avatarFile: string}>) => html`
-            <button
-                type="button"
-                class="option"
-                ?data-selected=${inputs.selectedAiId === key}
-                ?disabled=${inputs.submitting}
-                ${listen('click', () => dispatch(new events.aiSaveRequested(key)))}
-            >
-                <${VirAiAvatar.assign({
-                    name,
-                    avatarFile,
-                    sizePx: 24,
-                })}></${VirAiAvatar}>
-                <span class="option-text">
-                    <span class="option-name">${name}</span>
-                    <span class="option-command">${detail}</span>
-                </span>
-            </button>
-        `;
+        }: Readonly<{key: string; name: string; detail: string; avatarFile: string}>) {
+            return html`
+                <button
+                    type="button"
+                    class="option"
+                    ?data-selected=${inputs.selectedAiId === key}
+                    ?disabled=${inputs.submitting}
+                    ${listen('click', () => {
+                        return dispatch(
+                            new events.aiSaveRequested({
+                                detail: key,
+                            }),
+                        );
+                    })}
+                >
+                    <${VirAiAvatar.assign({
+                        name,
+                        avatarFile,
+                        sizePx: 24,
+                    })}></${VirAiAvatar}>
+                    <span class="option-text">
+                        <span class="option-name">${name}</span>
+                        <span class="option-command">${detail}</span>
+                    </span>
+                </button>
+            `;
+        }
 
         return html`
             <${ViraModal.assign({
                 open: inputs.open,
                 modalTitle: inputs.modalTitle,
             })}
-                ${listen(ViraModal.events.modalClose, () => dispatch(new events.closeRequested()))}
+                ${listen(ViraModal.events.modalClose, () => {
+                    return dispatch(
+                        new events.closeRequested({
+                            detail: undefined,
+                        }),
+                    );
+                })}
             >
                 <div class="body">
                     <div class="options">
@@ -142,13 +156,14 @@ export const VirAiPickerModal = defineElement<{
                         ${repeat(
                             inputs.aiDefinitions,
                             (definition) => definition.id,
-                            (definition) =>
-                                renderOption({
+                            (definition) => {
+                                return renderOption({
                                     key: definition.id,
                                     name: definition.name,
                                     detail: definition.resumeSessionCommand,
                                     avatarFile: definition.avatarFile || '',
-                                }),
+                                });
+                            },
                         )}
                     </div>
                     ${inputs.aiDefinitions.length

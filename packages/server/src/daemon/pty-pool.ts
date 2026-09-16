@@ -231,9 +231,9 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
  *   the install. A real terminal started from the OS has none of these, so neither should ours.
  */
 function spawnEnv(): NodeJS.ProcessEnv {
-    const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) =>
-        String(key).toLowerCase().startsWith('npm_'),
-    );
+    const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) => {
+        return String(key).toLowerCase().startsWith('npm_');
+    });
     const base = omitObjectKeys(process.env, [
         'BACKEND_PORT',
         'FRONTEND_PORT',
@@ -267,7 +267,7 @@ function applyMinSize(entry: PaneEntry): void {
         return;
     }
     const sizes = Array.from(entry.subscribers, (subscriber) => subscriber.size).filter(
-        (size): size is PaneSize => size !== undefined,
+        (size): size is PaneSize => size != undefined,
     );
     if (sizes.length === 0) {
         return;
@@ -284,9 +284,11 @@ function applyMinSize(entry: PaneEntry): void {
          * can no longer see (a backgrounded phone, a suspended PWA window) holding the pty below
          * the size the visible terminal is drawing at.
          */
-        const reported = Array.from(entry.subscribers, (subscriber) =>
-            subscriber.size ? `${subscriber.size.cols}x${subscriber.size.rows}` : 'unreported',
-        ).join(', ');
+        const reported = Array.from(entry.subscribers, (subscriber) => {
+            return subscriber.size
+                ? `${subscriber.size.cols}x${subscriber.size.rows}`
+                : 'unreported';
+        }).join(', ');
         log(
             [
                 `${entry.folder}:${entry.kind}:${entry.sessionId}`,

@@ -31,8 +31,8 @@ export function renderImageDiff({content}: Readonly<{content: Readonly<GitDiffFi
     }
     return html`
         <div class="image-diff">
-            ${sides.map(
-                (side) => html`
+            ${sides.map((side) => {
+                return html`
                     <div class="image-side">
                         <span class="image-side-label">${side.label}</span>
                         <div class="image-frame" ?data-empty=${!side.image}>
@@ -45,8 +45,8 @@ export function renderImageDiff({content}: Readonly<{content: Readonly<GitDiffFi
                                   `}
                         </div>
                     </div>
-                `,
-            )}
+                `;
+            })}
         </div>
     `;
 }
