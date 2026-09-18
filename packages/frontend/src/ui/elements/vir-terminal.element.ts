@@ -1,4 +1,4 @@
-// cspell:words meslo menlo keymap toggleable
+// cspell:words meslo menlo keymap toggleable decckm
 
 import {PaneKind, ptyWebSocket} from '@agent-storm/common';
 import {wait} from '@augment-vir/common';
@@ -295,6 +295,14 @@ const accessoryKeys: ReadonlyArray<{
     label: string;
     title: string;
     bytes: string;
+    /**
+     * Sent in place of `bytes` while the terminal has application cursor keys (DECCKM) on, which
+     * zsh's line editor turns on for the duration of every prompt. The two forms can be bound to
+     * different widgets: `^[OA` is `up-line-or-beginning-search` (search history for what's already
+     * typed) while `^[[A` is a plain `up-line-or-history` walk. Xterm picks the form itself for a
+     * hardware key; these buttons write straight to the pty, so they have to pick it too.
+     */
+    applicationBytes?: string | undefined;
 }> = [
     {
         label: 'esc',
@@ -305,21 +313,25 @@ const accessoryKeys: ReadonlyArray<{
         label: '←',
         title: 'Left arrow',
         bytes: '\x1b[D',
+        applicationBytes: '\x1bOD',
     },
     {
         label: '↑',
         title: 'Up arrow',
         bytes: '\x1b[A',
+        applicationBytes: '\x1bOA',
     },
     {
         label: '↓',
         title: 'Down arrow',
         bytes: '\x1b[B',
+        applicationBytes: '\x1bOB',
     },
     {
         label: '→',
         title: 'Right arrow',
         bytes: '\x1b[C',
+        applicationBytes: '\x1bOC',
     },
     {
         label: 'tab',
@@ -1313,7 +1325,11 @@ export const VirTerminal = defineElement<{
                                       title=${key.title}
                                       ${listen('pointerdown', (event) => {
                                           event.preventDefault();
-                                          state.sendBytes?.(key.bytes);
+                                          state.sendBytes?.(
+                                              state.terminal?.modes.applicationCursorKeysMode
+                                                  ? key.applicationBytes || key.bytes
+                                                  : key.bytes,
+                                          );
                                       })}
                                   >
                                       ${key.label}
