@@ -9,12 +9,14 @@ import {
     FrameType,
     type AttachResponse,
     type ClientHandshake,
+    type ColorsNotification,
     type ErrorResponse,
     type ExitNotification,
     type ResizeNotification,
     type SimpleResponse,
     type StatusEntry,
     type StatusResponse,
+    type TerminalColors,
 } from './protocol.js';
 
 function connect(): Promise<Socket> {
@@ -123,6 +125,8 @@ export type PaneAttachment = {
     isRunning: boolean;
     write(data: string): void;
     resize(cols: number, rows: number): void;
+    /** See {@link ColorsNotification} for why the palette is re-sent on an open socket. */
+    setColors(colors: Readonly<TerminalColors>): void;
     close(): void;
 };
 
@@ -130,6 +134,7 @@ export async function attachPane({
     folder,
     kind,
     sessionId,
+    colors,
     aiCmd,
     scrollbackLimit,
     onData,
@@ -139,6 +144,11 @@ export async function attachPane({
     kind: PaneKind;
     /** Which session tab to attach to. Empty/omitted resolves to the folder+kind's default. */
     sessionId?: string | undefined;
+    /**
+     * Palette this client renders with, forwarded to the daemon's attach handshake so it can answer
+     * the pty's OSC 10 / 11 color queries.
+     */
+    colors?: Readonly<TerminalColors> | undefined;
     /**
      * Current `aiCmd` from agent-storm config — forwarded to the daemon's attach handshake so a
      * fresh AI PTY honors the user's configured command rather than whatever was in env when the
@@ -163,6 +173,7 @@ export async function attachPane({
             folder,
             kind,
             sessionId,
+            colors,
             aiCmd,
             scrollbackLimit,
         }),
@@ -222,6 +233,13 @@ export async function attachPane({
                 type: 'resize',
                 cols,
                 rows,
+            };
+            socket.write(encodeControlFrame(notification));
+        },
+        setColors(updatedColors) {
+            const notification: ColorsNotification = {
+                type: 'colors',
+                colors: updatedColors,
             };
             socket.write(encodeControlFrame(notification));
         },

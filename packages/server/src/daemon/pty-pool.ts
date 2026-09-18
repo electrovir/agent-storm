@@ -1,4 +1,4 @@
-// cspell:words subshell, backgrounded, ptmx, ptys, spawnp
+// cspell:words subshell, backgrounded, ptmx, ptys, rrggbb, spawnp
 
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
@@ -8,7 +8,7 @@ import {homedir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {createDaemonLog} from './daemon-log.js';
 import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
-import {defaultSessionId, type StatusEntry} from './protocol.js';
+import {defaultSessionId, type StatusEntry, type TerminalColors} from './protocol.js';
 
 const log = createDaemonLog('size');
 const reapLog = createDaemonLog('reap');
@@ -80,6 +80,11 @@ type PaneEntry = {
     /** Bounded scrollback used to replay output to a newly attaching client. */
     scrollbackChunks: string[];
     scrollbackBytes: number;
+    /**
+     * Palette this pane's OSC 10 / 11 queries are answered with. Undefined until a client attaches
+     * carrying valid colors, which is also how "leave those queries unanswered" is expressed.
+     */
+    colors: TerminalColors | undefined;
 };
 
 /** Bounded replay buffer per pane for newly attached browser terminals. */
@@ -200,6 +205,7 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
         appliedSize: undefined,
         scrollbackChunks: [],
         scrollbackBytes: 0,
+        colors: undefined,
     };
     panes.set(key, entry);
     return entry;
@@ -361,6 +367,86 @@ function teardownPaneProcess(
     entry.pty = undefined;
 }
 
+/** Six hex digits, no leading `#` — the only form {@link TerminalColors} travels in. */
+const hexColorRegExp = /^[\da-f]{6}$/i;
+
+/**
+ * Colors arrive as untrusted search params, so anything that isn't plain six-digit hex is dropped
+ * rather than guessed at: a malformed value reaching {@link toOscColor} would produce a reply the
+ * asking app can't parse, which is worse than no reply at all.
+ */
+function parseTerminalColors(
+    colors: Readonly<TerminalColors> | undefined,
+): TerminalColors | undefined {
+    if (
+        !colors ||
+        !hexColorRegExp.test(colors.foreground) ||
+        !hexColorRegExp.test(colors.background)
+    ) {
+        return undefined;
+    }
+    return {
+        foreground: colors.foreground.toLowerCase(),
+        background: colors.background.toLowerCase(),
+    };
+}
+
+/**
+ * Terminals answer color queries with 16 bits per channel (`rgb:RRRR/GGGG/BBBB`), so each 8-bit
+ * pair is doubled rather than zero-padded — `ff` means full intensity and has to stay full at 16
+ * bits, where `ff00` would read as roughly 99.6% and `00ff` as nearly black.
+ */
+function toOscColor(hex: string) {
+    const channels = [
+        hex.slice(0, 2),
+        hex.slice(2, 4),
+        hex.slice(4, 6),
+    ].map((channel) => {
+        return `${channel}${channel}`;
+    });
+    return `rgb:${channels.join('/')}`;
+}
+
+/**
+ * Answer a pty's OSC 10 (foreground) and OSC 11 (background) color queries here in the daemon
+ * instead of in the browser. Codex draws the gray block behind its prompt only when both answers
+ * come back within roughly 100 ms of asking, and a browser round trip can't promise that: the reply
+ * would have to cross pty → daemon → websocket → xterm → websocket → pty, and a pane in a folder
+ * the user hasn't opened holds its output behind the fit gate until activation, so the query would
+ * be answered minutes late or reach xterm only as replayed scrollback. From here it's a
+ * sub-millisecond write that works with no client attached at all.
+ *
+ * Only `?` queries are answered. The set form (`ESC ]11;#rrggbb ST`) expects no reply, and echoing
+ * one back at the app would be gibberish on its stdin.
+ */
+function answerColorQueries(entry: PaneEntry, data: string) {
+    const colors = entry.colors;
+    const pty = entry.pty;
+    if (!colors || !pty) {
+        return;
+    }
+    const replies = [
+        {
+            code: 10,
+            hex: colors.foreground,
+        },
+        {
+            code: 11,
+            hex: colors.background,
+        },
+    ]
+        .filter((query) => {
+            return data.includes(`]${query.code};?`);
+        })
+        .map((query) => {
+            /** `ESC ]` opens the OSC string and `ESC \` (ST) terminates it. */
+            return `\u001B]${query.code};${toOscColor(query.hex)}\u001B\\`;
+        });
+    if (replies.length) {
+        pty.write(replies.join(''));
+    }
+}
+
 function startPty({
     folder,
     kind,
@@ -403,6 +489,7 @@ function startPty({
         entry.lastOutputAt = Date.now();
         pty.onData((data) => {
             entry.lastOutputAt = Date.now();
+            answerColorQueries(entry, data);
             appendScrollback(entry, data);
             entry.subscribers.forEach((subscriber) => {
                 subscriber.onData(data);
@@ -458,6 +545,7 @@ export function attachPane({
     folder,
     kind,
     sessionId,
+    colors,
     aiCmd,
     scrollbackLimit,
     onData,
@@ -467,6 +555,12 @@ export function attachPane({
     kind: PaneKind;
     /** Which session tab to attach to. Empty/omitted resolves to the folder+kind's default. */
     sessionId?: string | undefined;
+    /**
+     * Palette to answer this pane's OSC 10 / 11 queries with. Omitted or malformed colors leave the
+     * stored pair alone: a second client attaching without colors shouldn't make a pane that was
+     * answering those queries stop.
+     */
+    colors?: Readonly<TerminalColors> | undefined;
     /**
      * Current `aiCmd` from agent-storm config. Used only when spawning a fresh AI PTY here —
      * existing live PTYs continue running whatever command they were launched with until the user
@@ -486,9 +580,15 @@ export function attachPane({
     isRunning: boolean;
     scrollback: string;
     setSize: (cols: number, rows: number) => void;
+    setColors: (colors: Readonly<TerminalColors>) => void;
     detach: () => void;
 } {
     const entry = ensureEntry(folder, kind, sessionId);
+    /**
+     * Stored before the spawn below so the very first prompt's color queries — which codex fires
+     * within milliseconds of starting — already have an answer waiting.
+     */
+    entry.colors = parseTerminalColors(colors) ?? entry.colors;
     const isNew = !entry.pty;
     if (!entry.pty) {
         startPty({
@@ -522,6 +622,9 @@ export function attachPane({
                 rows,
             };
             applyMinSize(entry);
+        },
+        setColors(updatedColors) {
+            entry.colors = parseTerminalColors(updatedColors) ?? entry.colors;
         },
         detach() {
             entry.subscribers.delete(subscriber);

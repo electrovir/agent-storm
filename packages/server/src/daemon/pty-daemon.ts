@@ -13,13 +13,14 @@ import {
     encodeDataFrame,
     FrameDecoder,
     FrameType,
+    type AttachedNotification,
     type AttachResponse,
     type ClientHandshake,
     type ErrorResponse,
     type ExitNotification,
-    type ResizeNotification,
     type SimpleResponse,
     type StatusResponse,
+    type TerminalColors,
 } from './protocol.js';
 import {
     attachPane,
@@ -48,6 +49,7 @@ function handleAttach({
     folder,
     kind,
     sessionId,
+    colors,
     aiCmd,
     scrollbackLimit,
 }: Readonly<{
@@ -56,6 +58,7 @@ function handleAttach({
     folder: string;
     kind: PaneKind;
     sessionId: string | undefined;
+    colors: TerminalColors | undefined;
     aiCmd: string | undefined;
     scrollbackLimit: number | undefined;
 }>): void {
@@ -69,10 +72,11 @@ function handleAttach({
         };
         socket.write(encodeControlFrame(notification));
     }
-    const {isNew, isRunning, scrollback, setSize, detach} = attachPane({
+    const {isNew, isRunning, scrollback, setSize, setColors, detach} = attachPane({
         folder,
         kind,
         sessionId,
+        colors,
         aiCmd,
         scrollbackLimit,
         onData,
@@ -98,8 +102,12 @@ function handleAttach({
                 });
                 return;
             }
-            const parsed = JSON.parse(frame.payload.toString('utf-8')) as ResizeNotification;
-            setSize(parsed.cols, parsed.rows);
+            const parsed = JSON.parse(frame.payload.toString('utf-8')) as AttachedNotification;
+            if (parsed.type === 'colors') {
+                setColors(parsed.colors);
+            } else {
+                setSize(parsed.cols, parsed.rows);
+            }
         });
     });
     function cleanup() {
@@ -156,6 +164,7 @@ const server = createServer((socket) => {
                 folder: handshake.folder,
                 kind: handshake.kind,
                 sessionId: handshake.sessionId,
+                colors: handshake.colors,
                 aiCmd: handshake.aiCmd,
                 scrollbackLimit: handshake.scrollbackLimit,
             });

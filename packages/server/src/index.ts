@@ -959,6 +959,10 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             folder,
             kind,
             sessionId,
+            colors: {
+                foreground: searchParams.foreground,
+                background: searchParams.background,
+            },
             aiCmd:
                 isFreshAi && aiDefinition?.newSessionCommand
                     ? aiDefinition.newSessionCommand
@@ -997,6 +1001,9 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
              */
             recordFolderActivity(socketAttachment.folder);
             socketAttachment.attachment.write(message);
+            return;
+        } else if ('colors' in message) {
+            socketAttachment.attachment.setColors(message.colors);
             return;
         }
         socketAttachment.attachment.resize(message.resize.cols, message.resize.rows);

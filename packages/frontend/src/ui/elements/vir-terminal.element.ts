@@ -212,6 +212,32 @@ function terminalTheme(isDark: boolean): ITheme {
     return isDark ? terminalThemes.dark : terminalThemes.light;
 }
 
+/** Six hex digits, the only form the `/pty` socket carries a color in. */
+const bareHexRegExp = /^[\da-f]{6}$/i;
+
+/**
+ * Drops the `#` the palette above writes, since a `#` in a search param would start a URL fragment.
+ * A color with no six-digit hex form (a shorthand, an `rgba()`) becomes empty, which the host reads
+ * as "leave the matching query unanswered".
+ */
+function toBareHex(color: string | undefined) {
+    const bare = (color || '').replace(/^#/, '');
+    return bareHexRegExp.test(bare) ? bare.toLowerCase() : '';
+}
+
+/**
+ * The palette in the form the host forwards to the daemon, which answers the pty's OSC 10 / 11
+ * color queries with it — see `answerColorQueries` in `pty-pool.ts` for why answering them here
+ * (where xterm could) is too slow for codex.
+ */
+function terminalColors(isDark: boolean) {
+    const theme = terminalTheme(isDark);
+    return {
+        foreground: toBareHex(theme.foreground),
+        background: toBareHex(theme.background),
+    };
+}
+
 /**
  * Convert a typed character to the control byte a physical Ctrl+<key> would emit: the terminal
  * convention is `byte & 0x1f`, so Ctrl+C → `\x03`, Ctrl+D → `\x04`, Ctrl+L → `\x0c`, etc. Used by
@@ -756,6 +782,7 @@ export const VirTerminal = defineElement<{
                             kind: inputs.kind,
                             sessionId: inputs.sessionId,
                             scrollbackLimit: String(scrollbackLimit),
+                            ...terminalColors(isDarkMode()),
                         },
                         protocols: [secret],
                         listeners: {
@@ -1220,6 +1247,10 @@ export const VirTerminal = defineElement<{
                             useDarkTheme: isDark,
                         });
                         repaintGlyphs();
+                        /** The pty keeps asking for colors, so the daemon needs the new pair. */
+                        socket.send({
+                            colors: terminalColors(isDark),
+                        });
                     });
 
                     updateState({

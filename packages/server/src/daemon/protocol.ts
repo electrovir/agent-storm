@@ -66,13 +66,16 @@ export class FrameDecoder {
  * Bumped whenever the daemon's wire contract changes in a way a mismatched backend can't tolerate.
  * Version 2 introduced `sessionId` on the pane key; a version-1 daemon silently ignores the field
  * and collapses every session of a folder+kind onto one PTY, so `ensureDaemon` restarts any daemon
- * that doesn't report at least this value.
+ * that doesn't report at least this value. Version 4 answers a pty's OSC 10 / 11 color queries from
+ * {@link TerminalColors}; an earlier daemon leaves them unanswered, which silently costs codex the
+ * gray background behind its prompt. Version 3 was that same feature mid-landing — it declared the
+ * colors on the wire without answering anything — so the gate has to reject it too.
  *
  * The version is reported on {@link StatusResponse} rather than through a dedicated action because
  * `Status` is the only introspection action every historical daemon understands — see
  * {@link DaemonAction.Shutdown} for why probing with a new action would be destructive.
  */
-export const daemonProtocolVersion = 2;
+export const daemonProtocolVersion = 4;
 
 export enum DaemonAction {
     Attach = 'attach',
@@ -107,12 +110,27 @@ export type SessionKeyFields = {
     sessionId?: string | undefined;
 };
 
+/**
+ * A terminal's default foreground and background, each six hex digits with no leading `#`. The
+ * daemon holds them so it can answer a pty's OSC 10 / 11 color queries itself — see
+ * `answerColorQueries` in `pty-pool.ts` for why the browser can't answer them in time.
+ */
+export type TerminalColors = {
+    foreground: string;
+    background: string;
+};
+
 export type AttachHandshake = {
     action: DaemonAction.Attach;
     folder: string;
     kind: PaneKind;
     /** See {@link SessionKeyFields.sessionId}. */
     sessionId?: string | undefined;
+    /**
+     * Palette the attaching client renders with. Sent on every attach, so re-attaching after a
+     * light ↔ dark flip is enough to correct the answer even without {@link ColorsNotification}.
+     */
+    colors?: TerminalColors | undefined;
     /**
      * Command to invoke for `PaneKind.Ai` when the daemon spawns the PTY for the first time. Sent
      * on every attach because the daemon doesn't read agent-storm's config file — the backend does,
@@ -219,3 +237,16 @@ export type ResizeNotification = {
     cols: number;
     rows: number;
 };
+
+/**
+ * Sent from a daemon-client to the daemon over an already-attached socket when the client's palette
+ * changes. The socket outlives a light ↔ dark flip, so without this the daemon would keep answering
+ * color queries with the mode the pane was opened in.
+ */
+export type ColorsNotification = {
+    type: 'colors';
+    colors: TerminalColors;
+};
+
+/** Every control frame a daemon-client may send over an already-attached socket. */
+export type AttachedNotification = ResizeNotification | ColorsNotification;

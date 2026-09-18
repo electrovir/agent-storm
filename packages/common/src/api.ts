@@ -26,18 +26,28 @@ import {
 const stringMessageShape = defineShape('');
 
 /**
- * Client → host messages on the `/pty` socket are either raw keystroke / paste data written
- * directly to the pty, or `{resize: {cols, rows}}` carrying the xterm viewport's current
- * dimensions. The host pushes those dimensions through to `node-pty` so the spawned shell wraps at
- * the right column.
+ * Client → host messages on the `/pty` socket are raw keystroke / paste data written directly to
+ * the pty, `{resize: {cols, rows}}` carrying the xterm viewport's current dimensions (the host
+ * pushes those through to `node-pty` so the spawned shell wraps at the right column), or `{colors}`
+ * carrying the terminal palette after a light ↔ dark flip — same values as the `foreground` /
+ * `background` search params, re-sent because the socket outlives a theme change.
  */
 const ptyClientMessageShape = defineShape(
-    unionShape('', {
-        resize: {
-            cols: 0,
-            rows: 0,
+    unionShape(
+        '',
+        {
+            resize: {
+                cols: 0,
+                rows: 0,
+            },
         },
-    }),
+        {
+            colors: {
+                foreground: '',
+                background: '',
+            },
+        },
+    ),
 );
 
 /**
@@ -1412,6 +1422,14 @@ export const ptyWebSocket = defineWebSocket({
          * client limit" and the full buffered scrollback is replayed.
          */
         scrollbackLimit: defineShape(''),
+        /**
+         * The terminal's default foreground and background, as six hex digits each with no leading
+         * `#` (a `#` would start a URL fragment). The host hands them to the daemon, which answers
+         * a pty's OSC 10 / 11 color queries with them — see `answerColorQueries` in `pty-pool.ts`
+         * for why the reply can't come from the browser. Empty means "don't answer those queries".
+         */
+        foreground: defineShape(''),
+        background: defineShape(''),
     },
 });
 
