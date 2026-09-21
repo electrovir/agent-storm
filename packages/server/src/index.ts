@@ -40,13 +40,20 @@ import {
     type AiDefinition,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {HttpMethod, HttpStatus, log, omitObjectKeys, wait} from '@augment-vir/common';
+import {
+    HttpMethod,
+    HttpStatus,
+    log,
+    omitObjectKeys,
+    replaceExtension,
+    wait,
+} from '@augment-vir/common';
 import {type OriginRequirement} from '@rest-vir/api';
 import {attachApi, createApiImplementor, implementApi, silentServerLogger} from '@rest-vir/host';
 import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
 import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
-import {appendFile, mkdir, stat} from 'node:fs/promises';
+import {appendFile, mkdir, readFile, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
 import {initAuth, verifyAuthToken} from './auth.js';
@@ -1084,15 +1091,54 @@ const implementation = implementApi<undefined>()(agentStormService, {
 });
 
 /**
+ * This server has to match whatever scheme the frontend is served over, because the browser builds
+ * its URL from `location.protocol` (see `getBackendBaseUrl` in
+ * `packages/frontend/src/util/service-origin.ts`). An http backend behind an https page fails every
+ * request at the TLS handshake. `tlsCertPath` is the single switch for both, and the key is the
+ * file of the same name beside the certificate — same convention as
+ * `packages/frontend/configs/vite.config.ts`.
+ */
+async function readTlsOptions() {
+    const certPath = await loadConfig()
+        .then((config) => config.tlsCertPath || '')
+        .catch(() => '');
+    if (!certPath) {
+        return undefined;
+    }
+    const keyPath = replaceExtension({
+        path: certPath,
+        newExtension: '.key',
+    });
+    try {
+        return {
+            cert: await readFile(certPath),
+            key: await readFile(keyPath),
+        };
+    } catch (error) {
+        log.warning(
+            `Serving over http: failed to read TLS cert "${certPath}" / key "${keyPath}": ${String(error)}`,
+        );
+        return undefined;
+    }
+}
+
+const tlsOptions = await readTlsOptions();
+
+/**
  * Custom Fastify instance so we can raise `bodyLimit` past Fastify's 1 MB default. Image uploads
  * (screenshots dragged into a terminal) get base64-encoded inside a JSON body and that runs past
  * the default in a hurry.
  */
 const server = fastify({
     bodyLimit: 25 * 1024 * 1024,
+    ...(tlsOptions
+        ? {
+              https: tlsOptions,
+          }
+        : {}),
 });
 await attachApi(server, implementation, {
-    externalOrigin: `http://localhost:${port}`,
+    externalOrigin: `${tlsOptions ? 'https' : 'http'}://localhost:${port}`,
 });
 /**
  * Bind to `0.0.0.0` so the dev server is reachable over LAN (testing the UI from a phone or another

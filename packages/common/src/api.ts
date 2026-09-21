@@ -345,6 +345,22 @@ export const configJsonSchema = {
             description:
                 "When on, agent-storm stops checking GitHub for new commits on the dev branch and hides the sidebar's update banner.",
         },
+        /**
+         * Path to a TLS certificate. When set, the vite dev server serves the frontend over https
+         * with it, pairing it with the key file of the same name — see `readTlsOptions` in
+         * `packages/frontend/configs/vite.config.ts`. Empty (the default) stays on http.
+         *
+         * Rendered by the settings modal as its own field rather than through the JSON form, so a
+         * path that doesn't exist can report an error under the input. Intentionally absent from
+         * `required` so configs written by older builds still load.
+         */
+        tlsCertPath: {
+            type: 'string',
+            default: '',
+            title: 'HTTPS certificate path',
+            description:
+                'Path to a .crt file. When set, the frontend is served over https using this certificate and the .key file of the same name beside it. Leave empty to serve over http.',
+        },
     },
     required: [
         'aiDefinitions',

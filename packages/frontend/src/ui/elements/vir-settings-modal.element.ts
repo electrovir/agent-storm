@@ -1,4 +1,5 @@
 import {configJsonSchema, defaultConfig, type Config} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {
     getObjectTypedKeys,
     omitObjectKeys,
@@ -20,7 +21,7 @@ import {
     type ViraJsonSchemaObject,
     type ViraSelectOption,
 } from 'vira';
-import {getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
+import {checkPath, getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
 
@@ -29,10 +30,11 @@ import {localStorageClient, scrollbackLimit} from '../../util/local-storage-clie
  * restarts) but are hidden from the settings form. Reasons vary: `githubPollingAutoDisable` is
  * entirely backend-managed (the user has no business editing it here), while `repos` and
  * `folderAiIds` are per-folder data managed through the sidebar rather than this JSON form (and too
- * large / noisy to belong here). `aiDefinitions` has its own modal, and `defaultAiId` is rendered
- * as the AI picker below rather than as a raw id field. Stripped from both the schema we hand to
- * `ViraJsonForm` and from the form's input/output, then preserved on save so hiding them never
- * blows away their runtime state.
+ * large / noisy to belong here). `aiDefinitions` has its own modal, `defaultAiId` is rendered as
+ * the AI picker below, and `tlsCertPath` gets its own input so a path that doesn't exist can report
+ * an error directly beneath it — the JSON form has no per-property error slot. Stripped from both
+ * the schema we hand to `ViraJsonForm` and from the form's input/output, then preserved on save so
+ * hiding them never blows away their runtime state.
  */
 const hiddenConfigKeys = [
     'githubPollingAutoDisable',
@@ -40,6 +42,7 @@ const hiddenConfigKeys = [
     'aiDefinitions',
     'defaultAiId',
     'folderAiIds',
+    'tlsCertPath',
 ] as const satisfies ReadonlyArray<keyof Config>;
 
 const formJsonSchema: ViraJsonSchemaObject = (() => {
@@ -147,6 +150,14 @@ export const VirSettingsModal = defineElement<{
              */
             defaultAiId: undefined as string | undefined,
             /**
+             * Same arrangement as `defaultAiId`: rendered outside the JSON form, so save() applies
+             * it on top of the form's output. An empty string is a real value here (the user
+             * clearing the path to go back to http), which is why save() merges it with `??`.
+             */
+            tlsCertPath: undefined as string | undefined,
+            /** Set by save() when the backend reports no file at the saved certificate path. */
+            tlsCertPathError: undefined as string | undefined,
+            /**
              * The useWebgl value at load time, captured so save() can detect a flip and trigger a
              * page reload — existing terminals only read the config at construction.
              */
@@ -182,6 +193,19 @@ export const VirSettingsModal = defineElement<{
             white-space: pre-wrap;
         }
 
+        /* Holds the form and its per-field error together so the error reads as attached to the
+           input above it rather than sitting a full body gap away. */
+        .field-column {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .field-error {
+            font-size: 12px;
+            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+        }
+
         .loading {
             padding: 24px;
             text-align: center;
@@ -209,6 +233,8 @@ export const VirSettingsModal = defineElement<{
                 pending: undefined,
                 loaded: undefined,
                 defaultAiId: undefined,
+                tlsCertPath: undefined,
+                tlsCertPathError: undefined,
                 useWebgl: undefined,
                 loadError: undefined,
                 saveError: undefined,
@@ -250,6 +276,7 @@ export const VirSettingsModal = defineElement<{
                     pending: toJsonValue(config),
                     loaded: config,
                     defaultAiId: config.defaultAiId,
+                    tlsCertPath: config.tlsCertPath || '',
                     // optionalShape default is true; coerce undefined → true for comparison.
                     useWebgl: config.useWebgl,
                     loadError: undefined,
@@ -268,6 +295,7 @@ export const VirSettingsModal = defineElement<{
             updateState({
                 saving: true,
                 saveError: undefined,
+                tlsCertPathError: undefined,
             });
             try {
                 /**
@@ -279,8 +307,27 @@ export const VirSettingsModal = defineElement<{
                 const next: Config = {
                     ...fromJsonValue(state.pending, current),
                     defaultAiId: state.defaultAiId ?? current.defaultAiId,
+                    tlsCertPath: state.tlsCertPath ?? current.tlsCertPath,
                 };
                 await putConfig(next);
+                /**
+                 * Checked after the write, not before it: the certificate lives on the server's
+                 * filesystem, so only the backend can stat it, and a typo here shouldn't cost the
+                 * user every other edit in the form. The modal stays open on a miss so the path can
+                 * be corrected in place.
+                 */
+                if (next.tlsCertPath) {
+                    const {resolvedPath, exists} = await checkPath({
+                        path: next.tlsCertPath,
+                    });
+                    if (!exists) {
+                        updateState({
+                            saving: false,
+                            tlsCertPathError: `No file found at ${resolvedPath}`,
+                        });
+                        return;
+                    }
+                }
                 const nextUseWebgl = next.useWebgl;
                 const webglChanged = state.useWebgl != undefined && state.useWebgl !== nextUseWebgl;
                 reset();
@@ -326,36 +373,59 @@ export const VirSettingsModal = defineElement<{
                                   }
                               })}
                           >
-                              <${ViraForm.assign({
-                                  fields: {
-                                      scrollbackLimit: {
-                                          type: ViraFormFieldType.Number,
-                                          label: 'Terminal scrollback limit (lines)',
-                                          value: state.scrollbackLimit,
-                                          min: scrollbackLimit.min,
-                                          max: scrollbackLimit.max,
-                                          step: 1000,
+                              <div class="field-column">
+                                  <${ViraForm.assign({
+                                      fields: {
+                                          scrollbackLimit: {
+                                              type: ViraFormFieldType.Number,
+                                              label: 'Terminal scrollback limit (lines)',
+                                              value: state.scrollbackLimit,
+                                              min: scrollbackLimit.min,
+                                              max: scrollbackLimit.max,
+                                              step: 1000,
+                                          },
+                                          tlsCertPath: {
+                                              type: ViraFormFieldType.Text,
+                                              label: 'HTTPS certificate path',
+                                              value: state.tlsCertPath ?? '',
+                                              placeholder: 'Leave empty to serve over http',
+                                              hasError: !!state.tlsCertPathError,
+                                          },
                                       },
-                                  },
-                              })}
-                                  ${listen(ViraForm.events.valueChange, (event) => {
-                                      const nextValue = event.detail.value;
-                                      if (
-                                          typeof nextValue !== 'number' ||
-                                          !Number.isFinite(nextValue)
-                                      ) {
-                                          return;
-                                      }
-                                      const clamped = Math.min(
-                                          scrollbackLimit.max,
-                                          Math.max(scrollbackLimit.min, Math.round(nextValue)),
-                                      );
-                                      updateState({
-                                          scrollbackLimit: clamped,
-                                      });
-                                      localStorageClient.scrollbackLimit.write(clamped);
                                   })}
-                              ></${ViraForm}>
+                                      ${listen(ViraForm.events.valueChange, (event) => {
+                                          if (event.detail.key === 'tlsCertPath') {
+                                              updateState({
+                                                  tlsCertPath: check.isString(event.detail.value)
+                                                      ? event.detail.value
+                                                      : '',
+                                                  tlsCertPathError: undefined,
+                                              });
+                                              return;
+                                          }
+                                          const nextValue = event.detail.value;
+                                          if (
+                                              typeof nextValue !== 'number' ||
+                                              !Number.isFinite(nextValue)
+                                          ) {
+                                              return;
+                                          }
+                                          const clamped = Math.min(
+                                              scrollbackLimit.max,
+                                              Math.max(scrollbackLimit.min, Math.round(nextValue)),
+                                          );
+                                          updateState({
+                                              scrollbackLimit: clamped,
+                                          });
+                                          localStorageClient.scrollbackLimit.write(clamped);
+                                      })}
+                                  ></${ViraForm}>
+                                  ${state.tlsCertPathError
+                                      ? html`
+                                            <div class="field-error">${state.tlsCertPathError}</div>
+                                        `
+                                      : ''}
+                              </div>
                               <div class="ai-row">
                                   <${ViraSelect.assign({
                                       label: 'Default AI',
