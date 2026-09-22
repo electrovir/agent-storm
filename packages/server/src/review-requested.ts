@@ -25,7 +25,7 @@ async function fetchCount(): Promise<ReviewRequestedStatus> {
         'GET',
         'search/issues',
         '-f',
-        'q=is:open is:pr review-requested:@me archived:false',
+        'q=is:open is:pr review-requested:@me archived:false draft:false',
         '--jq',
         '.total_count',
     ]);
@@ -37,8 +37,8 @@ async function fetchCount(): Promise<ReviewRequestedStatus> {
 }
 
 /**
- * Count of open PRs awaiting the authenticated `gh` user's review, GitHub-wide. Cached for
- * {@link cacheTtlMs}; concurrent callers share one in-flight fetch. Returns `{count: null}` when
+ * Count of open, non-draft PRs awaiting the authenticated `gh` user's review, GitHub-wide. Cached
+ * for {@link cacheTtlMs}; concurrent callers share one in-flight fetch. Returns `{count: null}` when
  * `gh` is unavailable/unauthenticated or the search fails — the sidebar hides its counter then.
  */
 export async function getReviewRequestedStatus(): Promise<ReviewRequestedStatus> {

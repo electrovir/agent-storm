@@ -1118,7 +1118,7 @@ export const VirSidebar = defineElement<{
                       <div class="review-requested-cta">
                           <${ViraLink.assign({
                               link: {
-                                  url: 'https://github.com/pulls/review-requested',
+                                  url: reviewRequestedSearchUrl,
                                   newTab: true,
                               },
                               disableLinkStyles: true,
@@ -1140,7 +1140,7 @@ export const VirSidebar = defineElement<{
                         <div class="review-requested">
                             <${ViraLink.assign({
                                 link: {
-                                    url: 'https://github.com/pulls/review-requested',
+                                    url: reviewRequestedSearchUrl,
                                     newTab: true,
                                 },
                                 disableLinkStyles: true,
@@ -1401,6 +1401,14 @@ function sortBlockedLast(
         ...folders.filter((folder) => blockingSubTasksByParent.has(folder.path)),
     ];
 }
+
+/**
+ * Mirrors the backend's `review-requested` search (see `fetchCount`) so the page the button opens
+ * lists exactly the PRs it counted. GitHub's own /pulls/review-requested view has no draft filter,
+ * so linking there would show a different number than the button's label.
+ */
+const reviewRequestedSearchUrl =
+    'https://github.com/search?q=is%3Aopen+is%3Apr+review-requested%3A%40me+archived%3Afalse+draft%3Afalse&type=pullrequests';
 
 /**
  * Icon button beside the review-requested footer that forces a fresh GitHub fetch, bypassing the
