@@ -50,3 +50,4 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Deleting a worktree clears parentTaskPath references on any worktrees that pointed at it.
 - Sidebar bottom shows PRs awaiting review as a prominent green button; quiet text when zero.
 - Refresh icon next to the review counter force-fetches past the 5-minute server cache.
+- Check rollup keeps only each check name's latest run; stale reruns no longer block approval.

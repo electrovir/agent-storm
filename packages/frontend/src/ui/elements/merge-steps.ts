@@ -298,9 +298,13 @@ export const mergeStepsConfig: ReadonlyArray<MergeStepConfigValue> = [
         // Red exclam means "the author has something to do right now": a reviewer has actively
         // requested changes (`reviewDecision: CHANGES_REQUESTED`), at least one inline review
         // thread is still unresolved and not outdated, or the PR has merge conflicts against its
-        // base that the author must resolve before it can land. Re-requesting a reviewer flips
-        // GitHub's decision back to REVIEW_REQUIRED, so `prReviewChangesRequested` clears and the
-        // step falls back to loading ("waiting for re-review") — exactly what we want.
+        // base that the author must resolve before it can land. Deliberately NOT keyed off
+        // `prReviewCheckPassing === false`: this repo's gate check ("Check Review Status")
+        // reports FAILURE for the whole window before a human approves, so treating false as a
+        // failure paints every unapproved PR red and the step can never render loading.
+        // Re-requesting a reviewer flips GitHub's decision back to REVIEW_REQUIRED, so
+        // `prReviewChangesRequested` clears and the step falls back to loading ("waiting for
+        // re-review") — exactly what we want.
         failed: ({prHasUnresolvedReviewComments, prReviewChangesRequested, prHasMergeConflicts}) =>
             prHasUnresolvedReviewComments || prReviewChangesRequested || prHasMergeConflicts,
         onClick: (_inputs, {embedPr}) => embedPr(),

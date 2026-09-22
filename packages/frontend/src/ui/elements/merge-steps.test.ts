@@ -69,4 +69,26 @@ describe('get-approval step review state', () => {
         assert.isFalse(failed);
         assert.isTrue(loading);
     });
+
+    // app.example.com's "Check Review Status" gate reports FAILURE for the entire window before a
+    // human approves, so `prReviewCheckPassing: false` is the ordinary waiting state, not a block.
+    // Flagging it red made every unapproved PR show a red exclam.
+    it('shows loading when the review check is failing only for lack of an approval', () => {
+        const folder = openPrAwaitingApproval({
+            prReviewCheckPassing: false,
+            prReviewPending: true,
+        });
+        const {done, failed, loading} = evaluateMergeStep(folder, getApprovalStep);
+        assert.isFalse(done);
+        assert.isFalse(failed);
+        assert.isTrue(loading);
+    });
+
+    it('shows done once the review check passes', () => {
+        const folder = openPrAwaitingApproval({prReviewCheckPassing: true});
+        const {done, failed, loading} = evaluateMergeStep(folder, getApprovalStep);
+        assert.isTrue(done);
+        assert.isFalse(failed);
+        assert.isFalse(loading);
+    });
 });

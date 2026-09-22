@@ -5,7 +5,13 @@ import {mkdir, mkdtemp, rm, stat, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {promisify} from 'node:util';
-import {hasActiveChangesRequested, listWorktreeChildren, removeWorktree} from './git.js';
+import {
+    hasActiveChangesRequested,
+    isReviewCheck,
+    latestChecksByName,
+    listWorktreeChildren,
+    removeWorktree,
+} from './git.js';
 
 const exec = promisify(execFile);
 
@@ -192,5 +198,101 @@ describe(hasActiveChangesRequested.name, () => {
 
     it('is false when there are no reviews', () => {
         assert.isFalse(hasActiveChangesRequested([], new Set()));
+    });
+});
+
+describe(latestChecksByName.name, () => {
+    it('keeps only the most recent run of a repeated check name', () => {
+        const collapsed = latestChecksByName([
+            {
+                name: 'Check Review Status',
+                status: 'COMPLETED',
+                conclusion: 'FAILURE',
+                startedAt: '2026-09-17T19:34:20Z',
+                completedAt: '2026-09-17T19:34:53Z',
+            },
+            {
+                name: 'Check Review Status',
+                status: 'COMPLETED',
+                conclusion: 'SUCCESS',
+                startedAt: '2026-09-21T17:38:10Z',
+                completedAt: '2026-09-21T17:38:26Z',
+            },
+            {
+                name: 'lint',
+                status: 'COMPLETED',
+                conclusion: 'SUCCESS',
+                startedAt: '2026-09-21T17:30:00Z',
+                completedAt: '2026-09-21T17:32:00Z',
+            },
+        ]);
+
+        assert.deepEquals(
+            collapsed.map((check) => [
+                check.name,
+                check.conclusion,
+            ]),
+            [
+                [
+                    'Check Review Status',
+                    'SUCCESS',
+                ],
+                [
+                    'lint',
+                    'SUCCESS',
+                ],
+            ],
+        );
+    });
+
+    it('prefers an in-progress re-run over the completed run it supersedes', () => {
+        const collapsed = latestChecksByName([
+            {
+                name: 'compile',
+                status: 'COMPLETED',
+                conclusion: 'FAILURE',
+                startedAt: '2026-09-21T10:00:00Z',
+                completedAt: '2026-09-21T10:05:00Z',
+            },
+            {
+                name: 'compile',
+                status: 'IN_PROGRESS',
+                startedAt: '2026-09-21T11:00:00Z',
+            },
+        ]);
+
+        assert.strictEquals(collapsed.length, 1);
+        assert.strictEquals(collapsed[0]?.status, 'IN_PROGRESS');
+    });
+
+    it('collapses legacy StatusContext entries by their context name', () => {
+        const collapsed = latestChecksByName([
+            {
+                context: 'ci/legacy',
+                state: 'FAILURE',
+                createdAt: '2026-09-20T10:00:00Z',
+            },
+            {
+                context: 'ci/legacy',
+                state: 'SUCCESS',
+                createdAt: '2026-09-21T10:00:00Z',
+            },
+        ]);
+
+        assert.strictEquals(collapsed.length, 1);
+        assert.strictEquals(collapsed[0]?.state, 'SUCCESS');
+    });
+});
+
+describe(isReviewCheck.name, () => {
+    it('matches code-review checks', () => {
+        assert.isTrue(isReviewCheck({name: 'PR Review'}));
+        assert.isTrue(isReviewCheck({name: 'Check Review Status'}));
+        assert.isTrue(isReviewCheck({name: 'reviewdog'}));
+    });
+
+    it('does not match build checks that merely contain the letters', () => {
+        assert.isFalse(isReviewCheck({context: 'netlify/example-org/deploy-preview'}));
+        assert.isFalse(isReviewCheck({name: 'compile'}));
     });
 });

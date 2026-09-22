@@ -1,5 +1,5 @@
 import {RepoInspectionState, type RepoInspection} from '@agent-storm/common';
-import {log, wait} from '@augment-vir/common';
+import {wait} from '@augment-vir/common';
 import {runShellCommand} from '@augment-vir/node';
 import {execFile} from 'node:child_process';
 import {lstat, readdir, rename, rm, stat, writeFile} from 'node:fs/promises';
@@ -451,6 +451,14 @@ export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
  */
 const fetchRepoPrsBatchSize = 100;
 
+/**
+ * Upper bound on status-check contexts pulled per PR. Sits at the GraphQL connection ceiling
+ * because the rollup carries every superseded re-run alongside the current ones — app.example.com PRs
+ * routinely report 45+ contexts for ~20 distinct checks, and the old cap of 30 silently dropped the
+ * rest, which could hide the run that {@link latestChecksByName} needs to see.
+ */
+const fetchCheckRollupContextsSize = 100;
+
 const repoPrsGraphqlQuery = [
     'query($owner: String!, $name: String!) {',
     '  repository(owner: $owner, name: $name) {',
@@ -469,10 +477,10 @@ const repoPrsGraphqlQuery = [
     '        reviewRequests(first: 20) { totalCount nodes { requestedReviewer { __typename ... on User { login } } } }',
     '        reviewThreads(first: 25) { nodes { isResolved isOutdated } }',
     '        commits(last: 1) { nodes { commit { statusCheckRollup {',
-    '          contexts(first: 30) { nodes {',
+    `          contexts(first: ${fetchCheckRollupContextsSize}) { nodes {`,
     '            __typename',
-    '            ... on CheckRun { name status conclusion }',
-    '            ... on StatusContext { context state }',
+    '            ... on CheckRun { name status conclusion startedAt completedAt }',
+    '            ... on StatusContext { context state createdAt }',
     '          } }',
     '        } } } }',
     '      }',
@@ -488,6 +496,9 @@ type RawCheckRollupContext = {
     conclusion?: string;
     context?: string;
     state?: string;
+    startedAt?: string | null;
+    completedAt?: string | null;
+    createdAt?: string | null;
 };
 
 type RawPrNode = {
@@ -537,9 +548,14 @@ type RawPrNode = {
  * dedicated step ("Get approval") and a pending or failed review shouldn't make the CI step look
  * red.
  */
-const reviewCheckPattern = /review/i;
+/**
+ * Leading `\b` so "review" has to start a word: an unanchored /review/i also swallows Netlify's
+ * `netlify/<site>/deploy-preview` context, which would then report a failed deploy preview as a
+ * failed _review_ check and flag "Get approval" red instead of "Pass CI".
+ */
+const reviewCheckPattern = /\breview/i;
 
-function isReviewCheck(check: Readonly<RawCheckRollupContext>): boolean {
+export function isReviewCheck(check: Readonly<RawCheckRollupContext>): boolean {
     const label = check.name || check.context || '';
     return reviewCheckPattern.test(label);
 }
@@ -569,6 +585,46 @@ export function hasActiveChangesRequested(
             review.state === 'CHANGES_REQUESTED' &&
             !(review.author?.login != null && reRequestedLogins.has(review.author.login)),
     );
+}
+
+function checkRunRank(check: Readonly<RawCheckRollupContext>): number {
+    let newest = 0;
+    for (const raw of [
+        check.startedAt,
+        check.completedAt,
+        check.createdAt,
+    ]) {
+        const parsed = raw ? new Date(raw).getTime() : Number.NaN;
+        if (Number.isFinite(parsed) && parsed > newest) {
+            newest = parsed;
+        }
+    }
+    return newest;
+}
+
+/**
+ * Collapse a status-check rollup to one entry per check name, keeping that name's most recent run.
+ *
+ * GitHub's `statusCheckRollup` lists _every_ check run attached to the head commit, including ones
+ * superseded by a later re-run under the same name. Without this collapse a single stale FAILURE
+ * pins the rollup to `passing: false` forever: on app.example.com#5083 a "Check Review Status" that
+ * failed on 09-17 outlived the one that succeeded on 09-21 once the approval landed, so the "Get
+ * approval" step could never go green. Keying by name and taking the latest run is the same rule
+ * GitHub's own branch protection applies to a required check.
+ */
+export function latestChecksByName(
+    checks: ReadonlyArray<RawCheckRollupContext>,
+): ReadonlyArray<RawCheckRollupContext> {
+    const latest = new Map<string, {check: RawCheckRollupContext; rank: number}>();
+    checks.forEach((check) => {
+        const name = check.name || check.context || '';
+        const rank = checkRunRank(check);
+        const current = latest.get(name);
+        if (!current || rank >= current.rank) {
+            latest.set(name, {check, rank});
+        }
+    });
+    return Array.from(latest.values()).map((entry) => entry.check);
 }
 
 const failureConclusions = new Set([
@@ -721,8 +777,9 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
         if (!map.has(node.headRefName)) {
             const allChecks =
                 node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
-            const buildChecks = allChecks.filter((check) => !isReviewCheck(check));
-            const reviewChecks = allChecks.filter((check) => isReviewCheck(check));
+            const currentChecks = latestChecksByName(allChecks);
+            const buildChecks = currentChecks.filter((check) => !isReviewCheck(check));
+            const reviewChecks = currentChecks.filter((check) => isReviewCheck(check));
             const ciStatus = summarizeStatusCheckRollup(buildChecks);
             const reviewCheckStatus = summarizeStatusCheckRollup(reviewChecks);
             const reviewDecision = node.reviewDecision ?? '';
@@ -830,8 +887,9 @@ export async function fetchPrInfoForBranch(folder: string, branch: string): Prom
         return null;
     }
     const allChecks = parsed.statusCheckRollup ?? [];
-    const buildChecks = allChecks.filter((check) => !isReviewCheck(check));
-    const reviewChecks = allChecks.filter((check) => isReviewCheck(check));
+    const currentChecks = latestChecksByName(allChecks);
+    const buildChecks = currentChecks.filter((check) => !isReviewCheck(check));
+    const reviewChecks = currentChecks.filter((check) => isReviewCheck(check));
     const ciStatus = summarizeStatusCheckRollup(buildChecks);
     const reviewCheckStatus = summarizeStatusCheckRollup(reviewChecks);
     const reviewDecision = parsed.reviewDecision ?? '';
