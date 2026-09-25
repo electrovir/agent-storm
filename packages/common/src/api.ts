@@ -476,17 +476,10 @@ export const folderInfoShape = defineShape({
      */
     prCiInProgress: false,
     /**
-     * Aggregated result of _review-flavoured_ status checks (anything whose name matches
-     * `/review/i` — same set excluded from `prCiPassing`). These are CI checks that gate on "all
-     * required human approvals received", so the "Get approval" step uses this directly instead of
-     * GitHub's `reviewDecision`, which would also count bot reviewers (Claude, Copilot, etc.) the
-     * user doesn't actually care about.
-     *
-     * Null when there are no review checks on the PR (or all are still running).
+     * True when a human reviewer currently approves, nobody is requesting changes, and no human
+     * review request is outstanding. Bots are ignored. Computed from the PR's reviews and review
+     * requests, never from repo-specific review gate checks.
      */
-    prReviewCheckPassing: nullableShape(false),
-    /** True while at least one review-flavoured check is still running. */
-    prReviewCheckInProgress: false,
     prApproved: false,
     /**
      * True when at least one reviewer's current verdict is "changes requested" — i.e. their latest
@@ -496,12 +489,7 @@ export const folderInfoShape = defineShape({
      * Powers the red-exclamation failure state on the "Get approval" step.
      */
     prReviewChangesRequested: false,
-    /**
-     * True when reviewers have been requested but haven't yet responded (`reviewDecision ===
-     * 'REVIEW_REQUIRED'` with non-empty `reviewRequests`). Distinguishes "waiting on humans" from
-     * "no reviewers configured" so the approval step only shows a loading state when someone is
-     * actually expected to act.
-     */
+    /** True when at least one human review request on the PR is still outstanding. */
     prReviewPending: false,
     /**
      * True iff at least one inline review thread on the PR is still unresolved AND not outdated.

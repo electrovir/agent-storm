@@ -471,8 +471,6 @@ type PrSnapshot = Pick<
     | 'prIsDraft'
     | 'prCiPassing'
     | 'prCiInProgress'
-    | 'prReviewCheckPassing'
-    | 'prReviewCheckInProgress'
     | 'prApproved'
     | 'prReviewChangesRequested'
     | 'prReviewPending'
@@ -487,8 +485,6 @@ const emptyPrSnapshot: PrSnapshot = {
     prIsDraft: false,
     prCiPassing: null,
     prCiInProgress: false,
-    prReviewCheckPassing: null,
-    prReviewCheckInProgress: false,
     prApproved: false,
     prReviewChangesRequested: false,
     prReviewPending: false,
@@ -504,8 +500,6 @@ function prSnapshotFromPr(pr: Readonly<PrInfo>): PrSnapshot {
         prIsDraft: pr.isDraft,
         prCiPassing: pr.ciPassing,
         prCiInProgress: pr.ciInProgress,
-        prReviewCheckPassing: pr.reviewCheckPassing,
-        prReviewCheckInProgress: pr.reviewCheckInProgress,
         prApproved: pr.approved,
         prReviewChangesRequested: pr.reviewChangesRequested,
         prReviewPending: pr.reviewPending,
@@ -525,8 +519,6 @@ function prSnapshotFromPrior(prior: Readonly<FolderInfo>): PrSnapshot {
         prIsDraft: prior.prIsDraft,
         prCiPassing: prior.prCiPassing,
         prCiInProgress: prior.prCiInProgress,
-        prReviewCheckPassing: prior.prReviewCheckPassing,
-        prReviewCheckInProgress: prior.prReviewCheckInProgress,
         prApproved: prior.prApproved,
         prReviewChangesRequested: prior.prReviewChangesRequested,
         prReviewPending: prior.prReviewPending,
@@ -694,8 +686,6 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         prIsDraft: false,
         prCiPassing: null,
         prCiInProgress: false,
-        prReviewCheckPassing: null,
-        prReviewCheckInProgress: false,
         prApproved: false,
         prReviewChangesRequested: false,
         prReviewPending: false,
@@ -883,14 +873,6 @@ function normalizeCachedFolderInfo(info: FolderInfo): FolderInfo {
                 ? info.prCiPassing
                 : null,
         prCiInProgress: typeof info.prCiInProgress === 'boolean' ? info.prCiInProgress : false,
-        prReviewCheckPassing:
-            typeof info.prReviewCheckPassing === 'boolean' || info.prReviewCheckPassing === null
-                ? info.prReviewCheckPassing
-                : null,
-        prReviewCheckInProgress:
-            typeof info.prReviewCheckInProgress === 'boolean'
-                ? info.prReviewCheckInProgress
-                : false,
         prApproved: typeof info.prApproved === 'boolean' ? info.prApproved : false,
         prReviewChangesRequested:
             typeof info.prReviewChangesRequested === 'boolean'

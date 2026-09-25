@@ -61,20 +61,9 @@ import {
 } from '../../util/api-client.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
-import {isAnyMergeStepLoading} from './merge-steps.js';
+import {isWorking} from './merge-steps.js';
 
 const allowedLinkHostnames = ['github.com'];
-
-/**
- * "Working" = at least one of the worktree's progress-tracker steps is currently rendering as
- * loading (AI generating, CI in flight, get-approval spinning while waiting on a reviewer, …). The
- * merge-steps config is the single source of truth, so the sidebar grouping never drifts from what
- * the user sees on the step nodes. Everything else — failures, done, idle — falls through to "Needs
- * attention". Used to split each repo's worktrees into the two sidebar sections.
- */
-function isWorking(folder: FolderInfo): boolean {
-    return isAnyMergeStepLoading(folder);
-}
 
 const pollIntervalMs = 2000;
 

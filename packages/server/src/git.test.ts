@@ -11,6 +11,7 @@ import {
     latestChecksByName,
     listWorktreeChildren,
     removeWorktree,
+    resolveReviewerState,
 } from './git.js';
 
 const exec = promisify(execFile);
@@ -198,6 +199,64 @@ describe(hasActiveChangesRequested.name, () => {
 
     it('is false when there are no reviews', () => {
         assert.isFalse(hasActiveChangesRequested([], new Set()));
+    });
+});
+
+describe(resolveReviewerState.name, () => {
+    const human = (login: string) => ({__typename: 'User', login});
+    const bot = (login: string) => ({__typename: 'Bot', login});
+
+    // app.example.com#5228: reviewDecision was '' (no required-review rule) and a repo CI gate failed
+    // for an unrelated reason, so the approval never registered.
+    it('approves on a human approval with no outstanding requests', () => {
+        const result = resolveReviewerState(
+            [
+                {state: 'COMMENTED', author: bot('review-bot')},
+                {state: 'APPROVED', author: human('electrovir')},
+            ],
+            [],
+        );
+        assert.deepEquals(result, {approved: true, changesRequested: false, pending: false});
+    });
+
+    it('ignores bot approvals', () => {
+        const result = resolveReviewerState([{state: 'APPROVED', author: bot('copilot')}], []);
+        assert.isFalse(result.approved);
+    });
+
+    it('is pending while another human review request is outstanding', () => {
+        const result = resolveReviewerState(
+            [{state: 'APPROVED', author: human('electrovir')}],
+            [human('someone-else')],
+        );
+        assert.deepEquals(result, {approved: false, changesRequested: false, pending: true});
+    });
+
+    it('ignores outstanding bot review requests', () => {
+        const result = resolveReviewerState(
+            [{state: 'APPROVED', author: human('electrovir')}],
+            [bot('copilot-pull-request-reviewer')],
+        );
+        assert.isTrue(result.approved);
+    });
+
+    it('does not approve while another human requests changes', () => {
+        const result = resolveReviewerState(
+            [
+                {state: 'APPROVED', author: human('electrovir')},
+                {state: 'CHANGES_REQUESTED', author: human('someone-else')},
+            ],
+            [],
+        );
+        assert.deepEquals(result, {approved: false, changesRequested: true, pending: false});
+    });
+
+    it('treats a re-requested approver as pending, not approved', () => {
+        const result = resolveReviewerState(
+            [{state: 'APPROVED', author: human('electrovir')}],
+            [human('electrovir')],
+        );
+        assert.deepEquals(result, {approved: false, changesRequested: false, pending: true});
     });
 });
 

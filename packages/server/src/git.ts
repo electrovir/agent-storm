@@ -298,7 +298,7 @@ export type PrInfo = {
     ciPassing: boolean | null;
     /** True when at least one CI check is currently running. */
     ciInProgress: boolean;
-    /** True when GitHub's `reviewDecision` is APPROVED. */
+    /** See {@link resolveReviewerState}. */
     approved: boolean;
     /**
      * True when at least one reviewer's current verdict is "changes requested" — excluding
@@ -309,13 +309,6 @@ export type PrInfo = {
     reviewPending: boolean;
     /** True when at least one inline review thread is still unresolved. */
     hasUnresolvedReviewComments: boolean;
-    /**
-     * Aggregated result of review-flavoured status checks. Null when none exist or all are still
-     * running.
-     */
-    reviewCheckPassing: boolean | null;
-    /** True while at least one review-flavoured check is still running. */
-    reviewCheckInProgress: boolean;
     /**
      * True when GitHub reports the PR's `mergeable` state as `CONFLICTING` — the branch can't be
      * merged without resolving conflicts against the base. `UNKNOWN` (GitHub still computing) and
@@ -472,9 +465,8 @@ const repoPrsGraphqlQuery = [
     '        mergedAt',
     '        isDraft',
     '        mergeable',
-    '        reviewDecision',
-    '        latestReviews(first: 20) { nodes { state author { login } } }',
-    '        reviewRequests(first: 20) { totalCount nodes { requestedReviewer { __typename ... on User { login } } } }',
+    '        latestReviews(first: 20) { nodes { state author { __typename login } } }',
+    '        reviewRequests(first: 20) { totalCount nodes { requestedReviewer { __typename ... on User { login } ... on Bot { login } } } }',
     '        reviewThreads(first: 25) { nodes { isResolved isOutdated } }',
     '        commits(last: 1) { nodes { commit { statusCheckRollup {',
     `          contexts(first: ${fetchCheckRollupContextsSize}) { nodes {`,
@@ -510,17 +502,12 @@ type RawPrNode = {
     mergedAt?: string | null;
     isDraft?: boolean;
     mergeable?: string | null;
-    reviewDecision?: string | null;
     latestReviews?: {
-        nodes?: ReadonlyArray<{
-            state?: string | null;
-            author?: {login?: string | null} | null;
-        }>;
+        nodes?: ReadonlyArray<LatestReview>;
     };
     reviewRequests?: {
-        totalCount?: number;
         nodes?: ReadonlyArray<{
-            requestedReviewer?: {login?: string | null} | null;
+            requestedReviewer?: ReviewRequest | null;
         }>;
     };
     reviewThreads?: {
@@ -562,8 +549,58 @@ export function isReviewCheck(check: Readonly<RawCheckRollupContext>): boolean {
 
 type LatestReview = {
     state?: string | null;
-    author?: {login?: string | null} | null;
+    author?: {__typename?: string | null; login?: string | null} | null;
 };
+
+type ReviewRequest = {
+    __typename?: string | null;
+    login?: string | null;
+};
+
+function isBotLogin(typename: string | null | undefined, login: string | null | undefined) {
+    return typename === 'Bot' || !!login?.endsWith('[bot]');
+}
+
+export type ReviewerState = {
+    approved: boolean;
+    changesRequested: boolean;
+    pending: boolean;
+};
+
+/**
+ * Approval as the PR's reviewers see it, independent of any repo-specific review gate or GitHub's
+ * `reviewDecision` (which is empty on repos without a required-review rule). Bot reviewers and bot
+ * review requests are ignored. Approved means a human's current verdict is APPROVED, nobody is
+ * actively requesting changes, and no human review request is still outstanding.
+ */
+export function resolveReviewerState(
+    latestReviews: ReadonlyArray<LatestReview>,
+    reviewRequests: ReadonlyArray<ReviewRequest>,
+): ReviewerState {
+    const humanRequests = reviewRequests.filter(
+        (request) => !isBotLogin(request.__typename, request.login),
+    );
+    const reRequestedLogins = new Set(
+        humanRequests
+            .map((request) => request.login)
+            .filter((login): login is string => !!login),
+    );
+    const humanReviews = latestReviews.filter(
+        (review) => !isBotLogin(review.author?.__typename, review.author?.login),
+    );
+    const changesRequested = hasActiveChangesRequested(humanReviews, reRequestedLogins);
+    const pending = humanRequests.length > 0;
+    const hasCurrentApproval = humanReviews.some(
+        (review) =>
+            review.state === 'APPROVED' &&
+            !(review.author?.login != null && reRequestedLogins.has(review.author.login)),
+    );
+    return {
+        approved: hasCurrentApproval && !changesRequested && !pending,
+        changesRequested,
+        pending,
+    };
+}
 
 /**
  * True iff at least one reviewer's _current_ effective verdict is "changes requested". A reviewer
@@ -779,15 +816,12 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
                 node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
             const currentChecks = latestChecksByName(allChecks);
             const buildChecks = currentChecks.filter((check) => !isReviewCheck(check));
-            const reviewChecks = currentChecks.filter((check) => isReviewCheck(check));
             const ciStatus = summarizeStatusCheckRollup(buildChecks);
-            const reviewCheckStatus = summarizeStatusCheckRollup(reviewChecks);
-            const reviewDecision = node.reviewDecision ?? '';
-            const reviewRequestsCount = node.reviewRequests?.totalCount ?? 0;
-            const reRequestedLogins = new Set(
+            const reviewerState = resolveReviewerState(
+                node.latestReviews?.nodes ?? [],
                 (node.reviewRequests?.nodes ?? [])
-                    .map((request) => request.requestedReviewer?.login)
-                    .filter((login): login is string => !!login),
+                    .map((request) => request.requestedReviewer)
+                    .filter((reviewer): reviewer is ReviewRequest => !!reviewer),
             );
             const reviewThreadNodes = node.reviewThreads?.nodes ?? [];
             // Outdated threads point at code that no longer exists in the diff — the reviewer's
@@ -802,21 +836,10 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
                 headRefOid: node.headRefOid || '',
                 ciPassing: ciStatus.passing,
                 ciInProgress: ciStatus.inProgress,
-                approved: reviewDecision === 'APPROVED',
-                // Per-reviewer "currently blocking" — re-requested reviewers are excluded even
-                // though GitHub leaves `reviewDecision` stuck on CHANGES_REQUESTED. See
-                // `hasActiveChangesRequested`.
-                reviewChangesRequested: hasActiveChangesRequested(
-                    node.latestReviews?.nodes ?? [],
-                    reRequestedLogins,
-                ),
-                // Only flag pending when there's an outstanding human action. PRs without
-                // required reviewers report `reviewDecision: ''` and shouldn't light up the
-                // approval step as loading forever.
-                reviewPending: reviewDecision === 'REVIEW_REQUIRED' && reviewRequestsCount > 0,
+                approved: reviewerState.approved,
+                reviewChangesRequested: reviewerState.changesRequested,
+                reviewPending: reviewerState.pending,
                 hasUnresolvedReviewComments,
-                reviewCheckPassing: reviewCheckStatus.passing,
-                reviewCheckInProgress: reviewCheckStatus.inProgress,
                 hasMergeConflicts: node.mergeable === 'CONFLICTING',
             });
         }
@@ -840,13 +863,13 @@ export async function fetchPrInfoForBranch(folder: string, branch: string): Prom
     }
     const safeBranch = `'${branch.replace(/'/g, String.raw`'\''`)}'`;
     /**
-     * `gh pr view --json` exposes `statusCheckRollup`, `reviewDecision`, `reviewRequests`, etc. but
+     * `gh pr view --json` exposes `statusCheckRollup`, `reviewRequests`, etc. but
      * NOT `reviewThreads` — that's only reachable via raw GraphQL. The fallback path is rare
      * (worktree against a PR older than the batch window) so we accept the small accuracy loss on
      * `hasUnresolvedReviewComments` here rather than running a second per-branch GraphQL call.
      */
     const result = await runShellCommand(
-        `gh pr view ${safeBranch} --json url,state,mergedAt,isDraft,mergeable,headRefOid,statusCheckRollup,reviewDecision,latestReviews,reviewRequests`,
+        `gh pr view ${safeBranch} --json url,state,mergedAt,isDraft,mergeable,headRefOid,statusCheckRollup,latestReviews,reviewRequests`,
         {cwd: folder},
     );
     if (result.exitCode !== 0) {
@@ -871,12 +894,8 @@ export async function fetchPrInfoForBranch(folder: string, branch: string): Prom
         mergeable?: string | null;
         headRefOid?: string;
         statusCheckRollup?: ReadonlyArray<RawCheckRollupContext>;
-        reviewDecision?: string | null;
-        latestReviews?: ReadonlyArray<{
-            state?: string | null;
-            author?: {login?: string | null} | null;
-        }>;
-        reviewRequests?: ReadonlyArray<{login?: string | null}>;
+        latestReviews?: ReadonlyArray<LatestReview>;
+        reviewRequests?: ReadonlyArray<ReviewRequest>;
     };
     try {
         parsed = JSON.parse(result.stdout);
@@ -889,15 +908,10 @@ export async function fetchPrInfoForBranch(folder: string, branch: string): Prom
     const allChecks = parsed.statusCheckRollup ?? [];
     const currentChecks = latestChecksByName(allChecks);
     const buildChecks = currentChecks.filter((check) => !isReviewCheck(check));
-    const reviewChecks = currentChecks.filter((check) => isReviewCheck(check));
     const ciStatus = summarizeStatusCheckRollup(buildChecks);
-    const reviewCheckStatus = summarizeStatusCheckRollup(reviewChecks);
-    const reviewDecision = parsed.reviewDecision ?? '';
-    const reviewRequestsCount = parsed.reviewRequests?.length ?? 0;
-    const reRequestedLogins = new Set(
-        (parsed.reviewRequests ?? [])
-            .map((request) => request.login)
-            .filter((login): login is string => !!login),
+    const reviewerState = resolveReviewerState(
+        parsed.latestReviews ?? [],
+        parsed.reviewRequests ?? [],
     );
     return {
         url: parsed.url,
@@ -906,20 +920,13 @@ export async function fetchPrInfoForBranch(folder: string, branch: string): Prom
         headRefOid: parsed.headRefOid || '',
         ciPassing: ciStatus.passing,
         ciInProgress: ciStatus.inProgress,
-        approved: reviewDecision === 'APPROVED',
-        // See `hasActiveChangesRequested` — re-requested reviewers don't count even though
-        // GitHub leaves `reviewDecision` stuck on CHANGES_REQUESTED.
-        reviewChangesRequested: hasActiveChangesRequested(
-            parsed.latestReviews ?? [],
-            reRequestedLogins,
-        ),
-        reviewPending: reviewDecision === 'REVIEW_REQUIRED' && reviewRequestsCount > 0,
+        approved: reviewerState.approved,
+        reviewChangesRequested: reviewerState.changesRequested,
+        reviewPending: reviewerState.pending,
         // `gh pr view --json` doesn't expose reviewThreads, so this stays false on the fallback
         // path. Live data for branches in the batch window comes through the full GraphQL query
         // in `fetchRepoPrs`.
         hasUnresolvedReviewComments: false,
-        reviewCheckPassing: reviewCheckStatus.passing,
-        reviewCheckInProgress: reviewCheckStatus.inProgress,
         hasMergeConflicts: parsed.mergeable === 'CONFLICTING',
     };
 }

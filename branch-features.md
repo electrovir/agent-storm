@@ -5,7 +5,7 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - SPA router with `/add-repo`, `/add-worktree`, `/book` routes for empty/setup workspaces.
 - Native folder-picker endpoint backs the "add repo" flow from the frontend.
 - Worktrees persisted in `~/.config/agent-storm.json` instead of filesystem scan each refresh.
-- Sidebar groups worktrees into Working vs Needs-attention with status dots and footer.
+- Sidebar groups worktrees into Working vs Needs-attention; red steps force Needs-attention unless AI is generating.
 - Sidebar redesigned with brand mark, resizable width, and always-visible row actions.
 - Worktree create/delete updates the sidebar immediately via reconcile on config save.
 - Adding a worktree-child folder recognizes it as its parent repo automatically.
@@ -16,7 +16,7 @@ At-a-glance list of features on this branch. Append one 10–15 word bullet per 
 - Terminal supports Ctrl+Shift+C/V and clickable web links via xterm addons.
 - Progress tracker driven by per-step `mergeStepsConfig` with all step state stored on the worktree config.
 - Self-review step now exposes Toggle + Open-in-IDE via a hover popover instead of one overloaded click.
-- Reviewer-approved step reads `gh pr view --json reviewDecision` so approvals auto-check on the PR.
+- "Get approval" checks off from human reviewers' approvals and pending requests; ignores bots and repo CI gates.
 - Smarter pane busy detection and clean pty restart on failure.
 - WebSocket auto-reconnects and drops stale cache entries; live target fields overlay.
 - Theme consolidated onto vira's ViraThemeClient (sidebar switcher); brand vars applied via its callback.

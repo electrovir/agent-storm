@@ -16,12 +16,6 @@ export type MergeStepInputs = {
     prIsDraft: boolean;
     prCiPassing: boolean | null;
     prCiInProgress: boolean;
-    /**
-     * Aggregated review-check status — drives the "Get approval" step in place of GitHub's
-     * `reviewDecision`. See `folderInfoShape.prReviewCheckPassing` for semantics.
-     */
-    prReviewCheckPassing: boolean | null;
-    prReviewCheckInProgress: boolean;
     prApproved: boolean;
     prReviewChangesRequested: boolean;
     prReviewPending: boolean;
@@ -282,29 +276,14 @@ export const mergeStepsConfig: ReadonlyArray<MergeStepConfigValue> = [
         // Approval state is meaningless until a real (non-draft) PR exists — hide the step
         // entirely until `open-pr` is done.
         dependsOn: ['open-pr'],
-        // Driven by the review-check CI status, not GitHub's `reviewDecision`. The user's
-        // repo gates approval through a CI check that excludes bot reviewers (Claude, Copilot,
-        // etc.) the user doesn't care about — passing that check means every approver the
-        // user *does* care about has signed off. Merged PRs satisfy this too so the step
-        // doesn't appear unchecked on a PR that already shipped.
         storageKey: null,
-        calculate: ({prReviewCheckPassing, prMerged}) => prReviewCheckPassing === true || prMerged,
-        // Loading covers two cases: review check is mid-flight, OR the PR is open + non-draft
-        // with no active block. A review check sitting in a not-yet-passing state because the
-        // human just hasn't approved is NOT a failure — it's "still waiting". Done/failed
-        // precedence in the render loop strips the loading state once approval lands or a
-        // real block appears.
+        calculate: ({prApproved, prMerged}) => prApproved || prMerged,
         loading: ({prUrl, prIsDraft}) => !!prUrl && !prIsDraft,
         // Red exclam means "the author has something to do right now": a reviewer has actively
-        // requested changes (`reviewDecision: CHANGES_REQUESTED`), at least one inline review
-        // thread is still unresolved and not outdated, or the PR has merge conflicts against its
-        // base that the author must resolve before it can land. Deliberately NOT keyed off
-        // `prReviewCheckPassing === false`: this repo's gate check ("Check Review Status")
-        // reports FAILURE for the whole window before a human approves, so treating false as a
-        // failure paints every unapproved PR red and the step can never render loading.
-        // Re-requesting a reviewer flips GitHub's decision back to REVIEW_REQUIRED, so
-        // `prReviewChangesRequested` clears and the step falls back to loading ("waiting for
-        // re-review") — exactly what we want.
+        // requested changes, at least one inline review thread is still unresolved and not
+        // outdated, or the PR has merge conflicts against its base that the author must resolve
+        // before it can land. Re-requesting a reviewer clears `prReviewChangesRequested`, so the
+        // step falls back to loading ("waiting for re-review").
         failed: ({prHasUnresolvedReviewComments, prReviewChangesRequested, prHasMergeConflicts}) =>
             prHasUnresolvedReviewComments || prReviewChangesRequested || prHasMergeConflicts,
         onClick: (_inputs, {embedPr}) => embedPr(),
@@ -363,8 +342,6 @@ export function buildMergeStepInputs(
         prIsDraft: folder.prIsDraft,
         prCiPassing: folder.prCiPassing ?? null,
         prCiInProgress: folder.prCiInProgress,
-        prReviewCheckPassing: folder.prReviewCheckPassing ?? null,
-        prReviewCheckInProgress: folder.prReviewCheckInProgress,
         prApproved: folder.prApproved,
         prReviewChangesRequested: folder.prReviewChangesRequested,
         prReviewPending: folder.prReviewPending,
@@ -434,4 +411,32 @@ export function isAnyMergeStepLoading(folder: FolderInfo): boolean {
         if (!areStepDepsSatisfied(step, doneByName)) return false;
         return evaluateMergeStep(folder, step).loading;
     });
+}
+
+export function isAnyMergeStepFailed(folder: FolderInfo): boolean {
+    const doneByName = buildDoneByName(folder);
+    return mergeStepsConfig.some((step) => {
+        if (!areStepDepsSatisfied(step, doneByName)) return false;
+        return evaluateMergeStep(folder, step).failed;
+    });
+}
+
+export function isAiGenerating(folder: FolderInfo): boolean {
+    const step = mergeStepsConfig.find((candidate) => candidate.name === 'ai-generating');
+    return !!step && evaluateMergeStep(folder, step).loading;
+}
+
+/**
+ * "Working" = at least one of the worktree's progress-tracker steps is currently rendering as
+ * loading (AI generating, CI in flight, get-approval spinning while waiting on a reviewer, …). The
+ * merge-steps config is the single source of truth, so the sidebar grouping never drifts from what
+ * the user sees on the step nodes. Any red step (e.g. failed CI while get-approval still spins)
+ * overrides loading and drops the worktree into "Needs attention", as does done / idle — except
+ * while the AI is generating, which always counts as "Working". Used to split each repo's worktrees
+ * into the two sidebar sections.
+ */
+export function isWorking(folder: FolderInfo): boolean {
+    return (
+        isAiGenerating(folder) || (isAnyMergeStepLoading(folder) && !isAnyMergeStepFailed(folder))
+    );
 }
