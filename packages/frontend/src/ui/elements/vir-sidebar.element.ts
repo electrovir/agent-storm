@@ -1374,8 +1374,9 @@ const folderComparators: Record<SidebarSorting, (a: FolderInfo, b: FolderInfo) =
         return b.createdAtMs - a.createdAtMs || folderComparators[SidebarSorting.Name](a, b);
     },
     /**
-     * Most-recently-typed-in first. Folders nobody has typed in carry `0` and land at the end,
-     * where they fall back to the name comparator.
+     * Most-recently-typed-in first. Repos nobody has typed in use their last-opened time instead.
+     * Folders with neither carry `0` and land at the end, where they fall back to the name
+     * comparator.
      */
     [SidebarSorting.Activity](a, b) {
         return (

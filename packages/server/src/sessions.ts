@@ -189,6 +189,11 @@ export function isFreshAiSession(params: Readonly<{folder: string; sessionId: st
  * (the OS out of PTYs, a bad command) leaves the marker in place so the retry still launches a new
  * conversation instead of silently falling back to the resume command.
  */
+/** Mark an existing tab fresh so its next spawn starts a new conversation. */
+export function markFreshAiSession(params: Readonly<{folder: string; sessionId: string}>): void {
+    freshAiSessions.add(freshAiSessionKey(params));
+}
+
 export function clearFreshAiSession(params: Readonly<{folder: string; sessionId: string}>): void {
     freshAiSessions.delete(freshAiSessionKey(params));
 }

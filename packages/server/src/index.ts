@@ -64,6 +64,7 @@ import {
     loadConfig,
     saveConfig,
     setFolderAiId,
+    updateConfig,
 } from './config.js';
 import {
     attachPane,
@@ -97,6 +98,7 @@ import {
     forgetFolderSessions,
     getFolderSessions,
     isFreshAiSession,
+    markFreshAiSession,
     pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
@@ -331,22 +333,13 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
         const {worktreePath} = await addWorktree(requestData);
         const aiId = requestData.aiId?.trim();
         if (aiId) {
-            /**
-             * Best-effort override write. `loadConfig` throws on read failure rather than returning
-             * defaults, so `.catch(() => undefined)` here is what prevents a transient race from
-             * kicking us into a "defaults + this override" save that would wipe the user's other
-             * settings.
-             */
-            const initial = await loadConfig().catch(() => undefined);
-            if (initial) {
-                await saveConfig(
-                    setFolderAiId({
-                        config: initial,
-                        folder: worktreePath,
-                        aiId,
-                    }),
-                );
-            }
+            await updateConfig((config) => {
+                return setFolderAiId({
+                    config,
+                    folder: worktreePath,
+                    aiId,
+                });
+            });
         }
         await refreshFolderInfoNow();
         await runPostWorktreeCmd({
@@ -474,14 +467,49 @@ const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEnd
 
 const sessionSetAiImplementation = implementor.implementEndpoint(sessionSetAiEndpoint, {
     async [HttpMethod.Post]({requestData}) {
+        const folder = normalizePath(requestData.folder);
+        const sessions = await setFolderSessionAi({
+            folder,
+            kind: requestData.kind,
+            sessionId: requestData.sessionId,
+            aiId: requestData.aiId,
+        });
+        if (requestData.kind === PaneKind.Ai) {
+            const resolvedAis = await Promise.all(
+                sessions.ai.map(async (session) => {
+                    return {
+                        sessionId: session.id,
+                        aiId: (
+                            await resolveAiForSession({
+                                folder,
+                                sessionId: session.id,
+                            })
+                        )?.id,
+                    };
+                }),
+            );
+            const switchedAiId = resolvedAis.find(
+                (entry) => entry.sessionId === requestData.sessionId,
+            )?.aiId;
+            /**
+             * Switching onto an AI another tab in this folder already runs is the same as adding a
+             * second tab for it: resuming would open that other tab's conversation.
+             */
+            if (
+                switchedAiId &&
+                resolvedAis.some((entry) => {
+                    return entry.sessionId !== requestData.sessionId && entry.aiId === switchedAiId;
+                })
+            ) {
+                markFreshAiSession({
+                    folder,
+                    sessionId: requestData.sessionId,
+                });
+            }
+        }
         return {
             [HttpStatus.Ok]: {
-                responseData: await setFolderSessionAi({
-                    folder: normalizePath(requestData.folder),
-                    kind: requestData.kind,
-                    sessionId: requestData.sessionId,
-                    aiId: requestData.aiId,
-                }),
+                responseData: sessions,
             },
         };
     },
@@ -624,33 +652,28 @@ const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint,
          * `parentRepoPath` to resolve the repo. Unknown folders (stale paths, freshly-deleted
          * worktrees, race against folder-info refresh) are no-ops — never error, this is
          * best-effort metadata.
-         *
-         * `loadConfig` now throws on read failure rather than returning defaults, so the `.catch`
-         * here is what prevents a transient load error from triggering a
-         * `saveConfig({...defaultConfig, repos: [...]})` reset of the user's other settings.
-         * Touching is fire-and-forget metadata; silently skipping a single stamp is the right
-         * trade.
          */
         const target = normalizePath(requestData.folder);
         const cached = await getCachedFolders();
         const folder = cached.find((entry) => entry.path === target);
         const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
-        const config = await loadConfig().catch(() => undefined);
-        const repoIndex = config?.repos.findIndex((repo) => repo.path === repoPath) ?? -1;
-        if (config && repoIndex !== -1) {
-            const updatedRepos = config.repos.map((repo, index) => {
-                return index === repoIndex
-                    ? {
-                          ...repo,
-                          lastInteractedAtMs: Date.now(),
-                      }
-                    : repo;
-            });
-            await saveConfig({
+        await updateConfig((config) => {
+            const repoIndex = config.repos.findIndex((repo) => repo.path === repoPath);
+            if (repoIndex === -1) {
+                return undefined;
+            }
+            return {
                 ...config,
-                repos: updatedRepos,
-            });
-        }
+                repos: config.repos.map((repo, index) => {
+                    return index === repoIndex
+                        ? {
+                              ...repo,
+                              lastInteractedAtMs: Date.now(),
+                          }
+                        : repo;
+                }),
+            };
+        });
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -674,17 +697,20 @@ const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
         const cached = await getCachedFolders();
         const folder = cached.find((entry) => entry.path === target);
         const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
-        const config = await loadConfig().catch(() => undefined);
-        const repoIndex = config?.repos.findIndex((repo) => repo.path === repoPath) ?? -1;
-        if (config && repoIndex !== -1) {
-            const updatedRepos = config.repos.map((repo, index) => {
-                return index === repoIndex ? omitObjectKeys(repo, ['lastInteractedAtMs']) : repo;
-            });
-            await saveConfig({
+        await updateConfig((config) => {
+            const repoIndex = config.repos.findIndex((repo) => repo.path === repoPath);
+            if (repoIndex === -1) {
+                return undefined;
+            }
+            return {
                 ...config,
-                repos: updatedRepos,
-            });
-        }
+                repos: config.repos.map((repo, index) => {
+                    return index === repoIndex
+                        ? omitObjectKeys(repo, ['lastInteractedAtMs'])
+                        : repo;
+                }),
+            };
+        });
         return {
             [HttpStatus.Ok]: {
                 responseData: {

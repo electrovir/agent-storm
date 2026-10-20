@@ -1,3 +1,4 @@
+import {getStoredSecret} from './auth.js';
 import {getBackendBaseUrl} from './service-origin.js';
 
 /**
@@ -82,15 +83,24 @@ async function probeAndReload(): Promise<void> {
 }
 
 /**
- * Any HTTP response — even 401 from a missing auth header — means the backend process is alive and
- * serving. We only treat true network failures (DNS/connect refused/timeout, i.e. `fetch` itself
- * throwing) as "still down". This avoids reload loops when the user's secret is stale.
+ * Any HTTP response — even 401 from a stale or missing secret — means the backend process is alive
+ * and serving. We only treat true network failures (DNS/connect refused/timeout, i.e. `fetch`
+ * itself throwing) as "still down". This avoids reload loops when the user's secret is stale.
+ *
+ * The stored secret is sent when there is one so a healthy probe doesn't make the backend log a
+ * 401.
  */
 async function isBackendReachable(): Promise<boolean> {
+    const secret = getStoredSecret();
     try {
         const response = await fetch(`${getBackendBaseUrl()}/folders`, {
             method: 'GET',
             cache: 'no-store',
+            headers: secret
+                ? {
+                      Authorization: `Bearer ${secret}`,
+                  }
+                : {},
         });
         return response.status > 0;
     } catch {

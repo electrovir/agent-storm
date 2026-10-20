@@ -11,7 +11,7 @@ import {awaitedForEach, log, wait} from '@augment-vir/common';
 import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
 import {basename} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
-import {getFolderAiDefinition, loadConfig, saveConfig} from './config.js';
+import {getFolderAiDefinition, loadConfig, updateConfig} from './config.js';
 import {folderInfoCachePath, githubCachePath, notCommittedDir} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {
@@ -141,47 +141,21 @@ function isAutoDisabled(): boolean {
     }
 }
 
-/**
- * Chain of in-flight config writes for the auto-disable field. The config file is a user-edited
- * JSON; we don't want overlapping writes from successive rate-limit events to interleave or to race
- * with a config save from the settings modal — chaining serializes them.
- */
-const autoDisableWriteState: {pending: Promise<void>} = {
-    pending: Promise.resolve(),
-};
-
 async function persistAutoDisableToConfig(): Promise<void> {
-    autoDisableWriteState.pending = autoDisableWriteState.pending
-        .catch(() => {
-            /* prior write failed; carry on so the next one still has a chance */
-        })
-        .then(async () => {
-            /**
-             * Skip the write if `loadConfig` can't read the current file. Previously a transient
-             * read failure here would return `defaultConfig` and the subsequent `saveConfig` would
-             * clobber every user setting (repos list, AI cmd overrides, etc.) just to record an
-             * auto-disable flag. Now we bail; the auto-disable still lives in memory for the rest
-             * of the process and the next attempt after the file is readable will persist it.
-             */
-            const config = await loadConfig().catch(() => undefined);
-            if (!config) {
-                return;
-            }
-            await saveConfig({
-                ...config,
-                githubPollingAutoDisable:
-                    githubPollingState.autoDisabled && githubPollingState.reason
-                        ? {
-                              reason: githubPollingState.reason,
-                              disabledUntilMs: githubPollingState.disabledUntilMs,
-                          }
-                        : null,
-            });
-        })
-        .catch(() => {
-            /* persistence is best-effort — losing a write just means a cold restart */
-        });
-    return autoDisableWriteState.pending;
+    await updateConfig((config) => {
+        return {
+            ...config,
+            githubPollingAutoDisable:
+                githubPollingState.autoDisabled && githubPollingState.reason
+                    ? {
+                          reason: githubPollingState.reason,
+                          disabledUntilMs: githubPollingState.disabledUntilMs,
+                      }
+                    : null,
+        };
+    }).catch(() => {
+        /* persistence is best-effort — losing a write just means a cold restart */
+    });
 }
 
 function isValidAutoDisableReason(value: unknown): value is GitHubPollingDisableReason {
@@ -321,6 +295,8 @@ type RefreshTarget = {
     isWorktreeRoot: boolean;
     /** Resolved AI for this folder, or empty when the user has defined no AI at all. */
     aiId: string;
+    /** The repo's config `lastInteractedAtMs`. Only set on top-level repo targets. */
+    lastInteractedAtMs?: number | undefined;
 };
 
 /**
@@ -350,6 +326,7 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                         parentRepoPath: null,
                         createdAtMs,
                         isWorktreeRoot: false,
+                        lastInteractedAtMs: repo.lastInteractedAtMs,
                         aiId:
                             getFolderAiDefinition({
                                 config,
@@ -365,6 +342,7 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                     parentRepoPath: null,
                     createdAtMs,
                     isWorktreeRoot: true,
+                    lastInteractedAtMs: repo.lastInteractedAtMs,
                     aiId:
                         getFolderAiDefinition({
                             config,
@@ -509,9 +487,12 @@ export async function getCachedFolders(): Promise<FolderInfo[]> {
             sessionStatuses: [...sessionStatusLookup(target.folder)],
             /**
              * Overlaid like `sessionStatuses` rather than baked into the sweep's cache: a keystroke
-             * has to move the sidebar's activity sort within a poll, not within a 25s sweep.
+             * has to move the sidebar's activity sort within a poll, not within a 25s sweep. A repo
+             * nobody has typed in yet falls back to when it was last opened or added, so a freshly
+             * added repo sorts at the top instead of the end.
              */
-            lastActivityAtMs: getFolderActivityAtMs(target.folder),
+            lastActivityAtMs:
+                getFolderActivityAtMs(target.folder) || target.lastInteractedAtMs || 0,
         };
     });
 }

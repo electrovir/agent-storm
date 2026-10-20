@@ -1,8 +1,14 @@
 // cspell:words upserts
 
 import {defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
-import {log, omitObjectKeys, setFirstLetterCasing, StringCase} from '@augment-vir/common';
-import {createHash} from 'node:crypto';
+import {
+    log,
+    omitObjectKeys,
+    PromiseQueue,
+    setFirstLetterCasing,
+    StringCase,
+} from '@augment-vir/common';
+import {createHash, randomUUID} from 'node:crypto';
 import {mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {pruneAiAvatars} from './ai-avatar.js';
@@ -250,7 +256,7 @@ export async function loadConfig(): Promise<Config> {
         .catch(() => false);
     if (!exists) {
         const seeded = migrateAiConfig(defaultConfig);
-        await saveConfig(seeded);
+        await writeConfig(seeded);
         return seeded;
     }
     const contents = await readFile(configPath, 'utf-8');
@@ -278,12 +284,12 @@ export async function loadConfig(): Promise<Config> {
  * `loadConfig` calls (from `/repos/touch`, GitHub-polling auto-disable, etc.) to fall through to
  * the "save defaults" path and wipe the user's settings.
  */
-export async function saveConfig(config: Readonly<Config>): Promise<void> {
+async function writeConfig(config: Readonly<Config>): Promise<void> {
     await mkdir(dirname(configPath), {
         recursive: true,
     });
     const normalized = normalizeConfig(config);
-    const tempPath = `${configPath}.tmp.${process.pid}`;
+    const tempPath = `${configPath}.tmp.${randomUUID()}`;
     try {
         await writeFile(tempPath, JSON.stringify(normalized, undefined, 4), 'utf-8');
         await rename(tempPath, configPath);
@@ -293,4 +299,32 @@ export async function saveConfig(config: Readonly<Config>): Promise<void> {
         log.warning(`Failed to save config: ${String(error)}`);
         throw error;
     }
+}
+
+/**
+ * Serializes every config write. Without it, two requests that each load, modify, and save the
+ * config interleave and the later save silently drops the earlier one's change.
+ */
+const configWriteQueue = new PromiseQueue();
+
+/** Replaces the whole config file. Runs after any queued {@link updateConfig} calls finish. */
+export async function saveConfig(config: Readonly<Config>): Promise<void> {
+    await configWriteQueue.add(async () => await writeConfig(config));
+}
+
+/**
+ * Load, modify, and save the config as one queued step so concurrent updates can't overwrite each
+ * other. Skips the write when `update` returns `undefined` or when the current config can't be
+ * read, so a transient read failure never resets the user's settings to defaults.
+ */
+export async function updateConfig(
+    update: (config: Readonly<Config>) => Config | undefined,
+): Promise<void> {
+    await configWriteQueue.add(async () => {
+        const config = await loadConfig().catch(() => undefined);
+        const updated = config && update(config);
+        if (updated) {
+            await writeConfig(updated);
+        }
+    });
 }
