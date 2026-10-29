@@ -93,18 +93,18 @@ import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './gith
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
 import {
-    clearFreshAiSession,
     createFolderSession,
+    findFolderSession,
     forgetFolderSessions,
     getFolderSessions,
-    isFreshAiSession,
-    markFreshAiSession,
+    markConversationStarted,
     pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
     setFolderSessionAi,
+    startNewConversation,
 } from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
@@ -474,42 +474,43 @@ const sessionSetAiImplementation = implementor.implementEndpoint(sessionSetAiEnd
             sessionId: requestData.sessionId,
             aiId: requestData.aiId,
         });
-        if (requestData.kind === PaneKind.Ai) {
-            const resolvedAis = await Promise.all(
-                sessions.ai.map(async (session) => {
-                    return {
-                        sessionId: session.id,
-                        aiId: (
-                            await resolveAiForSession({
-                                folder,
-                                sessionId: session.id,
-                            })
-                        )?.id,
-                    };
-                }),
-            );
-            const switchedAiId = resolvedAis.find(
-                (entry) => entry.sessionId === requestData.sessionId,
-            )?.aiId;
-            /**
-             * Switching onto an AI another tab in this folder already runs is the same as adding a
-             * second tab for it: resuming would open that other tab's conversation.
-             */
-            if (
-                switchedAiId &&
-                resolvedAis.some((entry) => {
-                    return entry.sessionId !== requestData.sessionId && entry.aiId === switchedAiId;
-                })
-            ) {
-                markFreshAiSession({
-                    folder,
-                    sessionId: requestData.sessionId,
-                });
-            }
-        }
+        const resolvedAis =
+            requestData.kind === PaneKind.Ai
+                ? await Promise.all(
+                      sessions.ai.map(async (session) => {
+                          return {
+                              sessionId: session.id,
+                              aiId: (
+                                  await resolveAiForSession({
+                                      folder,
+                                      sessionId: session.id,
+                                  })
+                              )?.id,
+                          };
+                      }),
+                  )
+                : [];
+        const switchedAiId = resolvedAis.find(
+            (entry) => entry.sessionId === requestData.sessionId,
+        )?.aiId;
+        /**
+         * Switching onto an AI another tab in this folder already runs is the same as adding a
+         * second tab for it: resuming would open that other tab's conversation.
+         */
+        const isSharedAi =
+            !!switchedAiId &&
+            resolvedAis.some((entry) => {
+                return entry.sessionId !== requestData.sessionId && entry.aiId === switchedAiId;
+            });
         return {
             [HttpStatus.Ok]: {
-                responseData: sessions,
+                responseData: isSharedAi
+                    ? await startNewConversation({
+                          folder,
+                          kind: requestData.kind,
+                          sessionId: requestData.sessionId,
+                      })
+                    : sessions,
             },
         };
     },
@@ -554,26 +555,34 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
             folder,
             sessionId,
         });
+        const session = await findFolderSession({
+            folder,
+            kind: requestData.kind,
+            sessionId,
+        });
         /**
-         * A tab still carrying its fresh marker has no conversation of its own yet (its first spawn
-         * failed, or the user changed its AI before it spawned), so resuming here would drop it
-         * into another tab's conversation. See {@link isFreshAiSession}.
+         * A tab whose conversation hasn't started yet (its first spawn failed, or the user changed
+         * its AI before it spawned) has nothing of its own to resume, so resuming here would drop
+         * it into another tab's conversation.
          */
-        const isFreshAi =
-            requestData.kind === PaneKind.Ai &&
-            isFreshAiSession({
-                folder,
-                sessionId,
-            });
+        const isNewConversation = requestData.kind === PaneKind.Ai && !!session?.isNewConversation;
         await restartPane({
             folder,
             kind: requestData.kind,
             sessionId,
             aiCmd:
-                isFreshAi && aiDefinition?.newSessionCommand
+                isNewConversation && aiDefinition?.newSessionCommand
                     ? aiDefinition.newSessionCommand
                     : aiDefinition?.resumeSessionCommand,
+            conversationId: session?.conversationId,
         });
+        if (isNewConversation) {
+            await markConversationStarted({
+                folder,
+                kind: requestData.kind,
+                sessionId,
+            });
+        }
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -979,15 +988,16 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             folder,
             sessionId,
         });
-        /**
-         * A tab the user just added gets the AI's new-session command, so it opens a new
-         * conversation instead of resuming the one the tab they already had is showing. See
-         * {@link isFreshAiSession}.
-         */
-        const isFreshAi = isFreshAiSession({
+        const session = await findFolderSession({
             folder,
+            kind,
             sessionId,
         });
+        /**
+         * A tab the user just added gets the AI's new-session command, so it opens a new
+         * conversation instead of resuming the one the tab they already had is showing.
+         */
+        const isNewConversation = kind === PaneKind.Ai && !!session?.isNewConversation;
         const attachment = await attachPane({
             folder,
             kind,
@@ -997,9 +1007,10 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 background: searchParams.background,
             },
             aiCmd:
-                isFreshAi && aiDefinition?.newSessionCommand
+                isNewConversation && aiDefinition?.newSessionCommand
                     ? aiDefinition.newSessionCommand
                     : aiDefinition?.resumeSessionCommand,
+            conversationId: session?.conversationId,
             scrollbackLimit,
             onData(data) {
                 webSocket.send(data);
@@ -1011,9 +1022,10 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             },
         });
         /** Only a spawn that produced a live PTY actually used the new-session command. */
-        if (isFreshAi && attachment.isRunning) {
-            clearFreshAiSession({
+        if (isNewConversation && attachment.isRunning) {
+            await markConversationStarted({
                 folder,
+                kind,
                 sessionId,
             });
         }

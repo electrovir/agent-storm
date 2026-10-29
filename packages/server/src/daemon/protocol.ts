@@ -142,6 +142,11 @@ export type AttachHandshake = {
      */
     aiCmd?: string | undefined;
     /**
+     * Set as `AGENT_STORM_CONVERSATION_ID` in a freshly spawned PTY's environment. Daemons older
+     * than this field ignore it, which only means their panes go without the variable.
+     */
+    conversationId?: string | undefined;
+    /**
      * Max scrollback lines to replay to this client on attach. When set, the daemon truncates the
      * pane's buffered scrollback to the last N lines before sending it. Omitted means replay the
      * full buffered scrollback.
@@ -161,6 +166,8 @@ export type RestartHandshake = {
     sessionId?: string | undefined;
     /** See {@link AttachHandshake.aiCmd} — same plumbing, applied to the restart spawn. */
     aiCmd?: string | undefined;
+    /** See {@link AttachHandshake.conversationId}. */
+    conversationId?: string | undefined;
 };
 
 /** Kills every session of every kind under `folder`. */

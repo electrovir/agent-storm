@@ -80,6 +80,7 @@ export async function restartPane(
         kind: PaneKind;
         sessionId?: string | undefined;
         aiCmd?: string | undefined;
+        conversationId?: string | undefined;
     }>,
 ): Promise<void> {
     await singleShot<SimpleResponse>({
@@ -88,6 +89,7 @@ export async function restartPane(
         kind: params.kind,
         sessionId: params.sessionId,
         aiCmd: params.aiCmd,
+        conversationId: params.conversationId,
     });
 }
 
@@ -136,6 +138,7 @@ export async function attachPane({
     sessionId,
     colors,
     aiCmd,
+    conversationId,
     scrollbackLimit,
     onData,
     onExit,
@@ -155,6 +158,8 @@ export async function attachPane({
      * daemon started.
      */
     aiCmd?: string | undefined;
+    /** Set as `AGENT_STORM_CONVERSATION_ID` in the PTY's environment if this attach spawns it. */
+    conversationId?: string | undefined;
     /**
      * Client-requested cap on replayed scrollback lines, forwarded to the daemon's attach
      * handshake. The daemon truncates the buffered scrollback to the last N lines before replaying
@@ -175,6 +180,7 @@ export async function attachPane({
             sessionId,
             colors,
             aiCmd,
+            conversationId,
             scrollbackLimit,
         }),
     );

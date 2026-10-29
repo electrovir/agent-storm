@@ -47,6 +47,16 @@ export const sessionStorePath = resolve(notCommittedDir, 'pane-sessions.json');
  */
 export const folderActivityPath = resolve(notCommittedDir, 'folder-activity.json');
 
+/**
+ * Where wrapper scripts record which CLI session each tab's conversation maps to, one file per
+ * conversation id under a per-CLI subdirectory. Agent-storm never reads these files, it only
+ * deletes a conversation's files once no tab holds that conversation anymore.
+ */
+export const conversationStateDir = resolve(
+    process.env.XDG_STATE_HOME || resolve(homedir(), '.local', 'state'),
+    'agent-storm',
+);
+
 /** Unix domain socket the pty daemon listens on for new pane attachments. */
 export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
 

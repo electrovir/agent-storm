@@ -1,15 +1,15 @@
 import {PaneKind} from '@agent-storm/common';
 import {assert, assertWrap} from '@augment-vir/assert';
+import {omitObjectKeys} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {
-    clearFreshAiSession,
     createFolderSession,
     forgetFolderSessions,
     getFolderSessions,
-    isFreshAiSession,
+    markConversationStarted,
     parseSessionStore,
     pruneSessionAiIds,
     reconcileFolderSessions,
@@ -17,6 +17,7 @@ import {
     renameFolderSession,
     resolveSessionId,
     setFolderSessionAi,
+    startNewConversation,
 } from './sessions.js';
 
 /**
@@ -93,74 +94,86 @@ describe(createFolderSession.name, () => {
     });
 });
 
-describe(isFreshAiSession.name, () => {
-    it('marks only new AI sessions', async () => {
+describe(createFolderSession.name, () => {
+    it('starts a new conversation only for new AI tabs', async () => {
         await withTempFolder(async (folder) => {
-            const sessions = await createFolderSession({
+            await createFolderSession({
                 folder,
                 kind: PaneKind.Ai,
             });
-            const withShell = await createFolderSession({
+            const sessions = await createFolderSession({
                 folder,
                 kind: PaneKind.Shell,
             });
 
-            assert.isTrue(
-                isFreshAiSession({
-                    folder,
-                    sessionId: assertWrap.isDefined(sessions.ai[1]).id,
-                }),
+            assert.deepEquals(
+                [
+                    sessions.ai,
+                    sessions.shell,
+                ].map((list) => list.map((session) => session.isNewConversation)),
+                [
+                    /** The folder's pre-existing tab keeps resuming its conversation. */
+                    [
+                        false,
+                        true,
+                    ],
+                    [
+                        false,
+                        false,
+                    ],
+                ],
             );
-            /** The folder's pre-existing tab is not new, so it keeps the normal AI command. */
-            assert.isFalse(
-                isFreshAiSession({
-                    folder,
-                    sessionId: assertWrap.isDefined(sessions.ai[0]).id,
-                }),
-            );
-            assert.isFalse(
-                isFreshAiSession({
-                    folder,
-                    sessionId: assertWrap.isDefined(withShell.shell[1]).id,
-                }),
+            /** Two tabs sharing a conversation id would resume the same conversation. */
+            assert.strictEquals(
+                new Set(sessions.ai.map((session) => session.conversationId)).size,
+                2,
             );
         });
     });
+});
 
-    /**
-     * The whole point of the split between peek and clear: a spawn that fails must leave the tab
-     * still asking for a new session, or the retry silently resumes another tab's conversation.
-     */
-    it('survives repeated checks and only clears explicitly', async () => {
+describe(markConversationStarted.name, () => {
+    it('makes the next spawn resume instead of starting over', async () => {
         await withTempFolder(async (folder) => {
-            const sessions = await createFolderSession({
+            const created = await createFolderSession({
                 folder,
                 kind: PaneKind.Ai,
             });
-            const sessionId = assertWrap.isDefined(sessions.ai[1]).id;
+            const newSession = assertWrap.isDefined(created.ai[1]);
 
-            assert.isTrue(
-                isFreshAiSession({
-                    folder,
-                    sessionId,
-                }),
-            );
-            assert.isTrue(
-                isFreshAiSession({
-                    folder,
-                    sessionId,
-                }),
-            );
-            clearFreshAiSession({
+            await markConversationStarted({
                 folder,
-                sessionId,
+                kind: PaneKind.Ai,
+                sessionId: newSession.id,
             });
-            assert.isFalse(
-                isFreshAiSession({
-                    folder,
-                    sessionId,
-                }),
-            );
+            const sessions = await getFolderSessions(folder);
+
+            assert.deepEquals(sessions.ai[1], {
+                ...newSession,
+                isNewConversation: false,
+            });
+        });
+    });
+});
+
+describe(startNewConversation.name, () => {
+    it('gives the tab a different conversation that has not started', async () => {
+        await withTempFolder(async (folder) => {
+            const initial = await getFolderSessions(folder);
+            const session = assertWrap.isDefined(initial.ai[0]);
+
+            const updated = await startNewConversation({
+                folder,
+                kind: PaneKind.Ai,
+                sessionId: session.id,
+            });
+            const updatedSession = assertWrap.isDefined(updated.ai[0]);
+
+            assert.notStrictEquals(updatedSession.conversationId, session.conversationId);
+            assert.deepEquals(omitObjectKeys(updatedSession, ['conversationId']), {
+                ...omitObjectKeys(session, ['conversationId']),
+                isNewConversation: true,
+            });
         });
     });
 });
@@ -404,16 +417,19 @@ describe(parseSessionStore.name, () => {
             }),
         );
 
-        assert.deepEquals(parsed['/tmp/keeps-valid'], {
-            ai: [
+        assert.deepEquals(
+            parsed['/tmp/keeps-valid']?.ai.map((session) => {
+                return omitObjectKeys(session, ['conversationId']);
+            }),
+            [
                 {
                     id: 'a',
                     name: 'named',
                     aiId: '',
+                    isNewConversation: false,
                 },
             ],
-            shell: [],
-        });
+        );
         assert.isUndefined(parsed['/tmp/drops-no-id']);
     });
 
@@ -432,5 +448,26 @@ describe(parseSessionStore.name, () => {
         );
 
         assert.strictEquals(parsed['/tmp/nameless']?.ai[0]?.name, '');
+    });
+
+    it('replaces a conversation id that is unsafe in a file path', () => {
+        const parsed = parseSessionStore(
+            JSON.stringify({
+                '/tmp/unsafe': {
+                    ai: [
+                        {
+                            id: 'a',
+                            conversationId: '../../escape',
+                        },
+                    ],
+                    shell: [],
+                },
+            }),
+        );
+
+        assert.matches(
+            assertWrap.isDefined(parsed['/tmp/unsafe']?.ai[0]).conversationId,
+            /^[a-z0-9]+$/,
+        );
     });
 });

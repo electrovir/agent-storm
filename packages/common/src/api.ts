@@ -453,6 +453,14 @@ export const sessionMetaShape = defineShape({
      * state, exactly like `name`.
      */
     aiId: '',
+    /**
+     * Agent-storm's id for the conversation this tab holds, handed to the AI process as
+     * `AGENT_STORM_CONVERSATION_ID` so a wrapper script can map it to the CLI's own session id.
+     * Unlike `id`, it changes whenever the tab starts a new conversation.
+     */
+    conversationId: '',
+    /** Whether the tab's next AI spawn should use the new-session command instead of resuming. */
+    isNewConversation: false,
 });
 
 /**

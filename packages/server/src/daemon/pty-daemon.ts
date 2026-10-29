@@ -51,6 +51,7 @@ function handleAttach({
     sessionId,
     colors,
     aiCmd,
+    conversationId,
     scrollbackLimit,
 }: Readonly<{
     socket: Socket;
@@ -60,6 +61,7 @@ function handleAttach({
     sessionId: string | undefined;
     colors: TerminalColors | undefined;
     aiCmd: string | undefined;
+    conversationId: string | undefined;
     scrollbackLimit: number | undefined;
 }>): void {
     function onData(data: string) {
@@ -78,6 +80,7 @@ function handleAttach({
         sessionId,
         colors,
         aiCmd,
+        conversationId,
         scrollbackLimit,
         onData,
         onExit,
@@ -166,6 +169,7 @@ const server = createServer((socket) => {
                 sessionId: handshake.sessionId,
                 colors: handshake.colors,
                 aiCmd: handshake.aiCmd,
+                conversationId: handshake.conversationId,
                 scrollbackLimit: handshake.scrollbackLimit,
             });
         } else if (handshake.action === DaemonAction.Status) {
@@ -182,6 +186,7 @@ const server = createServer((socket) => {
                 kind: handshake.kind,
                 sessionId: handshake.sessionId,
                 aiCmd: handshake.aiCmd,
+                conversationId: handshake.conversationId,
             });
             const response: SimpleResponse = {
                 ok: true,

@@ -236,13 +236,20 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
  *   frozen prefix regardless of the shell's current `nvm`-selected node, so `npm -v` never reflects
  *   the install. A real terminal started from the OS has none of these, so neither should ours.
  */
-function spawnEnv(): NodeJS.ProcessEnv {
+const conversationIdEnvKey = 'AGENT_STORM_CONVERSATION_ID';
+
+function spawnEnv(conversationId: string | undefined): NodeJS.ProcessEnv {
     const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) => {
         return String(key).toLowerCase().startsWith('npm_');
     });
     const base = omitObjectKeys(process.env, [
         'BACKEND_PORT',
         'FRONTEND_PORT',
+        /**
+         * A daemon started from inside an agent-storm pane inherits that pane's id, which would
+         * otherwise leak into every pane spawned without one.
+         */
+        conversationIdEnvKey,
         ...npmInjectedKeys,
     ]);
     /**
@@ -253,12 +260,19 @@ function spawnEnv(): NodeJS.ProcessEnv {
     const cleanedPath = process.env.PATH?.split(':')
         .filter((entry) => !entry.endsWith('/node_modules/.bin'))
         .join(':');
-    return cleanedPath
-        ? {
-              ...base,
-              PATH: cleanedPath,
-          }
-        : base;
+    return {
+        ...base,
+        ...(cleanedPath
+            ? {
+                  PATH: cleanedPath,
+              }
+            : {}),
+        ...(conversationId
+            ? {
+                  [conversationIdEnvKey]: conversationId,
+              }
+            : {}),
+    };
 }
 
 /**
@@ -452,11 +466,13 @@ function startPty({
     kind,
     entry,
     aiCmd,
+    conversationId,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     entry: PaneEntry;
     aiCmd: string;
+    conversationId: string | undefined;
 }>): void {
     entry.spawnGeneration += 1;
     const spawnGeneration = entry.spawnGeneration;
@@ -481,7 +497,7 @@ function startPty({
             cols: 120,
             rows: 32,
             cwd,
-            env: spawnEnv() as Record<string, string>,
+            env: spawnEnv(conversationId) as Record<string, string>,
         });
         livePtys.add(pty);
         entry.pty = pty;
@@ -547,6 +563,7 @@ export function attachPane({
     sessionId,
     colors,
     aiCmd,
+    conversationId,
     scrollbackLimit,
     onData,
     onExit,
@@ -567,6 +584,8 @@ export function attachPane({
      * explicitly restarts the pane. Falls back to {@link fallbackAiCommand} when omitted.
      */
     aiCmd?: string | undefined;
+    /** Like `aiCmd`, only applied when this attach spawns the PTY. */
+    conversationId?: string | undefined;
     /**
      * Client-requested cap on replayed scrollback lines. Truncates the returned `scrollback` to the
      * last N lines so a client with a small terminal buffer doesn't receive history it will
@@ -596,6 +615,7 @@ export function attachPane({
             kind,
             entry,
             aiCmd: aiCmd || fallbackAiCommand,
+            conversationId,
         });
     }
     const subscriber: Subscriber = {
@@ -657,11 +677,13 @@ export function restartPane({
     kind,
     sessionId,
     aiCmd,
+    conversationId,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     sessionId?: string | undefined;
     aiCmd?: string | undefined;
+    conversationId?: string | undefined;
 }>): void {
     const entry = ensureEntry(folder, kind, sessionId);
     teardownPaneProcess(entry);
@@ -672,6 +694,7 @@ export function restartPane({
         kind,
         entry,
         aiCmd: aiCmd || fallbackAiCommand,
+        conversationId,
     });
 }
 

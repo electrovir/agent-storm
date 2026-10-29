@@ -1,10 +1,10 @@
 import {PaneKind, type FolderSessions, type SessionMeta} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {getObjectTypedKeys, wrapInTry} from '@augment-vir/common';
-import {randomUUID} from 'node:crypto';
-import {mkdir, readFile, rename, writeFile} from 'node:fs/promises';
+import {createCuid2, getObjectTypedKeys, wrapInTry} from '@augment-vir/common';
+import {mkdir, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
 import {defaultSessionId} from './daemon/protocol.js';
-import {notCommittedDir, sessionStorePath} from './file-paths.js';
+import {conversationStateDir, notCommittedDir, sessionStorePath} from './file-paths.js';
 import {normalizePath} from './paths.js';
 
 /**
@@ -42,6 +42,15 @@ function normalizeStoredSession(entry: Readonly<SessionMeta>): SessionMeta {
         name: check.isString(entry.name) ? entry.name : '',
         /** Absent in stores written before per-tab AI overrides existed. */
         aiId: check.isString(entry.aiId) ? entry.aiId : '',
+        /**
+         * Absent in stores written before per-tab conversations existed. Also regenerated when it
+         * isn't a plain id, because it ends up in a file path under {@link conversationStateDir}.
+         */
+        conversationId:
+            check.isString(entry.conversationId) && /^[a-z0-9]+$/.test(entry.conversationId)
+                ? entry.conversationId
+                : createCuid2(),
+        isNewConversation: check.isTrue(entry.isNewConversation),
     };
 }
 
@@ -82,6 +91,13 @@ async function loadStore(): Promise<SessionStore> {
     const contents = await readFile(sessionStorePath, 'utf-8').catch(() => undefined);
     const store = contents?.trim() ? parseSessionStore(contents) : {};
     storeState.loaded = store;
+    /**
+     * Parsing generates a conversation id for any tab missing one. Persist those right away, or the
+     * next backend start would generate different ones and every tab would lose its conversation.
+     */
+    if (contents && JSON.stringify(store, undefined, 4) !== contents) {
+        persistStore(store);
+    }
     return store;
 }
 
@@ -152,50 +168,132 @@ function initialSession(): SessionMeta {
         id: defaultSessionId,
         name: '',
         aiId: '',
+        conversationId: createCuid2(),
+        isNewConversation: false,
     };
 }
 
 /**
- * AI sessions created by "New tab" whose PTY hasn't spawned yet, keyed by folder + session id.
- *
- * A new tab should be a new conversation. An AI's resume command is usually written to pick the
- * last one back up (`claude --continue` and the like), so spawning a new tab with it would drop the
- * user back into the conversation the tab they already had is showing. The AI's new-session command
- * is exactly "start a fresh one", so a new tab launches with that instead.
- *
- * In memory only. The entry is consumed by the attach that successfully spawns the PTY, which
- * follows within a second of the tab being created; a backend restart inside that window costs
- * nothing worse than the tab launching with the resume command.
+ * Delete whatever wrapper scripts recorded for these conversations under
+ * {@link conversationStateDir}. Only the mapping goes: the CLI's own transcripts stay where the CLI
+ * keeps them. Best-effort, since a leftover mapping file costs a few bytes.
  */
-const freshAiSessions = new Set<string>();
+async function forgetConversationState(conversationIds: ReadonlyArray<string>): Promise<void> {
+    const cliDirs = await readdir(conversationStateDir).catch(() => []);
+    await Promise.all(
+        cliDirs.flatMap((cliDir) => {
+            return conversationIds.map(async (conversationId) => {
+                await rm(join(conversationStateDir, cliDir, conversationId), {
+                    force: true,
+                }).catch(() => {
+                    /* best-effort cleanup */
+                });
+            });
+        }),
+    );
+}
 
-function freshAiSessionKey({
+export async function findFolderSession({
     folder,
+    kind,
     sessionId,
 }: Readonly<{
     folder: string;
+    kind: PaneKind;
     sessionId: string;
-}>): string {
-    return `${normalizePath(folder)}\u0000${sessionId}`;
+}>): Promise<SessionMeta | undefined> {
+    const sessions = await getFolderSessions(folder);
+    return sessions[kind].find((session) => session.id === sessionId);
 }
 
-/** Whether this session is a new tab still waiting for its first successful spawn. */
-export function isFreshAiSession(params: Readonly<{folder: string; sessionId: string}>): boolean {
-    return freshAiSessions.has(freshAiSessionKey(params));
+function updateFolderSession({
+    folder,
+    kind,
+    sessions,
+    sessionId,
+    update,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessions: Readonly<FolderSessions>;
+    sessionId: string;
+    update: (session: Readonly<SessionMeta>) => SessionMeta;
+}>): FolderSessions {
+    const updated: FolderSessions = {
+        ...sessions,
+        [kind]: sessions[kind].map((session) => {
+            return session.id === sessionId ? update(session) : session;
+        }),
+    };
+    writeFolder(folder, updated);
+    return updated;
 }
 
 /**
- * Drop the fresh-session marker. Called only once a PTY is actually running: a spawn that failed
- * (the OS out of PTYs, a bad command) leaves the marker in place so the retry still launches a new
- * conversation instead of silently falling back to the resume command.
+ * Give a tab a new conversation id and make its next spawn use the AI's new-session command. Used
+ * when a tab switches onto an AI another tab in the folder already runs, where resuming would open
+ * that other tab's conversation.
  */
-/** Mark an existing tab fresh so its next spawn starts a new conversation. */
-export function markFreshAiSession(params: Readonly<{folder: string; sessionId: string}>): void {
-    freshAiSessions.add(freshAiSessionKey(params));
+export async function startNewConversation({
+    folder: folderPath,
+    kind,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
+}>): Promise<FolderSessions> {
+    const folder = normalizePath(folderPath);
+    const current = await getFolderSessions(folder);
+    const previousConversationId = current[kind].find(
+        (session) => session.id === sessionId,
+    )?.conversationId;
+    const updated = updateFolderSession({
+        folder,
+        kind,
+        sessions: current,
+        sessionId,
+        update(session) {
+            return {
+                ...session,
+                conversationId: createCuid2(),
+                isNewConversation: true,
+            };
+        },
+    });
+    if (previousConversationId) {
+        await forgetConversationState([previousConversationId]);
+    }
+    return updated;
 }
 
-export function clearFreshAiSession(params: Readonly<{folder: string; sessionId: string}>): void {
-    freshAiSessions.delete(freshAiSessionKey(params));
+/**
+ * Called only once a PTY is actually running with the new-session command. A spawn that failed (the
+ * OS out of PTYs, a bad command) leaves the flag set so the retry still starts a new conversation
+ * instead of falling back to the resume command.
+ */
+export async function markConversationStarted({
+    folder: folderPath,
+    kind,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
+}>): Promise<void> {
+    const folder = normalizePath(folderPath);
+    updateFolderSession({
+        folder,
+        kind,
+        sessions: await getFolderSessions(folder),
+        sessionId,
+        update(session) {
+            return {
+                ...session,
+                isNewConversation: false,
+            };
+        },
+    });
 }
 
 export async function createFolderSession({
@@ -207,23 +305,21 @@ export async function createFolderSession({
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
     const current = await getFolderSessions(folder);
-    const sessionId = randomUUID();
-    if (kind === PaneKind.Ai) {
-        freshAiSessions.add(
-            freshAiSessionKey({
-                folder,
-                sessionId,
-            }),
-        );
-    }
     const updated: FolderSessions = {
         ...current,
         [kind]: [
             ...current[kind],
             {
-                id: sessionId,
+                id: createCuid2(),
                 name: '',
                 aiId: '',
+                conversationId: createCuid2(),
+                /**
+                 * An AI's resume command is usually written to pick the last conversation back up
+                 * (`claude --continue` and the like), so a new tab launched with it would show the
+                 * conversation another tab already holds.
+                 */
+                isNewConversation: kind === PaneKind.Ai,
             },
         ],
     };
@@ -358,7 +454,8 @@ export async function removeFolderSession({
 }>): Promise<{sessions: FolderSessions; removed: boolean}> {
     const folder = normalizePath(folderPath);
     const current = await getFolderSessions(folder);
-    if (current[kind].length <= 1 || !current[kind].some((session) => session.id === sessionId)) {
+    const removedSession = current[kind].find((session) => session.id === sessionId);
+    if (current[kind].length <= 1 || !removedSession) {
         return {
             sessions: current,
             removed: false,
@@ -369,6 +466,7 @@ export async function removeFolderSession({
         [kind]: current[kind].filter((session) => session.id !== sessionId),
     };
     writeFolder(folder, updated);
+    await forgetConversationState([removedSession.conversationId]);
     return {
         sessions: updated,
         removed: true,
@@ -389,7 +487,8 @@ export async function removeFolderSession({
 export async function forgetFolderSessions(folderPath: string): Promise<void> {
     const folder = normalizePath(folderPath);
     const store = await loadStore();
-    if (!store[folder]) {
+    const forgotten = store[folder];
+    if (!forgotten) {
         return;
     }
     const updated = getObjectTypedKeys(store).reduce<SessionStore>((next, key) => {
@@ -406,6 +505,12 @@ export async function forgetFolderSessions(folderPath: string): Promise<void> {
     }, {});
     storeState.loaded = updated;
     persistStore(updated);
+    await forgetConversationState(
+        [
+            ...forgotten.ai,
+            ...forgotten.shell,
+        ].map((session) => session.conversationId),
+    );
 }
 
 /**
@@ -433,6 +538,8 @@ export async function reconcileFolderSessions({
                         id,
                         name: '',
                         aiId: '',
+                        conversationId: createCuid2(),
+                        isNewConversation: false,
                     };
                 });
             return orphans.length === 0
