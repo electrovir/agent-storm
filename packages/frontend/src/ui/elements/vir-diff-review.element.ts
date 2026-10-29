@@ -8,7 +8,7 @@ import {
 } from '@agent-storm/common';
 import {awaitedBlockingMap, typedObjectFromEntries} from '@augment-vir/common';
 import {css, defineElement, defineElementEvent, html, listen, unsafeCSS} from 'element-vir';
-import {LoaderAnimated24Icon, ViraIcon, viraThemeByKeys} from 'vira';
+import {createSizedIcon, LucideLoaderIcon, ViraIcon, viraThemeByKeys} from 'vira';
 import {getGitDiffFile} from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {colorsFor} from '../../util/diff-colors.js';
@@ -20,6 +20,7 @@ import {
 } from '../../util/diff-hunks.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
 import {imageDiffStyles, renderImageDiff} from './image-diff.js';
+import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
 
 /**
  * Rendered lines one file contributes before the rest is cut off. A file rewritten end to end is a
@@ -27,6 +28,8 @@ import {imageDiffStyles, renderImageDiff} from './image-diff.js';
  * changes — one of them turning the whole list to treacle defeats it.
  */
 const maxRenderedLinesPerFile = 2000;
+
+const loaderIcon = createSizedIcon(LucideLoaderIcon, 24);
 
 const linePrefixes: Readonly<Record<DiffLineType, string>> = {
     [DiffLineType.Context]: ' ',
@@ -222,6 +225,12 @@ export const VirDiffReview = defineElement<{
             padding: 16px;
         }
 
+        .loading ${ViraIcon} {
+            ${spinAnimationCss}
+        }
+
+        ${spinKeyframesCss}
+
         ${imageDiffStyles}
     `,
     render({inputs, state, updateState, host, dispatch, events}) {
@@ -372,7 +381,7 @@ export const VirDiffReview = defineElement<{
                 ? html`
                       <div class="loading">
                           <${ViraIcon.assign({
-                              icon: LoaderAnimated24Icon,
+                              icon: loaderIcon,
                           })}></${ViraIcon}>
                       </div>
                   `

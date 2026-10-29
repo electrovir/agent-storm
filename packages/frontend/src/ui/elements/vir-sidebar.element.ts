@@ -25,7 +25,6 @@ import {css, defineElement, defineElementEvent, html, listen} from 'element-vir'
 import {parseUrl} from 'url-vir';
 import {
     createSizedIcon,
-    LoaderAnimated24Icon,
     LucideArchiveIcon,
     LucideCheckIcon,
     LucideEllipsisIcon,
@@ -33,6 +32,7 @@ import {
     LucideGitBranchPlusIcon,
     LucideHourglassIcon,
     LucideListFilterIcon,
+    LucideLoaderIcon,
     LucideMinusIcon,
     LucidePlusIcon,
     LucidePowerOffIcon,
@@ -80,23 +80,19 @@ import {
 } from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
 import {AgentStormMarkIcon} from '../icons/agent-storm-mark.icon.js';
+import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
 import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 
 const allowedLinkHostnames = ['github.com'];
 
 const pollIntervalMs = 2000;
 
-const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
+const loaderIcon = createSizedIcon(LucideLoaderIcon, 12);
 const dashIcon = createSizedIcon(LucideMinusIcon, 12);
 const exitedIcon = createSizedIcon(LucideXIcon, 12);
 const stalledIcon = createSizedIcon(LucideHourglassIcon, 12);
 const mergedCheckIcon = createSizedIcon(LucideCheckIcon, 14);
 
-const buttonIconSize = 16;
-const searchIcon = createSizedIcon(LucideSearchIcon, buttonIconSize);
-const plusIcon = createSizedIcon(LucidePlusIcon, buttonIconSize);
-const ellipsisIcon = createSizedIcon(LucideEllipsisIcon, buttonIconSize);
-const filterIcon = createSizedIcon(LucideListFilterIcon, buttonIconSize);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 /**
@@ -109,19 +105,6 @@ const mobileSearchIcon = createSizedIcon(LucideSearchIcon, mobileButtonIconSize)
 const mobilePlusIcon = createSizedIcon(LucidePlusIcon, mobileButtonIconSize);
 const mobileEllipsisIcon = createSizedIcon(LucideEllipsisIcon, mobileButtonIconSize);
 const mobileFilterIcon = createSizedIcon(LucideListFilterIcon, mobileButtonIconSize);
-
-/**
- * Icons for the per-folder / repo / worktree row (⋯) menu items. Sized down from lucide's native
- * 24px so they sit proportionally next to the menu label text.
- */
-const menuIconSize = 16;
-const menuOpenPrIcon = createSizedIcon(LucideExternalLinkIcon, menuIconSize);
-const menuEditCommandsIcon = createSizedIcon(LucideTerminalIcon, menuIconSize);
-const menuRestartPanesIcon = createSizedIcon(LucideRotateCwIcon, menuIconSize);
-const menuKillPanesIcon = createSizedIcon(LucidePowerOffIcon, menuIconSize);
-const menuHideRepoIcon = createSizedIcon(LucideArchiveIcon, menuIconSize);
-const menuDeleteWorktreeIcon = createSizedIcon(LucideTrashIcon, menuIconSize);
-const menuRemoveRepoIcon = createSizedIcon(LucideXIcon, menuIconSize);
 
 const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
     [SidebarGrouping.Repo]: 'Group by repo',
@@ -448,6 +431,12 @@ export const VirSidebar = defineElement<{
             align-items: center;
             justify-content: center;
         }
+
+        .chip[data-busy] ${ViraIcon} {
+            ${spinAnimationCss}
+        }
+
+        ${spinKeyframesCss}
 
         .name {
             flex-grow: 1;
@@ -786,7 +775,7 @@ export const VirSidebar = defineElement<{
                         })}
                     >
                         <${ViraButton.assign({
-                            icon: inputs.mobileModal ? mobileSearchIcon : searchIcon,
+                            icon: inputs.mobileModal ? mobileSearchIcon : LucideSearchIcon,
                             buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                             /**
                              * Bump the search button to Standard emphasis while a search is active
@@ -843,7 +832,7 @@ export const VirSidebar = defineElement<{
                          * Apple HIG's 44px guideline. The desktop docked sidebar keeps the compact
                          * 24px `Small` version where mouse precision makes that fine.
                          */
-                        icon: inputs.mobileModal ? mobilePlusIcon : plusIcon,
+                        icon: inputs.mobileModal ? mobilePlusIcon : LucidePlusIcon,
                         buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                         color: ViraColorVariant.Positive,
                     })}
@@ -858,7 +847,7 @@ export const VirSidebar = defineElement<{
                         })}
                     >
                         <${ViraButton.assign({
-                            icon: inputs.mobileModal ? mobileFilterIcon : filterIcon,
+                            icon: inputs.mobileModal ? mobileFilterIcon : LucideListFilterIcon,
                             buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Neutral,
@@ -890,7 +879,7 @@ export const VirSidebar = defineElement<{
                         })}
                     >
                         <${ViraButton.assign({
-                            icon: inputs.mobileModal ? mobileEllipsisIcon : ellipsisIcon,
+                            icon: inputs.mobileModal ? mobileEllipsisIcon : LucideEllipsisIcon,
                             buttonSize: inputs.mobileModal ? ViraSize.Large : ViraSize.Small,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Neutral,
@@ -983,7 +972,7 @@ export const VirSidebar = defineElement<{
                                     })}
                                 >
                                     <${ViraButton.assign({
-                                        icon: ellipsisIcon,
+                                        icon: LucideEllipsisIcon,
                                         buttonSize: ViraSize.Small,
                                         buttonEmphasis: ViraEmphasis.Subtle,
                                         color: ViraColorVariant.Neutral,
@@ -1009,7 +998,7 @@ export const VirSidebar = defineElement<{
                                              * at once.
                                              */
                                             content: 'Change AI',
-                                            iconOverride: menuEditCommandsIcon,
+                                            iconOverride: LucideTerminalIcon,
                                             onClick() {
                                                 void openChangeAiModal(root, updateState);
                                             },
@@ -1250,6 +1239,7 @@ function renderPaneChip(label: string, status: PaneStatus) {
     return html`
         <span
             class="chip"
+            ?data-busy=${status === PaneStatus.Busy}
             style="color: ${paneStatusColor[status]};"
             title="${label} pane: ${status}"
         >
@@ -1324,7 +1314,7 @@ function renderRow({
                     })}
                 >
                     <${ViraButton.assign({
-                        icon: ellipsisIcon,
+                        icon: LucideEllipsisIcon,
                         buttonSize: ViraSize.Small,
                         buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
@@ -1539,18 +1529,18 @@ function buildRowMenuEntries({
                         Open PR
                     </${ViraLink}>
                 `,
-                iconOverride: menuOpenPrIcon,
+                iconOverride: LucideExternalLinkIcon,
             },
         {
             content: 'Change AI',
-            iconOverride: menuEditCommandsIcon,
+            iconOverride: LucideTerminalIcon,
             onClick() {
                 void openChangeAiModal(folder, updateState);
             },
         },
         {
             content: 'Restart panes',
-            iconOverride: menuRestartPanesIcon,
+            iconOverride: LucideRotateCwIcon,
             onClick() {
                 void restartFolderPanes({
                     folder: folder.path,
@@ -1561,7 +1551,7 @@ function buildRowMenuEntries({
         },
         {
             content: 'Kill panes',
-            iconOverride: menuKillPanesIcon,
+            iconOverride: LucidePowerOffIcon,
             onClick() {
                 void (async () => {
                     try {
@@ -1598,7 +1588,7 @@ function buildRowMenuEntries({
          */
         !folder.parentRepoPath && {
             content: 'Hide repo',
-            iconOverride: menuHideRepoIcon,
+            iconOverride: LucideArchiveIcon,
             onClick() {
                 void (async () => {
                     try {
@@ -1622,7 +1612,7 @@ function buildRowMenuEntries({
         folder.parentRepoPath
             ? {
                   content: 'Delete worktree',
-                  iconOverride: menuDeleteWorktreeIcon,
+                  iconOverride: LucideTrashIcon,
                   onClick() {
                       void confirmDeleteWorktree({
                           worktreePath: folder.path,
@@ -1636,7 +1626,7 @@ function buildRowMenuEntries({
               }
             : {
                   content: 'Remove repo',
-                  iconOverride: menuRemoveRepoIcon,
+                  iconOverride: LucideXIcon,
                   onClick() {
                       void confirmRemoveRepo(folder.path, updateState, () => {
                           return emitFoldersRemoved([folder.path]);

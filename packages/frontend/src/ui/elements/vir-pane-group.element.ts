@@ -12,9 +12,9 @@ import {
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {
     createSizedIcon,
-    LoaderAnimated24Icon,
     LucideEllipsisVerticalIcon,
     LucideHourglassIcon,
+    LucideLoaderIcon,
     noUserSelect,
     renderMenuItemEntries,
     ViraButton,
@@ -41,6 +41,7 @@ import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
+import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
 import {VirAiAvatar} from './vir-ai-avatar.element.js';
 import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirDiffPane} from './vir-diff-pane.element.js';
@@ -57,7 +58,7 @@ const sessionActivityIndicators: Record<
 > = {
     [PaneStatus.None]: undefined,
     [PaneStatus.Busy]: {
-        icon: createSizedIcon(LoaderAnimated24Icon, 12),
+        icon: createSizedIcon(LucideLoaderIcon, 12),
         title: 'Working',
     },
     [PaneStatus.Stalled]: {
@@ -431,6 +432,12 @@ export const VirPaneGroup = defineElement<{
             height: 12px;
             color: ${viraThemeByKeys.pink.foreground.header.foreground.value};
         }
+
+        .session-activity[data-busy] ${ViraIcon} {
+            ${spinAnimationCss}
+        }
+
+        ${spinKeyframesCss}
 
         .session-activity[data-stalled] {
             color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
@@ -879,6 +886,7 @@ export const VirPaneGroup = defineElement<{
                 <span
                     class="session-activity"
                     ?data-idle=${!indicator}
+                    ?data-busy=${status === PaneStatus.Busy}
                     ?data-stalled=${status === PaneStatus.Stalled}
                     title=${indicator?.title || ''}
                 >

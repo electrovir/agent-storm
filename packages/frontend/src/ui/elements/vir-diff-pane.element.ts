@@ -38,13 +38,13 @@ import {
     type HtmlInterpolation,
 } from 'element-vir';
 import {
-    LoaderAnimated24Icon,
     LucideChevronDownIcon,
     LucideChevronLeftIcon,
     LucideChevronRightIcon,
     LucideChevronUpIcon,
     LucideColumns2Icon,
     LucideFileStackIcon,
+    LucideLoaderIcon,
     LucideMinusIcon,
     LucidePilcrowIcon,
     LucidePlusIcon,
@@ -85,6 +85,7 @@ import {ScreenSize} from '../../util/screen-size.js';
 import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
 import {diffConfig} from '../../util/vscode-diff.js';
 import {imageDiffStyles, renderImageDiff} from './image-diff.js';
+import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
 import {VirDiffReview} from './vir-diff-review.element.js';
 
 /**
@@ -141,13 +142,13 @@ const hunkStageIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
 
 /** The gutter pair again at thumb size, for the touch layout's bigger tap targets. */
 const mobileHunkStageIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
-    [GitDiffSide.Staged]: createSizedIcon(LucideMinusIcon, 16),
-    [GitDiffSide.Unstaged]: createSizedIcon(LucidePlusIcon, 16),
+    [GitDiffSide.Staged]: LucideMinusIcon,
+    [GitDiffSide.Unstaged]: LucidePlusIcon,
 };
 
 const hunkUndoIcon = createSizedIcon(LucideUndo2Icon, 11);
 
-const mobileHunkUndoIcon = createSizedIcon(LucideUndo2Icon, 16);
+const loaderIcon = createSizedIcon(LucideLoaderIcon, 24);
 
 /** A path's final segment, which is all the file rows show — the full path is their `title`. */
 function basename(path: string): string {
@@ -782,7 +783,7 @@ class HunkActionMarker extends GutterMarker {
                 ? [
                       buildHunkButton({
                           label: undoHunkLabel,
-                          icon: this.isMobile ? mobileHunkUndoIcon : hunkUndoIcon,
+                          icon: this.isMobile ? LucideUndo2Icon : hunkUndoIcon,
                           onClick: onUndo,
                       }),
                   ]
@@ -1823,7 +1824,13 @@ export const VirDiffPane = defineElement<{
             background: ${viraThemeByKeys.grey['behind-bg'].invisible.background.value};
             opacity: 0.75;
             pointer-events: none;
+
+            & ${ViraIcon} {
+                ${spinAnimationCss}
+            }
         }
+
+        ${spinKeyframesCss}
 
         /*
          * Overview ruler, the same idea as VS Code's: a full-height strip where every change in
@@ -3162,7 +3169,7 @@ export const VirDiffPane = defineElement<{
                     ? html`
                           <div class="loading-overlay">
                               <${ViraIcon.assign({
-                                  icon: LoaderAnimated24Icon,
+                                  icon: loaderIcon,
                               })}></${ViraIcon}>
                           </div>
                       `

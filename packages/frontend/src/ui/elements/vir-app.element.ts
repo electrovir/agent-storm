@@ -6,7 +6,6 @@ import {colorCss} from '@electrovir/color';
 import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {
-    createSizedIcon,
     LucideMenuIcon,
     ViraButton,
     ViraColorVariant,
@@ -148,8 +147,6 @@ function pathsForFolder(
 }
 
 const folderInfoPollMs = 2000;
-
-const hamburgerIcon = createSizedIcon(LucideMenuIcon, 16);
 
 function clampSidebarWidth(value: number): number {
     if (!Number.isFinite(value)) {
@@ -809,7 +806,7 @@ export const VirApp = defineElement()({
                 ></div>
                 <div class="stage">
                     <${ViraButton.assign({
-                        icon: hamburgerIcon,
+                        icon: LucideMenuIcon,
                         buttonSize: ViraSize.Small,
                         buttonEmphasis: ViraEmphasis.Subtle,
                         color: ViraColorVariant.Neutral,
