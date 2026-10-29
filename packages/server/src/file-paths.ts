@@ -57,6 +57,21 @@ export const conversationStateDir = resolve(
     'agent-storm',
 );
 
+/**
+ * Where `claude-hooks/agent-storm-activity.sh` records what Claude is doing in each tab. Sits under
+ * {@link conversationStateDir} so a conversation's file is deleted along with its other state.
+ */
+export const claudeActivityDir = resolve(conversationStateDir, 'claude-activity');
+
+/** Repo copies of the Claude Code hook scripts, the source of truth for what gets installed. */
+export const claudeHookSourceDir = resolve(import.meta.dirname, 'claude-hooks');
+
+/** Where the hook scripts are installed to. Claude Code's settings reference them by this path. */
+export const claudeHookInstallDir = resolve(homedir(), '.claude');
+
+/** Claude Code's user-level settings, where agent-storm registers its hooks. */
+export const claudeSettingsPath = resolve(claudeHookInstallDir, 'settings.json');
+
 /** Unix domain socket the pty daemon listens on for new pane attachments. */
 export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
 

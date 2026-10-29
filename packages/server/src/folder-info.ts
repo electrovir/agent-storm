@@ -715,7 +715,9 @@ async function refreshOnce({
 }
 
 function isLivePaneStatus(status: PaneStatus): boolean {
-    return status === PaneStatus.Busy || status === PaneStatus.Idle;
+    return (
+        status === PaneStatus.Busy || status === PaneStatus.Stalled || status === PaneStatus.Idle
+    );
 }
 
 /**

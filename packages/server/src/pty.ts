@@ -1,4 +1,5 @@
 import {PaneStatus, type PaneKind, type PaneSessionStatus} from '@agent-storm/common';
+import {applyClaudeActivity} from './claude-activity.js';
 import {fetchPaneStatuses} from './daemon/daemon-client.js';
 import {type StatusEntry} from './daemon/protocol.js';
 
@@ -22,15 +23,16 @@ function statusKey(folder: string, kind: PaneKind): string {
 
 /**
  * Precedence used to collapse a folder+kind's sessions into the single status the sidebar renders.
- * A folder with any busy session reads as busy; failing that, any live-but-quiet session reads as
- * idle; `Exited` only surfaces when every session has exited, and `None` when there are no sessions
- * at all. Lower number wins.
+ * A folder with any busy session reads as busy; failing that, a stalled one reads as stalled, and
+ * any live-but-quiet session reads as idle; `Exited` only surfaces when every session has exited,
+ * and `None` when there are no sessions at all. Lower number wins.
  */
 const statusPriority: Record<PaneStatus, number> = {
     [PaneStatus.Busy]: 0,
-    [PaneStatus.Idle]: 1,
-    [PaneStatus.Exited]: 2,
-    [PaneStatus.None]: 3,
+    [PaneStatus.Stalled]: 1,
+    [PaneStatus.Idle]: 2,
+    [PaneStatus.Exited]: 3,
+    [PaneStatus.None]: 4,
 };
 
 function reduceStatuses(entries: ReadonlyArray<Readonly<StatusEntry>>): Map<string, PaneStatus> {
@@ -89,7 +91,7 @@ function collectSessionStatuses(
 }
 
 async function refreshStatuses(): Promise<void> {
-    const entries = await fetchPaneStatuses();
+    const entries = await applyClaudeActivity(await fetchPaneStatuses());
     cacheState.statuses = reduceStatuses(entries);
     cacheState.sessionIds = collectSessionIds(entries);
     cacheState.sessionStatuses = collectSessionStatuses(entries);

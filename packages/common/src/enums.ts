@@ -6,8 +6,16 @@ export enum PaneKind {
 export enum PaneStatus {
     /** No PTY has ever been started for this pane. */
     None = 'none',
-    /** PTY is alive and producing output recently. */
+    /**
+     * PTY is alive and producing output recently, or Claude's hooks report unfinished work that is
+     * still showing signs of life.
+     */
     Busy = 'busy',
+    /**
+     * Claude's hooks report unfinished work (a turn or background tasks), but nothing has shown
+     * signs of life for a while, so it may be hung.
+     */
+    Stalled = 'stalled',
     /** PTY is alive but has been quiet for a moment. */
     Idle = 'idle',
     /** PTY process exited (the pane shows its last buffered output). */

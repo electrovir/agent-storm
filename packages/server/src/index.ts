@@ -57,6 +57,7 @@ import {appendFile, mkdir, readFile, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
 import {initAuth, verifyAuthToken} from './auth.js';
+import {recordClaudeInterrupt} from './claude-activity.js';
 import {startConfigBackupLoop} from './config-backup.js';
 import {
     findAiDefinition,
@@ -90,6 +91,7 @@ import {
 } from './git-diff.js';
 import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
 import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './github-pr.js';
+import {installClaudeHooks} from './install-claude-hooks.js';
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
 import {
@@ -175,6 +177,8 @@ type SocketAttachment = {
     attachment: PaneAttachment;
     folder: string;
     kind: PaneKind;
+    /** Set only for AI panes, whose interrupt key presses feed {@link recordClaudeInterrupt}. */
+    conversationId: string | undefined;
 };
 
 const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
@@ -182,6 +186,8 @@ const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 await ensureDaemon();
 
 await loadFolderActivity();
+
+await installClaudeHooks();
 
 await startFolderInfoRefreshLoop();
 
@@ -1033,6 +1039,7 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             attachment,
             folder,
             kind,
+            conversationId: kind === PaneKind.Ai ? session?.conversationId : undefined,
         });
     },
     message({webSocket, message}) {
@@ -1045,6 +1052,10 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
              * which the browser sends on its own and so say nothing about the user being here.
              */
             recordFolderActivity(socketAttachment.folder);
+            /** Escape and Ctrl+C on their own are how a Claude turn gets interrupted. */
+            if (socketAttachment.conversationId && (message === '\u001B' || message === '\u0003')) {
+                recordClaudeInterrupt(socketAttachment.conversationId);
+            }
             socketAttachment.attachment.write(message);
             return;
         } else if ('colors' in message) {

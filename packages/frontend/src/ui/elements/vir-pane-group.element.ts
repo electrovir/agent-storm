@@ -14,6 +14,7 @@ import {
     createSizedIcon,
     LoaderAnimated24Icon,
     LucideEllipsisVerticalIcon,
+    LucideHourglassIcon,
     noUserSelect,
     renderMenuItemEntries,
     ViraButton,
@@ -23,6 +24,7 @@ import {
     ViraMenuTrigger,
     ViraSize,
     viraThemeByKeys,
+    type ViraIconSvg,
     type ViraMenuItemEntry,
 } from 'vira';
 import {
@@ -45,7 +47,26 @@ import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 const sessionMenuIcon = createSizedIcon(LucideEllipsisVerticalIcon, 12);
-const activityIcon = createSizedIcon(LoaderAnimated24Icon, 12);
+const sessionActivityIndicators: Record<
+    PaneStatus,
+    | {
+          icon: ViraIconSvg;
+          title: string;
+      }
+    | undefined
+> = {
+    [PaneStatus.None]: undefined,
+    [PaneStatus.Busy]: {
+        icon: createSizedIcon(LoaderAnimated24Icon, 12),
+        title: 'Working',
+    },
+    [PaneStatus.Stalled]: {
+        icon: createSizedIcon(LucideHourglassIcon, 12),
+        title: 'Unfinished work, but no sign of activity for a while. It may be stuck.',
+    },
+    [PaneStatus.Idle]: undefined,
+    [PaneStatus.Exited]: undefined,
+};
 
 /** Tab label: the user's name when set, otherwise the tab's 1-based position. */
 function sessionLabel(session: Readonly<SessionMeta>, index: number): string {
@@ -407,6 +428,10 @@ export const VirPaneGroup = defineElement<{
             width: 12px;
             height: 12px;
             color: ${viraThemeByKeys.pink.foreground.header.foreground.value};
+        }
+
+        .session-activity[data-stalled] {
+            color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
         }
 
         /* Hidden rather than unrendered so the tab's width doesn't change when activity starts. */
@@ -822,23 +847,26 @@ export const VirPaneGroup = defineElement<{
         }
 
         /**
-         * Activity slot for one tab: a spinner while the pane's process is producing output, empty
-         * space otherwise. The element is always rendered so the tab doesn't change width when
-         * activity starts. `floating` picks the placement for a pane with no tab strip to hold it.
+         * Activity slot for one tab: a spinner while the pane is working, an hourglass while its
+         * work has gone quiet for too long, empty space otherwise. The element is always rendered
+         * so the tab doesn't change width when activity starts. `floating` picks the placement for
+         * a pane with no tab strip to hold it.
          */
         function renderActivitySpinner(kind: PaneKind, session: Readonly<SessionMeta>) {
-            const isBusy =
+            const status =
                 inputs.sessionStatuses.find(
                     (entry) => entry.kind === kind && entry.sessionId === session.id,
-                )?.status === PaneStatus.Busy;
+                )?.status ?? PaneStatus.None;
+            const indicator = sessionActivityIndicators[status];
             return html`
                 <span
                     class="session-activity"
-                    ?data-idle=${!isBusy}
-                    title=${isBusy ? 'Working' : ''}
+                    ?data-idle=${!indicator}
+                    ?data-stalled=${status === PaneStatus.Stalled}
+                    title=${indicator?.title || ''}
                 >
                     <${ViraIcon.assign({
-                        icon: activityIcon,
+                        icon: indicator?.icon,
                     })}></${ViraIcon}>
                 </span>
             `;

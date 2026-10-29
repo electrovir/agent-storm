@@ -31,6 +31,7 @@ import {
     LucideEllipsisIcon,
     LucideExternalLinkIcon,
     LucideGitBranchPlusIcon,
+    LucideHourglassIcon,
     LucideListFilterIcon,
     LucideMinusIcon,
     LucidePlusIcon,
@@ -49,6 +50,7 @@ import {
     ViraEmphasis,
     viraFormCssVars,
     ViraIcon,
+    type ViraIconSvg,
     ViraInput,
     ViraLink,
     type ViraMenuItemEntry,
@@ -87,6 +89,7 @@ const pollIntervalMs = 2000;
 const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
 const dashIcon = createSizedIcon(LucideMinusIcon, 12);
 const exitedIcon = createSizedIcon(LucideXIcon, 12);
+const stalledIcon = createSizedIcon(LucideHourglassIcon, 12);
 const mergedCheckIcon = createSizedIcon(LucideCheckIcon, 14);
 
 const buttonIconSize = 16;
@@ -134,6 +137,7 @@ const sidebarSortingLabels: Record<SidebarSorting, string> = {
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
     [PaneStatus.Busy]: String(viraThemeByKeys.pink.foreground.header.foreground.value),
+    [PaneStatus.Stalled]: String(viraThemeByKeys.yellow.foreground.header.foreground.value),
     [PaneStatus.Idle]: String(viraThemeByKeys.grey.foreground.header.foreground.value),
     [PaneStatus.Exited]: String(viraThemeByKeys.red.foreground.header.foreground.value),
 };
@@ -1228,18 +1232,21 @@ function focusSearchInput(host: HTMLElement): void {
     });
 }
 
+const paneStatusIcon: Record<PaneStatus, ViraIconSvg> = {
+    [PaneStatus.None]: dashIcon,
+    [PaneStatus.Busy]: loaderIcon,
+    [PaneStatus.Stalled]: stalledIcon,
+    [PaneStatus.Idle]: dashIcon,
+    [PaneStatus.Exited]: exitedIcon,
+};
+
 function renderPaneChip(label: string, status: PaneStatus) {
     if (status === PaneStatus.None) {
         return html`
             <span class="chip" title="${label} pane: ${status}"></span>
         `;
     }
-    const icon =
-        status === PaneStatus.Busy
-            ? loaderIcon
-            : status === PaneStatus.Exited
-              ? exitedIcon
-              : dashIcon;
+    const icon = paneStatusIcon[status];
     return html`
         <span
             class="chip"
@@ -1747,7 +1754,9 @@ const recencyWindow: AnyDuration = {
 };
 
 function isPaneRunning(status: PaneStatus): boolean {
-    return status === PaneStatus.Busy || status === PaneStatus.Idle;
+    return (
+        status === PaneStatus.Busy || status === PaneStatus.Stalled || status === PaneStatus.Idle
+    );
 }
 
 /**
