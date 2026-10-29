@@ -37,6 +37,7 @@ import {
     setSessionAi,
 } from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
+import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
 import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
 import {type FrontendTab} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
@@ -195,6 +196,17 @@ export const VirPaneGroup = defineElement<{
              * that instead. Undefined before the user has clicked into either pane.
              */
             focusedKind: undefined as PaneKind | undefined,
+            /**
+             * The tab just created by this group, whose terminal should grab focus when it mounts.
+             * Cleared by the next `focusin` in either pane, so switching back to that tab later
+             * doesn't steal focus again.
+             */
+            sessionToFocus: undefined as
+                | {
+                      kind: PaneKind;
+                      sessionId: string;
+                  }
+                | undefined,
             /**
              * Set true the first time the user opens the Diff tab, and never reset. The diff pane
              * costs nothing while hidden (it holds no socket and no subprocess), so keeping it
@@ -653,6 +665,13 @@ export const VirPaneGroup = defineElement<{
             })
                 .then((sessions) => {
                     applySessions(sessions);
+                    const createdSession = sessions[kind].at(-1);
+                    updateState({
+                        sessionToFocus: createdSession && {
+                            kind,
+                            sessionId: createdSession.id,
+                        },
+                    });
                     /** Jump to the session just created — it's appended, so it's the last one. */
                     dispatch(
                         new events.sessionRequested({
@@ -664,6 +683,14 @@ export const VirPaneGroup = defineElement<{
                     );
                 })
                 .catch(reportSessionError);
+        }
+
+        function onNewTabKeydown(event: Event, kind: PaneKind) {
+            if (!(event instanceof KeyboardEvent) || !isNewTabShortcut(event)) {
+                return;
+            }
+            event.preventDefault();
+            onAddSession(kind);
         }
 
         function onRenameSession(kind: PaneKind, session: Readonly<SessionMeta>, index: number) {
@@ -1010,6 +1037,9 @@ export const VirPaneGroup = defineElement<{
                             sessionId: session.id,
                             active: inputs.active,
                             showAccessoryKeys: inputs.screenSize === ScreenSize.Mobile,
+                            focusOnMount:
+                                state.sessionToFocus?.kind === kind &&
+                                state.sessionToFocus.sessionId === session.id,
                         })}></${VirTerminal}>
                     `;
                 },
@@ -1267,8 +1297,10 @@ export const VirPaneGroup = defineElement<{
                         ${listen('focusin', () => {
                             return updateState({
                                 focusedKind: PaneKind.Ai,
+                                sessionToFocus: undefined,
                             });
                         })}
+                        ${listen('keydown', (event) => onNewTabKeydown(event, PaneKind.Ai))}
                     >
                         ${state.sessions && state.sessions.ai.length > 1
                             ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
@@ -1319,8 +1351,10 @@ export const VirPaneGroup = defineElement<{
                         ${listen('focusin', () => {
                             return updateState({
                                 focusedKind: PaneKind.Shell,
+                                sessionToFocus: undefined,
                             });
                         })}
+                        ${listen('keydown', (event) => onNewTabKeydown(event, PaneKind.Shell))}
                     >
                         ${state.sessions && state.sessions.shell.length > 1
                             ? renderSessionBar(PaneKind.Shell, state.sessions.shell)

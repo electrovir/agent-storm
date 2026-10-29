@@ -12,6 +12,7 @@ import {createSizedIcon, LucideClipboardIcon, ViraIcon, viraThemeByKeys} from 'v
 import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 import {reportRenderError} from '../../util/client-error-log.js';
+import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
 import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
 import {defaultXtermStyles} from './xterm-styles.js';
@@ -437,6 +438,8 @@ export const VirTerminal = defineElement<{
      * keys.
      */
     showAccessoryKeys: boolean;
+    /** Take keyboard focus as soon as the terminal opens. Read once, when the element mounts. */
+    focusOnMount: boolean;
 }>()({
     tagName: 'vir-terminal',
     options: {
@@ -723,6 +726,9 @@ export const VirTerminal = defineElement<{
                         terminal.loadAddon(new WebLinksAddon());
                     }
                     terminal.open(element);
+                    if (inputs.focusOnMount) {
+                        terminal.focus();
+                    }
 
                     /**
                      * WebGL must be attached after `open()` because it needs the DOM-mounted
@@ -960,6 +966,12 @@ export const VirTerminal = defineElement<{
                     terminal.attachCustomKeyEventHandler((event) => {
                         if (event.type !== 'keydown') {
                             return true;
+                        } else if (isNewTabShortcut(event)) {
+                            /**
+                             * Left for `vir-pane-group` to handle as it bubbles out. Without this
+                             * xterm also sends Ctrl+T to the shell as \x14 (transpose-chars).
+                             */
+                            return false;
                         }
                         const modifier = event.metaKey ? 'meta' : event.altKey ? 'alt' : '';
                         const bytes = keyBindings[`${modifier}+${event.key}`];
