@@ -1177,6 +1177,7 @@ export const VirSidebar = defineElement<{
                         <${ViraButton.assign({
                             text: 'Create',
                             color: ViraColorVariant.Brand,
+                            rightSideIcon: state.worktreeSubmitting ? loaderIcon : undefined,
                             isDisabled: !state.worktreeName.trim() || state.worktreeSubmitting,
                         })}
                             ${listen('click', submitWorktree)}

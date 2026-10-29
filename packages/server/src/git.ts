@@ -1,8 +1,8 @@
 import {wait} from '@augment-vir/common';
 import {maybeCreateFullDate, toTimestamp, utcTimezone} from 'date-vir';
 import {execFile} from 'node:child_process';
-import {lstat, readdir, rm, stat} from 'node:fs/promises';
-import {dirname, join} from 'node:path';
+import {lstat, readdir, realpath, rm, stat} from 'node:fs/promises';
+import {basename, dirname, join} from 'node:path';
 import {promisify} from 'node:util';
 
 const exec = promisify(execFile);
@@ -137,6 +137,11 @@ async function isBareGitRepo(folder: string): Promise<boolean> {
     return !!headStat?.isFile() && !!refsStat?.isDirectory() && !!objectsStat?.isDirectory();
 }
 
+/**
+ * Create `name` as a sibling of the repo's existing worktrees. A worktree left behind by an earlier
+ * attempt (the server restarted mid-checkout, say) is adopted instead of failing on "already
+ * exists".
+ */
 export async function addWorktree({
     repoPath,
     name,
@@ -145,24 +150,68 @@ export async function addWorktree({
     name: string;
 }>): Promise<{worktreePath: string}> {
     const children = await listWorktreeChildren(repoPath);
-    const anyChild = children[0];
+    /** Skip the target itself, which an earlier attempt may have already created. */
+    const anyChild = children.find((child) => basename(child) !== name);
     if (!anyChild) {
         throw new Error(`No existing worktree found in ${repoPath} to base a new worktree on.`);
     }
-    await exec(
-        'git',
-        [
-            'worktree',
-            'add',
-            `../${name}`,
-        ],
-        {
-            cwd: anyChild,
-        },
-    );
+    const worktreePath = join(dirname(anyChild), name);
+    const existing = await findRegisteredWorktree({
+        cwd: anyChild,
+        worktreePath,
+    });
+    if (existing?.isInitializing) {
+        throw new Error(
+            `${worktreePath} is still being checked out by an earlier attempt. Try again once it finishes.`,
+        );
+    } else if (!existing) {
+        await exec(
+            'git',
+            [
+                'worktree',
+                'add',
+                `../${name}`,
+            ],
+            {
+                cwd: anyChild,
+            },
+        );
+    }
     return {
-        worktreePath: join(dirname(anyChild), name),
+        worktreePath,
     };
+}
+
+/**
+ * Undefined when git has no worktree registered at `worktreePath`. `git worktree add` locks a new
+ * worktree with the reason `initializing` until its checkout finishes, which is what
+ * `isInitializing` reports.
+ */
+async function findRegisteredWorktree({
+    cwd,
+    worktreePath,
+}: Readonly<{
+    cwd: string;
+    worktreePath: string;
+}>): Promise<{isInitializing: boolean} | undefined> {
+    const realWorktreePath = await realpath(worktreePath).catch(() => undefined);
+    if (!realWorktreePath) {
+        return undefined;
+    }
+    const output = await runGit(cwd, [
+        'worktree',
+        'list',
+        '--porcelain',
+    ]);
+    const entryLines = output
+        ?.split('\n\n')
+        .map((entry) => entry.split('\n'))
+        .find((lines) => lines[0] === `worktree ${realWorktreePath}`);
+    return entryLines
+        ? {
+              isInitializing: entryLines.includes('locked initializing'),
+          }
+        : undefined;
 }
 
 export async function removeWorktree({
