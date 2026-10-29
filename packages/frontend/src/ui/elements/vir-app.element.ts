@@ -7,7 +7,7 @@ import {attachOnResize, css, defineElement, html, listen, repeat} from 'element-
 import {themeDefaultKey} from 'theme-vir';
 import {
     createSizedIcon,
-    lucideIcons,
+    LucideMenuIcon,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
@@ -151,7 +151,7 @@ function pathsForFolder(
 
 const folderInfoPollMs = 2000;
 
-const hamburgerIcon = createSizedIcon(lucideIcons.Menu, 16);
+const hamburgerIcon = createSizedIcon(LucideMenuIcon, 16);
 
 function clampSidebarWidth(value: number): number {
     if (!Number.isFinite(value)) {

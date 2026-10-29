@@ -26,8 +26,18 @@ import {
 } from 'element-vir';
 import {
     createSizedIcon,
-    HorizontalAnchor,
-    lucideIcons,
+    LucideCircleAlertIcon,
+    LucideCircleCheckIcon,
+    LucideCircleDashedIcon,
+    LucideCircleSlashIcon,
+    LucideCircleXIcon,
+    LucideClockIcon,
+    LucideExternalLinkIcon,
+    LucideGitMergeIcon,
+    LucideGitPullRequestDraftIcon,
+    LucideGitPullRequestIcon,
+    LucideMessageSquareTextIcon,
+    LucideRefreshCwIcon,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
@@ -70,10 +80,10 @@ const stateColors: Readonly<Record<GitHubPrState, CSSResult>> = {
 };
 
 const stateIcons: Readonly<Record<GitHubPrState, ViraIconSvg>> = {
-    [GitHubPrState.Draft]: createSizedIcon(lucideIcons.GitPullRequestDraft, 14),
-    [GitHubPrState.Open]: createSizedIcon(lucideIcons.GitPullRequest, 14),
-    [GitHubPrState.Merged]: createSizedIcon(lucideIcons.GitMerge, 14),
-    [GitHubPrState.Closed]: createSizedIcon(lucideIcons.CircleX, 14),
+    [GitHubPrState.Draft]: createSizedIcon(LucideGitPullRequestDraftIcon, 14),
+    [GitHubPrState.Open]: createSizedIcon(LucideGitPullRequestIcon, 14),
+    [GitHubPrState.Merged]: createSizedIcon(LucideGitMergeIcon, 14),
+    [GitHubPrState.Closed]: createSizedIcon(LucideCircleXIcon, 14),
 };
 
 const checkLabels: Readonly<Record<GitHubCheckState, string>> = {
@@ -91,10 +101,10 @@ const checkColors: Readonly<Record<GitHubCheckState, CSSResult>> = {
 };
 
 const checkIcons: Readonly<Record<GitHubCheckState, ViraIconSvg>> = {
-    [GitHubCheckState.None]: createSizedIcon(lucideIcons.CircleSlash, 14),
-    [GitHubCheckState.Pending]: createSizedIcon(lucideIcons.Clock, 14),
-    [GitHubCheckState.Success]: createSizedIcon(lucideIcons.CircleCheck, 14),
-    [GitHubCheckState.Failure]: createSizedIcon(lucideIcons.CircleX, 14),
+    [GitHubCheckState.None]: createSizedIcon(LucideCircleSlashIcon, 14),
+    [GitHubCheckState.Pending]: createSizedIcon(LucideClockIcon, 14),
+    [GitHubCheckState.Success]: createSizedIcon(LucideCircleCheckIcon, 14),
+    [GitHubCheckState.Failure]: createSizedIcon(LucideCircleXIcon, 14),
 };
 
 const reviewLabels: Readonly<Record<GitHubReviewState, string>> = {
@@ -114,15 +124,15 @@ const reviewColors: Readonly<Record<GitHubReviewState, CSSResult>> = {
 };
 
 const reviewIcons: Readonly<Record<GitHubReviewState, ViraIconSvg>> = {
-    [GitHubReviewState.Approved]: createSizedIcon(lucideIcons.CircleCheck, 14),
-    [GitHubReviewState.ChangesRequested]: createSizedIcon(lucideIcons.CircleAlert, 14),
-    [GitHubReviewState.Commented]: createSizedIcon(lucideIcons.MessageSquareText, 14),
-    [GitHubReviewState.Dismissed]: createSizedIcon(lucideIcons.CircleSlash, 14),
-    [GitHubReviewState.Pending]: createSizedIcon(lucideIcons.CircleDashed, 14),
+    [GitHubReviewState.Approved]: createSizedIcon(LucideCircleCheckIcon, 14),
+    [GitHubReviewState.ChangesRequested]: createSizedIcon(LucideCircleAlertIcon, 14),
+    [GitHubReviewState.Commented]: createSizedIcon(LucideMessageSquareTextIcon, 14),
+    [GitHubReviewState.Dismissed]: createSizedIcon(LucideCircleSlashIcon, 14),
+    [GitHubReviewState.Pending]: createSizedIcon(LucideCircleDashedIcon, 14),
 };
 
-const refreshIcon = createSizedIcon(lucideIcons.RefreshCw, 14);
-const openExternalIcon = createSizedIcon(lucideIcons.ExternalLink, 14);
+const refreshIcon = createSizedIcon(LucideRefreshCwIcon, 14);
+const openExternalIcon = createSizedIcon(LucideExternalLinkIcon, 14);
 
 const reactionEmoji: Readonly<Record<GitHubReaction, string>> = {
     [GitHubReaction.ThumbsUp]: '👍',
@@ -895,9 +905,7 @@ export const VirGithubPane = defineElement<{
                             </button>
                         `;
                     })}
-                    <${ViraMenuTrigger.assign({
-                        horizontalAnchor: HorizontalAnchor.Left,
-                    })}>
+                    <${ViraMenuTrigger}>
                         <${ViraButton.assign({
                             buttonSize: ViraSize.Small,
                             buttonEmphasis: ViraEmphasis.Subtle,

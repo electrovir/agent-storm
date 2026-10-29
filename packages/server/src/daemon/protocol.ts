@@ -1,4 +1,5 @@
 import {type PaneKind, type PaneStatus} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {Buffer} from 'node:buffer';
 
 export enum FrameType {
@@ -46,16 +47,18 @@ export class FrameDecoder {
         ]);
         const frames: ParsedFrame[] = [];
         while (this.buffer.length >= headerSize) {
-            const type = this.buffer.readUInt8(0) as FrameType;
+            const type = this.buffer.readUInt8(0);
             const length = this.buffer.readUInt32BE(1);
             if (this.buffer.length < headerSize + length) {
                 break;
             }
-            const payload = Buffer.from(this.buffer.subarray(headerSize, headerSize + length));
-            frames.push({
-                type,
-                payload,
-            });
+            if (check.isEnumValue(type, FrameType)) {
+                const payload = Buffer.from(this.buffer.subarray(headerSize, headerSize + length));
+                frames.push({
+                    type,
+                    payload,
+                });
+            }
             this.buffer = this.buffer.subarray(headerSize + length);
         }
         return frames;

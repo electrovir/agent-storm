@@ -38,8 +38,18 @@ import {
     type HtmlInterpolation,
 } from 'element-vir';
 import {
-    HorizontalAnchor,
     LoaderAnimated24Icon,
+    LucideChevronDownIcon,
+    LucideChevronLeftIcon,
+    LucideChevronRightIcon,
+    LucideChevronUpIcon,
+    LucideColumns2Icon,
+    LucideFileStackIcon,
+    LucideMinusIcon,
+    LucidePilcrowIcon,
+    LucidePlusIcon,
+    LucideRows2Icon,
+    LucideUndo2Icon,
     ViraButton,
     ViraCollapsibleCard,
     ViraColorVariant,
@@ -49,7 +59,6 @@ import {
     ViraMenuTrigger,
     ViraSize,
     createSizedIcon,
-    lucideIcons,
     viraShadows,
     viraThemeByKeys,
     type ViraIconSvg,
@@ -106,39 +115,39 @@ const changeBadgeColors: Readonly<Record<GitFileChange, CSSResult>> = {
     [GitFileChange.Untracked]: viraThemeByKeys.grey.foreground['non-body'].foreground.value,
 };
 
-const caretIcon = createSizedIcon(lucideIcons.ChevronDown, 14);
+const caretIcon = createSizedIcon(LucideChevronDownIcon, 14);
 
-const revertIcon = createSizedIcon(lucideIcons.Undo2, 14);
+const revertIcon = createSizedIcon(LucideUndo2Icon, 14);
 
 /** Opens the whole side's changes as one scrollable review instead of one file at a time. */
-const reviewIcon = createSizedIcon(lucideIcons.FileStack, 14);
+const reviewIcon = createSizedIcon(LucideFileStackIcon, 14);
 
 /** Toolbar toggles read as settings rather than actions, so they sit a size below the nav arrows. */
-const splitLayoutIcon = createSizedIcon(lucideIcons.Columns2, 12);
-const inlineLayoutIcon = createSizedIcon(lucideIcons.Rows2, 12);
-const whitespaceIcon = createSizedIcon(lucideIcons.Pilcrow, 12);
+const splitLayoutIcon = createSizedIcon(LucideColumns2Icon, 12);
+const inlineLayoutIcon = createSizedIcon(LucideRows2Icon, 12);
+const whitespaceIcon = createSizedIcon(LucidePilcrowIcon, 12);
 
 /** Direction the row's stage button moves the file, matching {@link stageActionLabels}. */
 const stageActionIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
-    [GitDiffSide.Staged]: createSizedIcon(lucideIcons.Minus, 14),
-    [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 14),
+    [GitDiffSide.Staged]: createSizedIcon(LucideMinusIcon, 14),
+    [GitDiffSide.Unstaged]: createSizedIcon(LucidePlusIcon, 14),
 };
 
 /** The same icons a size down, for the buttons stacked in the diff's own gutter. */
 const hunkStageIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
-    [GitDiffSide.Staged]: createSizedIcon(lucideIcons.Minus, 11),
-    [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 11),
+    [GitDiffSide.Staged]: createSizedIcon(LucideMinusIcon, 11),
+    [GitDiffSide.Unstaged]: createSizedIcon(LucidePlusIcon, 11),
 };
 
 /** The gutter pair again at thumb size, for the touch layout's bigger tap targets. */
 const mobileHunkStageIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
-    [GitDiffSide.Staged]: createSizedIcon(lucideIcons.Minus, 16),
-    [GitDiffSide.Unstaged]: createSizedIcon(lucideIcons.Plus, 16),
+    [GitDiffSide.Staged]: createSizedIcon(LucideMinusIcon, 16),
+    [GitDiffSide.Unstaged]: createSizedIcon(LucidePlusIcon, 16),
 };
 
-const hunkUndoIcon = createSizedIcon(lucideIcons.Undo2, 11);
+const hunkUndoIcon = createSizedIcon(LucideUndo2Icon, 11);
 
-const mobileHunkUndoIcon = createSizedIcon(lucideIcons.Undo2, 16);
+const mobileHunkUndoIcon = createSizedIcon(LucideUndo2Icon, 16);
 
 /** A path's final segment, which is all the file rows show — the full path is their `title`. */
 function basename(path: string): string {
@@ -2841,7 +2850,6 @@ export const VirDiffPane = defineElement<{
                 ${isMobile
                     ? html`
                           <${ViraMenuTrigger.assign({
-                              horizontalAnchor: HorizontalAnchor.Left,
                               isDisabled: !hasFiles,
                           })}
                               class="file-menu"
@@ -2933,7 +2941,7 @@ export const VirDiffPane = defineElement<{
                 <div class="toolbar-actions">
                     <div class="toolbar-group">
                         <${ViraButton.assign({
-                            icon: lucideIcons.ChevronLeft,
+                            icon: LucideChevronLeftIcon,
                             buttonSize,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
@@ -2943,7 +2951,7 @@ export const VirDiffPane = defineElement<{
                             ${listen('click', () => stepFile(-1))}
                         ></${ViraButton}>
                         <${ViraButton.assign({
-                            icon: lucideIcons.ChevronRight,
+                            icon: LucideChevronRightIcon,
                             buttonSize,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
@@ -2955,7 +2963,7 @@ export const VirDiffPane = defineElement<{
                     </div>
                     <div class="toolbar-group">
                         <${ViraButton.assign({
-                            icon: lucideIcons.ChevronUp,
+                            icon: LucideChevronUpIcon,
                             buttonSize,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
@@ -2965,7 +2973,7 @@ export const VirDiffPane = defineElement<{
                             ${listen('click', () => stepChunk(-1))}
                         ></${ViraButton}>
                         <${ViraButton.assign({
-                            icon: lucideIcons.ChevronDown,
+                            icon: LucideChevronDownIcon,
                             buttonSize,
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,

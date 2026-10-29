@@ -13,11 +13,11 @@ import {
 import {
     ViraButton,
     ViraColorVariant,
+    ViraDropdown,
+    type ViraDropdownOption,
     ViraEmphasis,
     ViraInput,
     ViraModal,
-    ViraSelect,
-    type ViraSelectOption,
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
@@ -327,29 +327,23 @@ export const VirAiModal = defineElement<{
         /**
          * Other AIs whose avatar this draft can borrow, so a second `claude` variant doesn't need
          * the user to find the same image file again. The draft itself is excluded — copying its
-         * own avatar onto itself does nothing. A lone placeholder entry means there's nothing to
-         * copy, and the whole control is dropped.
+         * own avatar onto itself does nothing. No entries means there's nothing to copy, and the
+         * whole control is dropped.
          */
-        const avatarSourceOptions: ViraSelectOption[] = [
-            {
-                value: '',
-                label: 'Pick an AI...',
-            },
-            ...(state.loaded?.aiDefinitions || [])
-                .filter((definition) => {
-                    return (
-                        definition.avatarFile &&
-                        definition.id !== state.draft?.id &&
-                        definition.avatarFile !== state.draft?.avatarFile
-                    );
-                })
-                .map((definition) => {
-                    return {
-                        value: definition.id,
-                        label: definition.name,
-                    };
-                }),
-        ];
+        const avatarSourceOptions: ViraDropdownOption[] = (state.loaded?.aiDefinitions || [])
+            .filter((definition) => {
+                return (
+                    definition.avatarFile &&
+                    definition.id !== state.draft?.id &&
+                    definition.avatarFile !== state.draft?.avatarFile
+                );
+            })
+            .map((definition) => {
+                return {
+                    value: definition.id,
+                    label: definition.name,
+                };
+            });
 
         function renderEditor(draft: Readonly<AiDraft>) {
             return html`
@@ -451,21 +445,23 @@ export const VirAiModal = defineElement<{
                               `
                             : ''}
                     </div>
-                    ${avatarSourceOptions.length > 1
+                    ${avatarSourceOptions.length
                         ? html`
-                              <${ViraSelect.assign({
+                              <${ViraDropdown.assign({
                                   label: 'Copy avatar from',
                                   options: avatarSourceOptions,
                                   /**
-                                   * Always shows the placeholder: picking an entry is an action that
-                                   * copies its image onto this draft, not a value this draft holds.
+                                   * Always shows the placeholder: picking an entry is an action
+                                   * that copies its image onto this draft, not a value this draft
+                                   * holds.
                                    */
-                                  value: '',
-                                  disabled: state.saving,
+                                  placeholder: 'Pick an AI...',
+                                  selected: [],
+                                  isDisabled: state.saving,
                               })}
-                                  ${listen(ViraSelect.events.valueChange, (event) => {
+                                  ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
                                       const source = (state.loaded?.aiDefinitions || []).find(
-                                          (definition) => definition.id === event.detail,
+                                          (definition) => definition.id === event.detail[0],
                                       );
                                       if (source?.avatarFile) {
                                           updateDraft({
@@ -473,7 +469,7 @@ export const VirAiModal = defineElement<{
                                           });
                                       }
                                   })}
-                              ></${ViraSelect}>
+                              ></${ViraDropdown}>
                           `
                         : ''}
                     <div class="footer">

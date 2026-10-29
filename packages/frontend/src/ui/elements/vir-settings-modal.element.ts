@@ -10,16 +10,16 @@ import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from
 import {
     ViraButton,
     ViraColorVariant,
+    ViraDropdown,
     ViraEmphasis,
     ViraForm,
     ViraFormFieldType,
     ViraJsonForm,
     ViraModal,
-    ViraSelect,
     viraThemeByKeys,
+    type ViraDropdownOption,
     type ViraJsonSchema,
     type ViraJsonSchemaObject,
-    type ViraSelectOption,
 } from 'vira';
 import {checkPath, getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
 import {reportRenderError} from '../../util/client-error-log.js';
@@ -75,7 +75,7 @@ const formConfigKeys = getObjectTypedKeys(formJsonSchema.properties || {});
  * The AI choices for the default picker. An empty leading option covers a config with no AI defined
  * yet, which is also the state a brand-new install starts in if the seeded definition was deleted.
  */
-function aiOptions(config: Readonly<Config> | undefined): ViraSelectOption[] {
+function aiOptions(config: Readonly<Config> | undefined): ViraDropdownOption[] {
     return (config?.aiDefinitions || []).map((definition) => {
         return {
             value: definition.id,
@@ -427,18 +427,25 @@ export const VirSettingsModal = defineElement<{
                                       : ''}
                               </div>
                               <div class="ai-row">
-                                  <${ViraSelect.assign({
+                                  <${ViraDropdown.assign({
                                       label: 'Default AI',
                                       options: aiOptions(state.loaded),
-                                      value: state.defaultAiId || '',
-                                      disabled: state.saving || !state.loaded,
+                                      selected: state.defaultAiId
+                                          ? [
+                                                state.defaultAiId,
+                                            ]
+                                          : [],
+                                      isDisabled: state.saving || !state.loaded,
                                   })}
-                                      ${listen(ViraSelect.events.valueChange, (event) => {
-                                          return updateState({
-                                              defaultAiId: event.detail,
-                                          });
-                                      })}
-                                  ></${ViraSelect}>
+                                      ${listen(
+                                          ViraDropdown.events.selectedValuesChange,
+                                          (event) => {
+                                              return updateState({
+                                                  defaultAiId: event.detail[0],
+                                              });
+                                          },
+                                      )}
+                                  ></${ViraDropdown}>
                                   <${ViraButton.assign({
                                       text: 'Define AI',
                                       buttonEmphasis: ViraEmphasis.Subtle,

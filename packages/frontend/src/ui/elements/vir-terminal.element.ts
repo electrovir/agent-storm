@@ -8,7 +8,7 @@ import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal, type ITheme} from '@xterm/xterm';
 import {css, defineElement, html, listen, onDomCreated, unsafeCSS} from 'element-vir';
-import {createSizedIcon, lucideIcons, ViraIcon, viraThemeByKeys} from 'vira';
+import {createSizedIcon, LucideClipboardIcon, ViraIcon, viraThemeByKeys} from 'vira';
 import {client, getConfig, uploadFile} from '../../util/api-client.js';
 import {ensureSecret} from '../../util/auth.js';
 import {reportRenderError} from '../../util/client-error-log.js';
@@ -321,7 +321,7 @@ export function toControlByte(input: string): string {
     return String.fromCodePoint((input.toUpperCase().codePointAt(0) ?? 0) & 0x1f);
 }
 
-const clipboardIcon = createSizedIcon(lucideIcons.Clipboard, 18);
+const clipboardIcon = createSizedIcon(LucideClipboardIcon, 18);
 
 /** Prompt-based paste fallback. The native prompt field is editable, so the OS paste menu works. */
 function promptPaste(terminal: Terminal): void {

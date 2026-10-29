@@ -12,9 +12,8 @@ import {
 import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
 import {
     createSizedIcon,
-    HorizontalAnchor,
     LoaderAnimated24Icon,
-    lucideIcons,
+    LucideEllipsisVerticalIcon,
     noUserSelect,
     renderMenuItemEntries,
     ViraButton,
@@ -45,7 +44,7 @@ import {VirDiffPane} from './vir-diff-pane.element.js';
 import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
-const sessionMenuIcon = createSizedIcon(lucideIcons.EllipsisVertical, 12);
+const sessionMenuIcon = createSizedIcon(LucideEllipsisVerticalIcon, 12);
 const activityIcon = createSizedIcon(LoaderAnimated24Icon, 12);
 
 /** Tab label: the user's name when set, otherwise the tab's 1-based position. */
@@ -913,23 +912,7 @@ export const VirPaneGroup = defineElement<{
                                         ${sessionLabel(session, index)}
                                     </span>
                                     <span ${listen('click', (event) => event.stopPropagation())}>
-                                        <${ViraMenuTrigger.assign({
-                                            /*
-                                             * Auto, not Right: a right-anchored menu grows leftward,
-                                             * and the first tab sits at the pane's left edge, so the
-                                             * menu ran outside the pane and `overflow: hidden` on
-                                             * `.pane` cut it off. Auto flips to grow rightward when
-                                             * there's no room on the left.
-                                             */
-                                            horizontalAnchor: HorizontalAnchor.Auto,
-                                            /*
-                                             * Without this the pop-up is capped at the width of the
-                                             * overflow container it opens inside, which here is the
-                                             * one-character-wide session tab — every label came out
-                                             * clipped to its first letter.
-                                             */
-                                            ignoreMaxWidth: true,
-                                        })}>
+                                        <${ViraMenuTrigger}>
                                             <${ViraButton.assign({
                                                 buttonSize: ViraSize.Small,
                                                 buttonEmphasis: ViraEmphasis.Subtle,

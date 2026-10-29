@@ -26,11 +26,11 @@
     },
     "dependencies": {
         "@agent-storm/server": "*",
-        "@augment-vir/common": "^32.3.1",
+        "@augment-vir/common": "^32.6.0",
         "portfinder": "^1.0.38"
     },
     "devDependencies": {
-        "@types/node": "^26.5.1"
+        "@types/node": "^26.6.5"
     },
     "engines": {
         "node": ">=22"

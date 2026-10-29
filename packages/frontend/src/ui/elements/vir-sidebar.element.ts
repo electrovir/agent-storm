@@ -25,13 +25,27 @@ import {css, defineElement, defineElementEvent, html, listen} from 'element-vir'
 import {parseUrl} from 'url-vir';
 import {
     createSizedIcon,
-    HorizontalAnchor,
     LoaderAnimated24Icon,
-    lucideIcons,
-    type PopUpManager,
+    LucideArchiveIcon,
+    LucideCheckIcon,
+    LucideEllipsisIcon,
+    LucideExternalLinkIcon,
+    LucideGitBranchPlusIcon,
+    LucideListFilterIcon,
+    LucideMinusIcon,
+    LucidePlusIcon,
+    LucidePowerOffIcon,
+    LucideRotateCwIcon,
+    LucideSearchIcon,
+    LucideTerminalIcon,
+    LucideTrashIcon,
+    LucideXIcon,
+    type PopoverManager,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
+    ViraDropdown,
+    type ViraDropdownOption,
     ViraEmphasis,
     viraFormCssVars,
     ViraIcon,
@@ -40,9 +54,7 @@ import {
     type ViraMenuItemEntry,
     ViraMenuTrigger,
     ViraModal,
-    ViraPopUpTrigger,
-    ViraSelect,
-    type ViraSelectOption,
+    ViraPopoverTrigger,
     viraShadows,
     ViraSize,
     viraThemeByKeys,
@@ -73,15 +85,15 @@ const allowedLinkHostnames = ['github.com'];
 const pollIntervalMs = 2000;
 
 const loaderIcon = createSizedIcon(LoaderAnimated24Icon, 12);
-const dashIcon = createSizedIcon(lucideIcons.Minus, 12);
-const exitedIcon = createSizedIcon(lucideIcons.X, 12);
-const mergedCheckIcon = createSizedIcon(lucideIcons.Check, 14);
+const dashIcon = createSizedIcon(LucideMinusIcon, 12);
+const exitedIcon = createSizedIcon(LucideXIcon, 12);
+const mergedCheckIcon = createSizedIcon(LucideCheckIcon, 14);
 
 const buttonIconSize = 16;
-const searchIcon = createSizedIcon(lucideIcons.Search, buttonIconSize);
-const plusIcon = createSizedIcon(lucideIcons.Plus, buttonIconSize);
-const ellipsisIcon = createSizedIcon(lucideIcons.Ellipsis, buttonIconSize);
-const filterIcon = createSizedIcon(lucideIcons.ListFilter, buttonIconSize);
+const searchIcon = createSizedIcon(LucideSearchIcon, buttonIconSize);
+const plusIcon = createSizedIcon(LucidePlusIcon, buttonIconSize);
+const ellipsisIcon = createSizedIcon(LucideEllipsisIcon, buttonIconSize);
+const filterIcon = createSizedIcon(LucideListFilterIcon, buttonIconSize);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 /**
@@ -90,23 +102,23 @@ const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
  * 16px-icon combo (24px tall) was well short of.
  */
 const mobileButtonIconSize = 24;
-const mobileSearchIcon = createSizedIcon(lucideIcons.Search, mobileButtonIconSize);
-const mobilePlusIcon = createSizedIcon(lucideIcons.Plus, mobileButtonIconSize);
-const mobileEllipsisIcon = createSizedIcon(lucideIcons.Ellipsis, mobileButtonIconSize);
-const mobileFilterIcon = createSizedIcon(lucideIcons.ListFilter, mobileButtonIconSize);
+const mobileSearchIcon = createSizedIcon(LucideSearchIcon, mobileButtonIconSize);
+const mobilePlusIcon = createSizedIcon(LucidePlusIcon, mobileButtonIconSize);
+const mobileEllipsisIcon = createSizedIcon(LucideEllipsisIcon, mobileButtonIconSize);
+const mobileFilterIcon = createSizedIcon(LucideListFilterIcon, mobileButtonIconSize);
 
 /**
  * Icons for the per-folder / repo / worktree row (⋯) menu items. Sized down from lucide's native
  * 24px so they sit proportionally next to the menu label text.
  */
 const menuIconSize = 16;
-const menuOpenPrIcon = createSizedIcon(lucideIcons.ExternalLink, menuIconSize);
-const menuEditCommandsIcon = createSizedIcon(lucideIcons.Terminal, menuIconSize);
-const menuRestartPanesIcon = createSizedIcon(lucideIcons.RotateCw, menuIconSize);
-const menuKillPanesIcon = createSizedIcon(lucideIcons.PowerOff, menuIconSize);
-const menuHideRepoIcon = createSizedIcon(lucideIcons.Archive, menuIconSize);
-const menuDeleteWorktreeIcon = createSizedIcon(lucideIcons.Trash2, menuIconSize);
-const menuRemoveRepoIcon = createSizedIcon(lucideIcons.X, menuIconSize);
+const menuOpenPrIcon = createSizedIcon(LucideExternalLinkIcon, menuIconSize);
+const menuEditCommandsIcon = createSizedIcon(LucideTerminalIcon, menuIconSize);
+const menuRestartPanesIcon = createSizedIcon(LucideRotateCwIcon, menuIconSize);
+const menuKillPanesIcon = createSizedIcon(LucidePowerOffIcon, menuIconSize);
+const menuHideRepoIcon = createSizedIcon(LucideArchiveIcon, menuIconSize);
+const menuDeleteWorktreeIcon = createSizedIcon(LucideTrashIcon, menuIconSize);
+const menuRemoveRepoIcon = createSizedIcon(LucideXIcon, menuIconSize);
 
 const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
     [SidebarGrouping.Repo]: 'Group by repo',
@@ -188,11 +200,11 @@ type SidebarState = {
      */
     searchQuery: string;
     /**
-     * The search pop-up's own manager, grabbed from its `init` event. `ViraPopUpTrigger` has no
+     * The search pop-up's own manager, grabbed from its `init` event. `ViraPopoverTrigger` has no
      * `open` input, so this is the only way to close the pop-up from the outside — needed when
      * Enter in the search input activates the top result.
      */
-    searchPopUpManager: PopUpManager | undefined;
+    searchPopoverManager: PopoverManager | undefined;
     /**
      * Mirrors `config.repos`. Needed for the hide-inactive filter so we can look up each repo's
      * `lastInteractedAtMs` against the 7-day cutoff. Kept in lockstep with the folders list via
@@ -282,7 +294,7 @@ export const VirSidebar = defineElement<{
             sidebarSorting: undefined,
             onlyShowRecent: undefined,
             searchQuery: '',
-            searchPopUpManager: undefined,
+            searchPopoverManager: undefined,
             repos: [],
             updateStatus: undefined,
         };
@@ -295,10 +307,6 @@ export const VirSidebar = defineElement<{
             font-family: ui-sans-serif, system-ui, sans-serif;
             font-size: 12px;
             border-right: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            /* No overflow clipping here on purpose: the header search pop-up grows past the
-               sidebar's right edge, and an overflow container at this level would clip it (the
-               pop-up manager constrains pop-ups to the nearest overflow ancestor). Scrolling lives
-               on the list instead, so the only thing that needs clipping still gets it. */
         }
 
         :host([data-hide-border]) {
@@ -759,18 +767,17 @@ export const VirSidebar = defineElement<{
                     })}></${ViraIcon}>
                 </span>
                 <span class="header-actions">
-                    <${ViraPopUpTrigger.assign({
-                        horizontalAnchor: HorizontalAnchor.Left,
+                    <${ViraPopoverTrigger.assign({
                         keepOpenAfterInteraction: true,
                     })}
-                        ${listen(ViraPopUpTrigger.events.openChange, (event) => {
+                        ${listen(ViraPopoverTrigger.events.openChange, (event) => {
                             if (event.detail) {
                                 focusSearchInput(host);
                             }
                         })}
-                        ${listen(ViraPopUpTrigger.events.init, (event) => {
+                        ${listen(ViraPopoverTrigger.events.init, (event) => {
                             updateState({
-                                searchPopUpManager: event.detail.popUpManager,
+                                searchPopoverManager: event.detail.popoverManager,
                             });
                         })}
                     >
@@ -788,12 +795,12 @@ export const VirSidebar = defineElement<{
                                 : ViraEmphasis.Subtle,
                             color: ViraColorVariant.Plain,
                         })}
-                            slot=${ViraPopUpTrigger.slotNames['vira-pop-up-trigger-trigger']}
+                            slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-trigger']}
                             title="Search repos & worktrees"
                         ></${ViraButton}>
                         <div
                             class="search-popup"
-                            slot=${ViraPopUpTrigger.slotNames['vira-pop-up-trigger-pop-up']}
+                            slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-popover']}
                         >
                             <${ViraInput.assign({
                                 value: state.searchQuery,
@@ -820,11 +827,11 @@ export const VirSidebar = defineElement<{
                                      * the pop-up on its own, and leaving it floating over a sidebar
                                      * that just jumped to the new folder is disorienting.
                                      */
-                                    state.searchPopUpManager?.removePopUp();
+                                    state.searchPopoverManager?.hide();
                                 })}
                             ></${ViraInput}>
                         </div>
-                    </${ViraPopUpTrigger}>
+                    </${ViraPopoverTrigger}>
                     <${ViraButton.assign({
                         /**
                          * Mobile (where the sidebar lives inside `ViraModal` on small screens) uses
@@ -839,9 +846,7 @@ export const VirSidebar = defineElement<{
                         title="Add new repository."
                         ${listen('click', () => void openAddRepoModal(updateState))}
                     ></${ViraButton}>
-                    <${ViraMenuTrigger.assign({
-                        horizontalAnchor: HorizontalAnchor.Right,
-                    })}
+                    <${ViraMenuTrigger}
                         ${listen(ViraMenuTrigger.events.openChange, (event) => {
                             updateState({
                                 openMenuKey: event.detail ? 'sidebar-grouping' : undefined,
@@ -873,9 +878,7 @@ export const VirSidebar = defineElement<{
                             `;
                         })}
                     </${ViraMenuTrigger}>
-                    <${ViraMenuTrigger.assign({
-                        horizontalAnchor: HorizontalAnchor.Right,
-                    })}
+                    <${ViraMenuTrigger}
                         ${listen(ViraMenuTrigger.events.openChange, (event) => {
                             updateState({
                                 openMenuKey: event.detail ? 'sidebar-settings' : undefined,
@@ -968,9 +971,7 @@ export const VirSidebar = defineElement<{
                                 </span>
                             </span>
                             <span class="actions">
-                                <${ViraMenuTrigger.assign({
-                                    horizontalAnchor: HorizontalAnchor.Right,
-                                })}
+                                <${ViraMenuTrigger}
                                     ${listen(ViraMenuTrigger.events.openChange, (event) => {
                                         updateState({
                                             openMenuKey: event.detail ? repoMenuKey : undefined,
@@ -991,7 +992,7 @@ export const VirSidebar = defineElement<{
                                     ${renderMenuItemEntries([
                                         {
                                             content: 'Add worktree',
-                                            iconOverride: lucideIcons.GitBranchPlus,
+                                            iconOverride: LucideGitBranchPlusIcon,
                                             onClick() {
                                                 void openAddWorktreeModal(root.path, updateState);
                                             },
@@ -1011,7 +1012,7 @@ export const VirSidebar = defineElement<{
                                         },
                                         {
                                             content: 'Remove repo',
-                                            iconOverride: lucideIcons.X,
+                                            iconOverride: LucideXIcon,
                                             onClick() {
                                                 void confirmRemoveRepo(
                                                     root.path,
@@ -1081,18 +1082,20 @@ export const VirSidebar = defineElement<{
                             }
                         })}
                     ></${ViraInput}>
-                    <${ViraSelect.assign({
+                    <${ViraDropdown.assign({
                         label: 'AI',
                         options: aiSelectOptions(state),
-                        value: state.repoAiId,
-                        disabled: state.repoSubmitting,
+                        selected: [
+                            state.repoAiId,
+                        ],
+                        isDisabled: state.repoSubmitting,
                     })}
-                        ${listen(ViraSelect.events.valueChange, (event) => {
+                        ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
                             updateState({
-                                repoAiId: event.detail,
+                                repoAiId: event.detail[0] || defaultAiSelectValue,
                             });
                         })}
-                    ></${ViraSelect}>
+                    ></${ViraDropdown}>
                     <div class="repo-modal-footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -1138,7 +1141,7 @@ export const VirSidebar = defineElement<{
                             }
                         })}
                     ></${ViraInput}>
-                    <${ViraSelect.assign({
+                    <${ViraDropdown.assign({
                         label: 'AI',
                         /**
                          * The repo root's resolved AI, which the new worktree inherits when the
@@ -1151,15 +1154,17 @@ export const VirSidebar = defineElement<{
                                 (folder) => folder.path === state.worktreeModalRepoPath,
                             )?.aiId,
                         ),
-                        value: state.worktreeAiId,
-                        disabled: state.worktreeSubmitting,
+                        selected: [
+                            state.worktreeAiId,
+                        ],
+                        isDisabled: state.worktreeSubmitting,
                     })}
-                        ${listen(ViraSelect.events.valueChange, (event) => {
+                        ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
                             updateState({
-                                worktreeAiId: event.detail,
+                                worktreeAiId: event.detail[0] || defaultAiSelectValue,
                             });
                         })}
-                    ></${ViraSelect}>
+                    ></${ViraDropdown}>
                     <div class="worktree-modal-footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -1303,9 +1308,7 @@ function renderRow({
                   `
                 : ''}
             <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
-                <${ViraMenuTrigger.assign({
-                    horizontalAnchor: HorizontalAnchor.Right,
-                })}
+                <${ViraMenuTrigger}
                     ${listen(ViraMenuTrigger.events.openChange, (event) => {
                         updateState({
                             openMenuKey: event.detail ? rowMenuKey : undefined,
@@ -1411,7 +1414,7 @@ function buildFilterMenuSections({
              * is the menu's per-item icon slot — leaving it undefined leaves blank space, which
              * keeps the labels visually aligned across rows.
              */
-            iconOverride: sidebarGrouping === grouping ? lucideIcons.Check : undefined,
+            iconOverride: sidebarGrouping === grouping ? LucideCheckIcon : undefined,
             onClick() {
                 if (sidebarGrouping === grouping) {
                     return;
@@ -1432,7 +1435,7 @@ function buildFilterMenuSections({
         return {
             content: sidebarSortingLabels[sorting],
             iconOverride:
-                (sidebarSorting ?? SidebarSorting.Name) === sorting ? lucideIcons.Check : undefined,
+                (sidebarSorting ?? SidebarSorting.Name) === sorting ? LucideCheckIcon : undefined,
             onClick() {
                 if ((sidebarSorting ?? SidebarSorting.Name) === sorting) {
                     return;
@@ -1451,7 +1454,7 @@ function buildFilterMenuSections({
                  * Click toggles the persisted `onlyShowRecent` flag. A check icon shows the current
                  * state — the user can flip it off the same way they turned it on.
                  */
-                iconOverride: onlyShowRecent ? lucideIcons.Check : undefined,
+                iconOverride: onlyShowRecent ? LucideCheckIcon : undefined,
                 onClick() {
                     void toggleHideInactive(!onlyShowRecent, updateState);
                 },
@@ -1827,10 +1830,8 @@ function filterBySearch(folders: ReadonlyArray<FolderInfo>, query: string): Fold
 }
 
 /**
- * Value of the "use the default AI" entry in the add-repo / add-worktree selects. Deliberately not
- * the empty string, which `ViraSelect` coerces to "nothing selected" — it then renders its own
- * hidden placeholder option as selected and the field comes up blank. Mapped back to "no override"
- * at submit time.
+ * Value of the "use the default AI" entry in the add-repo / add-worktree selects. Mapped back to
+ * "no override" at submit time.
  */
 const defaultAiSelectValue = 'default';
 
@@ -1845,7 +1846,7 @@ const defaultAiSelectValue = 'default';
 function aiSelectOptions(
     state: Readonly<SidebarState>,
     inheritedAiId?: string | undefined,
-): ViraSelectOption[] {
+): ViraDropdownOption[] {
     const defaultName =
         state.aiDefinitions.find(
             (definition) => definition.id === (inheritedAiId || state.defaultAiId),

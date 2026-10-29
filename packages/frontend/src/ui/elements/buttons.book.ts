@@ -1,6 +1,6 @@
 import {defineBookPage} from 'element-book';
 import {html} from 'element-vir';
-import {lucideIcons, ViraButton, ViraColorVariant, ViraSize} from 'vira';
+import {LucidePlusIcon, LucideXIcon, ViraButton, ViraColorVariant, ViraSize} from 'vira';
 
 export const buttonsPage = defineBookPage({
     parent: undefined,
@@ -13,7 +13,7 @@ export const buttonsPage = defineBookPage({
                 return html`
                     <${ViraButton.assign({
                         text: 'Primary',
-                        icon: lucideIcons.Plus,
+                        icon: LucidePlusIcon,
                         buttonSize: ViraSize.Medium,
                         color: ViraColorVariant.Brand,
                     })}></${ViraButton}>
@@ -24,7 +24,7 @@ export const buttonsPage = defineBookPage({
                     })}></${ViraButton}>
                     <${ViraButton.assign({
                         text: 'Danger',
-                        icon: lucideIcons.X,
+                        icon: LucideXIcon,
                         buttonSize: ViraSize.Medium,
                         color: ViraColorVariant.Danger,
                     })}></${ViraButton}>
