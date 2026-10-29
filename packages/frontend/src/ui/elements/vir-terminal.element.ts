@@ -1166,23 +1166,24 @@ export const VirTerminal = defineElement<{
                      * Only a real size change fixes both: xterm re-wraps, and the pty raises
                      * SIGWINCH so the TUI repaints its whole screen.
                      *
-                     * So change the size for real, one column narrower, and change it back. The
-                     * pause between the two is the point — it gives the TUI time to actually paint
-                     * a frame at the narrow width. Snapping back within the same frame was tried
-                     * first and left two renderings overlaid on the same cells, because the redraw
-                     * landed in a buffer that had already been resized out from under it.
+                     * So change the size for real, one row taller, and change it back. Rows, not
+                     * columns: narrowing even one column makes xterm re-wrap every full-width line
+                     * (Claude Code draws its borders edge to edge), which pushes fragments of the
+                     * old frame into the scrollback before the TUI's repaint arrives, and the TUI
+                     * only clears the visible screen. Taller first, because Claude Code ignores a
+                     * row being added and only repaints when one is taken away; the shrink back
+                     * then pushes out the row the grow pulled in and the repaint covers the whole
+                     * screen. The pause between the two lets the TUI see the taller size, or it
+                     * would see no change at all.
                      */
                     async function nudgePtySize() {
-                        if (terminal.cols < 2) {
-                            return;
-                        }
-                        const restoreCols = terminal.cols;
-                        terminal.resize(restoreCols - 1, terminal.rows);
+                        const restoreRows = terminal.rows;
+                        terminal.resize(terminal.cols, restoreRows + 1);
                         sendResize();
                         await wait({
                             milliseconds: 80,
                         });
-                        terminal.resize(restoreCols, terminal.rows);
+                        terminal.resize(terminal.cols, restoreRows);
                         sendResize();
                     }
 
