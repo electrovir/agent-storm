@@ -1,4 +1,4 @@
-import {randomBytes} from 'node:crypto';
+import {createCuid2} from '@augment-vir/common';
 import {mkdir, writeFile} from 'node:fs/promises';
 import {extname, join} from 'node:path';
 import {uploadsDir} from './file-paths.js';
@@ -24,8 +24,7 @@ export async function saveUpload({
     const safe = safeFilename(filename);
     const stem = safe.slice(0, safe.length - extname(safe).length) || 'upload';
     const ext = extname(safe);
-    const uniqueId = randomBytes(4).toString('hex');
-    const filePath = join(uploadsDir, `${Date.now()}-${uniqueId}-${stem}${ext}`);
+    const filePath = join(uploadsDir, `${Date.now()}-${createCuid2()}-${stem}${ext}`);
     const buffer = Buffer.from(dataBase64, 'base64');
     await writeFile(filePath, buffer);
     return filePath;

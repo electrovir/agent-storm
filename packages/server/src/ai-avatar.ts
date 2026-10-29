@@ -1,4 +1,5 @@
 import {type AiDefinition} from '@agent-storm/common';
+import {createCuid2} from '@augment-vir/common';
 import {
     calculateRelativeDate,
     createFullDate,
@@ -6,7 +7,6 @@ import {
     isDateAfter,
     type AnyDuration,
 } from 'date-vir';
-import {randomBytes} from 'node:crypto';
 import {mkdir, readdir, readFile, stat, unlink, writeFile} from 'node:fs/promises';
 import {extname, join} from 'node:path';
 import {avatarsDir} from './file-paths.js';
@@ -36,7 +36,7 @@ const maxAvatarBytes = 1024 * 1024;
  * the pattern (rather than sanitizing on read) is what keeps a crafted `avatarFile` in the config
  * from reaching outside {@link avatarsDir}.
  */
-const avatarFileNamePattern = /^[a-f0-9]{16}\.(?:png|jpe?g|webp|gif)$/;
+const avatarFileNamePattern = /^(?:[a-f0-9]{16}|[a-z0-9]{24})\.(?:png|jpe?g|webp|gif)$/;
 
 /**
  * How long an avatar file is protected from pruning regardless of whether any definition references
@@ -72,7 +72,7 @@ export async function saveAiAvatar({
     await mkdir(avatarsDir, {
         recursive: true,
     });
-    const avatarFile = `${randomBytes(8).toString('hex')}${extension}`;
+    const avatarFile = `${createCuid2()}${extension}`;
     await writeFile(join(avatarsDir, avatarFile), buffer);
     return avatarFile;
 }

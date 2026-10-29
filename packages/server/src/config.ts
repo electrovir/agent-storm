@@ -2,13 +2,14 @@
 
 import {defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
 import {
+    createCuid2,
     log,
     omitObjectKeys,
     PromiseQueue,
     setFirstLetterCasing,
     StringCase,
 } from '@augment-vir/common';
-import {createHash, randomUUID} from 'node:crypto';
+import {createHash} from 'node:crypto';
 import {mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {pruneAiAvatars} from './ai-avatar.js';
@@ -289,7 +290,7 @@ async function writeConfig(config: Readonly<Config>): Promise<void> {
         recursive: true,
     });
     const normalized = normalizeConfig(config);
-    const tempPath = `${configPath}.tmp.${randomUUID()}`;
+    const tempPath = `${configPath}.tmp.${createCuid2()}`;
     try {
         await writeFile(tempPath, JSON.stringify(normalized, undefined, 4), 'utf-8');
         await rename(tempPath, configPath);
