@@ -211,6 +211,11 @@ function readReplyBody(form: HTMLFormElement): string {
     return check.isString(value) ? value.trim() : '';
 }
 
+/**
+ * Possibly unused: nothing renders this pane since its GitHub tab was removed from the pane group.
+ * Delete it, along with `util/github-markdown.ts`, the `GitHub` calls in `util/api-client.ts`, and
+ * the server's `github-pr.ts` and `/github/*` endpoints, unless some of it gets reused soon.
+ */
 export const VirGithubPane = defineElement<{
     folder: string;
     /**

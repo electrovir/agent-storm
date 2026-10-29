@@ -24,7 +24,6 @@ import {
     bareMainTabPaths,
     defaultFrontendTab,
     MainTab,
-    mainTabFromRoute,
     rememberedSessionIndexForFolder,
     rememberedTabForFolder,
     rememberSessionIndexForFolder,
@@ -41,7 +40,6 @@ import {applyThemeMode} from '../../util/theme-mode.js';
 import {VirAiModal} from './vir-ai-modal.element.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirBook} from './vir-book.element.js';
-import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
@@ -173,11 +171,6 @@ type AppState = {
     /** Open state of the "Define AI" modal, raised from the settings modal so the two never stack. */
     aiModalOpen: boolean;
     route: AppRoute;
-    /**
-     * Most recent Write Code route, so switching to Review Code and back restores the repo, pane
-     * tab, and session the user was on instead of dumping them at the bare tab route.
-     */
-    lastWriteCodeRoute: AppRoute | undefined;
     removeRouteListener: (() => void) | undefined;
     sidebarWidth: number;
     sidebarDragging: boolean;
@@ -227,7 +220,6 @@ export const VirApp = defineElement()({
             settingsOpen: false,
             aiModalOpen: false,
             route: router.readCurrentRoute(),
-            lastWriteCodeRoute: undefined,
             removeRouteListener: undefined,
             sidebarWidth: localStorageClient.sidebarWidth.read(),
             sidebarDragging: false,
@@ -281,38 +273,9 @@ export const VirApp = defineElement()({
             overflow: hidden;
         }
 
-        vir-main-tabs {
-            flex-shrink: 0;
-        }
-
-        /*
-         * Mobile drops the docked strip: it reappears as a horizontal row inside the sidebar modal
-         * (and at the top of the review panel, which has no other chrome to get back out of).
-         */
-        :host([data-mobile]) > vir-main-tabs {
-            display: none;
-        }
-
         .write-code-panel {
             display: flex;
             flex-direction: row;
-            flex-grow: 1;
-            min-width: 0;
-            min-height: 0;
-        }
-
-        /*
-         * Hidden rather than unmounted: every mounted pane group holds live /pty WebSocket(s) and
-         * xterm scrollback, so unmounting the whole panel on every tab switch would tear all of them
-         * down and replay every terminal on the way back.
-         */
-        .write-code-panel[data-hidden] {
-            display: none;
-        }
-
-        .review-code-panel {
-            display: flex;
-            flex-direction: column;
             flex-grow: 1;
             min-width: 0;
             min-height: 0;
@@ -437,11 +400,6 @@ export const VirApp = defineElement()({
         const removeRouteListener = router.listen(true, (route) => {
             updateState({
                 route,
-                ...(route.paths[0] === MainTab.WriteCode
-                    ? {
-                          lastWriteCodeRoute: route,
-                      }
-                    : {}),
             });
         });
         /**
@@ -559,7 +517,6 @@ export const VirApp = defineElement()({
          * can't resolve (mistyped path, repo-with-worktrees + no second segment, etc.) and folder
          * info has actually loaded, bounce the user back to `/` so we don't sit in a broken state.
          */
-        const mainTab = mainTabFromRoute(state.route);
         const resolution = resolveRoute(state.route.paths.slice(1), state.folderInfo);
         const activeFolder = resolution.folder?.path;
         if (resolution.redirectToRoot) {
@@ -820,49 +777,8 @@ export const VirApp = defineElement()({
             void refreshFolderInfo(updateState);
         }
 
-        function handleMainTabRequested(tab: MainTab) {
-            const routeByMainTab: Record<MainTab, Parameters<typeof router.setRoute>[0]> = {
-                [MainTab.WriteCode]: state.lastWriteCodeRoute ?? {
-                    paths: bareMainTabPaths[MainTab.WriteCode],
-                    search: undefined,
-                },
-                [MainTab.ReviewCode]: {
-                    paths: bareMainTabPaths[MainTab.ReviewCode],
-                    search: undefined,
-                },
-            };
-            router.setRoute(routeByMainTab[tab]);
-        }
-
-        /**
-         * The horizontal copy of the main tabs, for the two places mobile puts them. Switching tab
-         * also dismisses the sidebar modal, since the repo list it holds belongs to Write Code.
-         */
-        function renderMobileMainTabs() {
-            return html`
-                <${VirMainTabs.assign({
-                    activeTab: mainTab,
-                    isHorizontal: true,
-                })}
-                    ${listen(VirMainTabs.events.tabRequested, (event) => {
-                        handleMainTabRequested(event.detail);
-                        updateState({
-                            mobileSidebarOpen: false,
-                        });
-                    })}
-                ></${VirMainTabs}>
-            `;
-        }
-
         return html`
-            <${VirMainTabs.assign({
-                activeTab: mainTab,
-            })}
-                ${listen(VirMainTabs.events.tabRequested, (event) => {
-                    return handleMainTabRequested(event.detail);
-                })}
-            ></${VirMainTabs}>
-            <div class="write-code-panel" ?data-hidden=${mainTab !== MainTab.WriteCode}>
+            <div class="write-code-panel">
                 <${VirSidebar.assign({
                     activeFolder,
                     themeClient: state.themeClient,
@@ -962,7 +878,6 @@ export const VirApp = defineElement()({
                                         parentRepoPath: info?.parentRepoPath || '',
                                         aiConfigRevision: state.aiConfigRevision,
                                         sessionStatuses: info?.sessionStatuses || [],
-                                        prUrl: info?.prUrl || '',
                                     })}
                                         ${listen(VirPaneGroup.events.sessionRequested, (event) => {
                                             /**
@@ -1034,11 +949,6 @@ export const VirApp = defineElement()({
                     )}
                 </div>
             </div>
-            ${mainTab === MainTab.ReviewCode
-                ? html`
-                      <div class="review-code-panel">${isMobile ? renderMobileMainTabs() : ''}</div>
-                  `
-                : ''}
             <${VirSettingsModal.assign({
                 open: state.settingsOpen,
             })}
@@ -1082,7 +992,6 @@ export const VirApp = defineElement()({
                 })}
             >
                 <div class="mobile-sidebar-modal-content">
-                    ${renderMobileMainTabs()}
                     <${VirSidebar.assign({
                         activeFolder,
                         hideBorder: true,

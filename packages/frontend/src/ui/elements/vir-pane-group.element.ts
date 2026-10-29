@@ -44,7 +44,6 @@ import {ScreenSize} from '../../util/screen-size.js';
 import {VirAiAvatar} from './vir-ai-avatar.element.js';
 import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirDiffPane} from './vir-diff-pane.element.js';
-import {VirGithubPane} from './vir-github-pane.element.js';
 import {VirTerminal} from './vir-terminal.element.js';
 
 const sessionMenuIcon = createSizedIcon(LucideEllipsisVerticalIcon, 12);
@@ -114,11 +113,6 @@ export const VirPaneGroup = defineElement<{
      * mobile each value shows exactly one pane.
      */
     activeTab: FrontendTab;
-    /**
-     * URL of the pull request on this folder's branch, or empty when it has none. Non-empty is the
-     * only condition for showing the GitHub tab — the pane fetches the PR's details itself.
-     */
-    prUrl: string;
     /**
      * Coarse viewport bucket from `vir-app`'s state. Controls whether the CLI panes get one shared
      * tab or one each, and the pane-visibility rules. Updates as the user resizes the window.
@@ -213,8 +207,6 @@ export const VirPaneGroup = defineElement<{
              * mounted preserves its selected file and scroll position across tab switches.
              */
             diffMounted: false,
-            /** Same lazy-mount-then-keep pattern as `diffMounted` above, for the GitHub pane. */
-            githubMounted: false,
             /**
              * The user's AI definitions, needed to show each AI tab's avatar and to populate the
              * "Change AI" picker. Loaded once per mount and re-read after a change, since this
@@ -312,7 +304,6 @@ export const VirPaneGroup = defineElement<{
         }
 
         .diff-pane,
-        .github-pane,
         .cli-panes {
             position: absolute;
             inset: 0;
@@ -322,7 +313,6 @@ export const VirPaneGroup = defineElement<{
         }
 
         .diff-pane[data-hidden],
-        .github-pane[data-hidden],
         .cli-panes[data-hidden] {
             /*
              * Keep the hidden side mounted so its scroll position and, for the terminals, their
@@ -1140,12 +1130,6 @@ export const VirPaneGroup = defineElement<{
             '';
 
         const isDiffTab = inputs.activeTab === 'diff';
-        /**
-         * A `?tab=github` URL for a folder whose PR has gone away (merged and aged out, branch
-         * force-pushed) falls back to the CLI layout instead of showing an empty pane. The URL
-         * keeps its value, so the tab and its pane come back if the PR reappears.
-         */
-        const isGithubTab = inputs.activeTab === 'github' && !!inputs.prUrl;
         const isMobile = inputs.screenSize === ScreenSize.Mobile;
         /** Basename of the folder path — matches how folder names are derived elsewhere. */
         const folderName = inputs.folder.split('/').findLast(Boolean) || inputs.folder;
@@ -1153,12 +1137,12 @@ export const VirPaneGroup = defineElement<{
          * Pane visibility decision matrix:
          *
          * - Desktop, tab=ai|shell → both AI + Shell visible (the existing split layout).
-         * - Desktop, tab=diff|github → that pane visible (both terminals hidden).
+         * - Desktop, tab=diff → diff pane visible (both terminals hidden).
          * - Mobile, tab=ai → only AI pane visible.
          * - Mobile, tab=shell → only Shell pane visible.
-         * - Mobile, tab=diff|github → only that pane visible.
+         * - Mobile, tab=diff → only diff pane visible.
          */
-        const showCliPanes = !isDiffTab && !isGithubTab;
+        const showCliPanes = !isDiffTab;
         const showAiPane = showCliPanes && (!isMobile || inputs.activeTab === 'ai');
         const showShellPane = showCliPanes && (!isMobile || inputs.activeTab === 'shell');
 
@@ -1179,12 +1163,6 @@ export const VirPaneGroup = defineElement<{
             });
         }
 
-        if (isGithubTab && !state.githubMounted) {
-            updateState({
-                githubMounted: true,
-            });
-        }
-
         /**
          * Tab bar layout differs by screen size:
          *
@@ -1192,8 +1170,6 @@ export const VirPaneGroup = defineElement<{
          *   the user can't tell them apart on desktop (both panes are visible) so we collapse them
          *   into one button. Clicking CLI sets `tab=ai` as a stable default.
          * - Mobile: AI, Shell, Diff, each mapping directly to the URL param.
-         *
-         * Both layouts gain a GitHub tab only while the branch has a PR.
          */
         const cliTabButtons: ReadonlyArray<TabButton> = isMobile
             ? [
@@ -1215,15 +1191,6 @@ export const VirPaneGroup = defineElement<{
                       isActive: showCliPanes,
                   },
               ];
-        const githubTabButtons: ReadonlyArray<TabButton> = inputs.prUrl
-            ? [
-                  {
-                      label: 'GitHub',
-                      tab: 'github',
-                      isActive: isGithubTab,
-                  },
-              ]
-            : [];
         const tabButtons: ReadonlyArray<TabButton> = [
             ...cliTabButtons,
             {
@@ -1231,7 +1198,6 @@ export const VirPaneGroup = defineElement<{
                 tab: 'diff',
                 isActive: isDiffTab,
             },
-            ...githubTabButtons,
         ];
 
         function requestTab(tab: FrontendTab) {
@@ -1275,17 +1241,6 @@ export const VirPaneGroup = defineElement<{
                                   active: isDiffTab && inputs.active,
                                   screenSize: inputs.screenSize,
                               })}></${VirDiffPane}>
-                          </div>
-                      `
-                    : ''}
-                ${state.githubMounted
-                    ? html`
-                          <div class="github-pane" ?data-hidden=${!isGithubTab}>
-                              <${VirGithubPane.assign({
-                                  folder: inputs.folder,
-                                  active: isGithubTab && inputs.active,
-                                  screenSize: inputs.screenSize,
-                              })}></${VirGithubPane}>
                           </div>
                       `
                     : ''}

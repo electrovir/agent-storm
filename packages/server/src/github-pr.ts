@@ -19,6 +19,11 @@ import {getObjectTypedEntries} from '@augment-vir/common';
 import {getCurrentBranch, getRepoSlug, runGh} from './git.js';
 
 /**
+ * Possibly unused: only the frontend's `vir-github-pane`, which nothing renders anymore, calls into
+ * this file. Delete it with that pane unless some of it gets reused soon.
+ */
+
+/**
  * Per-connection caps on the one PR query. Each `first:` multiplies into GitHub's GraphQL cost
  * calculation, so these are sized to cover a realistically large review (fifty inline threads,
  * fifty conversation comments) without paying for the pathological case. A PR past these limits

@@ -378,6 +378,11 @@ export async function discardUnstagedGitChanges(params: Readonly<{folder: string
     });
 }
 
+/**
+ * Possibly unused: the GitHub calls below serve only `vir-github-pane`, which nothing renders
+ * anymore. Delete them with that pane unless some of them get reused soon.
+ */
+
 /** Null when the folder's branch has no PR, or GitHub isn't reachable through `gh`. */
 export async function getGitHubPr(
     params: Readonly<{folder: string; forceRefresh: boolean}>,

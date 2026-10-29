@@ -3,27 +3,10 @@ import {omitObjectKeys} from '@augment-vir/common';
 import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
 import {localStorageClient} from './local-storage-client.js';
 
-/**
- * Top-level app tab, rendered as the vertical tab strip left of the sidebar and carried as the
- * first path segment so a tab selection survives a reload or a shared link.
- */
+/** First path segment of every app route other than the element book. */
 export enum MainTab {
     WriteCode = 'write-code',
-    ReviewCode = 'review-code',
 }
-
-export const defaultMainTab = MainTab.WriteCode;
-
-/** Tab order in the strip, top to bottom. */
-export const orderedMainTabs: ReadonlyArray<MainTab> = [
-    MainTab.WriteCode,
-    MainTab.ReviewCode,
-];
-
-export const mainTabLabels: Record<MainTab, string> = {
-    [MainTab.WriteCode]: 'Write Code',
-    [MainTab.ReviewCode]: 'Review Code',
-};
 
 /**
  * The valid shape of the in-app URL.
@@ -33,10 +16,7 @@ export const mainTabLabels: Record<MainTab, string> = {
  *   repo that _has_ worktrees, the route is invalid; `vir-app` redirects back to `/write-code` once
  *   it has folder info to make that determination.
  * - `/write-code/<repoName>/<worktreeName>` — a worktree under a worktree-root repo selected.
- * - `/review-code` — the Review Code tab, which has no contents yet.
- * - `/book/<...>` — the element-book route, deliberately left outside the tab strip: it replaces the
- *   whole app chrome, so nesting it under a tab would be a lie (and would break existing deep
- *   links).
+ * - `/book/<...>` — the element-book route, which replaces the whole app chrome.
  *
  * The `:repo-name` / `:worktree-name` segments are dynamic — sanitization keeps whatever value the
  * user typed and lets `vir-app` resolve it against the live folder list.
@@ -60,7 +40,6 @@ export const frontendPathTree = new PathTree({
                 },
             },
         },
-        [MainTab.ReviewCode]: {},
         book: {
             anyChildren: true,
         },
@@ -72,13 +51,9 @@ export type FrontendPaths = typeof frontendPathTree.PathsType;
 /**
  * Which pane the user is focused on. On desktop, `ai` and `shell` both render the "CLI" tab with
  * both panes visible side-by-side (their difference doesn't affect the layout); `diff` shows the
- * diff viewer and `github` the PR review pane. On mobile, each value shows exactly one pane.
- *
- * `github` stays a valid URL value even for folders with no PR (where the tab isn't rendered) — the
- * pane group falls back to the CLI layout in that case rather than the URL being rewritten, so the
- * tab reappears if a PR shows up on the next poll.
+ * diff viewer. On mobile, each value shows exactly one pane.
  */
-export type FrontendTab = 'ai' | 'shell' | 'diff' | 'github';
+export type FrontendTab = 'ai' | 'shell' | 'diff';
 
 export const defaultFrontendTab: FrontendTab = 'ai';
 
@@ -86,7 +61,6 @@ const allowedTabValues: ReadonlyArray<FrontendTab> = [
     'ai',
     'shell',
     'diff',
-    'github',
 ];
 
 /**
@@ -126,19 +100,9 @@ function isRepoSelectionRoute(paths: ReadonlyArray<string>): boolean {
     return paths[0] === MainTab.WriteCode && paths.length >= 2;
 }
 
-/**
- * Which top-level tab the URL selects. Anything that isn't explicitly another tab reads as the
- * default, so `/book/...` (outside the strip entirely) doesn't leave the strip with nothing
- * marked.
- */
-export function mainTabFromRoute(route: AppRoute): MainTab {
-    return route.paths[0] === MainTab.ReviewCode ? MainTab.ReviewCode : defaultMainTab;
-}
-
-/** Bare route for one tab, used when switching tabs with nothing to restore. */
+/** Bare route for one tab, with nothing selected. */
 export const bareMainTabPaths = {
     [MainTab.WriteCode]: [MainTab.WriteCode],
-    [MainTab.ReviewCode]: [MainTab.ReviewCode],
 } as const satisfies Record<MainTab, FrontendPaths>;
 
 function isFrontendTab(value: string): value is FrontendTab {
