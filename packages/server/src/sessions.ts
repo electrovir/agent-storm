@@ -444,6 +444,22 @@ export async function pruneSessionAiIds({
 }
 
 /**
+ * Whether {@link removeFolderSession} would drop the session: it exists and isn't the last one of
+ * its kind.
+ */
+export function isFolderSessionRemovable({
+    sessions,
+    kind,
+    sessionId,
+}: Readonly<{
+    sessions: Readonly<FolderSessions>;
+    kind: PaneKind;
+    sessionId: string;
+}>) {
+    return sessions[kind].length > 1 && sessions[kind].some((session) => session.id === sessionId);
+}
+
+/**
  * Remove a session from the list. Refuses to drop the last remaining session of a kind — a pane
  * with zero tabs has nothing to render, and the lazy default in {@link getFolderSessions} would
  * immediately recreate one anyway.
@@ -460,7 +476,14 @@ export async function removeFolderSession({
     const folder = normalizePath(folderPath);
     const current = await getFolderSessions(folder);
     const removedSession = current[kind].find((session) => session.id === sessionId);
-    if (current[kind].length <= 1 || !removedSession) {
+    if (
+        !removedSession ||
+        !isFolderSessionRemovable({
+            sessions: current,
+            kind,
+            sessionId,
+        })
+    ) {
         return {
             sessions: current,
             removed: false,

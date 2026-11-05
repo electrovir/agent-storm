@@ -137,7 +137,7 @@ import {
 } from './pane-launch.js';
 import {normalizePath} from './paths.js';
 import {defaultPorts, PortEnvVar, readEnvPort} from './ports.js';
-import {getLivePaneSessionIds} from './pty.js';
+import {getLivePaneSessionIds, invalidatePaneStatuses} from './pty.js';
 import {startReviewAutoStart} from './review-auto-start.js';
 import {
     addReviewComment,
@@ -149,6 +149,8 @@ import {loadReviewConfig, saveReviewConfig} from './review-config.js';
 import {
     createFolderSession,
     forgetFolderSessions,
+    getFolderSessions,
+    isFolderSessionRemovable,
     pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
@@ -452,17 +454,22 @@ const sessionRenameImplementation = implementor.implementEndpoint(sessionRenameE
 const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         const folder = normalizePath(requestData.folder);
-        const {sessions, removed} = await removeFolderSession({
-            folder,
-            kind: requestData.kind,
-            sessionId: requestData.sessionId,
-        });
         /**
-         * Only kill the PTY once the store actually dropped the tab. Closing the last remaining
-         * session is refused store-side, and killing its process while the tab stays visible would
-         * leave the user looking at a dead terminal with no obvious way to revive it.
+         * Kill the PTY and drop the cached daemon snapshot before removing the tab. The other order
+         * leaves a window where the tab is gone but a snapshot still lists its PTY as live, and any
+         * session-list request in that window has `reconcileFolderSessions` re-add it as an unnamed
+         * tab. The check for whether the tab can close comes first because closing the last
+         * remaining session is refused store-side, and killing its process while the tab stays
+         * visible would leave the user looking at a dead terminal with no obvious way to revive
+         * it.
          */
-        if (removed) {
+        if (
+            isFolderSessionRemovable({
+                sessions: await getFolderSessions(folder),
+                kind: requestData.kind,
+                sessionId: requestData.sessionId,
+            })
+        ) {
             await killPaneSession({
                 folder,
                 kind: requestData.kind,
@@ -470,7 +477,13 @@ const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEnd
             }).catch(() => {
                 /* no live PTY for this session (never attached, or daemon restarted) */
             });
+            invalidatePaneStatuses();
         }
+        const {sessions} = await removeFolderSession({
+            folder,
+            kind: requestData.kind,
+            sessionId: requestData.sessionId,
+        });
         return {
             [HttpStatus.Ok]: {
                 responseData: sessions,

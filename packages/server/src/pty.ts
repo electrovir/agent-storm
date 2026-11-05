@@ -14,11 +14,14 @@ const cacheState: {
     sessionIds: Partial<Record<string, string[]>>;
     sessionStatuses: Partial<Record<string, PaneSessionStatus[]>>;
     lastFetchAt: number;
+    /** Bumped by {@link invalidatePaneStatuses} so a fetch already in flight can't save stale data. */
+    generation: number;
 } = {
     statuses: {},
     sessionIds: {},
     sessionStatuses: {},
     lastFetchAt: 0,
+    generation: 0,
 };
 
 function statusKey(folder: string, kind: PaneKind): string {
@@ -96,8 +99,13 @@ function collectSessionStatuses(entries: ReadonlyArray<Readonly<StatusEntry>>) {
     );
 }
 
+/** Recursive, so its return type can't be inferred. */
 async function refreshStatuses(): Promise<void> {
+    const generation = cacheState.generation;
     const entries = await applyClaudeActivity(await fetchPaneStatuses());
+    if (generation !== cacheState.generation) {
+        return refreshStatuses();
+    }
     cacheState.statuses = reduceStatuses(entries);
     cacheState.sessionIds = collectSessionIds(entries);
     cacheState.sessionStatuses = collectSessionStatuses(entries);
@@ -113,6 +121,15 @@ async function ensureFresh(): Promise<void> {
     ) {
         await refreshStatuses();
     }
+}
+
+/**
+ * Forces the next read to query the daemon. Call after killing a session: a snapshot taken before
+ * the kill still lists it as live, and the session-list reconcile would re-add its tab.
+ */
+export function invalidatePaneStatuses(): void {
+    cacheState.lastFetchAt = 0;
+    cacheState.generation++;
 }
 
 /**
