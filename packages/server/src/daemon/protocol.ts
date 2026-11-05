@@ -80,7 +80,7 @@ export class FrameDecoder {
  * `Status` is the only introspection action every historical daemon understands — see
  * {@link DaemonAction.Shutdown} for why probing with a new action would be destructive.
  */
-export const daemonProtocolVersion = 4;
+export const daemonProtocolVersion = 5;
 
 export enum DaemonAction {
     Attach = 'attach',
