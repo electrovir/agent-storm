@@ -3,6 +3,15 @@ export enum PaneKind {
     Shell = 'shell',
 }
 
+/**
+ * Whether a pane kind runs an AI. Only those tabs hold a conversation, which can be resumed or
+ * started over.
+ */
+export const paneKindRunsAi: Readonly<Record<PaneKind, boolean>> = {
+    [PaneKind.Ai]: true,
+    [PaneKind.Shell]: false,
+};
+
 export enum PaneStatus {
     /** No PTY has ever been started for this pane. */
     None = 'none',
@@ -139,4 +148,67 @@ export enum GitHubReaction {
     Heart = 'HEART',
     Rocket = 'ROCKET',
     Eyes = 'EYES',
+}
+
+/** Why the backend switched GitHub polling off on its own. */
+export enum GitHubPollingDisableReason {
+    RateLimited = 'rate-limited',
+    Unauthenticated = 'unauthenticated',
+}
+
+/** Where a folder's watch mode stands. */
+export enum WatchModeStatus {
+    Off = 'off',
+    /** Polling the PR, with nothing for the AI to do yet. */
+    Watching = 'watching',
+    /** An AI pass is running in the folder's Watch tab. */
+    Working = 'working',
+    /** Held back while the user reviews the branch or the folder's other AI tabs are busy. */
+    Paused = 'paused',
+}
+
+/**
+ * Where a folder's PR stands from the `gh` user's point of view. A re-requested review counts as
+ * `AwaitingReview` again, or as `ReReviewRequested` when that user's latest verdict requested
+ * changes.
+ */
+export enum PrStatus {
+    None = 'none',
+    AwaitingReview = 'awaitingReview',
+    /** Same as `AwaitingReview` except the viewer has started a local manual review of the branch. */
+    ReviewStarted = 'reviewStarted',
+    /** Same as `AwaitingReview` except the viewer's latest verdict on the PR requested changes. */
+    ReReviewRequested = 'reReviewRequested',
+    /** Has unresolved review threads, and no verdict that outranks them. */
+    UnresolvedComments = 'unresolvedComments',
+    ChangesRequested = 'changesRequested',
+    Approved = 'approved',
+    /** The viewer wrote or approved it, but someone else requested changes. */
+    OthersRequestedChanges = 'othersRequestedChanges',
+    /**
+     * The viewer wrote or approved it and left nothing unresolved, but a code owner that
+     * pull-request-vir listed in the description hasn't approved, or GitHub still requires a
+     * review.
+     */
+    AwaitingOtherReviews = 'awaitingOtherReviews',
+    /** Same as `AwaitingOtherReviews` except every code owner approved and a check failed. */
+    ChecksFailed = 'checksFailed',
+    /** GitHub's merge button is green. */
+    ReadyToMerge = 'readyToMerge',
+    Merged = 'merged',
+    /** Closed without merging. */
+    Closed = 'closed',
+}
+
+/**
+ * Where a review stands, as the manual-review skill records it in
+ * `~/.agent-storm/manual-review/state.json`.
+ */
+export enum ManualReviewStatus {
+    Started = 'started',
+    Approved = 'approved',
+    RequestedChanges = 'requestedChanges',
+    Commented = 'commented',
+    PostFailed = 'postFailed',
+    Aborted = 'aborted',
 }

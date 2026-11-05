@@ -7,7 +7,7 @@ const globalConfigShape = defineShape({
 export type InjectedGlobalData = typeof globalConfigShape.runtimeType;
 declare const VITE_INJECTED_DATA: InjectedGlobalData;
 
-export function readInjectedGlobalData(): InjectedGlobalData {
+export function getInjectedGlobalData(): InjectedGlobalData {
     if (typeof VITE_INJECTED_DATA === 'undefined') {
         return {
             backendPort: null,

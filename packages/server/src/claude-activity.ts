@@ -1,19 +1,16 @@
 // cspell:words pids
 
-import {PaneKind, PaneStatus} from '@agent-storm/common';
+import {paneKindRunsAi, PaneStatus} from '@agent-storm/common';
 import {filterMap} from '@augment-vir/common';
 import {convertDuration} from 'date-vir';
-import {execFile} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {promisify} from 'node:util';
-import {checkValidShape, defineShape} from 'object-shape-tester';
+import {checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
 import {collectDescendantPids} from './daemon/kill-process-tree.js';
 import {type StatusEntry} from './daemon/protocol.js';
 import {claudeActivityDir} from './file-paths.js';
+import {runCommand} from './run-command.js';
 import {findFolderSession} from './sessions.js';
-
-const exec = promisify(execFile);
 
 /** What `claude-hooks/agent-storm-activity.sh` writes for each conversation. */
 const claudeActivityShape = defineShape({
@@ -21,6 +18,10 @@ const claudeActivityShape = defineShape({
     claudePid: 0,
     turnActive: false,
     backgroundTaskCount: 0,
+    /** Claude is showing a permission prompt or a question. Absent from files an older hook wrote. */
+    isAwaitingPermission: optionalShape(false, {
+        alsoUndefined: true,
+    }),
     updatedAt: 0,
 });
 
@@ -56,16 +57,16 @@ const activityState: {
  * Note a key press that interrupts Claude's turn. Claude fires no hook when a turn is interrupted,
  * so without this the hook state would claim the turn is still running until it went stale.
  */
-export function recordClaudeInterrupt(conversationId: string): void {
+export function recordClaudeInterrupt(conversationId: string) {
     activityState.interruptedAt.set(conversationId, Date.now());
 }
 
 /** CPU time as `ps` prints it, e.g. `31:10.24` or `1:02:03.45`, in seconds. */
-export function parseCpuTime(time: string): number {
+export function parseCpuTime(time: string) {
     return time.split(':').reduce((total, part) => total * 60 + Number(part), 0);
 }
 
-async function readClaudeActivity(conversationId: string): Promise<ClaudeActivity | undefined> {
+async function readClaudeActivity(conversationId: string) {
     try {
         const parsed: unknown = JSON.parse(
             await readFile(join(claudeActivityDir, conversationId), 'utf8'),
@@ -76,7 +77,48 @@ async function readClaudeActivity(conversationId: string): Promise<ClaudeActivit
     }
 }
 
-function hasOpenWork(activity: Readonly<ClaudeActivity>, interruptedAt: number): boolean {
+/** `comm` as `ps` prints it, which is a full path when Claude was started through one. */
+function isClaudeCommand(command: string) {
+    return command === 'claude' || command.endsWith('/claude');
+}
+
+/**
+ * True once Claude's SessionStart hook has run in the tab, that Claude is still alive, and it isn't
+ * showing a permission prompt. Input typed into the pane from then on gets submitted as a prompt;
+ * input typed while Claude is still starting is lost, and input typed into a permission prompt
+ * answers it.
+ */
+export async function isClaudeReady(conversationId: string) {
+    const activity = await readClaudeActivity(conversationId);
+    if (!activity?.claudePid || activity.isAwaitingPermission) {
+        return false;
+    }
+    /** The pid may belong to some other process by now, if the Claude the hook found has exited. */
+    const command = await runCommand(
+        '/bin/ps',
+        [
+            '-o',
+            'comm=',
+            '-p',
+            String(activity.claudePid),
+        ],
+        {
+            timeout: {
+                seconds: 5,
+            },
+        },
+    )
+        .then(({stdout}) => stdout.trim())
+        .catch(() => '');
+    return isClaudeCommand(command);
+}
+
+/** Whether the tab's Claude last reported a permission prompt or question it is waiting on. */
+export async function isClaudeAwaitingPermission(conversationId: string) {
+    return !!(await readClaudeActivity(conversationId))?.isAwaitingPermission;
+}
+
+function hasOpenWork(activity: Readonly<ClaudeActivity>, interruptedAt: number) {
     return (
         (activity.turnActive && activity.updatedAt > interruptedAt) ||
         activity.backgroundTaskCount > 0
@@ -127,7 +169,7 @@ export function resolveQuietClaudeStatus({
  * as working. One `ps` covers every pane, and runs at most every few seconds no matter how often
  * statuses are polled.
  */
-async function sampleClaudeProcesses(claudeProcessIds: ReadonlyArray<number>): Promise<void> {
+async function sampleClaudeProcesses(claudeProcessIds: ReadonlyArray<number>) {
     const now = Date.now();
     if (
         !claudeProcessIds.length ||
@@ -144,11 +186,19 @@ async function sampleClaudeProcesses(claudeProcessIds: ReadonlyArray<number>): P
         return;
     }
     activityState.lastSampleAt = now;
-    const processTable = await exec('/bin/ps', [
-        '-A',
-        '-o',
-        'pid=,ppid=,time=,comm=',
-    ])
+    const processTable = await runCommand(
+        '/bin/ps',
+        [
+            '-A',
+            '-o',
+            'pid=,ppid=,time=,comm=',
+        ],
+        {
+            timeout: {
+                seconds: 5,
+            },
+        },
+    )
         .then(({stdout}) => stdout)
         .catch(() => undefined);
     if (!processTable) {
@@ -181,7 +231,7 @@ async function sampleClaudeProcesses(claudeProcessIds: ReadonlyArray<number>): P
     claudeProcessIds.forEach((claudePid) => {
         const command = rows.get(claudePid)?.command || '';
         /** Also catches the pid having been reused by something else since the hook recorded it. */
-        if (command !== 'claude' && !command.endsWith('/claude')) {
+        if (!isClaudeCommand(command)) {
             activityState.samples.set(claudePid, {
                 isAlive: false,
                 cpuSeconds: 0,
@@ -215,7 +265,15 @@ async function sampleClaudeProcesses(claudeProcessIds: ReadonlyArray<number>): P
                 : undefined;
         const isActive =
             !recentPrevious ||
-            (cpuSeconds - recentPrevious.cpuSeconds) / ((now - recentPrevious.sampledAt) / 1000) >
+            (cpuSeconds - recentPrevious.cpuSeconds) /
+                convertDuration(
+                    {
+                        milliseconds: now - recentPrevious.sampledAt,
+                    },
+                    {
+                        seconds: true,
+                    },
+                ).seconds >
                 activeCpuFraction;
         activityState.samples.set(claudePid, {
             isAlive: true,
@@ -238,7 +296,7 @@ export async function applyClaudeActivity(
     const resolved = await Promise.all(
         entries.map(async (entry) => {
             const conversationId =
-                entry.kind === PaneKind.Ai && entry.sessionId
+                paneKindRunsAi[entry.kind] && entry.sessionId
                     ? (
                           await findFolderSession({
                               folder: entry.folder,

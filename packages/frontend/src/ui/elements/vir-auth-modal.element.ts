@@ -1,4 +1,4 @@
-import {css, defineElement, html, listen} from 'element-vir';
+import {css, html, listen} from 'element-vir';
 import {
     ViraButton,
     ViraColorVariant,
@@ -8,7 +8,7 @@ import {
     viraThemeByKeys,
 } from 'vira';
 import {getStoredSecret, setStoredSecret, subscribeSecret} from '../../util/auth.js';
-import {reportRenderError} from '../../util/client-error-log.js';
+import {defineAppElement} from '../define-app-element.js';
 
 type AuthModalState = {
     open: boolean;
@@ -16,11 +16,8 @@ type AuthModalState = {
     unsubscribe: (() => void) | undefined;
 };
 
-export const VirAuthModal = defineElement()({
+export const VirAuthModal = defineAppElement()({
     tagName: 'vir-auth-modal',
-    options: {
-        errorHandler: reportRenderError,
-    },
     state(): AuthModalState {
         return {
             open: !getStoredSecret(),

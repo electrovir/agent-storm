@@ -1,7 +1,7 @@
 // cspell:words ptys
 
-import {type PaneKind} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
+import {convertDuration} from 'date-vir';
 import {existsSync, unlinkSync} from 'node:fs';
 import {createServer, type Socket} from 'node:net';
 import {daemonSocketPath} from '../file-paths.js';
@@ -14,13 +14,14 @@ import {
     FrameDecoder,
     FrameType,
     type AttachedNotification,
+    type AttachHandshake,
     type AttachResponse,
     type ClientHandshake,
     type ErrorResponse,
     type ExitNotification,
     type SimpleResponse,
     type StatusResponse,
-    type TerminalColors,
+    type VerifyLaunchResponse,
 } from './protocol.js';
 import {
     attachPane,
@@ -30,6 +31,7 @@ import {
     listAllPaneStatuses,
     restartPane,
     sweepDeadPanes,
+    verifyLaunchSignature,
     writeToPane,
 } from './pty-pool.js';
 
@@ -46,23 +48,11 @@ if (existsSync(daemonSocketPath)) {
 function handleAttach({
     socket,
     decoder,
-    folder,
-    kind,
-    sessionId,
-    colors,
-    aiCmd,
-    conversationId,
-    scrollbackLimit,
+    handshake: {folder, kind, sessionId, colors, aiCmd, conversationId, scrollbackLimit},
 }: Readonly<{
     socket: Socket;
     decoder: FrameDecoder;
-    folder: string;
-    kind: PaneKind;
-    sessionId: string | undefined;
-    colors: TerminalColors | undefined;
-    aiCmd: string | undefined;
-    conversationId: string | undefined;
-    scrollbackLimit: number | undefined;
+    handshake: Readonly<AttachHandshake>;
 }>): void {
     function onData(data: string) {
         socket.write(encodeDataFrame(data));
@@ -123,6 +113,90 @@ function handleAttach({
     });
 }
 
+/** Sends the one reply a non-attach action gets, then closes the socket. */
+function reply(
+    socket: Socket,
+    response: Readonly<SimpleResponse | StatusResponse | VerifyLaunchResponse | ErrorResponse>,
+) {
+    socket.write(encodeControlFrame(response));
+    socket.end();
+}
+
+const okResponse: SimpleResponse = {
+    ok: true,
+};
+
+type HandshakeHandler<Action extends DaemonAction> = (
+    params: Readonly<{
+        socket: Socket;
+        decoder: FrameDecoder;
+        handshake: Readonly<Extract<ClientHandshake, {action: Action}>>;
+    }>,
+) => void;
+
+const handshakeHandlers: {[Action in DaemonAction]: HandshakeHandler<Action>} = {
+    [DaemonAction.Attach]: handleAttach,
+    [DaemonAction.Status]({socket}) {
+        reply(socket, {
+            ok: true,
+            panes: listAllPaneStatuses(),
+            protocolVersion: daemonProtocolVersion,
+        });
+    },
+    [DaemonAction.Restart]({socket, handshake}) {
+        restartPane({
+            folder: handshake.folder,
+            kind: handshake.kind,
+            sessionId: handshake.sessionId,
+            aiCmd: handshake.aiCmd,
+            conversationId: handshake.conversationId,
+        });
+        reply(socket, okResponse);
+    },
+    [DaemonAction.Kill]({socket, handshake}) {
+        killFolderPanes({
+            folder: handshake.folder,
+        });
+        reply(socket, okResponse);
+    },
+    [DaemonAction.SessionKill]({socket, handshake}) {
+        killPaneSession({
+            folder: handshake.folder,
+            kind: handshake.kind,
+            sessionId: handshake.sessionId,
+        });
+        reply(socket, okResponse);
+    },
+    [DaemonAction.VerifyLaunch]({socket, handshake}) {
+        reply(socket, {
+            ok: true,
+            isValid: verifyLaunchSignature({
+                conversationId: handshake.conversationId,
+                payload: handshake.payload,
+                signature: handshake.signature,
+            }),
+        });
+    },
+    [DaemonAction.Shutdown]({socket}) {
+        reply(socket, okResponse);
+        /**
+         * Give the OK frame a beat to flush over the socket before tearing the daemon down.
+         * `forceShutdown` exits the process; nothing after the timeout runs.
+         */
+        setTimeout(
+            () => forceShutdown('shutdown command'),
+            convertDuration(
+                {
+                    milliseconds: 100,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds,
+        );
+    },
+};
+
 const server = createServer((socket) => {
     const decoder = new FrameDecoder();
     let handshakeSeen = false;
@@ -143,89 +217,28 @@ const server = createServer((socket) => {
         const handshake = JSON.parse(controlFrame.payload.toString('utf-8')) as ClientHandshake;
 
         /**
-         * Validate the action before dispatching. The parsed frame is untrusted socket JSON, so its
-         * declared type guarantees nothing at runtime — and the dispatch below ends in an `else`
-         * that shuts the daemon down. Without this gate, a newer backend probing with an action
-         * this build doesn't know would land in that branch and kill every pane and VS Code
-         * instance across every folder.
+         * The parsed frame is untrusted socket JSON, so its declared type guarantees nothing at
+         * runtime. A newer backend probing with an action this build doesn't know gets an error
+         * reply, which it reads as "unsupported" (see {@link DaemonAction.VerifyLaunch}).
          */
         if (!check.isEnumValue(handshake.action, DaemonAction)) {
             log(`unknown action from client: ${String(handshake.action)}`);
-            const response: ErrorResponse = {
+            reply(socket, {
                 ok: false,
                 error: `Unknown daemon action: ${String(handshake.action)}`,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
+            });
             return;
         }
 
-        if (handshake.action === DaemonAction.Attach) {
-            handleAttach({
-                socket,
-                decoder,
-                folder: handshake.folder,
-                kind: handshake.kind,
-                sessionId: handshake.sessionId,
-                colors: handshake.colors,
-                aiCmd: handshake.aiCmd,
-                conversationId: handshake.conversationId,
-                scrollbackLimit: handshake.scrollbackLimit,
-            });
-        } else if (handshake.action === DaemonAction.Status) {
-            const response: StatusResponse = {
-                ok: true,
-                panes: listAllPaneStatuses(),
-                protocolVersion: daemonProtocolVersion,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
-        } else if (handshake.action === DaemonAction.Restart) {
-            restartPane({
-                folder: handshake.folder,
-                kind: handshake.kind,
-                sessionId: handshake.sessionId,
-                aiCmd: handshake.aiCmd,
-                conversationId: handshake.conversationId,
-            });
-            const response: SimpleResponse = {
-                ok: true,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
-        } else if (handshake.action === DaemonAction.SessionKill) {
-            killPaneSession({
-                folder: handshake.folder,
-                kind: handshake.kind,
-                sessionId: handshake.sessionId,
-            });
-            const response: SimpleResponse = {
-                ok: true,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
-        } else if (handshake.action === DaemonAction.Kill) {
-            killFolderPanes({
-                folder: handshake.folder,
-            });
-            const response: SimpleResponse = {
-                ok: true,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
-        } else {
-            const response: SimpleResponse = {
-                ok: true,
-            };
-            socket.write(encodeControlFrame(response));
-            socket.end();
-            /**
-             * Give the OK frame a beat to flush over the socket before tearing the daemon down.
-             * `forceShutdown` exits the process; nothing after the timeout runs. Only reachable for
-             * `Shutdown` now that unknown actions are rejected above.
-             */
-            setTimeout(() => forceShutdown('shutdown command'), 100);
-        }
+        (
+            handshakeHandlers[
+                handshake.action
+            ] satisfies HandshakeHandler<any> as HandshakeHandler<DaemonAction>
+        )({
+            socket,
+            decoder,
+            handshake,
+        });
     }
 
     socket.on('data', handshakeHandler);
@@ -244,7 +257,17 @@ server.listen(daemonSocketPath, () => {
  * shorter than it takes anyone to churn through hundreds of ptys, and the sweep is one
  * `process.kill` per live pane. `unref` so this timer alone can't hold the daemon open.
  */
-setInterval(() => sweepDeadPanes(), 60_000).unref();
+setInterval(
+    () => sweepDeadPanes(),
+    convertDuration(
+        {
+            minutes: 1,
+        },
+        {
+            milliseconds: true,
+        },
+    ).milliseconds,
+).unref();
 
 function shutdown(signal: string): void {
     log(`${signal} received, shutting down`);

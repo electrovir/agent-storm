@@ -3,47 +3,70 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
+import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn, type IPty} from 'node-pty';
+import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
 import {homedir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {basename, join, resolve} from 'node:path';
+import {agentLaunchScriptPath} from '../file-paths.js';
 import {createDaemonLog} from './daemon-log.js';
 import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
 import {defaultSessionId, type StatusEntry, type TerminalColors} from './protocol.js';
 
-const log = createDaemonLog('size');
+const sizeLog = createDaemonLog('size');
 const reapLog = createDaemonLog('reap');
 
-const idleThresholdMs = 2000;
+/** How long a pane stays busy after its last output. */
+const idleThreshold: AnyDuration = {
+    seconds: 2,
+};
 
 /**
- * Fallback AI command when the backend doesn't supply one via the attach handshake. The
- * `AGENT_STORM_AI_CMD` env var is still honored as a last resort for direct daemon-protocol callers
- * that don't go through the backend (mostly debugging / tests). Production calls always carry the
- * current config's `aiCmd` and so override this.
+ * AI command used when the backend doesn't supply one via the attach handshake. Production calls
+ * always carry the current config's `aiCmd` and so override this.
  */
-const fallbackAiCommand = process.env.AGENT_STORM_AI_CMD || 'claude';
+const fallbackAiCommand = 'claude';
+
+const paneShell = process.env.SHELL || '/bin/bash';
 
 /**
- * Build the argv for a fresh PTY. AI pane runs through a login + interactive shell so `.zprofile` /
- * `.zshrc` get sourced (those are where managed-Claude installers usually inject their PATH lines).
- * When the AI command exits the wrapper shell terminates with it — the pane lands in `Exited` state
- * so the user can read whatever the AI command printed without it being clobbered by a new shell
- * prompt. Restart via the row's menu when ready to start a fresh session.
+ * How each pane kind is spawned and read. Both run {@link paneShell} as a login shell. The AI pane
+ * is also interactive so `.zprofile` / `.zshrc` get sourced (those are where managed-Claude
+ * installers usually inject their PATH lines). When the AI command exits the wrapper shell
+ * terminates with it — the pane lands in `Exited` state so the user can read whatever the AI
+ * command printed without it being clobbered by a new shell prompt. Restart via the row's menu when
+ * ready to start a fresh session.
  */
-function buildPaneCommand(kind: PaneKind, aiCmd: string): string[] {
-    const shell = process.env.SHELL || '/bin/bash';
-    if (kind === PaneKind.Ai) {
-        return [
-            shell,
-            '-lic',
-            aiCmd,
-        ];
+const paneKindBehaviors: Record<
+    PaneKind,
+    {
+        buildShellArgs: (aiCmd: string) => string[];
+        /**
+         * Whether a foreground process other than the shell means a command is running. The AI
+         * pane's foreground process is the AI itself for its whole life, so only a shell pane can
+         * tell a running command from its prompt.
+         */
+        hasCommandPrompt: boolean;
     }
-    return [
-        shell,
-        '-l',
-    ];
-}
+> = {
+    [PaneKind.Ai]: {
+        buildShellArgs(aiCmd) {
+            return [
+                '-lic',
+                aiCmd,
+            ];
+        },
+        hasCommandPrompt: false,
+    },
+    [PaneKind.Shell]: {
+        buildShellArgs() {
+            return [
+                '-l',
+            ];
+        },
+        hasCommandPrompt: true,
+    },
+};
 
 type PaneSize = {
     cols: number;
@@ -85,6 +108,13 @@ type PaneEntry = {
      * carrying valid colors, which is also how "leave those queries unanswered" is expressed.
      */
     colors: TerminalColors | undefined;
+    /** The running pty's `AGENT_STORM_CONVERSATION_ID`. No other process is given it. */
+    conversationId: string | undefined;
+    /**
+     * Signs the running pty's launch requests. Held only in the daemon's memory and that pty's
+     * environment, and replaced on every spawn.
+     */
+    launchKey: string | undefined;
 };
 
 /** Bounded replay buffer per pane for newly attached browser terminals. */
@@ -206,6 +236,8 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
         scrollbackChunks: [],
         scrollbackBytes: 0,
         colors: undefined,
+        conversationId: undefined,
+        launchKey: undefined,
     };
     panes.set(key, entry);
     return entry;
@@ -237,8 +269,16 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
  *   the install. A real terminal started from the OS has none of these, so neither should ours.
  */
 const conversationIdEnvKey = 'AGENT_STORM_CONVERSATION_ID';
+const launchKeyEnvKey = 'AGENT_STORM_LAUNCH_KEY';
+const launchScriptEnvKey = 'AGENT_STORM_LAUNCH_SCRIPT';
 
-function spawnEnv(conversationId: string | undefined): NodeJS.ProcessEnv {
+function spawnEnv({
+    conversationId,
+    launchKey,
+}: Readonly<{
+    conversationId: string | undefined;
+    launchKey: string | undefined;
+}>): NodeJS.ProcessEnv {
     const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) => {
         return String(key).toLowerCase().startsWith('npm_');
     });
@@ -250,6 +290,16 @@ function spawnEnv(conversationId: string | undefined): NodeJS.ProcessEnv {
          * otherwise leak into every pane spawned without one.
          */
         conversationIdEnvKey,
+        launchKeyEnvKey,
+        launchScriptEnvKey,
+        /**
+         * A daemon started from Terminal.app inherits that tab's identity. With these set, macOS's
+         * `/etc/zshrc_Apple_Terminal` treats every pane as that one tab: all panes share its
+         * session-restore and history files under `~/.zsh_sessions`.
+         */
+        'TERM_SESSION_ID',
+        'TERM_PROGRAM',
+        'TERM_PROGRAM_VERSION',
         ...npmInjectedKeys,
     ]);
     /**
@@ -272,7 +322,37 @@ function spawnEnv(conversationId: string | undefined): NodeJS.ProcessEnv {
                   [conversationIdEnvKey]: conversationId,
               }
             : {}),
+        ...(launchKey
+            ? {
+                  [launchKeyEnvKey]: launchKey,
+                  [launchScriptEnvKey]: agentLaunchScriptPath,
+              }
+            : {}),
     };
+}
+
+/**
+ * Whether `signature` is the hex HMAC-SHA256 of `payload` under the launch key of the running pty
+ * whose conversation id is `conversationId`.
+ */
+export function verifyLaunchSignature({
+    conversationId,
+    payload,
+    signature,
+}: Readonly<{
+    conversationId: string;
+    payload: string;
+    signature: string;
+}>) {
+    const launchKey = Array.from(panes.values()).find((entry) => {
+        return !!entry.pty && !!conversationId && entry.conversationId === conversationId;
+    })?.launchKey;
+    if (!launchKey) {
+        return false;
+    }
+    const expected = createHmac('sha256', launchKey).update(payload).digest();
+    const provided = Buffer.from(signature, 'hex');
+    return provided.length === expected.length && timingSafeEqual(provided, expected);
 }
 
 /**
@@ -309,9 +389,9 @@ function applyMinSize(entry: PaneEntry): void {
                 ? `${subscriber.size.cols}x${subscriber.size.rows}`
                 : 'unreported';
         }).join(', ');
-        log(
+        sizeLog(
             [
-                `${entry.folder}:${entry.kind}:${entry.sessionId}`,
+                paneKey(entry.folder, entry.kind, entry.sessionId),
                 `-> ${cols}x${rows}`,
                 `from [${reported}]`,
             ].join(' '),
@@ -374,7 +454,7 @@ function teardownPaneProcess(
     });
     if (!killed) {
         reapLog(
-            `${entry.folder}:${entry.kind}:${entry.sessionId} not killed (pid ${pty.pid} is no longer ours)`,
+            `${paneKey(entry.folder, entry.kind, entry.sessionId)} not killed (pid ${pty.pid} is no longer ours)`,
         );
     }
     releasePty(pty);
@@ -476,14 +556,9 @@ function startPty({
 }>): void {
     entry.spawnGeneration += 1;
     const spawnGeneration = entry.spawnGeneration;
-    const [
-        command,
-        ...args
-    ] = buildPaneCommand(kind, aiCmd);
-    if (!command) {
-        return;
-    }
     const cwd = normalizePath(folder);
+    entry.conversationId = conversationId;
+    entry.launchKey = conversationId ? randomBytes(32).toString('hex') : undefined;
     try {
         if (livePtys.size >= maxLivePtys) {
             /**
@@ -492,12 +567,15 @@ function startPty({
              */
             throw new Error(`daemon already holds ${livePtys.size} ptys (limit ${maxLivePtys})`);
         }
-        const pty = spawn(command, args, {
+        const pty = spawn(paneShell, paneKindBehaviors[kind].buildShellArgs(aiCmd), {
             name: 'xterm-256color',
             cols: 120,
             rows: 32,
             cwd,
-            env: spawnEnv(conversationId) as Record<string, string>,
+            env: spawnEnv({
+                conversationId,
+                launchKey: entry.launchKey,
+            }),
         });
         livePtys.add(pty);
         entry.pty = pty;
@@ -624,7 +702,19 @@ export function attachPane({
         size: undefined,
     };
     entry.subscribers.add(subscriber);
-    const scrollback = limitScrollbackLines(entry.scrollbackChunks.join(''), scrollbackLimit);
+    /**
+     * The attaching xterm answers every Device Attributes query (`CSI c`, `CSI > c`, `CSI = c`) it
+     * parses, including stale ones in the replay. Those answers reach the pty as typed input, and
+     * an idle shell prints them at the prompt as `1;2c`.
+     */
+    const scrollback = limitScrollbackLines(
+        entry.scrollbackChunks.join('').replaceAll(
+            // eslint-disable-next-line no-control-regex
+            /\x1b\[[>=]?0?c/g,
+            '',
+        ),
+        scrollbackLimit,
+    );
     return {
         isNew,
         /**
@@ -798,7 +888,7 @@ export function sweepDeadPanes(): void {
             return;
         }
         reapLog(
-            `${entry.folder}:${entry.kind}:${entry.sessionId} released (pid ${entry.pty.pid} gone)`,
+            `${paneKey(entry.folder, entry.kind, entry.sessionId)} released (pid ${entry.pty.pid} gone)`,
         );
         releasePty(entry.pty);
         entry.pty = undefined;
@@ -846,11 +936,23 @@ function sweepOrphanedPtys(): void {
     }
 }
 
+/**
+ * A quiet command prints nothing for a while, so output alone would call its pane idle. node-pty's
+ * `process` names the pty's foreground process, which is the shell itself only while it sits at its
+ * prompt. Full-screen programs like `vim` or `less` count as running too.
+ */
+function isShellRunningCommand({kind, pty}: Readonly<PaneEntry>) {
+    return paneKindBehaviors[kind].hasCommandPrompt && !!pty && pty.process !== basename(paneShell);
+}
+
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {
     if (!entry) {
         return PaneStatus.None;
     } else if (entry.pty) {
-        return Date.now() - entry.lastOutputAt < idleThresholdMs
+        return Date.now() - entry.lastOutputAt <
+            convertDuration(idleThreshold, {
+                milliseconds: true,
+            }).milliseconds || isShellRunningCommand(entry)
             ? PaneStatus.Busy
             : PaneStatus.Idle;
     } else {
@@ -865,6 +967,7 @@ export function listAllPaneStatuses(): StatusEntry[] {
             kind: entry.kind,
             sessionId: entry.sessionId,
             status: entryStatus(entry),
+            isRunningCommand: isShellRunningCommand(entry),
         };
     });
 }

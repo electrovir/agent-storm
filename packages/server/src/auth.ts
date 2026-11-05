@@ -1,3 +1,4 @@
+import {check} from '@augment-vir/assert';
 import {ensureErrorAndPrependMessage, log} from '@augment-vir/common';
 import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
 import {randomBytes} from 'node:crypto';
@@ -11,10 +12,18 @@ import {authSecretFileName, authSecretPath, notCommittedDir} from './file-paths.
  */
 const argon2Prefix = '$argon2';
 
-let cachedHash: string | undefined;
-let watcher: FSWatcher | undefined;
-let regenerating: Promise<void> | undefined;
-let writingSelf = false;
+const authState: {
+    cachedHash: string | undefined;
+    watcher: FSWatcher | undefined;
+    regenerating: Promise<void> | undefined;
+    /** Set while this process writes the secret file, so its own write doesn't trigger a reload. */
+    isWritingSelf: boolean;
+} = {
+    cachedHash: undefined,
+    watcher: undefined,
+    regenerating: undefined,
+    isWritingSelf: false,
+};
 
 async function readStoredHash(): Promise<string | undefined> {
     const contents = await readFile(authSecretPath, 'utf-8').catch(() => undefined);
@@ -34,15 +43,15 @@ async function generateAndStoreSecret(): Promise<string> {
     await mkdir(notCommittedDir, {
         recursive: true,
     });
-    writingSelf = true;
+    authState.isWritingSelf = true;
     try {
         await writeFile(authSecretPath, hash, {
             mode: 0o600,
         });
     } finally {
-        writingSelf = false;
+        authState.isWritingSelf = false;
     }
-    cachedHash = hash;
+    authState.cachedHash = hash;
     return cleartext;
 }
 
@@ -56,30 +65,28 @@ function logNewSecret(cleartext: string): void {
     );
 }
 
-async function regenerate(): Promise<void> {
-    const cleartext = await generateAndStoreSecret();
-    logNewSecret(cleartext);
+/** Uses the stored hash when there is a valid one, else generates and stores a new secret. */
+async function loadOrGenerateSecret(): Promise<void> {
+    const existing = await readStoredHash();
+    if (existing) {
+        authState.cachedHash = existing;
+    } else {
+        logNewSecret(await generateAndStoreSecret());
+    }
 }
 
 function handleWatchEvent(filename: string | null): void {
-    if (filename !== authSecretFileName || writingSelf || regenerating) {
+    if (filename !== authSecretFileName || authState.isWritingSelf || authState.regenerating) {
         return;
     }
-    regenerating = (async () => {
-        const existing = await readStoredHash();
-        if (existing) {
-            cachedHash = existing;
-            return;
-        }
-        await regenerate();
-    })()
+    authState.regenerating = loadOrGenerateSecret()
         .catch((error: unknown) => {
             log.error(
                 ensureErrorAndPrependMessage(error, 'Failed to regenerate auth secret.').message,
             );
         })
         .finally(() => {
-            regenerating = undefined;
+            authState.regenerating = undefined;
         });
 }
 
@@ -87,25 +94,35 @@ export async function initAuth(): Promise<void> {
     await mkdir(notCommittedDir, {
         recursive: true,
     });
-    const existing = await readStoredHash();
-    if (existing) {
-        cachedHash = existing;
-    } else {
-        const cleartext = await generateAndStoreSecret();
-        logNewSecret(cleartext);
-    }
-    watcher?.close();
-    watcher = watch(notCommittedDir, (_eventType, filename) => {
+    await loadOrGenerateSecret();
+    authState.watcher?.close();
+    authState.watcher = watch(notCommittedDir, (_eventType, filename) => {
         handleWatchEvent(filename);
     });
 }
 
 export async function verifyAuthToken(provided: string | undefined): Promise<boolean> {
-    if (!provided || !cachedHash) {
+    if (!provided || !authState.cachedHash) {
         return false;
     }
     return await doesPasswordMatchHash({
         password: provided,
-        hash: cachedHash,
+        hash: authState.cachedHash,
     });
+}
+
+/**
+ * The token from an `Authorization: Bearer <token>` header. The scheme matches case-insensitively,
+ * as RFC 9110 requires. Undefined for any other scheme, a repeated header, or an empty token.
+ */
+export function extractBearerToken(header: string | string[] | undefined) {
+    if (!check.isString(header)) {
+        return undefined;
+    }
+    const trimmed = header.trim();
+    const schemePrefix = 'bearer ';
+    if (trimmed.slice(0, schemePrefix.length).toLowerCase() !== schemePrefix) {
+        return undefined;
+    }
+    return trimmed.slice(schemePrefix.length).trimStart() || undefined;
 }

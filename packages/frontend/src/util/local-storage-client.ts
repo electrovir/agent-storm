@@ -1,3 +1,17 @@
+import {configShape, folderInfoShape, GitDiffSide, PaneKind} from '@agent-storm/common';
+import {clamp, omitObjectKeys, type PartialWithUndefined} from '@augment-vir/common';
+import {
+    checkValidShape,
+    defineShape,
+    enumShape,
+    exactShape,
+    recordShape,
+    unionShape,
+    type ShapeInitType,
+} from 'object-shape-tester';
+import {FrontendTab} from './frontend-tab.js';
+import {DiffView} from './pane-layout.js';
+
 type Listener<T> = (value: T) => void;
 
 type SettingConfig<T> = {
@@ -64,6 +78,15 @@ function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
     };
 }
 
+const sidebarSnapshotShape = defineShape({
+    folders: [
+        folderInfoShape,
+    ],
+    config: configShape,
+});
+
+export type SidebarSnapshot = typeof sidebarSnapshotShape.runtimeType;
+
 export const sidebarWidth = {
     min: 180,
     max: 600,
@@ -94,84 +117,88 @@ type NumberBounds = Readonly<{
     default: number;
 }>;
 
-function clamp({
-    value,
+/** A number setting clamped into `bounds`, falling back to the default when it isn't a number. */
+function defineNumberSetting({
+    key,
     bounds,
+    isInteger,
 }: Readonly<{
-    value: number;
+    key: string;
     bounds: NumberBounds;
-}>) {
-    if (!Number.isFinite(value)) {
-        return bounds.default;
-    }
-    return Math.min(bounds.max, Math.max(bounds.min, value));
+}> &
+    PartialWithUndefined<{
+        isInteger: boolean;
+    }>) {
+    return defineSetting<number>({
+        key,
+        defaultValue: bounds.default,
+        parse(raw) {
+            const value = isInteger ? Math.round(Number.parseFloat(raw)) : Number.parseFloat(raw);
+            return Number.isFinite(value) ? clamp(value, bounds) : bounds.default;
+        },
+        serialize(value) {
+            return String(value);
+        },
+    });
 }
 
-/**
- * A string per folder, keyed by absolute folder path. Non-string entries are dropped on read, so a
- * hand-edited or stale value falls back to the caller's default rather than being trusted.
- */
-function parseStringByFolder(raw: string): Record<string, string> {
-    try {
-        const parsed: unknown = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            return {};
-        }
-        return Object.fromEntries(
-            Object.entries(parsed).filter(
-                ([
-                    ,
-                    value,
-                ]) => typeof value === 'string',
-            ),
-        ) as Record<string, string>;
-    } catch {
-        return {};
-    }
-}
+export type FolderSetting<Value> = Setting<Partial<Record<string, Value>>> & {
+    readFolder(folder: string): Value | undefined;
+    /** `undefined` removes the folder's entry. */
+    writeFolder(
+        params: Readonly<{
+            folder: string;
+            value: Value | undefined;
+        }>,
+    ): void;
+};
 
 /**
- * Which session tab each folder was last on, per pane kind: `{'/path/to/repo': {ai: 2, shell: 1}}`.
- * 1-based, matching the URL params. Entries that aren't a positive integer are dropped on read, so
- * a hand-edited or stale value falls back to the first session rather than pointing at nothing.
+ * One value per folder, keyed by absolute folder path. A stored map that doesn't match `valueShape`
+ * is discarded on read, so a hand-edited or stale value falls back to the caller's default rather
+ * than being trusted.
  */
-function parseSessionIndexByFolder(raw: string): Record<string, Record<string, number>> {
-    try {
-        const parsed: unknown = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            return {};
-        }
-        return Object.fromEntries(
-            Object.entries(parsed).flatMap(
-                ([
-                    folder,
-                    byKind,
-                ]) => {
-                    if (!byKind || typeof byKind !== 'object' || Array.isArray(byKind)) {
-                        return [];
-                    }
-                    const validIndexes = Object.fromEntries(
-                        Object.entries(byKind).filter(
-                            ([
-                                ,
-                                index,
-                            ]) => Number.isSafeInteger(index) && Number(index) >= 1,
-                        ),
-                    ) as Record<string, number>;
-                    return Object.keys(validIndexes).length
-                        ? [
-                              [
-                                  folder,
-                                  validIndexes,
-                              ] as const,
-                          ]
-                        : [];
-                },
-            ),
-        );
-    } catch {
-        return {};
-    }
+function defineFolderSetting<const ValueShape>({
+    key,
+    valueShape,
+}: Readonly<{
+    key: string;
+    valueShape: ValueShape;
+}>): FolderSetting<ShapeInitType<ValueShape>> {
+    const mapShape = recordShape({
+        keys: '',
+        values: valueShape,
+        partial: true,
+    });
+    const setting = defineSetting<Partial<Record<string, ShapeInitType<ValueShape>>>>({
+        key,
+        defaultValue: {},
+        parse(raw) {
+            const parsed: unknown = JSON.parse(raw);
+            return checkValidShape(parsed, mapShape) ? parsed : {};
+        },
+        serialize(value) {
+            return JSON.stringify(value);
+        },
+    });
+    return {
+        ...setting,
+        readFolder(folder) {
+            return setting.read()[folder];
+        },
+        writeFolder({folder, value}) {
+            setting.write(
+                value == undefined
+                    ? omitObjectKeys(setting.read(), [
+                          folder,
+                      ])
+                    : {
+                          ...setting.read(),
+                          [folder]: value,
+                      },
+            );
+        },
+    };
 }
 
 export const localStorageClient = {
@@ -185,89 +212,97 @@ export const localStorageClient = {
             return value || undefined;
         },
     }),
-    sidebarWidth: defineSetting<number>({
+    sidebarWidth: defineNumberSetting({
         key: 'agent-storm:sidebar-width',
-        defaultValue: sidebarWidth.default,
-        parse(raw) {
-            return clamp({
-                value: Number.parseFloat(raw),
-                bounds: sidebarWidth,
-            });
-        },
-        serialize(value) {
-            return String(value);
-        },
+        bounds: sidebarWidth,
     }),
-    diffSidebarWidth: defineSetting<number>({
+    /** Same as `sidebarWidth`, for the Review tab's sidebar. */
+    reviewSidebarWidth: defineNumberSetting({
+        key: 'agent-storm:review-sidebar-width',
+        bounds: sidebarWidth,
+    }),
+    diffSidebarWidth: defineNumberSetting({
         key: 'agent-storm:diff-sidebar-width',
-        defaultValue: diffSidebarWidth.default,
-        parse(raw) {
-            return clamp({
-                value: Number.parseFloat(raw),
-                bounds: diffSidebarWidth,
-            });
-        },
-        serialize(value) {
-            return String(value);
-        },
+        bounds: diffSidebarWidth,
     }),
-    paneSplit: defineSetting<number>({
+    paneSplit: defineNumberSetting({
         key: 'agent-storm:pane-split',
-        defaultValue: paneSplit.default,
-        parse(raw) {
-            return clamp({
-                value: Number.parseFloat(raw),
-                bounds: paneSplit,
-            });
-        },
-        serialize(value) {
-            return String(value);
-        },
+        bounds: paneSplit,
+    }),
+    reviewPaneSplit: defineNumberSetting({
+        key: 'agent-storm:review-pane-split',
+        bounds: paneSplit,
     }),
     /**
      * Which tab each folder was last on. Persisted so switching away from a folder and back returns
      * to the pane you were using there, rather than resetting to AI.
      */
-    tabByFolder: defineSetting<Record<string, string>>({
+    tabByFolder: defineFolderSetting({
         key: 'agent-storm:tab-by-folder',
-        defaultValue: {},
-        parse: parseStringByFolder,
-        serialize(value) {
-            return JSON.stringify(value);
-        },
+        valueShape: enumShape(FrontendTab),
     }),
     /**
      * Which file each folder's diff pane was last showing, as that pane's own side-plus-path select
      * value. A value naming a file that no longer has a diff is discarded when the pane next reads
      * git status.
      */
-    diffFileByFolder: defineSetting<Record<string, string>>({
+    diffFileByFolder: defineFolderSetting({
         key: 'agent-storm:diff-file-by-folder',
-        defaultValue: {},
-        parse: parseStringByFolder,
-        serialize(value) {
-            return JSON.stringify(value);
-        },
+        valueShape: '',
     }),
-    sessionIndexByFolder: defineSetting<Record<string, Record<string, number>>>({
-        key: 'agent-storm:session-index-by-folder',
-        defaultValue: {},
-        parse: parseSessionIndexByFolder,
-        serialize(value) {
-            return JSON.stringify(value);
-        },
+    /**
+     * Which side each folder's diff pane was last reading as one stacked review, or `false` for a
+     * folder that was last on a single-file diff. A folder with no entry opens the unstaged review.
+     */
+    diffReviewSideByFolder: defineFolderSetting({
+        key: 'agent-storm:diff-review-side-by-folder',
+        valueShape: unionShape(enumShape(GitDiffSide), exactShape(false)),
     }),
-    scrollbackLimit: defineSetting<number>({
-        key: 'agent-storm:scrollback-limit',
-        defaultValue: scrollbackLimit.default,
+    /** Which checkout each Build folder's Diff tab was last set to show. */
+    diffViewByFolder: defineFolderSetting({
+        key: 'agent-storm:diff-view-by-folder',
+        valueShape: enumShape(DiffView),
+    }),
+    /**
+     * The repos sidebar's last loaded data. A page reload (which the backend watchdog triggers
+     * after any backend outage) renders this right away instead of an empty list.
+     */
+    sidebarSnapshot: defineSetting<SidebarSnapshot | undefined>({
+        key: 'agent-storm:sidebar-snapshot',
+        defaultValue: undefined,
         parse(raw) {
-            return clamp({
-                value: Math.round(Number.parseFloat(raw)),
-                bounds: scrollbackLimit,
-            });
+            const parsed: unknown = JSON.parse(raw);
+            return checkValidShape(parsed, sidebarSnapshotShape) ? parsed : undefined;
         },
         serialize(value) {
-            return String(value);
+            return value && JSON.stringify(value);
         },
+    }),
+    /**
+     * Which session tab each folder was last on, per pane kind: `{'/path/to/repo': {ai: 2}}`.
+     * 1-based, matching the URL params.
+     */
+    sessionIndexByFolder: defineFolderSetting({
+        key: 'agent-storm:session-index-by-folder',
+        valueShape: recordShape({
+            keys: enumShape(PaneKind),
+            values: 0,
+            partial: true,
+        }),
+    }),
+    showDebugTab: defineSetting<boolean>({
+        key: 'agent-storm:show-debug-tab',
+        defaultValue: false,
+        parse(raw) {
+            return raw === 'true';
+        },
+        serialize(value) {
+            return value ? 'true' : undefined;
+        },
+    }),
+    scrollbackLimit: defineNumberSetting({
+        key: 'agent-storm:scrollback-limit',
+        bounds: scrollbackLimit,
+        isInteger: true,
     }),
 };

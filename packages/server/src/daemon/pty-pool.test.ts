@@ -2,6 +2,7 @@ import {PaneKind} from '@agent-storm/common';
 import {assert, waitUntil} from '@augment-vir/assert';
 import {wait} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
+import {createHmac} from 'node:crypto';
 import {mkdir, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -12,6 +13,8 @@ import {
     listAllPaneStatuses,
     livePtyCount,
     restartPane,
+    verifyLaunchSignature,
+    writeToPane,
 } from './pty-pool.js';
 
 function persistentAiCommand(label: string): string {
@@ -329,6 +332,54 @@ describe('pane sessions', () => {
     });
 });
 
+describe(attachPane.name, () => {
+    it('drops device attributes queries from the replayed scrollback', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
+        try {
+            const output: string[] = [];
+            const first = attachPane({
+                folder,
+                kind: PaneKind.Ai,
+                aiCmd: String.raw`printf 'start\033[c\033[>0c end\n'; while true; do sleep 1; done`,
+                onData(data) {
+                    output.push(data);
+                },
+                onExit() {},
+            });
+            try {
+                await waitUntil(() => output.join('').includes(' end'), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: {
+                        seconds: 3,
+                    },
+                });
+                const second = attachPane({
+                    folder,
+                    kind: PaneKind.Ai,
+                    onData() {},
+                    onExit() {},
+                });
+                second.detach();
+
+                assert.isTrue(output.join('').includes('start\x1b[c\x1b[>0c end'));
+                assert.isTrue(second.scrollback.includes('start end'));
+            } finally {
+                first.detach();
+                killFolderPanes({
+                    folder,
+                });
+            }
+        } finally {
+            await rm(folder, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+});
+
 describe(livePtyCount.name, () => {
     it('holds no extra pty after a restart and a kill', async () => {
         const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
@@ -379,6 +430,180 @@ describe(livePtyCount.name, () => {
             }
 
             assert.strictEquals(livePtyCount(), before);
+        } finally {
+            await rm(folder, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+});
+
+describe(verifyLaunchSignature.name, () => {
+    it('accepts only signatures from the running tab key', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
+        try {
+            const output: string[] = [];
+            const attachment = attachPane({
+                folder,
+                kind: PaneKind.Ai,
+                conversationId: 'launch-conversation',
+                aiCmd: String.raw`printf 'key=%s\n' "$AGENT_STORM_LAUNCH_KEY"; while true; do sleep 1; done`,
+                onData(data) {
+                    output.push(data);
+                },
+                onExit() {},
+            });
+            try {
+                const launchKey = await waitUntil.isString(
+                    () => {
+                        return /key=([0-9a-f]{64})/.exec(output.join(''))?.[1];
+                    },
+                    {
+                        interval: {
+                            milliseconds: 20,
+                        },
+                        timeout: {
+                            seconds: 5,
+                        },
+                    },
+                );
+                const payload = '{"folder":"/example"}';
+                const signature = createHmac('sha256', launchKey).update(payload).digest('hex');
+
+                assert.deepEquals(
+                    [
+                        verifyLaunchSignature({
+                            conversationId: 'launch-conversation',
+                            payload,
+                            signature,
+                        }),
+                        verifyLaunchSignature({
+                            conversationId: 'launch-conversation',
+                            payload: '{"folder":"/elsewhere"}',
+                            signature,
+                        }),
+                        verifyLaunchSignature({
+                            conversationId: 'other-conversation',
+                            payload,
+                            signature,
+                        }),
+                    ],
+                    [
+                        true,
+                        false,
+                        false,
+                    ],
+                );
+
+                attachment.detach();
+                killFolderPanes({
+                    folder,
+                });
+                assert.isFalse(
+                    verifyLaunchSignature({
+                        conversationId: 'launch-conversation',
+                        payload,
+                        signature,
+                    }),
+                );
+            } finally {
+                attachment.detach();
+                killFolderPanes({
+                    folder,
+                });
+            }
+        } finally {
+            await rm(folder, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+});
+
+describe(listAllPaneStatuses.name, () => {
+    it('reports a running command only for a shell pane', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
+        try {
+            const aiOutput: string[] = [];
+            const aiAttachment = attachPane({
+                folder,
+                kind: PaneKind.Ai,
+                aiCmd: String.raw`printf 'ai-ready\n'; sleep 30`,
+                onData(data) {
+                    aiOutput.push(data);
+                },
+                onExit() {},
+            });
+            const shellAttachment = attachPane({
+                folder,
+                kind: PaneKind.Shell,
+                onData() {},
+                onExit() {},
+            });
+            try {
+                await waitUntil.isTrue(() => aiOutput.join('').includes('ai-ready'), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: {
+                        seconds: 5,
+                    },
+                });
+                writeToPane({
+                    folder,
+                    kind: PaneKind.Shell,
+                    data: 'sleep 30\n',
+                });
+                await waitUntil.isTrue(
+                    () => {
+                        return listAllPaneStatuses().some((status) => {
+                            return (
+                                status.folder === folder &&
+                                status.kind === PaneKind.Shell &&
+                                status.isRunningCommand
+                            );
+                        });
+                    },
+                    {
+                        interval: {
+                            milliseconds: 50,
+                        },
+                        timeout: {
+                            seconds: 10,
+                        },
+                    },
+                );
+
+                assert.deepEquals(
+                    listAllPaneStatuses()
+                        .filter((status) => status.folder === folder)
+                        .map((status) => {
+                            return {
+                                kind: status.kind,
+                                isRunningCommand: status.isRunningCommand,
+                            };
+                        })
+                        .toSorted((first, second) => first.kind.localeCompare(second.kind)),
+                    [
+                        {
+                            kind: PaneKind.Ai,
+                            isRunningCommand: false,
+                        },
+                        {
+                            kind: PaneKind.Shell,
+                            isRunningCommand: true,
+                        },
+                    ],
+                );
+            } finally {
+                aiAttachment.detach();
+                shellAttachment.detach();
+                killFolderPanes({
+                    folder,
+                });
+            }
         } finally {
             await rm(folder, {
                 recursive: true,

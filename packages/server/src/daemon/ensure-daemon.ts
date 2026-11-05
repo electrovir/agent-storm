@@ -1,4 +1,6 @@
-import {log, wait} from '@augment-vir/common';
+import {waitUntil} from '@augment-vir/assert';
+import {log} from '@augment-vir/common';
+import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {createConnection} from 'node:net';
@@ -6,15 +8,29 @@ import {daemonScriptPath, daemonSocketPath} from '../file-paths.js';
 import {fetchDaemonProtocolVersion, shutdownDaemon} from './daemon-client.js';
 import {daemonProtocolVersion} from './protocol.js';
 
+/** A wedged daemon can accept nothing, and a connect that never settles would hang every poll. */
+const pingTimeout: AnyDuration = {
+    seconds: 1,
+};
+
 async function pingDaemon(): Promise<boolean> {
     if (!existsSync(daemonSocketPath)) {
         return false;
     }
     return await new Promise<boolean>((resolve) => {
-        const socket = createConnection(daemonSocketPath);
+        const socket = createConnection({
+            path: daemonSocketPath,
+            timeout: convertDuration(pingTimeout, {
+                milliseconds: true,
+            }).milliseconds,
+        });
         socket.once('connect', () => {
             socket.end();
             resolve(true);
+        });
+        socket.once('timeout', () => {
+            socket.destroy();
+            resolve(false);
         });
         socket.once('error', () => {
             socket.destroy();
@@ -23,30 +39,32 @@ async function pingDaemon(): Promise<boolean> {
     });
 }
 
-async function waitForDaemonReady(timeoutMs: number): Promise<boolean> {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeoutMs) {
-        if (await pingDaemon()) {
-            return true;
-        }
-        await wait({
-            milliseconds: 100,
+/**
+ * Polls the daemon socket until it answers as `isUp` expects. Resolves false when `timeout` passes
+ * first.
+ */
+async function waitForDaemonPing({
+    isUp,
+    timeout,
+}: Readonly<{
+    isUp: boolean;
+    timeout: Readonly<AnyDuration>;
+}>) {
+    try {
+        await waitUntil.strictEquals(isUp, () => pingDaemon(), {
+            timeout,
         });
+        return true;
+    } catch {
+        return false;
     }
-    return false;
 }
 
-export async function waitForDaemonGone(timeoutMs: number): Promise<boolean> {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeoutMs) {
-        if (!(await pingDaemon())) {
-            return true;
-        }
-        await wait({
-            milliseconds: 100,
-        });
-    }
-    return false;
+export async function waitForDaemonGone(timeout: Readonly<AnyDuration>) {
+    return await waitForDaemonPing({
+        isUp: false,
+        timeout,
+    });
 }
 
 /**
@@ -77,7 +95,12 @@ async function replaceOutdatedDaemon(): Promise<boolean> {
     await shutdownDaemon().catch(() => {
         /* an unresponsive daemon may not honor shutdown; the wait below decides whether it died */
     });
-    const gone = await waitForDaemonGone(3000);
+    const gone = await waitForDaemonPing({
+        isUp: false,
+        timeout: {
+            seconds: 3,
+        },
+    });
     if (!gone) {
         throw new Error(
             'An outdated PTY daemon is still running and did not shut down. Kill the `pty-daemon` process manually and restart.',
@@ -112,11 +135,20 @@ export async function ensureDaemon(): Promise<void> {
     /* eslint-enable sonarjs/no-os-command-from-path */
     child.unref();
 
-    const readyTimeoutMs = 8000;
-    const ready = await waitForDaemonReady(readyTimeoutMs);
+    const readyTimeout: AnyDuration = {
+        seconds: 8,
+    };
+    const ready = await waitForDaemonPing({
+        isUp: true,
+        timeout: readyTimeout,
+    });
     if (!ready) {
         throw new Error(
-            `PTY daemon did not become ready within ${readyTimeoutMs / 1000}s. Check the daemon log for details.`,
+            `PTY daemon did not become ready within ${
+                convertDuration(readyTimeout, {
+                    seconds: true,
+                }).seconds
+            }s. Check the daemon log for details.`,
         );
     }
     log.success('PTY daemon ready.');

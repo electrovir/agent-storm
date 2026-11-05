@@ -1,12 +1,10 @@
 // cspell:words askpass
 
 import {type UpdateStatus} from '@agent-storm/common';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
+import {type AnyDuration, convertDuration} from 'date-vir';
 import {loadConfig} from './config.js';
 import {monorepoRoot} from './file-paths.js';
-
-const exec = promisify(execFile);
+import {runCommand} from './run-command.js';
 
 /**
  * Branch the local checkout is compared against. Hardcoded to `dev` per project convention — that
@@ -16,11 +14,15 @@ const upstreamBranch = 'dev';
 
 /**
  * Cache window for the remote SHA. The remote lookup costs one git protocol round-trip per call, so
- * a 10-minute TTL keeps polling traffic flat while still letting the banner clear within minutes of
- * a fresh push landing on `dev`. Negative results (network down, branch missing) honor the same TTL
- * so a sustained outage doesn't have us re-running `git ls-remote` every sidebar poll.
+ * a TTL of minutes keeps polling traffic flat while still letting the banner clear within minutes
+ * of a fresh push landing on `dev`. Negative results (network down, branch missing) honor the same
+ * TTL so a sustained outage doesn't have us re-running `git ls-remote` every sidebar poll.
  */
-const remoteShaCacheTtlMs = 10 * 60 * 1000;
+const remoteShaCacheTtl: AnyDuration = {
+    minutes: 10,
+};
+
+const fullShaPattern = /^[0-9a-f]{40}$/i;
 
 const remoteShaState: {
     sha: string | undefined;
@@ -35,16 +37,19 @@ const remoteShaState: {
 /**
  * Run `git` inside the agent-storm checkout with all credential prompting disabled — a missing or
  * stale credential should fail fast, not hang waiting for the user to type something on the server
- * console (which they can't, because the server is headless).
+ * console (which they can't, because the server is headless). Resolves `undefined` when git fails.
  */
-async function runGitInMonorepo(args: ReadonlyArray<string>): Promise<string | undefined> {
+async function runGitInMonorepo(args: ReadonlyArray<string>) {
     try {
-        const result = await exec('git', [...args], {
+        const result = await runCommand('git', args, {
             cwd: monorepoRoot,
             env: {
                 ...process.env,
                 GIT_TERMINAL_PROMPT: '0',
                 GIT_ASKPASS: 'true',
+            },
+            timeout: {
+                seconds: 30,
             },
         });
         return result.stdout.trim();
@@ -58,7 +63,7 @@ async function getCurrentSha(): Promise<string | undefined> {
         'rev-parse',
         'HEAD',
     ]);
-    return sha && /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
+    return sha && fullShaPattern.test(sha) ? sha : undefined;
 }
 
 /**
@@ -73,29 +78,15 @@ async function getCurrentSha(): Promise<string | undefined> {
  * probe — so we conservatively treat both as "not up to date" and let the user `git fetch` if they
  * want the banner to update.
  */
-async function isRemoteShaAncestorOfHead(remoteSha: string): Promise<boolean> {
-    try {
-        await exec(
-            'git',
-            [
-                'merge-base',
-                '--is-ancestor',
-                remoteSha,
-                'HEAD',
-            ],
-            {
-                cwd: monorepoRoot,
-                env: {
-                    ...process.env,
-                    GIT_TERMINAL_PROMPT: '0',
-                    GIT_ASKPASS: 'true',
-                },
-            },
-        );
-        return true;
-    } catch {
-        return false;
-    }
+async function isRemoteShaAncestorOfHead(remoteSha: string) {
+    return (
+        (await runGitInMonorepo([
+            'merge-base',
+            '--is-ancestor',
+            remoteSha,
+            'HEAD',
+        ])) != undefined
+    );
 }
 
 async function fetchRemoteSha(): Promise<string | undefined> {
@@ -117,13 +108,16 @@ async function fetchRemoteSha(): Promise<string | undefined> {
         firstLine,
     ] = output.split('\n');
     const sha = firstLine?.split(/\s+/)[0];
-    return sha && /^[0-9a-f]{40}$/i.test(sha) ? sha : undefined;
+    return sha && fullShaPattern.test(sha) ? sha : undefined;
 }
 
 async function getRemoteSha(): Promise<string | undefined> {
     if (
         remoteShaState.fetchedAt > 0 &&
-        Date.now() - remoteShaState.fetchedAt < remoteShaCacheTtlMs
+        Date.now() - remoteShaState.fetchedAt <
+            convertDuration(remoteShaCacheTtl, {
+                milliseconds: true,
+            }).milliseconds
     ) {
         return remoteShaState.sha;
     } else if (remoteShaState.inFlight) {

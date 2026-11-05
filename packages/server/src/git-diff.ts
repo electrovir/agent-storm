@@ -8,14 +8,28 @@ import {
     maxDiffImageBytes,
     type GitDiffFile,
     type GitDiffStatus,
+    type gitDiffFileEndpoint,
+    type gitStageHunkEndpoint,
 } from '@agent-storm/common';
-import {arrayToObject, awaitedForEach, extractExtension} from '@augment-vir/common';
+import {check} from '@augment-vir/assert';
+import {
+    arrayToObject,
+    awaitedForEach,
+    extractErrorMessage,
+    extractExtension,
+    filterMap,
+    retry,
+    type HttpMethod,
+} from '@augment-vir/common';
+import {doesPathContain} from '@augment-vir/node';
+import {type EndpointRequestType} from '@rest-vir/api';
+import {convertDuration} from 'date-vir';
 import {execFile} from 'node:child_process';
 import {readFile, rm} from 'node:fs/promises';
-import {isAbsolute, relative, resolve} from 'node:path';
+import {isAbsolute, resolve} from 'node:path';
 import {promisify} from 'node:util';
-
-const exec = promisify(execFile);
+import {extractCommandStderr, gitTimeout, readOnlyGitEnv} from './git.js';
+import {runCommand} from './run-command.js';
 
 /**
  * Buffer ceiling for these git calls. `git show` of a single blob is bounded by
@@ -43,9 +57,11 @@ async function runGitText(
     folder: string,
     args: ReadonlyArray<string>,
 ): Promise<string | undefined> {
-    const result = await exec('git', [...args], {
+    const result = await runCommand('git', [...args], {
         cwd: folder,
         maxBuffer: gitMaxBuffer,
+        env: readOnlyGitEnv,
+        timeout: gitTimeout,
     }).catch(() => undefined);
     return result?.stdout;
 }
@@ -54,24 +70,43 @@ async function runGitText(
  * Run a git command that is expected to succeed, surfacing git's own stderr on failure. Used for
  * the index-mutating calls, where a silent no-op would leave the user staring at an unchanged pane
  * with no explanation.
+ *
+ * Retried while `index.lock` is held: any other git process in the checkout (an agent's or an
+ * editor's `git status`) holds it for the moment its own call takes, and a write that hits it fails
+ * without changing anything.
  */
 async function runGitOrThrow(
     folder: string,
     args: ReadonlyArray<string>,
     stdin?: string | undefined,
 ): Promise<void> {
-    const child = exec('git', [...args], {
-        cwd: folder,
-        maxBuffer: gitMaxBuffer,
-    });
-    if (stdin != undefined) {
-        child.child.stdin?.end(stdin);
+    const failure = await retry(
+        10,
+        async () => {
+            const stderr = await runCommand('git', [...args], {
+                cwd: folder,
+                maxBuffer: gitMaxBuffer,
+                stdin,
+                timeout: gitTimeout,
+            }).then(
+                () => undefined,
+                (error: unknown) => extractCommandStderr(error),
+            );
+            /** Thrown only so `retry` tries again; every other failure is returned as final. */
+            if (stderr?.includes('index.lock')) {
+                throw new Error(stderr);
+            }
+            return stderr;
+        },
+        {
+            interval: {
+                milliseconds: 100,
+            },
+        },
+    ).catch((error: unknown) => extractErrorMessage(error));
+    if (failure) {
+        throw new Error(`git ${args[0]} failed: ${failure}`);
     }
-    await child.catch((error: unknown) => {
-        const stderr =
-            error && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : '';
-        throw new Error(`git ${args[0]} failed: ${stderr.trim() || String(error)}`);
-    });
 }
 
 /**
@@ -242,20 +277,16 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
     }
 
     return {
-        staged: entries
-            .filter((entry) => entry.stagedChange)
-            .map((entry) => {
-                return toFile(entry, entry.stagedChange ?? GitFileChange.Modified, stagedCounts);
-            }),
-        unstaged: entries
-            .filter((entry) => entry.unstagedChange)
-            .map((entry) => {
-                return toFile(
-                    entry,
-                    entry.unstagedChange ?? GitFileChange.Modified,
-                    unstagedCounts,
-                );
-            }),
+        staged: filterMap(
+            entries,
+            (entry) => entry.stagedChange && toFile(entry, entry.stagedChange, stagedCounts),
+            check.isTruthy,
+        ),
+        unstaged: filterMap(
+            entries,
+            (entry) => entry.unstagedChange && toFile(entry, entry.unstagedChange, unstagedCounts),
+            check.isTruthy,
+        ),
     };
 }
 
@@ -271,11 +302,12 @@ function resolveRepoPath({
         return undefined;
     }
     const resolved = resolve(folder, repoRelativePath);
-    const relativeToFolder = relative(folder, resolved);
-    if (!relativeToFolder || relativeToFolder.startsWith('..') || isAbsolute(relativeToFolder)) {
-        return undefined;
-    }
-    return resolved;
+    return doesPathContain({
+        potentialParentPath: folder,
+        potentialChildPath: resolved,
+    })
+        ? resolved
+        : undefined;
 }
 
 function looksBinary(contents: Readonly<Buffer>): boolean {
@@ -284,7 +316,8 @@ function looksBinary(contents: Readonly<Buffer>): boolean {
 
 /** Read a blob by git revision spec (`HEAD:path`, `:path`). Empty when the blob doesn't exist. */
 async function readBlob({folder, spec}: Readonly<{folder: string; spec: string}>): Promise<Buffer> {
-    const result = await exec(
+    /** Not {@link runCommand}, which decodes output as text and would mangle a binary blob. */
+    const result = await promisify(execFile)(
         'git',
         [
             'show',
@@ -294,6 +327,9 @@ async function readBlob({folder, spec}: Readonly<{folder: string; spec: string}>
             cwd: folder,
             maxBuffer: gitMaxBuffer,
             encoding: 'buffer',
+            timeout: convertDuration(gitTimeout, {
+                milliseconds: true,
+            }).milliseconds,
         },
     ).catch(() => undefined);
     return result?.stdout ?? Buffer.alloc(0);
@@ -304,7 +340,7 @@ async function blobExists({
     folder,
     spec,
 }: Readonly<{folder: string; spec: string}>): Promise<boolean> {
-    return await exec(
+    return await runCommand(
         'git',
         [
             'cat-file',
@@ -313,6 +349,7 @@ async function blobExists({
         ],
         {
             cwd: folder,
+            timeout: gitTimeout,
         },
     )
         .then(() => true)
@@ -494,15 +531,12 @@ function toImageDataUrl({
 }
 
 export async function getDiffFileContents(
-    params: Readonly<{
-        folder: string;
-        path: string;
-        oldPath: string | undefined;
-        side: GitDiffSide;
-        allowLarge: boolean;
-    }>,
+    params: Readonly<EndpointRequestType<typeof gitDiffFileEndpoint, typeof HttpMethod.Post>>,
 ) {
-    const {oldBuffer, newBuffer} = await readSideBuffers(params);
+    const {oldBuffer, newBuffer} = await readSideBuffers({
+        ...params,
+        oldPath: params.oldPath || undefined,
+    });
 
     const extension = extractExtension(params.path).extension.toLowerCase();
     const imageMimeType = imageMimeTypes[extension];
@@ -547,6 +581,42 @@ export async function getDiffFileContents(
     };
 }
 
+/** Moves one file across the index, away from the side it's on. */
+const moveFileFromSide: Readonly<
+    Record<GitDiffSide, (params: Readonly<{folder: string; path: string}>) => Promise<void>>
+> = {
+    async [GitDiffSide.Unstaged]({folder, path}) {
+        /** `-A` is what makes this also stage a deletion rather than only content changes. */
+        await runGitOrThrow(folder, [
+            'add',
+            '-A',
+            '--',
+            path,
+        ]);
+    },
+    async [GitDiffSide.Staged]({folder, path}) {
+        /**
+         * `restore --staged` needs a HEAD to restore the index entry from. In a repo with no
+         * commits yet there is none, and dropping the index entry entirely is the equivalent
+         * operation.
+         */
+        await runGitOrThrow(folder, [
+            'restore',
+            '--staged',
+            '--',
+            path,
+        ]).catch(async () => {
+            await runGitOrThrow(folder, [
+                'rm',
+                '--cached',
+                '--force',
+                '--',
+                path,
+            ]);
+        });
+    },
+};
+
 export async function setFileStaged({
     folder,
     path,
@@ -559,33 +629,10 @@ export async function setFileStaged({
         })
     ) {
         throw new Error('Refusing to stage a path outside the repo.');
-    } else if (side === GitDiffSide.Unstaged) {
-        /** `-A` is what makes this also stage a deletion rather than only content changes. */
-        await runGitOrThrow(folder, [
-            'add',
-            '-A',
-            '--',
-            path,
-        ]);
-        return;
     }
-    /**
-     * `restore --staged` needs a HEAD to restore the index entry from. In a repo with no commits
-     * yet there is none, and dropping the index entry entirely is the equivalent operation.
-     */
-    await runGitOrThrow(folder, [
-        'restore',
-        '--staged',
-        '--',
+    await moveFileFromSide[side]({
+        folder,
         path,
-    ]).catch(async () => {
-        await runGitOrThrow(folder, [
-            'rm',
-            '--cached',
-            '--force',
-            '--',
-            path,
-        ]);
     });
 }
 
@@ -653,8 +700,7 @@ export async function setSideStaged({
     side,
 }: Readonly<{folder: string; side: GitDiffSide}>): Promise<void> {
     const status = await getDiffStatus(folder);
-    const files = side === GitDiffSide.Staged ? status.staged : status.unstaged;
-    await awaitedForEach(files, async (file) => {
+    await awaitedForEach(status[side], async (file) => {
         await setFileStaged({
             folder,
             path: file.path,
@@ -852,16 +898,19 @@ const discardApplyArgsBySide: Readonly<Record<GitDiffSide, ReadonlyArray<string>
     [GitDiffSide.Staged]: ['--index'],
 };
 
-type HunkRequest = Readonly<{
-    folder: string;
-    path: string;
-    oldPath: string | undefined;
-    side: GitDiffSide;
-    fromOldLine: number;
-    toOldLine: number;
-    fromNewLine: number;
-    toNewLine: number;
-}>;
+/**
+ * `git apply --cached` args that move a hunk off the given side. Staging takes the index→worktree
+ * patch forward; unstaging takes the HEAD→index patch backward, which reverts just that hunk in the
+ * index and leaves the working tree alone either way.
+ */
+const moveApplyArgsBySide: Readonly<Record<GitDiffSide, ReadonlyArray<string>>> = {
+    [GitDiffSide.Unstaged]: [],
+    [GitDiffSide.Staged]: ['--reverse'],
+};
+
+type HunkRequest = Readonly<
+    EndpointRequestType<typeof gitStageHunkEndpoint, typeof HttpMethod.Post>
+>;
 
 /** The two sides' current contents turned into a one-hunk patch describing just the given range. */
 async function buildSideHunkPatch({
@@ -878,7 +927,7 @@ async function buildSideHunkPatch({
     const {oldBuffer, newBuffer} = await readSideBuffers({
         folder,
         path,
-        oldPath,
+        oldPath: oldPath || undefined,
         side,
     });
     if (looksBinary(oldBuffer) || looksBinary(newBuffer)) {
@@ -887,7 +936,7 @@ async function buildSideHunkPatch({
 
     const specs = specsForSide({
         path,
-        oldPath,
+        oldPath: oldPath || undefined,
         side,
     });
     const [
@@ -931,18 +980,13 @@ export async function moveHunkAcrossIndex(request: HunkRequest): Promise<void> {
         ...request,
         contextLines: hunkContextLines,
     });
-    /**
-     * Applying to the index only. Staging takes the index→worktree patch forward; unstaging takes
-     * the HEAD→index patch backward, which reverts just that hunk in the index and leaves the
-     * working tree alone either way.
-     */
     await runGitOrThrow(
         request.folder,
         [
             'apply',
             '--cached',
             '--whitespace=nowarn',
-            ...(request.side === GitDiffSide.Staged ? ['--reverse'] : []),
+            ...moveApplyArgsBySide[request.side],
             '-',
         ],
         patch,

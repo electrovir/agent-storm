@@ -1,15 +1,13 @@
-import {type AiDefinition, type Config} from '@agent-storm/common';
+import {
+    aiAvatarUploadEndpoint,
+    type AiDefinition,
+    type Config,
+    configEndpoint,
+} from '@agent-storm/common';
 import {createCuid2} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
-import {
-    css,
-    defineElement,
-    defineElementEvent,
-    html,
-    listen,
-    onDomCreated,
-    repeat,
-} from 'element-vir';
+import {HttpMethod} from '@rest-vir/api';
+import {css, defineElementEvent, html, listen, nothing, onDomCreated, repeat} from 'element-vir';
 import {
     ViraButton,
     ViraColorVariant,
@@ -22,8 +20,9 @@ import {
     viraThemeByKeys,
 } from 'vira';
 import {resizeImageForAvatar} from '../../util/ai-avatar.js';
-import {getConfig, putConfig, uploadAiAvatar} from '../../util/api-client.js';
-import {reportRenderError} from '../../util/client-error-log.js';
+import {fetchApi} from '../../util/api-client.js';
+import {defineAppElement} from '../define-app-element.js';
+import {savingIcon} from '../icons/saving-icon.js';
 import {VirAiAvatar} from './vir-ai-avatar.element.js';
 
 /** The editor's working copy of one AI. `id` is empty while adding, and assigned on save. */
@@ -61,13 +60,10 @@ function emptyDraft(): AiDraft {
  * overrides that pointed at a deleted AI, dropping orphaned avatar files) in one place on the
  * backend.
  */
-export const VirAiModal = defineElement<{
+export const VirAiModal = defineAppElement<{
     open: boolean;
 }>()({
     tagName: 'vir-ai-modal',
-    options: {
-        errorHandler: reportRenderError,
-    },
     events: {
         closeRequested: defineElementEvent<void>(),
         /** Emitted after a successful save so the app can re-read anything derived from config. */
@@ -202,7 +198,7 @@ export const VirAiModal = defineElement<{
         async function load() {
             try {
                 updateState({
-                    loaded: await getConfig(),
+                    loaded: await fetchApi(configEndpoint, HttpMethod.Get),
                     error: undefined,
                 });
             } catch (error: unknown) {
@@ -223,12 +219,14 @@ export const VirAiModal = defineElement<{
                 error: undefined,
             });
             try {
-                const current = await getConfig();
-                const saved = await putConfig({
-                    ...current,
-                    aiDefinitions: [...aiDefinitions],
-                    /** First definition becomes the default when nothing was set yet. */
-                    defaultAiId: current.defaultAiId || aiDefinitions[0]?.id || '',
+                const current = await fetchApi(configEndpoint, HttpMethod.Get);
+                const saved = await fetchApi(configEndpoint, HttpMethod.Put, {
+                    requestData: {
+                        ...current,
+                        aiDefinitions: [...aiDefinitions],
+                        /** First definition becomes the default when nothing was set yet. */
+                        defaultAiId: current.defaultAiId || aiDefinitions[0]?.id || '',
+                    },
                 });
                 updateState({
                     loaded: saved,
@@ -248,7 +246,7 @@ export const VirAiModal = defineElement<{
             }
         }
 
-        function submitDraft() {
+        async function submitDraft() {
             const draft = state.draft;
             if (!draft || state.saving) {
                 return;
@@ -273,7 +271,7 @@ export const VirAiModal = defineElement<{
                     : {}),
             };
             const existing = state.loaded?.aiDefinitions || [];
-            void saveDefinitions(
+            await saveDefinitions(
                 draft.id
                     ? existing.map((entry) => (entry.id === draft.id ? definition : entry))
                     : [
@@ -283,7 +281,7 @@ export const VirAiModal = defineElement<{
             );
         }
 
-        function deleteDefinition(definition: Readonly<AiDefinition>) {
+        async function deleteDefinition(definition: Readonly<AiDefinition>) {
             if (
                 !window.confirm(
                     `Delete "${definition.name}"? Folders and tabs using it fall back to the default AI.`,
@@ -291,7 +289,7 @@ export const VirAiModal = defineElement<{
             ) {
                 return;
             }
-            void saveDefinitions(
+            await saveDefinitions(
                 (state.loaded?.aiDefinitions || []).filter((entry) => entry.id !== definition.id),
             );
         }
@@ -306,7 +304,11 @@ export const VirAiModal = defineElement<{
             });
             try {
                 updateDraft({
-                    avatarFile: await uploadAiAvatar(await resizeImageForAvatar(file)),
+                    avatarFile: (
+                        await fetchApi(aiAvatarUploadEndpoint, HttpMethod.Post, {
+                            requestData: await resizeImageForAvatar(file),
+                        })
+                    ).avatarFile,
                 });
             } catch (error: unknown) {
                 updateState({
@@ -411,9 +413,9 @@ export const VirAiModal = defineElement<{
                                     dragging: false,
                                 });
                             })}
-                            ${listen('drop', (event) => {
+                            ${listen('drop', async (event) => {
                                 event.preventDefault();
-                                void applyAvatarFile(event.dataTransfer?.files[0]);
+                                await applyAvatarFile(event.dataTransfer?.files[0]);
                             })}
                         >
                             <span>Drop an image here for the avatar</span>
@@ -421,9 +423,9 @@ export const VirAiModal = defineElement<{
                                 type="file"
                                 accept="image/*"
                                 ?disabled=${state.saving}
-                                ${listen('change', (event) => {
+                                ${listen('change', async (event) => {
                                     const input = extractEventTarget(event, HTMLInputElement);
-                                    void applyAvatarFile(input.files?.[0]);
+                                    await applyAvatarFile(input.files?.[0]);
                                 })}
                             />
                         </div>
@@ -443,7 +445,7 @@ export const VirAiModal = defineElement<{
                                       })}
                                   ></${ViraButton}>
                               `
-                            : ''}
+                            : nothing}
                     </div>
                     ${avatarSourceOptions.length
                         ? html`
@@ -471,7 +473,7 @@ export const VirAiModal = defineElement<{
                                   })}
                               ></${ViraDropdown}>
                           `
-                        : ''}
+                        : nothing}
                     <div class="footer">
                         <${ViraButton.assign({
                             text: 'Cancel',
@@ -480,14 +482,18 @@ export const VirAiModal = defineElement<{
                             isDisabled: state.saving,
                         })}
                             ${listen('click', () => {
-                                return updateState({
+                                if (state.saving) {
+                                    return;
+                                }
+                                updateState({
                                     draft: undefined,
                                     error: undefined,
                                 });
                             })}
                         ></${ViraButton}>
                         <${ViraButton.assign({
-                            text: state.saving ? 'Saving...' : 'Save',
+                            text: 'Save',
+                            icon: state.saving ? savingIcon : undefined,
                             color: ViraColorVariant.Brand,
                             isDisabled: state.saving,
                         })}
@@ -540,7 +546,9 @@ export const VirAiModal = defineElement<{
                                             color: ViraColorVariant.Danger,
                                             isDisabled: state.saving,
                                         })}
-                                            ${listen('click', () => deleteDefinition(definition))}
+                                            ${listen('click', async () => {
+                                                await deleteDefinition(definition);
+                                            })}
                                         ></${ViraButton}>
                                     </span>
                                 </div>
@@ -549,7 +557,7 @@ export const VirAiModal = defineElement<{
                     )}
                 </div>
                 ${definitions.length
-                    ? ''
+                    ? nothing
                     : html`
                           <div class="empty">No AI defined yet.</div>
                       `}
@@ -601,7 +609,7 @@ export const VirAiModal = defineElement<{
                                   ? html`
                                         <div class="error">${state.error}</div>
                                     `
-                                  : ''}
+                                  : nothing}
                               ${state.draft
                                   ? renderEditor(state.draft)
                                   : state.loaded
@@ -611,7 +619,7 @@ export const VirAiModal = defineElement<{
                                       `}
                           </div>
                       `
-                    : ''}
+                    : nothing}
             </${ViraModal}>
         `;
     },

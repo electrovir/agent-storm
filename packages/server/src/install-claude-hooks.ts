@@ -1,8 +1,9 @@
 import {check} from '@augment-vir/assert';
 import {getObjectTypedEntries, getObjectTypedValues, log} from '@augment-vir/common';
-import {mkdir, readFile, rename, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {claudeHookInstallDir, claudeHookSourceDir, claudeSettingsPath} from './file-paths.js';
+import {writeFileAtomically} from './write-file-atomically.js';
 
 enum ClaudeHookScript {
     Session = 'agent-storm-session.sh',
@@ -127,12 +128,12 @@ export async function installClaudeHooks(): Promise<void> {
         if (!updated) {
             return;
         }
-        const tempPath = `${claudeSettingsPath}.tmp.${process.pid}`;
-        /** Claude Code creates this file owner-only, and it can hold credentials. */
-        await writeFile(tempPath, `${JSON.stringify(updated, undefined, 2)}\n`, {
+        await writeFileAtomically({
+            path: claudeSettingsPath,
+            contents: `${JSON.stringify(updated, undefined, 2)}\n`,
+            /** Claude Code creates this file owner-only, and it can hold credentials. */
             mode: 0o600,
         });
-        await rename(tempPath, claudeSettingsPath);
     } catch (error) {
         log.warning(`Failed to install Claude hooks: ${String(error)}`);
     }

@@ -1,8 +1,17 @@
 import {check} from '@augment-vir/assert';
-import {getObjectTypedKeys, omitObjectKeys, wrapInTry} from '@augment-vir/common';
-import {mkdir, readFile, rename, writeFile} from 'node:fs/promises';
-import {folderActivityPath, notCommittedDir} from './file-paths.js';
+import {
+    extractErrorMessage,
+    getObjectTypedEntries,
+    log,
+    omitObjectKeys,
+    PromiseQueue,
+    wrapInTry,
+} from '@augment-vir/common';
+import {convertDuration, type AnyDuration} from 'date-vir';
+import {readFile} from 'node:fs/promises';
+import {folderActivityPath} from './file-paths.js';
 import {normalizePath} from './paths.js';
+import {writeFileAtomically} from './write-file-atomically.js';
 
 /**
  * Folder path → milliseconds since epoch of the last keystroke the user sent to one of that
@@ -16,7 +25,12 @@ type ActivityStore = Record<string, number>;
  * stamp. Losing up to this much of a timestamp's precision to a crash is irrelevant to a sort order
  * measured in minutes.
  */
-const persistDebounceMs = 10_000;
+const persistDebounce: AnyDuration = {
+    seconds: 10,
+};
+
+/** Keeps a slow write from landing after, and overwriting, a newer one. */
+const persistQueue = new PromiseQueue();
 
 const storeState: {
     store: ActivityStore;
@@ -26,12 +40,10 @@ const storeState: {
      * store, and persisting that would erase the user's real history.
      */
     loaded: boolean;
-    pendingWrite: Promise<void>;
     persistTimeout: ReturnType<typeof setTimeout> | undefined;
 } = {
     store: {},
     loaded: false,
-    pendingWrite: Promise.resolve(),
     persistTimeout: undefined,
 };
 
@@ -44,20 +56,32 @@ export function parseActivityStore(contents: string): ActivityStore {
     const parsed: unknown = wrapInTry(() => JSON.parse(contents) as unknown, {
         fallbackValue: undefined,
     });
-    if (!parsed || typeof parsed !== 'object') {
+    if (!check.isObject(parsed)) {
         return {};
     }
-    const raw = parsed as Record<string, unknown>;
-    return getObjectTypedKeys(raw).reduce<ActivityStore>((store, folder) => {
-        const value = raw[folder];
-        if (!check.isNumber(value) || !Number.isFinite(value) || value <= 0) {
-            return store;
-        }
-        return {
-            ...store,
-            [normalizePath(folder)]: value,
-        };
-    }, {});
+    return getObjectTypedEntries(parsed).reduce<ActivityStore>(
+        (
+            store,
+            [
+                folder,
+                value,
+            ],
+        ) => {
+            if (
+                !check.isString(folder) ||
+                !check.isNumber(value) ||
+                !Number.isFinite(value) ||
+                value <= 0
+            ) {
+                return store;
+            }
+            return {
+                ...store,
+                [normalizePath(folder)]: value,
+            };
+        },
+        {},
+    );
 }
 
 export async function loadFolderActivity(): Promise<void> {
@@ -66,30 +90,21 @@ export async function loadFolderActivity(): Promise<void> {
     storeState.loaded = true;
 }
 
-/**
- * Persist the in-memory store. Writes are chained rather than concurrent, and staged through a temp
- * file then `rename`d over the destination — `rename` is atomic on POSIX within a filesystem, so a
- * crash mid-write leaves the previous version intact instead of a truncated file.
- */
 function persistStore(): void {
     if (!storeState.loaded) {
         return;
     }
-    const snapshot = JSON.stringify(storeState.store, undefined, 4);
-    storeState.pendingWrite = storeState.pendingWrite
-        .catch(() => {
-            /* a prior write failed; carry on so this one still gets a chance */
-        })
-        .then(async () => {
-            await mkdir(notCommittedDir, {
-                recursive: true,
+    const contents = JSON.stringify(storeState.store, undefined, 4);
+    void persistQueue
+        .add(async () => {
+            await writeFileAtomically({
+                path: folderActivityPath,
+                contents,
             });
-            const tempPath = `${folderActivityPath}.tmp.${process.pid}`;
-            await writeFile(tempPath, snapshot, 'utf-8');
-            await rename(tempPath, folderActivityPath);
         })
-        .catch(() => {
-            /* persistence is best-effort — a lost write only costs sort order */
+        .catch((error: unknown) => {
+            /** Best-effort: a lost write only costs sort order. */
+            log.warning(`Failed to save folder activity: ${extractErrorMessage(error)}`);
         });
 }
 
@@ -105,10 +120,15 @@ export function recordFolderActivity(folderPath: string): void {
     if (storeState.persistTimeout) {
         return;
     }
-    storeState.persistTimeout = setTimeout(() => {
-        storeState.persistTimeout = undefined;
-        persistStore();
-    }, persistDebounceMs);
+    storeState.persistTimeout = setTimeout(
+        () => {
+            storeState.persistTimeout = undefined;
+            persistStore();
+        },
+        convertDuration(persistDebounce, {
+            milliseconds: true,
+        }).milliseconds,
+    );
     /** Don't hold the process open for a sort-order write. */
     storeState.persistTimeout.unref();
 }

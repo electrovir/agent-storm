@@ -1,18 +1,38 @@
 import {
     folderInfoShape,
+    GitHubPollingDisableReason,
     PaneKind,
     PaneStatus,
+    PrStatus,
+    WatchModeStatus,
     type Config,
     type FolderInfo,
     type RepoConfig,
 } from '@agent-storm/common';
-import {check} from '@augment-vir/assert';
-import {awaitedForEach, log, wait} from '@augment-vir/common';
-import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
+import {
+    awaitedForEach,
+    extractErrorMessage,
+    getEnumValues,
+    log,
+    mapEnumToObject,
+    PromiseQueue,
+    wait,
+} from '@augment-vir/common';
+import {convertDuration, type AnyDuration} from 'date-vir';
+import {readFile, stat} from 'node:fs/promises';
 import {basename} from 'node:path';
-import {checkValidShape} from 'object-shape-tester';
+import {
+    checkValidShape,
+    defineShape,
+    nullableShape,
+    optionalShape,
+    parseJsonWithShape,
+    tupleShape,
+    unknownShape,
+} from 'object-shape-tester';
+import {repoCacheKey, repoPrCache} from './branch-prs.js';
 import {getFolderAiDefinition, loadConfig, updateConfig} from './config.js';
-import {folderInfoCachePath, githubCachePath, notCommittedDir} from './file-paths.js';
+import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {
     fetchRepoPrs,
@@ -21,55 +41,71 @@ import {
     GitHubPollingError,
     isWorktreeRoot,
     listWorktreeChildren,
-    type GitHubPollingDisableReason,
+    prInfoShape,
     type PrInfo,
     type RepoSlug,
 } from './git.js';
+import {applyManualReviewStatus} from './github-review-queue.js';
 import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
+import {writeFileAtomically} from './write-file-atomically.js';
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
+
+const offWatchMode: FolderInfo['watchMode'] = {
+    status: WatchModeStatus.Off,
+    message: '',
+};
 
 /**
  * How long a per-repo PR map is reused before a sweep re-fetches it. Per-repo (not per-branch)
  * caching is what keeps GitHub traffic small: one GraphQL call per unique repo, regardless of how
- * many worktrees the user has against it. Each call costs GitHub 1 GraphQL point, so a user with
- * twenty repos spends ~40 points/hour against the 5000/hour limit.
+ * many worktrees the user has against it, and each call costs a GraphQL point against GitHub's
+ * hourly limit.
  *
  * Two tiers, because a repo you're working in should notice a new PR quickly and a repo you last
  * touched in March does not:
  *
- * - Hot: the repo has a live pane, or you activated it within {@link recentInteractionMs}.
+ * - Hot: the repo has a live pane, or you activated it within {@link recentInteraction}.
  * - Cold: everything else that's still visible in the sidebar.
  *
  * Note that these govern only when a _refresh_ happens. A cached map is served no matter how old it
  * is (see {@link getCachedRepoPrMap}), which is what keeps PR markers on screen for repos that
  * aren't being refreshed at all.
  */
-const hotRepoPrTtlMs = 5 * 60 * 1000;
-const coldRepoPrTtlMs = 30 * 60 * 1000;
+export const hotRepoPrTtl: AnyDuration = {
+    minutes: 5,
+};
+export const coldRepoPrTtl: AnyDuration = {
+    minutes: 30,
+};
 
 /** How long after the user last activated a repo it still counts as hot. */
-const recentInteractionMs = 10 * 60 * 1000;
+const recentInteraction: AnyDuration = {
+    minutes: 10,
+};
 
 /**
  * Recency window for the sidebar's "Hide Inactive" filter, mirroring `recencyWindow` in
  * `vir-sidebar.element.ts`. A standalone repo outside this window with no live pane isn't rendered
  * while the filter is on, so there's no marker for a PR fetch to feed.
  */
-const sidebarRecencyWindowMs = 7 * 24 * 60 * 60 * 1000;
-
-type RepoPrCacheEntry = {
-    fetchedAt: number;
-    prsByBranch: Map<string, PrInfo>;
+const sidebarRecencyWindow: AnyDuration = {
+    days: 7,
 };
 
-/** Key: `${owner}/${name}`. See {@link repoCacheKey}. */
-const repoPrCache = new Map<string, RepoPrCacheEntry>();
+/** Whether a pane in this state counts as the user working in its repo. */
+const livePaneStatuses: Readonly<Record<PaneStatus, boolean>> = {
+    [PaneStatus.Busy]: true,
+    [PaneStatus.Stalled]: true,
+    [PaneStatus.Idle]: true,
+    [PaneStatus.Exited]: false,
+    [PaneStatus.None]: false,
+};
 
 /**
  * Repo paths (the {@link repoActivityKey} group key) that have produced at least one PR at some
  * point. Sticky and persisted: once a repo is known to be a repo the user opens PRs against, it
- * stays eligible for polling even after its last PR ages out of the 7-day terminal window.
+ * stays eligible for polling even after its last PR ages out of the terminal-PR window.
  *
  * This is what lets the sweep skip plain repos entirely — no worktrees, no PR ever seen means the
  * user doesn't do PR work there and a GraphQL call for it is pure waste. Such a repo re-qualifies
@@ -93,51 +129,55 @@ function markRepoHadPr(repoPath: string): void {
  */
 const repoSlugByFolder = new Map<string, RepoSlug | null>();
 
-function repoCacheKey(slug: Readonly<RepoSlug>): string {
-    return `${slug.owner}/${slug.name}`;
-}
-
-/**
- * GitHub primary rate limit resets hourly. When we observe a rate-limit error we can't read the
- * exact reset timestamp from `gh`'s stderr, so back off for a full hour — long enough to cover the
- * worst case where we hit the limit right after the previous reset.
- */
-const autoDisableRateLimitMs = 60 * 60 * 1000;
-/**
- * Auth failures don't auto-recover; the user has to re-run `gh auth login`. Back off long enough
- * that the warning isn't spamming logs, but short enough that the next sweep after they fix it
- * picks it back up.
- */
-const autoDisableAuthMs = 10 * 60 * 1000;
+/** How long polling backs off for each failure when GitHub doesn't say when to resume. */
+const autoDisableDurationByReason: Readonly<Record<GitHubPollingDisableReason, AnyDuration>> = {
+    /**
+     * The primary rate limit resets hourly, so a full hour covers the worst case where we hit the
+     * limit right after the previous reset.
+     */
+    [GitHubPollingDisableReason.RateLimited]: {
+        hours: 1,
+    },
+    /**
+     * Auth failures don't auto-recover; the user has to re-run `gh auth login`. Back off long
+     * enough that the warning isn't spamming logs, but short enough that the next sweep after they
+     * fix it picks it back up.
+     */
+    [GitHubPollingDisableReason.Unauthenticated]: {
+        minutes: 10,
+    },
+};
 
 /**
  * Auto-disable state for GitHub polling. Set when a GraphQL call surfaces rate-limit or auth
- * failure; subsequent sweeps skip the GitHub call until `disabledUntilMs` elapses. Persisted to
- * disk so `tsx --watch` restarts during dev don't immediately re-poll GitHub and hit the same rate
- * limit again. The user's explicit `disabledGitHubPolling: true` config takes precedence either
- * way; this only flips an implicit off-switch.
+ * failure; GitHub calls are skipped until `disabledUntilMs` elapses. Persisted to the config so
+ * `tsx --watch` restarts during dev don't immediately re-poll GitHub and hit the same rate limit
+ * again. The user's explicit `disabledGitHubPolling: true` config takes precedence either way; this
+ * only flips an implicit off-switch.
  */
 const githubPollingState: {
-    autoDisabled: boolean;
-    reason: GitHubPollingDisableReason | undefined;
-    disabledUntilMs: number;
+    autoDisable:
+        | {
+              reason: GitHubPollingDisableReason;
+              disabledUntilMs: number;
+          }
+        | undefined;
 } = {
-    autoDisabled: false,
-    reason: undefined,
-    disabledUntilMs: 0,
+    autoDisable: undefined,
 };
 
 function isAutoDisabled(): boolean {
-    if (!githubPollingState.autoDisabled) {
-        return false;
-    } else if (Date.now() >= githubPollingState.disabledUntilMs) {
-        githubPollingState.autoDisabled = false;
-        githubPollingState.reason = undefined;
-        githubPollingState.disabledUntilMs = 0;
-        void persistAutoDisableToConfig();
-        return false;
-    } else {
-        return true;
+    return (
+        !!githubPollingState.autoDisable &&
+        Date.now() < githubPollingState.autoDisable.disabledUntilMs
+    );
+}
+
+/** Forgets an auto-disable whose backoff has run out, so the config stops carrying it. */
+async function clearExpiredAutoDisable(): Promise<void> {
+    if (githubPollingState.autoDisable && !isAutoDisabled()) {
+        githubPollingState.autoDisable = undefined;
+        await persistAutoDisableToConfig();
     }
 }
 
@@ -145,69 +185,79 @@ async function persistAutoDisableToConfig(): Promise<void> {
     await updateConfig((config) => {
         return {
             ...config,
-            githubPollingAutoDisable:
-                githubPollingState.autoDisabled && githubPollingState.reason
-                    ? {
-                          reason: githubPollingState.reason,
-                          disabledUntilMs: githubPollingState.disabledUntilMs,
-                      }
-                    : null,
+            githubPollingAutoDisable: githubPollingState.autoDisable || null,
         };
-    }).catch(() => {
-        /* persistence is best-effort — losing a write just means a cold restart */
+    }).catch((error: unknown) => {
+        log.warning(`Failed to save GitHub polling auto-disable: ${extractErrorMessage(error)}`);
     });
-}
-
-function isValidAutoDisableReason(value: unknown): value is GitHubPollingDisableReason {
-    return value === 'rate-limited' || value === 'unauthenticated';
 }
 
 function loadAutoDisableFromConfig(config: Readonly<Config>): void {
     const saved = config.githubPollingAutoDisable;
-    if (
-        !saved ||
-        typeof saved.disabledUntilMs !== 'number' ||
-        Date.now() >= saved.disabledUntilMs ||
-        !isValidAutoDisableReason(saved.reason)
-    ) {
+    if (!saved || Date.now() >= saved.disabledUntilMs) {
         return;
     }
-    githubPollingState.autoDisabled = true;
-    githubPollingState.reason = saved.reason;
-    githubPollingState.disabledUntilMs = saved.disabledUntilMs;
-    const minutesLeft = Math.max(1, Math.round((saved.disabledUntilMs - Date.now()) / 60_000));
+    githubPollingState.autoDisable = {
+        reason: saved.reason,
+        disabledUntilMs: saved.disabledUntilMs,
+    };
+    const minutesLeft = Math.max(
+        1,
+        Math.round(
+            convertDuration(
+                {
+                    milliseconds: saved.disabledUntilMs - Date.now(),
+                },
+                {
+                    minutes: true,
+                },
+            ).minutes,
+        ),
+    );
     log.warning(
         `GitHub polling still auto-disabled from prior run (${saved.reason}); ${minutesLeft} min remaining.`,
     );
 }
 
-function markAutoDisabled(reason: GitHubPollingDisableReason, message: string): void {
-    const wasDisabled = githubPollingState.autoDisabled;
-    const backoffMs = reason === 'rate-limited' ? autoDisableRateLimitMs : autoDisableAuthMs;
-    githubPollingState.autoDisabled = true;
-    githubPollingState.reason = reason;
-    githubPollingState.disabledUntilMs = Date.now() + backoffMs;
+function markAutoDisabled({
+    reason,
+    message,
+    resumeAtMs,
+}: Readonly<{
+    reason: GitHubPollingDisableReason;
+    message: string;
+    resumeAtMs: number | undefined;
+}>): void {
+    const wasDisabled = isAutoDisabled();
+    const backoffMs =
+        resumeAtMs == undefined
+            ? convertDuration(autoDisableDurationByReason[reason], {
+                  milliseconds: true,
+              }).milliseconds
+            : Math.max(0, resumeAtMs - Date.now());
+    githubPollingState.autoDisable = {
+        reason,
+        disabledUntilMs: Date.now() + backoffMs,
+    };
     if (!wasDisabled) {
-        const minutes = Math.round(backoffMs / 60_000);
+        const minutes = Math.max(
+            1,
+            Math.round(
+                convertDuration(
+                    {
+                        milliseconds: backoffMs,
+                    },
+                    {
+                        minutes: true,
+                    },
+                ).minutes,
+            ),
+        );
         log.warning(
             `GitHub polling auto-disabled (${reason}); backing off ${minutes} min. ${message}`,
         );
     }
     void persistAutoDisableToConfig();
-}
-
-/**
- * Mirror of `config.disabledGitHubPolling`, refreshed on each sweep + on startup. Lets the
- * lowest-level fetch site short-circuit without re-reading the config file on every call. The
- * config is still the source of truth — this is just a hot cache so `getCachedRepoPrMap` can gate
- * without I/O.
- */
-const userPollingState: {manuallyDisabled: boolean} = {
-    manuallyDisabled: false,
-};
-
-function isUserPollingDisabled(): boolean {
-    return userPollingState.manuallyDisabled;
 }
 
 function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
@@ -225,9 +275,8 @@ async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
 }
 
 /**
- * The repo's branch → PR lookup, refreshing it first if the cached copy is older than
- * `refreshTtlMs`. An `undefined` TTL means "never refresh this repo" (it isn't visible in the
- * sidebar).
+ * The repo's branch → PR lookup, refreshing it first if the cached copy is older than `refreshTtl`.
+ * An `undefined` TTL means "never refresh this repo" (it isn't visible in the sidebar).
  *
  * Whatever is cached is always returned, however stale, and that's deliberate: a marker built from
  * an hour-old fetch is right far more often than no marker at all, and the alternative — returning
@@ -236,27 +285,28 @@ async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
  */
 async function getCachedRepoPrMap(
     slug: Readonly<RepoSlug>,
-    refreshTtlMs: number | undefined,
+    refreshTtl: AnyDuration | undefined,
 ): Promise<Map<string, PrInfo>> {
     const key = repoCacheKey(slug);
     const cached = repoPrCache.get(key)?.prsByBranch || new Map<string, PrInfo>();
     const fetchedAt = repoPrCache.get(key)?.fetchedAt || 0;
     /**
-     * Both kill-switches are re-checked here rather than trusted from the caller: the per-sweep
-     * flag in `buildFolderInfo` is captured once at sweep start, so a folder that trips
-     * auto-disable mid-sweep would otherwise let every later folder in that same sweep hit the
-     * API.
+     * Auto-disable is re-checked here rather than trusted from the caller: the per-sweep flag is
+     * captured once at sweep start, so a folder that trips auto-disable mid-sweep would otherwise
+     * let every later folder in that same sweep hit the API.
      */
     if (
-        isUserPollingDisabled() ||
         isAutoDisabled() ||
-        refreshTtlMs == undefined ||
-        Date.now() - fetchedAt < refreshTtlMs
+        refreshTtl == undefined ||
+        Date.now() - fetchedAt <
+            convertDuration(refreshTtl, {
+                milliseconds: true,
+            }).milliseconds
     ) {
         return cached;
     }
     try {
-        const prsByBranch = await fetchRepoPrs(slug);
+        const prsByBranch = (await fetchRepoPrs(slug)) || cached;
         repoPrCache.set(key, {
             fetchedAt: Date.now(),
             prsByBranch,
@@ -265,7 +315,11 @@ async function getCachedRepoPrMap(
         return prsByBranch;
     } catch (error) {
         if (error instanceof GitHubPollingError) {
-            markAutoDisabled(error.reason, error.message);
+            markAutoDisabled({
+                reason: error.reason,
+                message: error.message,
+                resumeAtMs: error.resumeAtMs,
+            });
             return cached;
         }
         throw error;
@@ -275,7 +329,7 @@ async function getCachedRepoPrMap(
 async function getCachedPrInfo(
     folder: string,
     branch: string | null,
-    refreshTtlMs: number | undefined,
+    refreshTtl: AnyDuration | undefined,
 ): Promise<PrInfo | null> {
     if (!branch) {
         return null;
@@ -284,20 +338,34 @@ async function getCachedPrInfo(
     if (!slug) {
         return null;
     }
-    const prsByBranch = await getCachedRepoPrMap(slug, refreshTtlMs);
-    return prsByBranch.get(branch) || null;
+    const pr = (await getCachedRepoPrMap(slug, refreshTtl)).get(branch);
+    return pr
+        ? {
+              ...pr,
+              status: await applyManualReviewStatus({
+                  prStatus: pr.status,
+                  owner: slug.owner,
+                  repoName: slug.name,
+                  branchName: branch,
+              }),
+          }
+        : null;
 }
 
-type RefreshTarget = {
-    folder: string;
-    parentRepoPath: string | null;
-    createdAtMs: number;
-    isWorktreeRoot: boolean;
+const refreshTargetShape = defineShape({
+    folder: '',
+    parentRepoPath: nullableShape(''),
+    createdAtMs: 0,
+    isWorktreeRoot: false,
     /** Resolved AI for this folder, or empty when the user has defined no AI at all. */
-    aiId: string;
+    aiId: '',
     /** The repo's config `lastInteractedAtMs`. Only set on top-level repo targets. */
-    lastInteractedAtMs?: number | undefined;
-};
+    lastInteractedAtMs: optionalShape(0, {
+        alsoUndefined: true,
+    }),
+});
+
+type RefreshTarget = typeof refreshTargetShape.runtimeType;
 
 /**
  * Filesystem creation time, used by the sidebar's "Sort by date" option. `birthtimeMs` is 0 on
@@ -374,43 +442,29 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
 async function buildFolderInfo({
     target,
     statusLookup,
-    disabledGitHubPolling,
-    prRefreshTtlMs,
+    prRefreshTtl,
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
-    disabledGitHubPolling: boolean;
-    prRefreshTtlMs: number | undefined;
+    prRefreshTtl: AnyDuration | undefined;
 }>): Promise<FolderInfo> {
     const git = await getGitInfo(target.folder);
-    const pr =
-        target.isWorktreeRoot || disabledGitHubPolling
-            ? null
-            : await getCachedPrInfo(target.folder, git.branch, prRefreshTtlMs);
+    const pr = target.isWorktreeRoot
+        ? null
+        : await getCachedPrInfo(target.folder, git.branch, prRefreshTtl);
     if (pr) {
         markRepoHadPr(repoActivityKey(target));
     }
     return {
-        path: target.folder,
-        name: basename(target.folder),
-        parentRepoPath: target.parentRepoPath,
-        createdAtMs: target.createdAtMs,
-        isWorktreeRoot: target.isWorktreeRoot,
-        aiId: target.aiId,
+        ...placeholderFolderInfo(target),
         branch: git.branch,
         git: {
             dirty: git.dirty,
             notPushed: git.notPushed,
         },
         prUrl: pr?.url || null,
-        prMerged: !!pr?.closed,
-        panes: {
-            ai: statusLookup(target.folder, PaneKind.Ai),
-            shell: statusLookup(target.folder, PaneKind.Shell),
-        },
-        /** Filled by the live overlay in {@link getCachedFolders}, not baked into the sweep's cache. */
-        sessionStatuses: [],
-        lastActivityAtMs: 0,
+        prStatus: pr?.status || PrStatus.None,
+        panes: mapEnumToObject(PaneKind, (kind) => statusLookup(target.folder, kind)),
     };
 }
 
@@ -456,21 +510,21 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
             notPushed: false,
         },
         prUrl: null,
-        prMerged: false,
-        panes: {
-            ai: PaneStatus.None,
-            shell: PaneStatus.None,
-        },
+        prStatus: PrStatus.None,
+        panes: mapEnumToObject(PaneKind, () => PaneStatus.None),
+        /** Filled by the live overlay in {@link getCachedFolders}, not baked into the sweep's cache. */
         sessionStatuses: [],
         lastActivityAtMs: 0,
+        /** Filled by the `/folders` endpoint, not baked into the sweep's cache. */
+        watchMode: offWatchMode,
     };
 }
 
 /**
  * Pane status changes (Busy ↔ Idle) need to surface within a frontend poll, not within the slow
- * git-driven sweep cycle. Overlay live statuses from the daemon (cached at 500ms in
- * `getPaneStatusLookup`) on top of the cached FolderInfo so the sidebar's loader icon flips ~within
- * one poll interval of the pane going busy, instead of waiting for the next 25s sweep to bake the
+ * git-driven sweep cycle. Overlay live statuses from the daemon (briefly cached in
+ * `getPaneStatusLookup`) on top of the cached FolderInfo so the sidebar's loader icon flips within
+ * about one poll interval of the pane going busy, instead of waiting for the next sweep to bake the
  * new status into the cache.
  */
 export async function getCachedFolders(): Promise<FolderInfo[]> {
@@ -480,14 +534,11 @@ export async function getCachedFolders(): Promise<FolderInfo[]> {
         const base = cache.get(target.folder) || placeholderFolderInfo(target);
         return {
             ...base,
-            panes: {
-                ai: statusLookup(target.folder, PaneKind.Ai),
-                shell: statusLookup(target.folder, PaneKind.Shell),
-            },
+            panes: mapEnumToObject(PaneKind, (kind) => statusLookup(target.folder, kind)),
             sessionStatuses: [...sessionStatusLookup(target.folder)],
             /**
              * Overlaid like `sessionStatuses` rather than baked into the sweep's cache: a keystroke
-             * has to move the sidebar's activity sort within a poll, not within a 25s sweep. A repo
+             * has to move the sidebar's activity sort within a poll, not within a sweep. A repo
              * nobody has typed in yet falls back to when it was last opened or added, so a freshly
              * added repo sorts at the top instead of the end.
              */
@@ -497,114 +548,108 @@ export async function getCachedFolders(): Promise<FolderInfo[]> {
     });
 }
 
-type PersistedCache = {
-    targets: RefreshTarget[];
-    entries: ReadonlyArray<
-        readonly [
-            string,
-            FolderInfo,
-        ]
-    >;
-};
+/**
+ * Folder-info cache file. Entries are left loose here and checked one by one against
+ * {@link folderInfoShape} so a schema change (renamed/added field) drops only the stale entries
+ * instead of poisoning the `/folders` response; the next sweep refills them.
+ */
+const persistedCacheShape = defineShape({
+    targets: [
+        unknownShape(),
+    ],
+    entries: [
+        tupleShape('', unknownShape()),
+    ],
+});
+
+/** GitHub cache file. PRs are checked one by one against {@link prInfoShape}, like the folder cache. */
+const persistedGithubCacheShape = defineShape({
+    repos: [
+        tupleShape('', {
+            fetchedAt: 0,
+            prs: [
+                tupleShape('', unknownShape()),
+            ],
+        }),
+    ],
+    /** Repo paths from {@link everHadPrRepoPaths}. */
+    everHadPr: optionalShape(['']),
+});
 
 /**
- * Chain of in-flight cache writes. New writes append rather than racing so we never have two
- * `writeFile` calls overlapping on the same path; each `persistCache` snapshot is captured
- * synchronously at call time so the chained write reflects the state at the moment of the call.
+ * Serializes each cache file's writes so a slow write can't land after, and overwrite, a newer
+ * snapshot. Each snapshot is captured synchronously when the write is requested.
  */
-const persistState: {pending: Promise<void>} = {
-    pending: Promise.resolve(),
-};
+const persistQueue = new PromiseQueue();
 
-function persistCache(): void {
-    const snapshot: PersistedCache = {
-        targets: [...refreshState.targets],
-        entries: Array.from(cache.entries()),
-    };
-    persistState.pending = persistState.pending
-        .catch(() => {
-            /* prior write failed; carry on so the next one still has a chance */
-        })
-        .then(async () => {
-            await mkdir(notCommittedDir, {
-                recursive: true,
+function persistJson(path: string, snapshot: unknown): void {
+    const contents = JSON.stringify(snapshot);
+    void persistQueue
+        .add(async () => {
+            await writeFileAtomically({
+                path,
+                contents,
             });
-            await writeFile(folderInfoCachePath, JSON.stringify(snapshot), 'utf-8');
         })
-        .catch(() => {
-            /* persistence is best-effort — losing a write just means a cold restart */
+        .catch((error: unknown) => {
+            /** Best-effort: losing a write just means a cold restart. */
+            log.warning(`Failed to write ${basename(path)}: ${extractErrorMessage(error)}`);
         });
 }
 
-async function loadPersistedCache(): Promise<void> {
-    const contents = await readFile(folderInfoCachePath, 'utf-8').catch(() => undefined);
-    if (!contents) {
-        return;
-    }
+function persistCache(): void {
+    persistJson(folderInfoCachePath, {
+        targets: [...refreshState.targets],
+        entries: Array.from(cache.entries()),
+    } satisfies typeof persistedCacheShape.runtimeType);
+}
+
+/** Reads a cache file, or undefined when it's missing or no longer matches `shape`. */
+async function readPersistedJson<
+    const SpecificShape extends Parameters<typeof parseJsonWithShape>[1],
+>(path: string, shape: SpecificShape): Promise<SpecificShape['runtimeType'] | undefined> {
+    const contents = await readFile(path, 'utf8').catch(() => undefined);
     try {
-        const parsed = JSON.parse(contents) as PersistedCache;
-        if (Array.isArray(parsed.targets) && Array.isArray(parsed.entries)) {
-            refreshState.targets = parsed.targets.map((target) => {
-                return {
-                    ...target,
-                    aiId: check.isString(target.aiId) ? target.aiId : '',
-                };
-            });
-            /**
-             * Validate each entry against the current shape so a schema change (renamed/added
-             * field) doesn't poison the `/folders` response with stale objects. Invalid entries are
-             * dropped; the next sweep refills them.
-             */
-            parsed.entries.forEach(
-                ([
-                    path,
-                    info,
-                ]) => {
-                    if (!checkValidShape(info, folderInfoShape)) {
-                        return;
-                    }
-                    cache.set(path, info);
-                    /**
-                     * Seed the eligibility set from last session's markers. Without this, upgrading
-                     * into the eligibility rule would make every repo whose PRs are already known
-                     * ineligible until something made it active again.
-                     */
-                    if (info.prUrl) {
-                        everHadPrRepoPaths.add(info.parentRepoPath || info.path);
-                    }
-                },
-            );
-        }
-    } catch {
-        /* corrupted persisted file — ignore and let the live sweep rebuild it */
+        return contents ? parseJsonWithShape(contents, shape) : undefined;
+    } catch (error) {
+        log.warning(
+            `Ignoring unreadable ${basename(path)}; the live sweep rebuilds it: ${extractErrorMessage(error)}`,
+        );
+        return undefined;
     }
 }
 
-type PersistedGithubCache = {
-    repos: ReadonlyArray<
-        readonly [
-            string,
-            {
-                fetchedAt: number;
-                prs: ReadonlyArray<
-                    readonly [
-                        string,
-                        PrInfo,
-                    ]
-                >;
-            },
-        ]
-    >;
-    /** Repo paths from {@link everHadPrRepoPaths}. */
-    everHadPr?: ReadonlyArray<string>;
-};
-
-const githubPersistState: {pending: Promise<void>} = {
-    pending: Promise.resolve(),
-};
+async function loadPersistedCache(): Promise<void> {
+    const persisted = await readPersistedJson(folderInfoCachePath, persistedCacheShape);
+    if (!persisted) {
+        return;
+    }
+    refreshState.targets = persisted.targets.filter((target) => {
+        return checkValidShape(target, refreshTargetShape);
+    });
+    persisted.entries.forEach(
+        ([
+            path,
+            info,
+        ]) => {
+            if (!checkValidShape(info, folderInfoShape)) {
+                return;
+            }
+            cache.set(path, info);
+            /**
+             * Seed the eligibility set from last session's markers. Without this, upgrading into
+             * the eligibility rule would make every repo whose PRs are already known ineligible
+             * until something made it active again.
+             */
+            if (info.prUrl) {
+                everHadPrRepoPaths.add(info.parentRepoPath || info.path);
+            }
+        },
+    );
+}
 
 function persistGithubCache(): void {
-    const snapshot: PersistedGithubCache = {
+    persistJson(githubCachePath, {
         repos: Array.from(
             repoPrCache.entries(),
             ([
@@ -617,107 +662,117 @@ function persistGithubCache(): void {
                         fetchedAt: entry.fetchedAt,
                         prs: Array.from(entry.prsByBranch.entries()),
                     },
-                ];
+                ] as const;
             },
         ),
         everHadPr: Array.from(everHadPrRepoPaths),
-    };
-    githubPersistState.pending = githubPersistState.pending
-        .catch(() => {
-            /* prior write failed; carry on so the next one still has a chance */
-        })
-        .then(async () => {
-            await mkdir(notCommittedDir, {
-                recursive: true,
-            });
-            await writeFile(githubCachePath, JSON.stringify(snapshot), 'utf-8');
-        })
-        .catch(() => {
-            /* persistence is best-effort — losing a write just means a cold restart */
-        });
+    } satisfies typeof persistedGithubCacheShape.runtimeType);
 }
 
 async function loadPersistedGithubCache(): Promise<void> {
-    const contents = await readFile(githubCachePath, 'utf-8').catch(() => undefined);
-    if (!contents) {
+    const persisted = await readPersistedJson(githubCachePath, persistedGithubCacheShape);
+    if (!persisted) {
         return;
     }
-    try {
-        const parsed = JSON.parse(contents) as PersistedGithubCache;
-        if (Array.isArray(parsed.repos)) {
-            parsed.repos.forEach(
-                ([
-                    key,
-                    entry,
-                ]) => {
-                    /**
-                     * Age is deliberately not checked. `fetchedAt` is carried through as-is so the
-                     * TTL tiers schedule a refresh, and until that refresh lands the sidebar shows
-                     * last session's PR markers instead of nothing.
-                     */
-                    if (typeof entry?.fetchedAt !== 'number' || !Array.isArray(entry.prs)) {
-                        return;
-                    }
-                    repoPrCache.set(key, {
-                        fetchedAt: entry.fetchedAt,
-                        prsByBranch: new Map(entry.prs),
-                    });
-                },
-            );
-        }
-        (parsed.everHadPr || []).filter(check.isString).forEach((repoPath) => {
-            everHadPrRepoPaths.add(repoPath);
-        });
-    } catch {
-        /* corrupted persisted file — ignore and let the live sweep rebuild it */
-    }
+    persisted.repos.forEach(
+        ([
+            key,
+            entry,
+        ]) => {
+            /**
+             * Age is deliberately not checked. `fetchedAt` is carried through as-is so the TTL
+             * tiers schedule a refresh, and until that refresh lands the sidebar shows last
+             * session's PR markers instead of nothing.
+             */
+            repoPrCache.set(key, {
+                fetchedAt: entry.fetchedAt,
+                prsByBranch: new Map(
+                    entry.prs.filter(
+                        (
+                            prEntry,
+                        ): prEntry is [
+                            string,
+                            PrInfo,
+                        ] => checkValidShape(prEntry[1], prInfoShape),
+                    ),
+                ),
+            });
+        },
+    );
+    (persisted.everHadPr || []).forEach((repoPath) => {
+        everHadPrRepoPaths.add(repoPath);
+    });
 }
 
 /**
- * Pause between consecutive folder refreshes within a sweep. Each folder costs roughly 4 git
+ * Pause between consecutive folder refreshes within a sweep. Each folder costs a handful of git
  * subprocesses (`rev-parse`, `status --porcelain`, upstream check, `log` ahead-count); spreading
- * them out keeps the backend from pegging a core when the user has many configured repos. 100ms
- * gives a ~3s sweep over ~30 folders while keeping CPU usage modest.
+ * them out keeps the backend from pegging a core when the user has many configured repos.
  */
-const perFolderDelayMs = 100;
+const perFolderDelay: AnyDuration = {
+    milliseconds: 100,
+};
 /**
- * Idle pause after each complete sweep through every folder. Tuned so the full cycle (sweep + idle)
- * lands near ~10s for typical folder counts, so the sidebar's `*` / `+` markers reflect dirty / not
- * pushed state within a poll interval of git activity. PR fetches piggy-back on this sweep but are
- * gated by {@link hotRepoPrTtlMs} / {@link coldRepoPrTtlMs}, so a faster sweep does not mean more
- * GitHub traffic.
+ * Idle pause after each complete sweep through every folder. Short enough that the sidebar's `*` /
+ * `+` markers reflect dirty / not pushed state soon after git activity. PR fetches piggy-back on
+ * this sweep but are gated by {@link hotRepoPrTtl} / {@link coldRepoPrTtl}, so a faster sweep does
+ * not mean more GitHub traffic.
  */
-const sweepIdleMs = 5000;
+const sweepIdle: AnyDuration = {
+    seconds: 5,
+};
+
+/**
+ * The last refresh error logged per folder, so a repo that keeps failing logs once rather than on
+ * every sweep.
+ */
+const loggedRefreshErrors = new Map<string, string>();
+
+const folderPrHooks: {
+    onNewPr: ((info: Readonly<FolderInfo>) => void) | undefined;
+} = {
+    onNewPr: undefined,
+};
+
+/**
+ * Calls `listener` when a sweep finds a PR on a folder whose previous sweep found none. A folder's
+ * first sweep never counts, so a newly added folder whose branch already has a PR doesn't trigger
+ * it. Replaces any earlier listener.
+ */
+export function listenToNewFolderPrs(listener: (info: Readonly<FolderInfo>) => void) {
+    folderPrHooks.onNewPr = listener;
+}
 
 async function refreshOnce({
     target,
     statusLookup,
-    disabledGitHubPolling,
-    prRefreshTtlMs,
+    prRefreshTtl,
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
-    disabledGitHubPolling: boolean;
-    prRefreshTtlMs: number | undefined;
+    prRefreshTtl: AnyDuration | undefined;
 }>): Promise<void> {
     try {
         const info = await buildFolderInfo({
             target,
             statusLookup,
-            disabledGitHubPolling,
-            prRefreshTtlMs,
+            prRefreshTtl,
         });
+        loggedRefreshErrors.delete(target.folder);
+        const previous = cache.get(target.folder);
         cache.set(target.folder, info);
         persistCache();
-    } catch {
-        /* swallow per-folder errors so one bad repo doesn't stop the sweep */
+        if (previous && !previous.prUrl && info.prUrl) {
+            folderPrHooks.onNewPr?.(info);
+        }
+    } catch (error) {
+        /** Swallowed so one bad repo doesn't stop the sweep. */
+        const message = extractErrorMessage(error);
+        if (loggedRefreshErrors.get(target.folder) !== message) {
+            loggedRefreshErrors.set(target.folder, message);
+            log.warning(`Failed to refresh ${target.folder}: ${message}`);
+        }
     }
-}
-
-function isLivePaneStatus(status: PaneStatus): boolean {
-    return (
-        status === PaneStatus.Busy || status === PaneStatus.Stalled || status === PaneStatus.Idle
-    );
 }
 
 /**
@@ -736,7 +791,7 @@ function repoActivityKey(target: RefreshTarget): string {
  *
  * A repo earns a GraphQL call only if one of three things is true:
  *
- * 1. It's active — a live AI/Shell pane, or activated within {@link recentInteractionMs}. This is the
+ * 1. It's active — a live AI/Shell pane, or activated within {@link recentInteraction}. This is the
  *    server-side stand-in for "the folder the user has selected", which the backend can't see
  *    directly (the selection lives in the frontend URL).
  * 2. It has worktrees, meaning the group is a worktree-root and its children. Worktree-per-branch is
@@ -767,15 +822,14 @@ export function computeRepoPrRefreshTtlByRepo({
     onlyShowRecent: boolean;
     everHadPrPaths: ReadonlySet<string>;
     nowMs: number;
-}>): Map<string, number | undefined> {
+}>): Map<string, AnyDuration | undefined> {
     const groupKeys = Array.from(new Set(targets.map(repoActivityKey)));
     return new Map(
         groupKeys.map((key) => {
             const groupTargets = targets.filter((target) => repoActivityKey(target) === key);
             const hasLivePane = groupTargets.some((target) => {
-                return (
-                    isLivePaneStatus(statusLookup(target.folder, PaneKind.Ai)) ||
-                    isLivePaneStatus(statusLookup(target.folder, PaneKind.Shell))
+                return getEnumValues(PaneKind).some(
+                    (kind) => livePaneStatuses[statusLookup(target.folder, kind)],
                 );
             });
             const isWorktreeGroup = groupTargets.some(
@@ -783,13 +837,21 @@ export function computeRepoPrRefreshTtlByRepo({
             );
             const msSinceInteraction =
                 nowMs - (repos.find((repo) => repo.path === key)?.lastInteractedAtMs || 0);
-            const isActive = hasLivePane || msSinceInteraction < recentInteractionMs;
+            const isActive =
+                hasLivePane ||
+                msSinceInteraction <
+                    convertDuration(recentInteraction, {
+                        milliseconds: true,
+                    }).milliseconds;
             const isEligible = isActive || isWorktreeGroup || everHadPrPaths.has(key);
             const isVisible =
                 !onlyShowRecent ||
                 isWorktreeGroup ||
                 hasLivePane ||
-                msSinceInteraction < sidebarRecencyWindowMs;
+                msSinceInteraction <
+                    convertDuration(sidebarRecencyWindow, {
+                        milliseconds: true,
+                    }).milliseconds;
             if (!isEligible || !isVisible) {
                 return [
                     key,
@@ -798,7 +860,7 @@ export function computeRepoPrRefreshTtlByRepo({
             }
             return [
                 key,
-                isActive ? hotRepoPrTtlMs : coldRepoPrTtlMs,
+                isActive ? hotRepoPrTtl : coldRepoPrTtl,
             ];
         }),
     );
@@ -809,6 +871,7 @@ async function runSweep(): Promise<void> {
     if (!config) {
         return;
     }
+    await clearExpiredAutoDisable();
     const targets = await enumerateTargets(config);
     /**
      * Publish the target list before the slow per-folder loop runs so `/folders` can return
@@ -839,12 +902,12 @@ async function runSweep(): Promise<void> {
         await refreshOnce({
             target,
             statusLookup,
-            disabledGitHubPolling,
-            prRefreshTtlMs: prRefreshTtlByRepo.get(repoActivityKey(target)),
+            /** Disabled polling still serves the cached PRs. It only skips fetching new ones. */
+            prRefreshTtl: disabledGitHubPolling
+                ? undefined
+                : prRefreshTtlByRepo.get(repoActivityKey(target)),
         });
-        await wait({
-            milliseconds: perFolderDelayMs,
-        });
+        await wait(perFolderDelay);
     });
     const validPaths = new Set(targets.map((target) => target.folder));
     const stale = Array.from(cache.keys()).filter((path) => !validPaths.has(path));
@@ -871,23 +934,27 @@ export async function refreshFolderInfoNow(): Promise<void> {
     }
     refreshState.targets = await enumerateTargets(config);
     persistCache();
-    void runSweep().catch(() => {
-        /* never let an out-of-band sweep crash the process */
-    });
+    void runSweep().catch(logSweepFailure);
+}
+
+/** Never let a sweep failure crash the process or end the loop; the next sweep tries again. */
+function logSweepFailure(error: unknown): void {
+    log.warning(`Folder sweep failed: ${extractErrorMessage(error)}`);
 }
 
 /**
- * Schedules the next sweep `sweepIdleMs` after the current one finishes. Recursive `setTimeout`
+ * Schedules the next sweep {@link sweepIdle} after the current one finishes. Recursive `setTimeout`
  * rather than `setInterval` so sweeps never overlap if one runs long.
  */
 function scheduleNextSweep(): void {
-    setTimeout(() => {
-        runSweep()
-            .catch(() => {
-                /* never let the loop die; just move on to the next sweep */
-            })
-            .finally(scheduleNextSweep);
-    }, sweepIdleMs);
+    setTimeout(
+        () => {
+            runSweep().catch(logSweepFailure).finally(scheduleNextSweep);
+        },
+        convertDuration(sweepIdle, {
+            milliseconds: true,
+        }).milliseconds,
+    );
 }
 
 /**
@@ -908,9 +975,5 @@ export async function startFolderInfoRefreshLoop(): Promise<void> {
     if (initialConfig) {
         loadAutoDisableFromConfig(initialConfig);
     }
-    runSweep()
-        .catch(() => {
-            /* never let the loop die; just move on to the next sweep */
-        })
-        .finally(scheduleNextSweep);
+    runSweep().catch(logSweepFailure).finally(scheduleNextSweep);
 }

@@ -6,6 +6,9 @@ export const monorepoRoot = resolve(import.meta.dirname, '..', '..', '..');
 /** Git-ignored directory at the repo root for runtime secrets and on-disk caches. */
 export const notCommittedDir = resolve(monorepoRoot, '.not-committed');
 
+/** Agent-storm's user-level files: config, its backups, and anything else that outlives a checkout. */
+export const userDataDir = resolve(homedir(), '.agent-storm');
+
 /**
  * Argon2id hash of the bearer secret used for browser ↔ backend auth. Only the hash is stored on
  * disk; the cleartext is shown once at startup and is required by the client.
@@ -52,10 +55,7 @@ export const folderActivityPath = resolve(notCommittedDir, 'folder-activity.json
  * conversation id under a per-CLI subdirectory. Agent-storm never reads these files, it only
  * deletes a conversation's files once no tab holds that conversation anymore.
  */
-export const conversationStateDir = resolve(
-    process.env.XDG_STATE_HOME || resolve(homedir(), '.local', 'state'),
-    'agent-storm',
-);
+export const conversationStateDir = resolve(userDataDir, 'conversations');
 
 /**
  * Where `claude-hooks/agent-storm-activity.sh` records what Claude is doing in each tab. Sits under
@@ -95,15 +95,53 @@ export const clientErrorLogPath = resolve(tmpdir(), 'agent-storm-client-errors.l
 /** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocketPath}. */
 export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts');
 
+/** Where each queued PR gets a folder to be reviewed in, at `<owner>/<repo>/<PR number>`. */
+export const reviewsDir = resolve(userDataDir, 'reviews');
+/** Review folders get moved here to be deleted in the background. */
+export const deletingReviewFoldersDir = resolve(userDataDir, 'deleting');
+/**
+ * The manual-review skill's folder. It holds the skill's {@link manualReviewStatePath} and the
+ * copies `/manual-review here` makes of a checkout's branch, at `<main checkout's folder
+ * name>/review__<branch>`.
+ */
+export const manualReviewSkillDir = resolve(userDataDir, 'manual-review');
+/** Written by the manual-review skill, keyed by `<owner>/<repo>` then head branch. */
+export const manualReviewStatePath = resolve(manualReviewSkillDir, 'state.json');
+
+/** Which folders watch mode is on in, and where each one's watch stands. */
+export const watchModeStatePath = resolve(userDataDir, 'watch-mode.json');
+
+/** What watch mode's AI passes follow, pointed at from each pass's prompt. */
+export const watchModeInstructionsPath = resolve(import.meta.dirname, 'watch-mode-instructions.md');
+
+/** Each watched folder's latest pass: its tasks and PR check, for the AI to read. */
+export const watchModePassDir = resolve(userDataDir, 'watch-mode');
+
 /** User-level config file, managed via the settings modal. */
-export const configPath = resolve(homedir(), '.config', 'agent-storm.json');
+export const configPath = resolve(userDataDir, 'config.json');
+
+/**
+ * An AI running in a tab launches a session in another folder by moving a signed `<id>.json`
+ * request into here, which `agentLaunchScriptPath` does for it. Kept on disk rather than behind an
+ * endpoint so only this machine can make the request.
+ */
+export const agentLaunchRequestsDir = resolve(userDataDir, 'launch-requests');
+
+/**
+ * Signs and submits a launch request. Its path is given to every AI tab as
+ * `AGENT_STORM_LAUNCH_SCRIPT`.
+ */
+export const agentLaunchScriptPath = resolve(import.meta.dirname, 'launch-session.script.ts');
+
+/** The Review tab's settings, managed from its sidebar menus. */
+export const reviewConfigPath = resolve(userDataDir, 'review-config.json');
 
 /**
  * Where daily snapshots of {@link configPath} are written. Lives alongside the config (not in
  * `.not-committed/`, which is per-checkout) so backups survive a server reinstall as long as the
  * user's home directory is intact.
  */
-export const configBackupDir = resolve(homedir(), '.config', 'agent-storm-backups');
+export const configBackupDir = resolve(userDataDir, 'config-backups');
 
 /** Directory where dragged-in screenshot uploads land before being attached to a pane. */
 export const uploadsDir = resolve(tmpdir(), 'agent-storm-uploads');
@@ -113,7 +151,7 @@ export const uploadsDir = resolve(tmpdir(), 'agent-storm-uploads');
  * `tmpdir()` like {@link uploadsDir}: these are referenced by the config and have to survive a
  * reboot, while uploads are throwaway files handed to a terminal once.
  */
-export const avatarsDir = resolve(homedir(), '.config', 'agent-storm-avatars');
+export const avatarsDir = resolve(userDataDir, 'avatars');
 
 /**
  * Installed location of the Vir Icons VS Code extension, the source of truth for the Diff pane's

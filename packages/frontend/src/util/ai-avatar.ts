@@ -1,4 +1,6 @@
-import {getAiAvatar} from './api-client.js';
+import {aiAvatarEndpoint} from '@agent-storm/common';
+import {HttpMethod} from '@rest-vir/api';
+import {fetchApi} from './api-client.js';
 
 /**
  * Object URLs for avatars already fetched, keyed by the definition's `avatarFile`. Avatars are
@@ -60,7 +62,7 @@ export async function resizeImageForAvatar(
 }
 
 /** Cached object URL for an already-loaded avatar, or undefined if it hasn't been fetched yet. */
-export function readCachedAvatarUrl(avatarFile: string): string | undefined {
+export function getCachedAvatarUrl(avatarFile: string): string | undefined {
     return objectUrlsByFile.get(avatarFile);
 }
 
@@ -80,7 +82,11 @@ export async function loadAvatarUrl(avatarFile: string): Promise<string | undefi
     if (pending) {
         return await pending;
     }
-    const request = getAiAvatar(avatarFile)
+    const request = fetchApi(aiAvatarEndpoint, HttpMethod.Post, {
+        requestData: {
+            avatarFile,
+        },
+    })
         .then((avatar) => {
             const objectUrl = toObjectUrl(avatar);
             objectUrlsByFile.set(avatarFile, objectUrl);

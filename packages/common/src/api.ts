@@ -1,7 +1,13 @@
 // cspell:words numstat, unstages
 
 import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from '@rest-vir/api';
-import {defineShape, enumShape, nullableShape, unionShape} from 'object-shape-tester';
+import {
+    defineShape,
+    enumShape,
+    nullableShape,
+    optionalShape,
+    unionShape,
+} from 'object-shape-tester';
 import {
     mapSchemaToShape,
     type FromSchemaDefaultOptions,
@@ -14,13 +20,17 @@ import {
     GitFileChange,
     GitHubCheckState,
     GitHubCommentTarget,
+    GitHubPollingDisableReason,
     GitHubPrState,
     GitHubReaction,
     GitHubReviewState,
+    ManualReviewStatus,
     PaneKind,
     PaneStatus,
+    PrStatus,
     SidebarGrouping,
     SidebarSorting,
+    WatchModeStatus,
 } from './enums.js';
 
 const stringMessageShape = defineShape('');
@@ -77,10 +87,6 @@ export const configJsonSchema = {
          * Every AI the user has defined: a display name, the command that resumes its last
          * conversation, the command that starts a fresh one, and an optional avatar. Managed
          * entirely through the "Define AI" modal, so it's hidden from the settings JSON form.
-         *
-         * Configs predating this field are migrated on load — see `migrateAiConfig` in the server's
-         * `config.ts`, which turns the old `aiCmd` / `resetAiSessionCmd` / `folderAiCmds` strings
-         * into definitions.
          */
         aiDefinitions: {
             type: 'array',
@@ -241,6 +247,10 @@ export const configJsonSchema = {
             properties: {
                 reason: {
                     type: 'string',
+                    enum: [
+                        GitHubPollingDisableReason.RateLimited,
+                        GitHubPollingDisableReason.Unauthenticated,
+                    ],
                 },
                 disabledUntilMs: {
                     type: 'number',
@@ -316,6 +326,14 @@ export const configJsonSchema = {
             description:
                 'When on, the Diff pane treats lines that differ only in spacing as unchanged. Toggled by the whitespace button in the Diff pane toolbar.',
         },
+        /** Sticky companion to `diffLayout`, written by the Diff pane's collapse button. */
+        diffCollapseUnchanged: {
+            type: 'boolean',
+            default: true,
+            title: 'Collapse unchanged lines',
+            description:
+                'When on, the Diff pane folds long runs of unchanged lines between changes. Toggled by the collapse button in the Diff pane toolbar.',
+        },
         /**
          * When on, the sidebar hides standalone repos that haven't been activated within the last 7
          * days (and have no running panes). Worktree-roots and their children are always shown
@@ -376,7 +394,7 @@ export const configJsonSchema = {
     ],
 } as const satisfies JSONSchema;
 
-const configShape = mapSchemaToShape(configJsonSchema);
+export const configShape = mapSchemaToShape(configJsonSchema);
 
 /**
  * Live status of one session tab. Reported per session rather than only per pane so a pane with
@@ -388,6 +406,12 @@ export const paneSessionStatusShape = defineShape({
     sessionId: '',
     status: enumShape(PaneStatus),
 });
+
+/** One status per pane kind, reducing every session of that kind in a folder to one value. */
+export const paneStatusesShape = defineShape({
+    [PaneKind.Ai]: enumShape(PaneStatus),
+    [PaneKind.Shell]: enumShape(PaneStatus),
+} satisfies Record<PaneKind, unknown>);
 
 export const folderInfoShape = defineShape({
     path: '',
@@ -412,11 +436,8 @@ export const folderInfoShape = defineShape({
         notPushed: false,
     },
     prUrl: nullableShape(''),
-    prMerged: false,
-    panes: {
-        ai: enumShape(PaneStatus),
-        shell: enumShape(PaneStatus),
-    },
+    prStatus: enumShape(PrStatus),
+    panes: paneStatusesShape,
     /**
      * Per-session statuses behind the reduced `panes` values above, one entry per session the
      * daemon currently holds a PTY for. A session with no PTY yet has no entry at all.
@@ -428,10 +449,26 @@ export const folderInfoShape = defineShape({
      * the activity store was created, which sorts the folder last.
      */
     lastActivityAtMs: 0,
+    watchMode: {
+        status: enumShape(WatchModeStatus),
+        /** Why watch mode stopped or paused, or what it's waiting on. */
+        message: '',
+    },
+});
+
+/**
+ * A request, made by an AI running in agent-storm, for every open frontend to switch to `folder`.
+ * Each frontend acts on a given `requestId` once.
+ */
+const folderActivationShape = defineShape({
+    folder: '',
+    requestId: '',
 });
 
 const foldersResponseShape = defineShape({
     folders: [folderInfoShape],
+    /** Only set for a short while after the request is made. */
+    folderActivation: nullableShape(folderActivationShape),
 });
 
 const folderActionRequestShape = defineShape({
@@ -468,10 +505,10 @@ export const sessionMetaShape = defineShape({
  * frontend replaces its list wholesale instead of patching and risking drift from the server's
  * ordering.
  */
-const sessionsResponseShape = defineShape({
-    ai: [sessionMetaShape],
-    shell: [sessionMetaShape],
-});
+export const folderSessionsShape = defineShape({
+    [PaneKind.Ai]: [sessionMetaShape],
+    [PaneKind.Shell]: [sessionMetaShape],
+} satisfies Record<PaneKind, unknown>);
 
 const sessionListRequestShape = defineShape({
     folder: '',
@@ -540,12 +577,6 @@ const uploadRequestShape = defineShape({
 
 const uploadResponseShape = defineShape({
     path: '',
-});
-
-/** Same payload as {@link uploadRequestShape}, but the bytes land in the avatars directory. */
-const aiAvatarUploadRequestShape = defineShape({
-    filename: '',
-    dataBase64: '',
 });
 
 const aiAvatarUploadResponseShape = defineShape({
@@ -724,6 +755,8 @@ const gitHubReactionGroupShape = defineShape({
     reaction: enumShape(GitHubReaction),
     count: 0,
     viewerHasReacted: false,
+    /** The first few reactors' logins, so `count` can exceed its length. */
+    reactors: [''],
 });
 
 /**
@@ -808,6 +841,9 @@ const gitHubCheckShape = defineShape({
 const gitHubPrShape = defineShape({
     /** GraphQL node id of the PR itself — the subject a new conversation comment attaches to. */
     id: '',
+    /** The base repository's owner. */
+    owner: '',
+    repoName: '',
     number: 0,
     url: '',
     title: '',
@@ -849,6 +885,173 @@ const gitHubPrRequestShape = defineShape({
      * after posting anything, where the point is to see what actually landed.
      */
     forceRefresh: false,
+});
+
+/** Names one PR. `owner` is the base repository's owner. */
+export const pullRequestRefShape = defineShape({
+    owner: '',
+    repoName: '',
+    number: 0,
+});
+
+/** Names one PR by its head branch, which is how the manual-review skill records a review. */
+export const pullRequestBranchShape = defineShape({
+    owner: '',
+    repoName: '',
+    branchName: '',
+});
+
+const pullRequestTextShape = defineShape({
+    title: '',
+    /** GitHub's rendering of `title`, so inline code spans in a title survive. */
+    titleHtml: '',
+    url: '',
+    /** The description. See {@link gitHubCommentShape}'s `bodyHtml`. */
+    bodyHtml: '',
+});
+
+/** One queued PR as the Review tab shows it. */
+const reviewQueuePrShape = defineShape({
+    ...pullRequestRefShape.default,
+    ...pullRequestTextShape.default,
+    /** The head branch. */
+    branchName: '',
+    isDraft: false,
+    /**
+     * How many listed PRs this one is stacked under, through its base branch being another listed
+     * PR's head. 0 for a PR that isn't stacked. A stacked PR comes right after its parent.
+     */
+    chainDepth: 0,
+    /**
+     * Where other people's reviews leave the PR, unlike a Build folder's `prStatus`, which tracks
+     * the viewer's own review. `None` for a draft.
+     */
+    prStatus: enumShape(PrStatus),
+    /** The viewer's own PRs can't get a review folder. */
+    isViewerAuthor: false,
+    /** GitHub has an open request for the viewer's review. */
+    isAwaitingViewerReview: false,
+    /** Live pane statuses of the PR's review folder, like a Build folder's `panes`. */
+    panes: paneStatusesShape,
+    /** Empty when the author's account was deleted. */
+    author: '',
+    authorAvatarUrl: '',
+    /**
+     * GitHub lists the author as the repo's owner, a member of its org, or a collaborator on it, or
+     * the author is a trusted review bot.
+     */
+    isAuthorTrusted: false,
+    /** The PR's author stands in when it has no assignees, matching review-vir. */
+    assignees: [
+        {
+            login: '',
+            avatarUrl: '',
+        },
+    ],
+});
+
+/** The server's cached copy of the review queue, which it refreshes on its own schedule. */
+export const reviewQueueResponseShape = defineShape({
+    pullRequests: [reviewQueuePrShape],
+    /**
+     * Reviewer list only: open, non-draft PRs the viewer has reviewed, isn't assigned to, and no
+     * longer has a pending review request on.
+     */
+    reviewedPullRequests: optionalShape([reviewQueuePrShape], {
+        alsoUndefined: true,
+    }),
+    /** Unix milliseconds of the last successful fetch. 0 until the first one lands. */
+    updatedAt: 0,
+    isUpdating: false,
+    /** Why the latest fetch failed. Empty when it succeeded; `pullRequests` keeps older data. */
+    error: '',
+});
+
+const reviewPrRequestShape = defineShape({
+    ...pullRequestRefShape.default,
+    /** The server caches each PR by its repo and head branch, which the Build tab shares. */
+    branchName: '',
+    /** True skips the server's cache and queries GitHub. Used by the Review tab's refresh button. */
+    forceRefresh: false,
+});
+
+/** Someone asking for the `gh` account's review. Empty `requester` for a deleted account. */
+const reviewRequestEventShape = defineShape({
+    id: '',
+    requester: '',
+    requesterAvatarUrl: '',
+    createdAt: '',
+    /** Whether an earlier request for the same account came first. */
+    isReRequest: false,
+});
+
+/**
+ * Someone asked to review the PR, or whose latest verdict approved it or requested changes. An
+ * outstanding request outranks that person's earlier verdict.
+ */
+const reviewPrReviewerShape = defineShape({
+    login: '',
+    avatarUrl: '',
+    /** `Pending` while a request is outstanding. */
+    state: enumShape(GitHubReviewState),
+});
+
+const reviewPrShape = defineShape({
+    /** Every reviewer, not only the `gh` account, sorted by login. */
+    reviewers: [reviewPrReviewerShape],
+    /** The `gh` account. */
+    viewer: {
+        login: '',
+        avatarUrl: '',
+    },
+    ...pullRequestTextShape.default,
+    branchName: '',
+    /**
+     * Only the inline and file-level threads the `gh` account started, plus every unresolved thread
+     * when that account is assigned to the PR.
+     */
+    threads: [gitHubReviewThreadShape],
+    /** Only the reviews the `gh` account submitted, oldest first. */
+    reviews: [gitHubReviewShape],
+    /** Only requests for the `gh` account's review, oldest first. */
+    reviewRequests: [reviewRequestEventShape],
+    /** Unix milliseconds of the GitHub fetch this came from. */
+    fetchedAt: 0,
+});
+
+export const manualReviewStateShape = defineShape({
+    status: enumShape(ManualReviewStatus),
+    /** True while the skill is still running the operation that set `status`. */
+    isPending: false,
+    /** Unix milliseconds. */
+    lastUpdatedAt: 0,
+});
+
+export type ManualReviewState = typeof manualReviewStateShape.runtimeType;
+
+const manualReviewStateResponseShape = defineShape({
+    /** Null when the skill has never recorded a review of the branch. */
+    review: nullableShape(manualReviewStateShape),
+});
+
+const reviewFolderRequestShape = defineShape({
+    ...pullRequestRefShape.default,
+    /** False only resolves the path, so selecting a PR leaves no folder behind. */
+    createFolder: false,
+});
+
+const reviewFolderResponseShape = defineShape({
+    folder: '',
+    pullRequest: reviewQueuePrShape,
+    /** Null when the skill has never recorded a review of the PR's branch. */
+    review: nullableShape(manualReviewStateShape),
+});
+
+const paneInputRequestShape = defineShape({
+    folder: '',
+    kind: enumShape(PaneKind),
+    sessionId: '',
+    text: '',
 });
 
 const gitHubCommentRequestShape = defineShape({
@@ -1024,6 +1227,150 @@ export const gitHubPrEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Open PRs from any repo still waiting on the `gh` account's review, in review-vir's Reviewer-list
+ * order. PRs assigned to that account, and PRs review-vir greys out, are left out.
+ *
+ * GET answers from the server's cache, starting its auto-refresh on the first call. POST fetches
+ * from GitHub first and answers once that lands.
+ */
+export const gitHubReviewQueueEndpoint = defineEndpoint({
+    path: '/github/review-queue',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewQueueResponseShape,
+                },
+            },
+        },
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewQueueResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Open PRs, drafts included, assigned to the `gh` account (or authored by it with no assignees), in
+ * review-vir's Assignee-list order. Cached and refreshed separately from the review queue, with the
+ * same GET and POST behavior as {@link gitHubReviewQueueEndpoint}.
+ */
+export const gitHubAssigneeQueueEndpoint = defineEndpoint({
+    path: '/github/assignee-queue',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewQueueResponseShape,
+                },
+            },
+        },
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewQueueResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Answers with the folder one queued PR is reviewed in, `~/.agent-storm/reviews/<owner>/<repo
+ * name>/<PR number>`, creating it when asked, plus where the manual-review skill says its review
+ * stands. The PR is looked up in the server's cached queue, so a client never names the path.
+ * Errors when the PR isn't in the queue.
+ */
+export const gitHubReviewFolderEndpoint = defineEndpoint({
+    path: '/github/review-folder',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: reviewFolderRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewFolderResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Types the Review tab's init command for the PR's repo into its review folder's default Shell
+ * session, spawning that session if it isn't running. Does nothing when no command is set.
+ */
+export const reviewInitEndpoint = defineEndpoint({
+    path: '/review/init',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: pullRequestRefShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * One PR's title, description, and the review threads the `gh` account started (plus all unresolved
+ * threads when it's assigned to the PR). The server caches each PR until a request sets
+ * `forceRefresh`.
+ */
+export const gitHubReviewPrEndpoint = defineEndpoint({
+    path: '/github/review-pr',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: reviewPrRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewPrShape,
+                },
+            },
+        },
+    },
+});
+
+const manualReviewCopyResponseShape = defineShape({
+    /** Null until `/manual-review here` has made a copy of the folder's branch. */
+    folder: nullableShape(''),
+});
+
+/** Finds the copy of a folder's branch that `/manual-review here` reviews in. */
+export const manualReviewCopyEndpoint = defineEndpoint({
+    path: '/git/manual-review-copy',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: folderActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: manualReviewCopyResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** Reads where the manual-review skill says the review of one PR branch stands. */
+export const manualReviewStateEndpoint = defineEndpoint({
+    path: '/review/state',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: pullRequestBranchShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: manualReviewStateResponseShape,
+                },
+            },
+        },
+    },
+});
+
 /** Posts a reply into a review thread, or a new top-level comment on the PR. */
 export const gitHubCommentEndpoint = defineEndpoint({
     path: '/github/comment',
@@ -1111,6 +1458,40 @@ export const configEndpoint = defineEndpoint({
     },
 });
 
+export const reviewConfigShape = defineShape({
+    /** Run in each new review checkout of a repo whose own `initCmd` is empty. */
+    defaultInitCmd: '',
+    repos: [
+        {
+            owner: '',
+            repoName: '',
+            initCmd: '',
+        },
+    ],
+});
+
+/** The Review tab's settings, kept in their own file apart from {@link configEndpoint}'s. */
+export const reviewConfigEndpoint = defineEndpoint({
+    path: '/review-config',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewConfigShape,
+                },
+            },
+        },
+        [HttpMethod.Put]: {
+            requestData: reviewConfigShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewConfigShape,
+                },
+            },
+        },
+    },
+});
+
 export const foldersEndpoint = defineEndpoint({
     path: '/folders',
     requests: {
@@ -1179,6 +1560,24 @@ export const restartPaneEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Types `text` into a running pane and presses Enter. Errors rather than spawn a session that isn't
+ * running.
+ */
+export const paneInputEndpoint = defineEndpoint({
+    path: '/panes/input',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: paneInputRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const killPanesEndpoint = defineEndpoint({
     path: '/panes/kill',
     requests: {
@@ -1200,7 +1599,7 @@ export const sessionListEndpoint = defineEndpoint({
             requestData: sessionListRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: sessionsResponseShape,
+                    responseData: folderSessionsShape,
                 },
             },
         },
@@ -1218,7 +1617,7 @@ export const sessionCreateEndpoint = defineEndpoint({
             requestData: sessionCreateRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: sessionsResponseShape,
+                    responseData: folderSessionsShape,
                 },
             },
         },
@@ -1232,7 +1631,7 @@ export const sessionRenameEndpoint = defineEndpoint({
             requestData: sessionRenameRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: sessionsResponseShape,
+                    responseData: folderSessionsShape,
                 },
             },
         },
@@ -1247,7 +1646,7 @@ export const sessionCloseEndpoint = defineEndpoint({
             requestData: sessionCloseRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: sessionsResponseShape,
+                    responseData: folderSessionsShape,
                 },
             },
         },
@@ -1265,7 +1664,7 @@ export const sessionSetAiEndpoint = defineEndpoint({
             requestData: sessionSetAiRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: sessionsResponseShape,
+                    responseData: folderSessionsShape,
                 },
             },
         },
@@ -1349,6 +1748,140 @@ export const hideRepoEndpoint = defineEndpoint({
     },
 });
 
+const watchModeRequestShape = defineShape({
+    folder: '',
+    isEnabled: false,
+});
+
+export const watchModeEndpoint = defineEndpoint({
+    path: '/watch-mode',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: watchModeRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const closeEditorWindowEndpoint = defineEndpoint({
+    path: '/editor-window/close',
+    requests: {
+        [HttpMethod.Post]: {
+            /**
+             * Closes the window the manual-review skill recorded for the branch's review. Does
+             * nothing when no window is open on it, or on an unsupported OS.
+             */
+            requestData: pullRequestBranchShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * A comment the reviewer wrote on a diff line, stored in the manual-review skill's state file so
+ * its verdict commands post it alongside the comments typed into the code.
+ */
+export const reviewCommentShape = defineShape({
+    id: '',
+    /** Relative to the top of the checkout. */
+    path: '',
+    /**
+     * 1-based working-tree line, or `0` for a comment on the whole file (used for images and
+     * binaries, which have no lines).
+     */
+    line: 0,
+    /** Markdown. */
+    body: '',
+});
+
+export type ReviewComment = typeof reviewCommentShape.runtimeType;
+
+const reviewCommentsResponseShape = defineShape({
+    comments: [reviewCommentShape],
+});
+
+const addReviewCommentRequestShape = defineShape({
+    folder: '',
+    path: '',
+    line: 0,
+    body: '',
+});
+
+const updateReviewCommentRequestShape = defineShape({
+    folder: '',
+    id: '',
+    body: '',
+});
+
+const deleteReviewCommentRequestShape = defineShape({
+    folder: '',
+    id: '',
+});
+
+export const readReviewCommentsEndpoint = defineEndpoint({
+    path: '/review-comments/read',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: folderActionRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewCommentsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const addReviewCommentEndpoint = defineEndpoint({
+    path: '/review-comments/add',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: addReviewCommentRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewCommentsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const updateReviewCommentEndpoint = defineEndpoint({
+    path: '/review-comments/update',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: updateReviewCommentRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewCommentsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+export const deleteReviewCommentEndpoint = defineEndpoint({
+    path: '/review-comments/delete',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: deleteReviewCommentRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: reviewCommentsResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const checkPathEndpoint = defineEndpoint({
     path: '/paths/check',
     requests: {
@@ -1400,7 +1933,7 @@ export const aiAvatarUploadEndpoint = defineEndpoint({
     path: '/ai/avatar/upload',
     requests: {
         [HttpMethod.Post]: {
-            requestData: aiAvatarUploadRequestShape,
+            requestData: uploadRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
                     responseData: aiAvatarUploadResponseShape,
@@ -1461,12 +1994,14 @@ export const agentStormService = defineApi({
     apiName: 'agent-storm',
     endpoints: [
         configEndpoint,
+        reviewConfigEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
         createWorktreeEndpoint,
         deleteWorktreeEndpoint,
         restartPaneEndpoint,
         killPanesEndpoint,
+        paneInputEndpoint,
         sessionListEndpoint,
         sessionCreateEndpoint,
         sessionRenameEndpoint,
@@ -1478,6 +2013,12 @@ export const agentStormService = defineApi({
         restartDaemonEndpoint,
         touchRepoEndpoint,
         hideRepoEndpoint,
+        watchModeEndpoint,
+        closeEditorWindowEndpoint,
+        readReviewCommentsEndpoint,
+        addReviewCommentEndpoint,
+        updateReviewCommentEndpoint,
+        deleteReviewCommentEndpoint,
         checkPathEndpoint,
         createPathEndpoint,
         uploadEndpoint,
@@ -1493,6 +2034,13 @@ export const agentStormService = defineApi({
         gitHubCommentEndpoint,
         gitHubReactionEndpoint,
         gitHubResolveThreadEndpoint,
+        gitHubReviewQueueEndpoint,
+        gitHubAssigneeQueueEndpoint,
+        gitHubReviewFolderEndpoint,
+        reviewInitEndpoint,
+        gitHubReviewPrEndpoint,
+        manualReviewStateEndpoint,
+        manualReviewCopyEndpoint,
     ],
     webSockets: [ptyWebSocket],
 });
@@ -1508,12 +2056,17 @@ export type Config = SchemaShapeToType<
     Omit<FromSchemaDefaultOptions, 'keepDefaultedPropertiesOptional'>
 >;
 export type RepoConfig = Config['repos'][number];
+export type ReviewConfig = typeof reviewConfigShape.runtimeType;
 export type AiDefinition = Config['aiDefinitions'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
+export type FolderActivation = typeof folderActivationShape.runtimeType;
 export type PaneSessionStatus = typeof paneSessionStatusShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
 export type SessionMeta = typeof sessionMetaShape.runtimeType;
-export type FolderSessions = typeof sessionsResponseShape.runtimeType;
+export type FolderSessions = typeof folderSessionsShape.runtimeType;
+export type PaneStatuses = typeof paneStatusesShape.runtimeType;
+export type PullRequestRef = typeof pullRequestRefShape.runtimeType;
+export type PullRequestBranch = typeof pullRequestBranchShape.runtimeType;
 export type GitDiffFile = typeof gitDiffFileShape.runtimeType;
 export type GitDiffFileContents = typeof gitDiffFileResponseShape.runtimeType;
 export type GitDiffStatus = typeof gitDiffStatusResponseShape.runtimeType;
@@ -1524,3 +2077,7 @@ export type GitHubReview = typeof gitHubReviewShape.runtimeType;
 export type GitHubReviewRequest = typeof gitHubReviewRequestShape.runtimeType;
 export type GitHubCheck = typeof gitHubCheckShape.runtimeType;
 export type GitHubReactionGroup = typeof gitHubReactionGroupShape.runtimeType;
+export type ReviewQueuePr = typeof reviewQueuePrShape.runtimeType;
+export type ReviewQueue = typeof reviewQueueResponseShape.runtimeType;
+export type ReviewPr = typeof reviewPrShape.runtimeType;
+export type ReviewRequestEvent = typeof reviewRequestEventShape.runtimeType;

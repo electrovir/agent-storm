@@ -1,19 +1,23 @@
 import {PaneStatus, type PaneKind, type PaneSessionStatus} from '@agent-storm/common';
+import {groupArrayBy, mapObjectValues} from '@augment-vir/common';
+import {convertDuration, type AnyDuration} from 'date-vir';
 import {applyClaudeActivity} from './claude-activity.js';
 import {fetchPaneStatuses} from './daemon/daemon-client.js';
 import {type StatusEntry} from './daemon/protocol.js';
 
-const cacheTtlMs = 500;
+const cacheTtl: AnyDuration = {
+    milliseconds: 500,
+};
 
 const cacheState: {
-    statuses: Map<string, PaneStatus>;
-    sessionIds: Map<string, string[]>;
-    sessionStatuses: Map<string, PaneSessionStatus[]>;
+    statuses: Partial<Record<string, PaneStatus>>;
+    sessionIds: Partial<Record<string, string[]>>;
+    sessionStatuses: Partial<Record<string, PaneSessionStatus[]>>;
     lastFetchAt: number;
 } = {
-    statuses: new Map(),
-    sessionIds: new Map(),
-    sessionStatuses: new Map(),
+    statuses: {},
+    sessionIds: {},
+    sessionStatuses: {},
     lastFetchAt: 0,
 };
 
@@ -35,59 +39,61 @@ const statusPriority: Record<PaneStatus, number> = {
     [PaneStatus.None]: 4,
 };
 
-function reduceStatuses(entries: ReadonlyArray<Readonly<StatusEntry>>): Map<string, PaneStatus> {
-    return entries.reduce((reduced, entry) => {
-        const key = statusKey(entry.folder, entry.kind);
-        const existing = reduced.get(key);
-        if (existing == undefined || statusPriority[entry.status] < statusPriority[existing]) {
-            reduced.set(key, entry.status);
-        }
-        return reduced;
-    }, new Map<string, PaneStatus>());
-}
-
-function collectSessionIds(entries: ReadonlyArray<Readonly<StatusEntry>>): Map<string, string[]> {
-    return entries.reduce((collected, entry) => {
-        if (!entry.sessionId) {
-            return collected;
-        }
-        const key = statusKey(entry.folder, entry.kind);
-        const existing = collected.get(key);
-        if (existing) {
-            existing.push(entry.sessionId);
-        } else {
-            collected.set(key, [entry.sessionId]);
-        }
-        return collected;
-    }, new Map<string, string[]>());
+function reduceStatuses(entries: ReadonlyArray<Readonly<StatusEntry>>) {
+    return mapObjectValues(
+        groupArrayBy(entries, (entry) => statusKey(entry.folder, entry.kind), {
+            useRequired: true,
+        }),
+        (_key, group) => {
+            return group.reduce((winner: PaneStatus, entry) => {
+                return statusPriority[entry.status] < statusPriority[winner]
+                    ? entry.status
+                    : winner;
+            }, PaneStatus.None);
+        },
+    );
 }
 
 /**
- * Group the raw entries by folder, keeping each session's own status. Entries without a `sessionId`
- * (a version-1 daemon) are dropped rather than guessed at: the reduced per-folder+kind status above
- * still covers them, and inventing a session id here would attach the status to a tab that may not
- * exist.
+ * Entries without a `sessionId` (a version-1 daemon) are dropped rather than guessed at: the
+ * reduced per-folder+kind status above still covers them, and inventing a session id would attach
+ * the status to a tab that may not exist.
  */
-function collectSessionStatuses(
-    entries: ReadonlyArray<Readonly<StatusEntry>>,
-): Map<string, PaneSessionStatus[]> {
-    return entries.reduce((collected, entry) => {
-        if (!entry.sessionId) {
-            return collected;
-        }
-        const existing = collected.get(entry.folder);
-        const status: PaneSessionStatus = {
-            kind: entry.kind,
-            sessionId: entry.sessionId,
-            status: entry.status,
-        };
-        if (existing) {
-            existing.push(status);
-        } else {
-            collected.set(entry.folder, [status]);
-        }
-        return collected;
-    }, new Map<string, PaneSessionStatus[]>());
+function filterSessionEntries(entries: ReadonlyArray<Readonly<StatusEntry>>) {
+    return entries.filter((entry): entry is Readonly<StatusEntry & {sessionId: string}> => {
+        return !!entry.sessionId;
+    });
+}
+
+function collectSessionIds(entries: ReadonlyArray<Readonly<StatusEntry>>) {
+    return mapObjectValues(
+        groupArrayBy(
+            filterSessionEntries(entries),
+            (entry) => statusKey(entry.folder, entry.kind),
+            {
+                useRequired: true,
+            },
+        ),
+        (_key, group) => group.map((entry) => entry.sessionId),
+    );
+}
+
+/** Group the raw entries by folder, keeping each session's own status. */
+function collectSessionStatuses(entries: ReadonlyArray<Readonly<StatusEntry>>) {
+    return mapObjectValues(
+        groupArrayBy(filterSessionEntries(entries), (entry) => entry.folder, {
+            useRequired: true,
+        }),
+        (_key, group) => {
+            return group.map((entry): PaneSessionStatus => {
+                return {
+                    kind: entry.kind,
+                    sessionId: entry.sessionId,
+                    status: entry.status,
+                };
+            });
+        },
+    );
 }
 
 async function refreshStatuses(): Promise<void> {
@@ -99,32 +105,38 @@ async function refreshStatuses(): Promise<void> {
 }
 
 async function ensureFresh(): Promise<void> {
-    if (Date.now() - cacheState.lastFetchAt > cacheTtlMs) {
+    if (
+        Date.now() - cacheState.lastFetchAt >
+        convertDuration(cacheTtl, {
+            milliseconds: true,
+        }).milliseconds
+    ) {
         await refreshStatuses();
     }
 }
 
 /**
- * Returns a lookup over a recent pane status snapshot. The daemon is queried at most every 500ms so
- * a single `/folders` aggregation doesn't trigger one round-trip per pane. Multiple sessions under
- * the same folder+kind are reduced to one status via {@link statusPriority}.
+ * Returns a lookup over a recent pane status snapshot. The daemon is queried at most once per
+ * {@link cacheTtl} so a single `/folders` aggregation doesn't trigger one round-trip per pane.
+ * Multiple sessions under the same folder+kind are reduced to one status via
+ * {@link statusPriority}.
  */
 export async function getPaneStatusLookup(): Promise<
     (folder: string, kind: PaneKind) => PaneStatus
 > {
     await ensureFresh();
-    return (folder, kind) => cacheState.statuses.get(statusKey(folder, kind)) || PaneStatus.None;
+    return (folder, kind) => cacheState.statuses[statusKey(folder, kind)] || PaneStatus.None;
 }
 
 /**
  * Companion to {@link getPaneStatusLookup} that keeps each session's own status instead of reducing
- * them, so a pane's tabs can be annotated individually. Shares the same 500ms snapshot.
+ * them, so a pane's tabs can be annotated individually. Shares the same snapshot.
  */
 export async function getPaneSessionStatusLookup(): Promise<
     (folder: string) => ReadonlyArray<PaneSessionStatus>
 > {
     await ensureFresh();
-    return (folder) => cacheState.sessionStatuses.get(folder) || [];
+    return (folder) => cacheState.sessionStatuses[folder] || [];
 }
 
 /**
@@ -136,5 +148,5 @@ export async function getLivePaneSessionIds(
     kind: PaneKind,
 ): Promise<ReadonlyArray<string>> {
     await ensureFresh();
-    return cacheState.sessionIds.get(statusKey(folder, kind)) || [];
+    return cacheState.sessionIds[statusKey(folder, kind)] || [];
 }

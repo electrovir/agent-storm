@@ -1,7 +1,7 @@
 import {type Config} from '@agent-storm/common';
 import {log, replaceExtension} from '@augment-vir/common';
 import {defineConfig} from '@virmator/frontend/configs/vite.config.base.js';
-import {readFileSync, watch} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, watch} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename, dirname, resolve} from 'node:path';
 import {type Plugin} from 'vite';
@@ -22,11 +22,22 @@ function envPort(name: string): number | undefined {
  * package, and the constant can't move to `@agent-storm/common` without dragging `node:os` into the
  * browser bundle.
  */
-const configPath = resolve(homedir(), '.config', 'agent-storm.json');
+const configPath = resolve(homedir(), '.agent-storm', 'config.json');
+/**
+ * Where {@link configPath} used to live. The server moves it on startup, which can land after vite
+ * has already read the config.
+ */
+const legacyConfigPath = resolve(homedir(), '.config', 'agent-storm.json');
 
 function readCertPath(): string {
     try {
-        return (JSON.parse(readFileSync(configPath, 'utf-8')) as Partial<Config>).tlsCertPath || '';
+        return (
+            (
+                JSON.parse(
+                    readFileSync(existsSync(configPath) ? configPath : legacyConfigPath, 'utf-8'),
+                ) as Partial<Config>
+            ).tlsCertPath || ''
+        );
     } catch {
         /** No config file yet (fresh install) or mid-write; http is the right answer either way. */
         return '';
@@ -52,8 +63,13 @@ function tlsRestartPlugin(certPathAtStartup: string): Plugin {
              * action (selecting a folder, adding a worktree), so that reloaded the app constantly.
              *
              * Watches the directory instead of the file because `saveConfig` renames a temp file
-             * over the target, swapping out the inode a file-level watch is holding.
+             * over the target, swapping out the inode a file-level watch is holding. The directory
+             * is created first because `watch` throws on a missing one, and the server may not have
+             * moved the config there yet.
              */
+            mkdirSync(dirname(configPath), {
+                recursive: true,
+            });
             const configWatcher = watch(dirname(configPath), (_event, fileName) => {
                 if (fileName !== basename(configPath) || readCertPath() === certPathAtStartup) {
                     return;

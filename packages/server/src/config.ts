@@ -1,20 +1,11 @@
-// cspell:words upserts
-
-import {defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
-import {
-    createCuid2,
-    log,
-    omitObjectKeys,
-    PromiseQueue,
-    setFirstLetterCasing,
-    StringCase,
-} from '@augment-vir/common';
-import {createHash} from 'node:crypto';
-import {mkdir, readFile, rename, stat, writeFile} from 'node:fs/promises';
-import {dirname} from 'node:path';
+import {configShape, defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
+import {log, PromiseQueue} from '@augment-vir/common';
+import {readFile, stat} from 'node:fs/promises';
+import {assertValidShape} from 'object-shape-tester';
 import {pruneAiAvatars} from './ai-avatar.js';
 import {configPath} from './file-paths.js';
 import {normalizePath} from './paths.js';
+import {writeFileAtomically} from './write-file-atomically.js';
 
 function normalizeConfig(config: Readonly<Config>): Config {
     const definitionIds = config.aiDefinitions.map((definition) => definition.id);
@@ -118,145 +109,40 @@ export function setFolderAiId({
 }
 
 /**
- * The pre-"Define AI" config keys. Read only by {@link migrateAiConfig}, which converts them into
- * {@link Config.aiDefinitions} the first time a config written by an older build is loaded.
+ * Stands in whenever the config defines no AI, so the AI pane always has something to spawn. Its id
+ * is fixed rather than generated because the stand-in isn't persisted until the next save, and an
+ * override written against one load has to match the next.
  */
-type LegacyAiConfig = {
-    aiCmd?: string | undefined;
-    resetAiSessionCmd?: string | undefined;
-    folderAiCmds?:
-        | ReadonlyArray<{
-              folder?: string | undefined;
-              aiCmd?: string | undefined;
-              resetAiSessionCmd?: string | undefined;
-          }>
-        | undefined;
+const fallbackAiDefinition: AiDefinition = {
+    id: 'default-claude',
+    name: 'Claude',
+    resumeSessionCommand: 'claude',
+    newSessionCommand: '',
 };
 
-/**
- * Id for a migrated definition, derived from its commands rather than generated. `loadConfig`
- * migrates on every read but only persists on the next save, so a random id would differ between
- * two reads — folder overrides written against one would dangle against the next, and the frontend
- * would compare ids from two different loads and find no match.
- */
-function migratedAiId(pair: Readonly<Omit<AiDefinition, 'id' | 'name'>>): string {
-    const hash = createHash('sha256')
-        .update(`${pair.resumeSessionCommand}\u0000${pair.newSessionCommand}`)
-        .digest('hex');
-    return `migrated-${hash.slice(0, 16)}`;
-}
-
-/** `claude --continue` → `Claude`. Names are cosmetic; the ids are what overrides reference. */
-function aiNameFromCommand(command: string): string {
-    const firstWord = command.trim().split(/\s+/)[0] || 'AI';
-    return setFirstLetterCasing(firstWord, StringCase.Upper);
+export function withFallbackAi(config: Readonly<Config>): Config {
+    return config.aiDefinitions.length
+        ? config
+        : {
+              ...config,
+              aiDefinitions: [
+                  fallbackAiDefinition,
+              ],
+              defaultAiId: fallbackAiDefinition.id,
+          };
 }
 
 /**
- * Turn a legacy config's command strings into AI definitions, and rewrite its per-folder command
- * overrides into per-folder AI ids. One definition per distinct resume + new-session command pair,
- * so a user who ran `claude` everywhere and `codex` in one worktree ends up with exactly two. Runs
- * on every load and is not itself persisted; the next config save is what writes the result to
- * disk.
- *
- * A config that already has definitions is returned untouched, which is what makes this safe to run
- * on every load. A config with neither definitions nor legacy commands (a fresh install) gets a
- * single `claude` definition so the AI pane still has something to spawn.
+ * Only a missing file is replaced with defaults. Any other failure (a read error, an empty file,
+ * unparsable JSON, contents that don't match {@link configShape}) throws, and load-modify-save
+ * callers catch it and skip their save so the existing file is preserved.
  */
-export function migrateAiConfig(config: Readonly<Config & LegacyAiConfig>): Config {
-    /** Dropped from the returned object so the next save writes them out of the file for good. */
-    const withoutLegacy = omitObjectKeys(config, [
-        'aiCmd',
-        'resetAiSessionCmd',
-        'folderAiCmds',
-    ]);
-    if (config.aiDefinitions.length) {
-        return withoutLegacy;
-    }
-    const globalResume = config.aiCmd?.trim() || 'claude';
-    const globalNewSession = config.resetAiSessionCmd?.trim() || '';
-    const legacyPairs = [
-        {
-            resumeSessionCommand: globalResume,
-            newSessionCommand: globalNewSession,
-        },
-        ...(config.folderAiCmds || []).map((entry) => {
-            return {
-                resumeSessionCommand: entry.aiCmd?.trim() || globalResume,
-                newSessionCommand: entry.resetAiSessionCmd?.trim() || globalNewSession,
-            };
-        }),
-    ];
-    const definitions = legacyPairs.reduce<AiDefinition[]>((kept, pair) => {
-        const alreadyKept = kept.some((definition) => {
-            return (
-                definition.resumeSessionCommand === pair.resumeSessionCommand &&
-                definition.newSessionCommand === pair.newSessionCommand
-            );
-        });
-        if (alreadyKept) {
-            return kept;
-        }
-        const baseName = aiNameFromCommand(pair.resumeSessionCommand);
-        const sameNameCount = kept.filter(
-            (definition) => definition.name.split(' (')[0] === baseName,
-        ).length;
-        return [
-            ...kept,
-            {
-                ...pair,
-                id: migratedAiId(pair),
-                name: sameNameCount ? `${baseName} (${sameNameCount + 1})` : baseName,
-            },
-        ];
-    }, []);
-    function findPairId(pair: Readonly<Omit<AiDefinition, 'id' | 'name'>>): string {
-        return (
-            definitions.find((definition) => {
-                return (
-                    definition.resumeSessionCommand === pair.resumeSessionCommand &&
-                    definition.newSessionCommand === pair.newSessionCommand
-                );
-            })?.id || ''
-        );
-    }
-    const defaultAiId = findPairId({
-        resumeSessionCommand: globalResume,
-        newSessionCommand: globalNewSession,
-    });
-    return {
-        ...withoutLegacy,
-        aiDefinitions: definitions,
-        defaultAiId,
-        folderAiIds: (config.folderAiCmds || [])
-            .map((entry) => {
-                return {
-                    folder: entry.folder || '',
-                    aiId: findPairId({
-                        resumeSessionCommand: entry.aiCmd?.trim() || globalResume,
-                        newSessionCommand: entry.resetAiSessionCmd?.trim() || globalNewSession,
-                    }),
-                };
-            })
-            /** An entry that resolved to the default is what the folder would inherit anyway. */
-            .filter((entry) => entry.folder && entry.aiId && entry.aiId !== defaultAiId),
-    };
-}
-
 export async function loadConfig(): Promise<Config> {
-    /**
-     * Use `stat` to distinguish "file doesn't exist yet" from any other read failure. The old code
-     * collapsed both into "save defaults", which meant a transient read error (or — worse — a brief
-     * empty-file window caused by a non-atomic `writeFile`) would silently overwrite the user's
-     * config with defaults. Now we ONLY auto-create the file on a true `ENOENT`. Anything else
-     * (read failure, empty file, JSON parse error) throws and the caller decides what to do —
-     * load-modify-save callers catch and skip their save so the existing file is preserved.
-     */
     const exists = await stat(configPath)
         .then(() => true)
         .catch(() => false);
     if (!exists) {
-        const seeded = migrateAiConfig(defaultConfig);
+        const seeded = withFallbackAi(defaultConfig);
         await writeConfig(seeded);
         return seeded;
     }
@@ -266,34 +152,25 @@ export async function loadConfig(): Promise<Config> {
             `Config file at ${configPath} exists but is empty; refusing to overwrite with defaults.`,
         );
     }
-    const parsed = JSON.parse(contents) as Partial<Config> & LegacyAiConfig;
-    const merged: Config & LegacyAiConfig = {
+    const merged: unknown = {
         ...defaultConfig,
-        ...parsed,
-        repos: parsed.repos || defaultConfig.repos,
-        aiDefinitions: parsed.aiDefinitions || defaultConfig.aiDefinitions,
-        folderAiIds: parsed.folderAiIds || defaultConfig.folderAiIds,
+        ...JSON.parse(contents),
     };
-    return normalizeConfig(migrateAiConfig(merged));
+    assertValidShape(merged, configShape, {}, `Config file at ${configPath} is invalid.`);
+    return normalizeConfig(withFallbackAi(merged));
 }
 
 /**
- * Write the config atomically: stage to a temp file inside the same directory as the target, then
- * `rename` over the destination. `rename` is atomic on POSIX (and on macOS) when both paths are on
- * the same filesystem — readers either see the prior version or the new version, never an empty or
- * partially-written file. This eliminates the empty-file race that previously caused concurrent
- * `loadConfig` calls (from `/repos/touch`, GitHub-polling auto-disable, etc.) to fall through to
- * the "save defaults" path and wipe the user's settings.
+ * Written atomically: a non-atomic write leaves a brief empty-file window, and a concurrent
+ * {@link loadConfig} that reads it would throw instead of seeing the previous config.
  */
 async function writeConfig(config: Readonly<Config>): Promise<void> {
-    await mkdir(dirname(configPath), {
-        recursive: true,
-    });
     const normalized = normalizeConfig(config);
-    const tempPath = `${configPath}.tmp.${createCuid2()}`;
     try {
-        await writeFile(tempPath, JSON.stringify(normalized, undefined, 4), 'utf-8');
-        await rename(tempPath, configPath);
+        await writeFileAtomically({
+            path: configPath,
+            contents: JSON.stringify(normalized, undefined, 4),
+        });
         /** Replacing or deleting an AI's avatar leaves its old file behind; this is the cleanup. */
         await pruneAiAvatars(normalized.aiDefinitions);
     } catch (error) {

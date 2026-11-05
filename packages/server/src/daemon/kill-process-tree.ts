@@ -1,6 +1,7 @@
 // cspell:words reparented, reparent, pids
 
 import {filterMap, groupArrayBy} from '@augment-vir/common';
+import {convertDuration} from 'date-vir';
 import {execFileSync} from 'node:child_process';
 
 type ProcessRow = {
@@ -131,7 +132,17 @@ export function killProcessTree(
     if (immediate) {
         pids.forEach((pid) => signalPid(pid, 'SIGKILL'));
     } else {
-        setTimeout(() => pids.forEach((pid) => signalPid(pid, 'SIGKILL')), 250);
+        setTimeout(
+            () => pids.forEach((pid) => signalPid(pid, 'SIGKILL')),
+            convertDuration(
+                {
+                    milliseconds: 250,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds,
+        );
     }
     return true;
 }

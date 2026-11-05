@@ -1,9 +1,19 @@
 import {BookMainRoute, ElementBookApp} from 'element-book';
-import {css, defineElement, html, listen} from 'element-vir';
-import {router} from '../../util/router.js';
-import {buttonsPage} from './buttons.book.js';
+import {css, html, listen} from 'element-vir';
+import {router, type MainTab} from '../../util/router.js';
+import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
+import {defineAppElement} from '../define-app-element.js';
+import {prStatusRingPage} from './pr-status-ring.book.js';
 
-export const VirBook = defineElement<{
+/**
+ * The `<style>` element `ElementBookApp` writes Vira's dark overrides into, on the whole document
+ * rather than just itself.
+ */
+const elementBookDarkModeStyleId = 'element-book-dark-mode';
+
+export const VirBook = defineAppElement<{
+    /** First path segment of the app route the book lives under. */
+    routeBase: 'book' | MainTab.Debug;
     subPaths: ReadonlyArray<string>;
 }>()({
     tagName: 'vir-book',
@@ -12,6 +22,9 @@ export const VirBook = defineElement<{
             display: block;
             width: 100%;
             height: 100%;
+            flex-grow: 1;
+            min-width: 0;
+            min-height: 0;
         }
 
         element-book-app {
@@ -19,23 +32,48 @@ export const VirBook = defineElement<{
             height: 100%;
         }
     `,
-    render({inputs}) {
+    state() {
+        return {
+            isDark: isDarkMode(),
+            stopThemeListener: undefined as (() => void) | undefined,
+        };
+    },
+    init({updateState}) {
+        updateState({
+            isDark: isDarkMode(),
+            stopThemeListener: listenToDarkMode((isDark) => {
+                updateState({
+                    isDark,
+                });
+            }),
+        });
+    },
+    cleanup({state}) {
+        state.stopThemeListener?.();
+        /** Left behind, it would keep the app dark after a later switch to light. */
+        globalThis.document.getElementById(elementBookDarkModeStyleId)?.remove();
+    },
+    render({inputs, state}) {
         return html`
             <${ElementBookApp.assign({
-                pages: [buttonsPage],
+                pages: [
+                    prStatusRingPage,
+                ],
                 elementBookRoutePaths: [
                     BookMainRoute.Book,
                     ...inputs.subPaths,
                 ],
+                /** Without this, the book follows the OS setting instead of agent-storm's. */
+                darkMode: state.isDark,
             })}
                 ${listen(ElementBookApp.events.pathUpdate, (event) => {
                     const newPaths = event.detail;
                     router.setRoute({
                         paths: [
-                            'book',
+                            inputs.routeBase,
                             ...newPaths.slice(1),
-                        ] as [
-                            'book',
+                        ] satisfies ReadonlyArray<string> as [
+                            'book' | MainTab.Debug,
                             ...string[],
                         ],
                     });

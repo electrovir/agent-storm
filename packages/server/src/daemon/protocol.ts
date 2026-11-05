@@ -24,7 +24,7 @@ export function encodeControlFrame(message: unknown): Buffer {
 }
 
 export function encodeDataFrame(data: string | Buffer): Buffer {
-    const payload = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+    const payload = check.isString(data) ? Buffer.from(data, 'utf-8') : data;
     return encodeFrame(FrameType.Data, payload);
 }
 
@@ -72,7 +72,9 @@ export class FrameDecoder {
  * that doesn't report at least this value. Version 4 answers a pty's OSC 10 / 11 color queries from
  * {@link TerminalColors}; an earlier daemon leaves them unanswered, which silently costs codex the
  * gray background behind its prompt. Version 3 was that same feature mid-landing — it declared the
- * colors on the wire without answering anything — so the gate has to reject it too.
+ * colors on the wire without answering anything — so the gate has to reject it too. Version 5
+ * reports {@link StatusEntry.isRunningCommand}, without which the review init command could be typed
+ * into a shell that's busy running something else.
  *
  * The version is reported on {@link StatusResponse} rather than through a dedicated action because
  * `Status` is the only introspection action every historical daemon understands — see
@@ -90,6 +92,12 @@ export enum DaemonAction {
      * version-1 daemons, which is precisely why the version check must gate on `Status` first.
      */
     SessionKill = 'session-kill',
+    /**
+     * Checks a launch request's signature against the key of the AI tab it names. A daemon that
+     * predates this action rejects it as unknown, so the request is refused instead of the daemon
+     * being restarted, which would kill every pane.
+     */
+    VerifyLaunch = 'verify-launch',
     Shutdown = 'shutdown',
 }
 
@@ -101,17 +109,6 @@ export enum DaemonAction {
  * session burning CPU.
  */
 export const defaultSessionId = 'default';
-
-/**
- * Identifies one session tab within a folder's pane. Empty resolves to the folder+kind's first
- * session, which keeps pre-multi-session callers (and any client that hasn't loaded its session
- * list yet) attaching to the same PTY they always did.
- */
-export type SessionKeyFields = {
-    folder: string;
-    kind: PaneKind;
-    sessionId?: string | undefined;
-};
 
 /**
  * A terminal's default foreground and background, each six hex digits with no leading `#`. The
@@ -127,7 +124,11 @@ export type AttachHandshake = {
     action: DaemonAction.Attach;
     folder: string;
     kind: PaneKind;
-    /** See {@link SessionKeyFields.sessionId}. */
+    /**
+     * Identifies one session tab within a folder's pane. Empty resolves to the folder+kind's first
+     * session, which keeps pre-multi-session callers (and any client that hasn't loaded its session
+     * list yet) attaching to the same PTY they always did.
+     */
     sessionId?: string | undefined;
     /**
      * Palette the attaching client renders with. Sent on every attach, so re-attaching after a
@@ -162,7 +163,7 @@ export type RestartHandshake = {
     action: DaemonAction.Restart;
     folder: string;
     kind: PaneKind;
-    /** See {@link SessionKeyFields.sessionId}. */
+    /** See {@link AttachHandshake.sessionId}. */
     sessionId?: string | undefined;
     /** See {@link AttachHandshake.aiCmd} — same plumbing, applied to the restart spawn. */
     aiCmd?: string | undefined;
@@ -183,6 +184,15 @@ export type SessionKillHandshake = {
     sessionId: string;
 };
 
+export type VerifyLaunchHandshake = {
+    action: DaemonAction.VerifyLaunch;
+    conversationId: string;
+    /** The exact text that was signed. */
+    payload: string;
+    /** Hex HMAC-SHA256 of `payload`, keyed by the tab's `AGENT_STORM_LAUNCH_KEY`. */
+    signature: string;
+};
+
 export type ShutdownHandshake = {
     action: DaemonAction.Shutdown;
 };
@@ -193,6 +203,7 @@ export type ClientHandshake =
     | RestartHandshake
     | KillHandshake
     | SessionKillHandshake
+    | VerifyLaunchHandshake
     | ShutdownHandshake;
 
 export type StatusEntry = {
@@ -201,6 +212,11 @@ export type StatusEntry = {
     /** Absent when reported by a version-1 daemon, which had no concept of sessions. */
     sessionId?: string | undefined;
     status: PaneStatus;
+    /**
+     * A shell pane's foreground process is something other than the shell. Absent from daemons
+     * before version 5.
+     */
+    isRunningCommand?: boolean | undefined;
 };
 
 export type AttachResponse = {
@@ -226,6 +242,12 @@ export type StatusResponse = {
 
 export type SimpleResponse = {
     ok: true;
+};
+
+export type VerifyLaunchResponse = {
+    ok: true;
+    /** False when the signature is wrong or no running AI tab has that conversation id. */
+    isValid: boolean;
 };
 
 export type ErrorResponse = {

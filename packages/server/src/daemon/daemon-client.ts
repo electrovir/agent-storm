@@ -1,4 +1,6 @@
 import {type PaneKind} from '@agent-storm/common';
+import {wrapPromiseInTimeout} from '@augment-vir/common';
+import {type AnyDuration} from 'date-vir';
 import {createConnection, type Socket} from 'node:net';
 import {daemonSocketPath} from '../file-paths.js';
 import {
@@ -17,6 +19,7 @@ import {
     type StatusEntry,
     type StatusResponse,
     type TerminalColors,
+    type VerifyLaunchResponse,
 } from './protocol.js';
 
 function connect(): Promise<Socket> {
@@ -27,30 +30,72 @@ function connect(): Promise<Socket> {
     });
 }
 
-async function singleShot<Response extends {ok: true}>(
-    handshake: ClientHandshake,
-): Promise<Response> {
-    const socket = await connect();
+/**
+ * How long the daemon gets to answer a handshake. It answers every action synchronously, so running
+ * past this means it is wedged, and waiting longer would only hang whatever request is waiting on
+ * it.
+ */
+const daemonReplyTimeout: AnyDuration = {
+    seconds: 10,
+};
+
+/**
+ * Sends `handshake` over an already-connected `socket` and resolves with the daemon's first control
+ * frame. Rejects on an error reply, when the socket closes first, or past `timeout`. The socket is
+ * destroyed either way, since every action but `Attach` gets exactly one reply.
+ */
+export async function requestDaemonReply<Response extends {ok: true}>({
+    socket,
+    handshake,
+    timeout,
+}: Readonly<{
+    socket: Socket;
+    handshake: Readonly<ClientHandshake>;
+    timeout: Readonly<AnyDuration>;
+}>) {
     const decoder = new FrameDecoder();
-    return new Promise<Response>((resolve, reject) => {
-        socket.on('data', (chunk) => {
-            const frames = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-            const controlFrame = frames.find((frame) => frame.type === FrameType.Control);
-            if (!controlFrame) {
-                return;
-            }
-            const parsed = JSON.parse(controlFrame.payload.toString('utf-8')) as
-                | Response
-                | ErrorResponse;
-            if (parsed.ok) {
-                resolve(parsed);
-            } else {
-                reject(new Error(parsed.error));
-            }
-            socket.end();
-        });
-        socket.on('error', reject);
-        socket.write(encodeControlFrame(handshake));
+    try {
+        return await wrapPromiseInTimeout(
+            timeout,
+            new Promise<Response>((resolve, reject) => {
+                socket.on('data', (chunk) => {
+                    const controlFrame = decoder
+                        .push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+                        .find((frame) => frame.type === FrameType.Control);
+                    if (!controlFrame) {
+                        return;
+                    }
+                    const parsed = JSON.parse(controlFrame.payload.toString('utf-8')) as
+                        | Response
+                        | ErrorResponse;
+                    if (parsed.ok) {
+                        resolve(parsed);
+                    } else {
+                        reject(new Error(parsed.error));
+                    }
+                });
+                socket.once('error', reject);
+                socket.once('close', () => {
+                    reject(
+                        new Error(
+                            `PTY daemon closed the socket before answering ${handshake.action}.`,
+                        ),
+                    );
+                });
+                socket.write(encodeControlFrame(handshake));
+            }),
+            `PTY daemon did not answer ${handshake.action}`,
+        );
+    } finally {
+        socket.destroy();
+    }
+}
+
+async function singleShot<Response extends {ok: true}>(handshake: Readonly<ClientHandshake>) {
+    return await requestDaemonReply<Response>({
+        socket: await connect(),
+        handshake,
+        timeout: daemonReplyTimeout,
     });
 }
 
@@ -74,45 +119,70 @@ export async function fetchDaemonProtocolVersion(): Promise<number> {
     return response.protocolVersion ?? 1;
 }
 
-export async function restartPane(
-    params: Readonly<{
-        folder: string;
-        kind: PaneKind;
-        sessionId?: string | undefined;
-        aiCmd?: string | undefined;
-        conversationId?: string | undefined;
-    }>,
-): Promise<void> {
+export async function restartPane({
+    folder,
+    kind,
+    sessionId,
+    aiCmd,
+    conversationId,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessionId?: string | undefined;
+    aiCmd?: string | undefined;
+    conversationId?: string | undefined;
+}>): Promise<void> {
     await singleShot<SimpleResponse>({
         action: DaemonAction.Restart,
-        folder: params.folder,
-        kind: params.kind,
-        sessionId: params.sessionId,
-        aiCmd: params.aiCmd,
-        conversationId: params.conversationId,
+        folder,
+        kind,
+        sessionId,
+        aiCmd,
+        conversationId,
     });
 }
 
-export async function killPaneSession(
-    params: Readonly<{
-        folder: string;
-        kind: PaneKind;
-        sessionId: string;
-    }>,
-): Promise<void> {
+export async function killPaneSession({
+    folder,
+    kind,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
+}>): Promise<void> {
     await singleShot<SimpleResponse>({
         action: DaemonAction.SessionKill,
-        folder: params.folder,
-        kind: params.kind,
-        sessionId: params.sessionId,
+        folder,
+        kind,
+        sessionId,
     });
 }
 
-export async function killFolderPanes(params: Readonly<{folder: string}>): Promise<void> {
+export async function killFolderPanes({folder}: Readonly<{folder: string}>): Promise<void> {
     await singleShot<SimpleResponse>({
         action: DaemonAction.Kill,
-        folder: params.folder,
+        folder,
     });
+}
+
+/** Whether `signature` is `payload` signed with the launch key of a running AI tab. */
+export async function verifyLaunchSignature({
+    conversationId,
+    payload,
+    signature,
+}: Readonly<{
+    conversationId: string;
+    payload: string;
+    signature: string;
+}>) {
+    const response = await singleShot<VerifyLaunchResponse>({
+        action: DaemonAction.VerifyLaunch,
+        conversationId,
+        payload,
+        signature,
+    });
+    return response.isValid;
 }
 
 export async function shutdownDaemon(): Promise<void> {
@@ -121,16 +191,7 @@ export async function shutdownDaemon(): Promise<void> {
     });
 }
 
-export type PaneAttachment = {
-    isNew: boolean;
-    /** See {@link AttachResponse.isRunning}. */
-    isRunning: boolean;
-    write(data: string): void;
-    resize(cols: number, rows: number): void;
-    /** See {@link ColorsNotification} for why the palette is re-sent on an open socket. */
-    setColors(colors: Readonly<TerminalColors>): void;
-    close(): void;
-};
+export type PaneAttachment = Awaited<ReturnType<typeof attachPane>>;
 
 export async function attachPane({
     folder,
@@ -168,7 +229,7 @@ export async function attachPane({
     scrollbackLimit?: number | undefined;
     onData: (data: string) => void;
     onExit: (exitCode: number | undefined) => void;
-}>): Promise<PaneAttachment> {
+}>) {
     const socket = await connect();
     const decoder = new FrameDecoder();
 
@@ -189,52 +250,60 @@ export async function attachPane({
         resolved: false,
     };
 
-    const handshakeResult = await new Promise<AttachResponse>((resolve, reject) => {
-        function handler(chunk: Buffer | string) {
-            const frames = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-            frames.forEach((frame) => {
-                if (handshakeState.resolved) {
-                    routeFrame(frame);
-                } else if (frame.type === FrameType.Control) {
-                    handshakeState.resolved = true;
-                    const parsed = JSON.parse(frame.payload.toString('utf-8')) as
-                        | AttachResponse
-                        | ErrorResponse;
-                    if (parsed.ok) {
-                        resolve(parsed);
-                    } else {
-                        socket.end();
-                        reject(new Error(parsed.error));
+    const handshakeResult = await wrapPromiseInTimeout(
+        daemonReplyTimeout,
+        new Promise<AttachResponse>((resolve, reject) => {
+            function handler(chunk: Buffer | string) {
+                const frames = decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+                frames.forEach((frame) => {
+                    if (handshakeState.resolved) {
+                        routeFrame(frame);
+                    } else if (frame.type === FrameType.Control) {
+                        handshakeState.resolved = true;
+                        const parsed = JSON.parse(frame.payload.toString('utf-8')) as
+                            | AttachResponse
+                            | ErrorResponse;
+                        if (parsed.ok) {
+                            resolve(parsed);
+                        } else {
+                            socket.end();
+                            reject(new Error(parsed.error));
+                        }
                     }
+                });
+            }
+            function routeFrame(frame: {type: FrameType; payload: Buffer}) {
+                if (frame.type === FrameType.Data) {
+                    onData(frame.payload.toString('utf-8'));
+                    return;
+                }
+                const parsed = JSON.parse(frame.payload.toString('utf-8')) as ExitNotification;
+                onExit(parsed.exitCode);
+            }
+            socket.on('data', handler);
+            socket.once('error', reject);
+            socket.once('close', () => {
+                if (handshakeState.resolved) {
+                    onExit(undefined);
+                } else {
+                    reject(new Error('Daemon socket closed before handshake response.'));
                 }
             });
-        }
-        function routeFrame(frame: {type: FrameType; payload: Buffer}) {
-            if (frame.type === FrameType.Data) {
-                onData(frame.payload.toString('utf-8'));
-                return;
-            }
-            const parsed = JSON.parse(frame.payload.toString('utf-8')) as ExitNotification;
-            onExit(parsed.exitCode);
-        }
-        socket.on('data', handler);
-        socket.once('error', reject);
-        socket.once('close', () => {
-            if (handshakeState.resolved) {
-                onExit(undefined);
-            } else {
-                reject(new Error('Daemon socket closed before handshake response.'));
-            }
-        });
+        }),
+        'PTY daemon did not answer attach',
+    ).catch((error: unknown) => {
+        socket.destroy();
+        throw error;
     });
 
     return {
         isNew: handshakeResult.isNew,
+        /** See {@link AttachResponse.isRunning}. */
         isRunning: handshakeResult.isRunning ?? true,
-        write(data) {
+        write(data: string) {
             socket.write(encodeDataFrame(data));
         },
-        resize(cols, rows) {
+        resize({cols, rows}: Readonly<{cols: number; rows: number}>) {
             const notification: ResizeNotification = {
                 type: 'resize',
                 cols,
@@ -242,7 +311,8 @@ export async function attachPane({
             };
             socket.write(encodeControlFrame(notification));
         },
-        setColors(updatedColors) {
+        /** See {@link ColorsNotification} for why the palette is re-sent on an open socket. */
+        setColors(updatedColors: Readonly<TerminalColors>) {
             const notification: ColorsNotification = {
                 type: 'colors',
                 colors: updatedColors,

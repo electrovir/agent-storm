@@ -1,6 +1,5 @@
 import {extractExtension} from '@augment-vir/common';
 import {HighlightStyle, syntaxHighlighting, type LanguageSupport} from '@codemirror/language';
-import {type Extension} from '@codemirror/state';
 import {tags} from '@lezer/highlight';
 
 /**
@@ -84,6 +83,10 @@ const languageLoaders: Readonly<Record<string, () => Promise<LanguageSupport>>> 
  * `meta.function-call.arguments`, which VS Code's TypeScript grammar never emits — so properties
  * are plain foreground there, and mapping the rule onto `tags.propertyName` here would color every
  * `key:` red in a file VS Code leaves alone.
+ *
+ * Operators and punctuation are left out too. The theme gives them its own foreground color, which
+ * the editor foreground already matches in light mode, while a hard-coded copy of it is nearly
+ * invisible on the dark editor.
  */
 const virColorsHighlightStyle = HighlightStyle.define([
     {
@@ -119,10 +122,6 @@ const virColorsHighlightStyle = HighlightStyle.define([
             tags.logicOperator,
         ],
         color: '#a626a4',
-    },
-    {
-        tag: tags.operator,
-        color: '#383a42',
     },
     {
         tag: [
@@ -182,14 +181,6 @@ const virColorsHighlightStyle = HighlightStyle.define([
         color: '#AB6526',
     },
     {
-        tag: [
-            tags.punctuation,
-            tags.paren,
-            tags.bracket,
-        ],
-        color: '#383a42',
-    },
-    {
         tag: tags.tagName,
         color: '#4B83CD',
     },
@@ -244,14 +235,18 @@ const virColorsHighlightStyle = HighlightStyle.define([
     },
 ]);
 
+async function loadLanguage(path: string) {
+    const loader = languageLoaders[extractExtension(path).extension.toLowerCase()];
+    return loader ? await loader().catch(() => undefined) : undefined;
+}
+
 /**
  * Editor extensions that color one file's contents. An unrecognized extension still gets the
  * highlight style, which is harmless — with no grammar to produce tokens it simply colors nothing,
  * and the file renders as plain text rather than as an error.
  */
-export async function loadSyntaxExtensions(path: string): Promise<Extension[]> {
-    const loader = languageLoaders[extractExtension(path).extension.toLowerCase()];
-    const support = loader ? await loader().catch(() => undefined) : undefined;
+export async function loadSyntaxExtensions(path: string) {
+    const support = await loadLanguage(path);
     return [
         syntaxHighlighting(virColorsHighlightStyle, {
             fallback: true,

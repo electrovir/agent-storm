@@ -1,14 +1,17 @@
 // cspell:words mkdirs
 
 import {
+    addReviewCommentEndpoint,
     agentStormService,
     aiAvatarEndpoint,
     aiAvatarUploadEndpoint,
     checkPathEndpoint,
     clientErrorEndpoint,
+    closeEditorWindowEndpoint,
     configEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
+    deleteReviewCommentEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
     gitDiffFileEndpoint,
@@ -16,19 +19,30 @@ import {
     gitDiscardFileEndpoint,
     gitDiscardHunkEndpoint,
     gitDiscardUnstagedEndpoint,
+    gitHubAssigneeQueueEndpoint,
     gitHubCommentEndpoint,
     gitHubPrEndpoint,
     gitHubReactionEndpoint,
     gitHubResolveThreadEndpoint,
+    gitHubReviewFolderEndpoint,
+    gitHubReviewPrEndpoint,
+    gitHubReviewQueueEndpoint,
     gitStageAllEndpoint,
     gitStageFileEndpoint,
     gitStageHunkEndpoint,
     hideRepoEndpoint,
     killPanesEndpoint,
+    manualReviewCopyEndpoint,
+    manualReviewStateEndpoint,
+    paneInputEndpoint,
     PaneKind,
+    paneKindRunsAi,
     ptyWebSocket,
+    readReviewCommentsEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
+    reviewConfigEndpoint,
+    reviewInitEndpoint,
     sessionCloseEndpoint,
     sessionCreateEndpoint,
     sessionListEndpoint,
@@ -36,14 +50,18 @@ import {
     sessionSetAiEndpoint,
     touchRepoEndpoint,
     updateCheckEndpoint,
+    updateReviewCommentEndpoint,
     uploadEndpoint,
-    type AiDefinition,
+    watchModeEndpoint,
+    type RepoConfig,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
+    convertByteSize,
     HttpMethod,
     HttpStatus,
     log,
+    mapEnumToObject,
     omitObjectKeys,
     replaceExtension,
     wait,
@@ -55,18 +73,17 @@ import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
 import {appendFile, mkdir, readFile, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
+import {
+    getFolderActivation,
+    requestFolderActivation,
+    startLaunchRequestWatch,
+    type LaunchRequest,
+} from './agent-launch.js';
 import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
-import {initAuth, verifyAuthToken} from './auth.js';
+import {extractBearerToken, initAuth, verifyAuthToken} from './auth.js';
 import {recordClaudeInterrupt} from './claude-activity.js';
 import {startConfigBackupLoop} from './config-backup.js';
-import {
-    findAiDefinition,
-    getFolderAiDefinition,
-    loadConfig,
-    saveConfig,
-    setFolderAiId,
-    updateConfig,
-} from './config.js';
+import {loadConfig, saveConfig, setFolderAiId, updateConfig} from './config.js';
 import {
     attachPane,
     killFolderPanes,
@@ -76,7 +93,7 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {clientErrorLogPath, serverLogPath} from './file-paths.js';
+import {clientErrorLogPath, manualReviewSkillDir, reviewsDir, serverLogPath} from './file-paths.js';
 import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
@@ -89,17 +106,49 @@ import {
     setFileStaged,
     setSideStaged,
 } from './git-diff.js';
-import {addWorktree, listWorktreeChildren, removeWorktree} from './git.js';
+import {
+    addWorktree,
+    findManualReviewCopy,
+    removeWorktree,
+    sweepDeletingReviewFolders,
+} from './git.js';
 import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './github-pr.js';
+import {
+    closeReviewWindow,
+    readAssigneeQueue,
+    readReviewPr,
+    readReviewQueue,
+    refreshAssigneeQueue,
+    refreshReviewQueue,
+    resolveReviewFolder,
+    startPostedVerdictWatch,
+} from './github-review-queue.js';
 import {installClaudeHooks} from './install-claude-hooks.js';
+import {readManualReviewState} from './manual-review-state.js';
+import {migrateReviewFolders} from './migrate-review-folders.js';
+import {
+    launchFolderSession,
+    resolveAiForSession,
+    resolvePaneLaunch,
+    runPostWorktreeCmd,
+    runReviewInitCmd,
+    sendPaneText,
+    spawnPane,
+} from './pane-launch.js';
 import {normalizePath} from './paths.js';
+import {defaultPorts, PortEnvVar, readEnvPort} from './ports.js';
 import {getLivePaneSessionIds} from './pty.js';
+import {startReviewAutoStart} from './review-auto-start.js';
+import {
+    addReviewComment,
+    deleteReviewComment,
+    readReviewComments,
+    updateReviewComment,
+} from './review-comments.js';
+import {loadReviewConfig, saveReviewConfig} from './review-config.js';
 import {
     createFolderSession,
-    findFolderSession,
     forgetFolderSessions,
-    getFolderSessions,
-    markConversationStarted,
     pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
@@ -110,6 +159,7 @@ import {
 } from './sessions.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
+import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
 
 /**
  * Mirror stdout/stderr to `serverLogPath` so the assistant can tail the backend output instead of
@@ -128,7 +178,7 @@ function mirrorWriteTo<Stream extends NodeJS.WriteStream>(
 ): Stream['write'] {
     return ((chunk: unknown, ...rest: unknown[]) => {
         try {
-            if (typeof chunk === 'string' || chunk instanceof Buffer) {
+            if (check.isString(chunk) || chunk instanceof Buffer) {
                 appendFileSync(serverLogPath, chunk);
             }
         } catch {
@@ -141,15 +191,13 @@ process.stdout.write = mirrorWriteTo(process.stdout.write.bind(process.stdout), 
 process.stderr.write = mirrorWriteTo(process.stderr.write.bind(process.stderr), process.stderr);
 
 /**
- * Backend listen port and the frontend's listen port come from
- * `packages/scripts/src/start.script.ts` via env so each `npm start` gets fresh, conflict-free
- * ports. The frontend port is used below to install a CORS origin guard so only the matching vite
- * dev server (on any LAN hostname, on this port) is accepted — the auth secret in
- * `createHostContext` is the actual security boundary, but a port-scoped origin check is cheap
- * defense-in-depth.
+ * Both ports come from `packages/scripts/src/start.script.ts` via env. The frontend port is used
+ * below to install a CORS origin guard so only the matching vite dev server (on any LAN hostname,
+ * on this port) is accepted — the auth secret in `createHostContext` is the actual security
+ * boundary, but a port-scoped origin check is cheap defense-in-depth.
  */
-const port = Number(process.env.BACKEND_PORT) || 41_880;
-const frontendPort = Number(process.env.FRONTEND_PORT) || undefined;
+const port = readEnvPort(PortEnvVar.Backend) ?? defaultPorts[PortEnvVar.Backend];
+const frontendPort = readEnvPort(PortEnvVar.Frontend);
 
 /**
  * Restrict browser callers to whatever origin is running on the live frontend port. This is wider
@@ -183,102 +231,39 @@ type SocketAttachment = {
 
 const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 
+/**
+ * The hooks go first so running Claude sessions stop writing to the old conversation state folder
+ * before it's moved.
+ */
+await installClaudeHooks();
+
+await migrateReviewFolders({
+    skillDir: manualReviewSkillDir,
+    reviewsDir,
+});
+void sweepDeletingReviewFolders();
+
 await ensureDaemon();
 
 await loadFolderActivity();
-
-await installClaudeHooks();
 
 await startFolderInfoRefreshLoop();
 
 startConfigBackupLoop();
 
+startPostedVerdictWatch();
+
+await startWatchMode({
+    listFolders: getCachedFolders,
+    spawnPane,
+    sendPaneText,
+});
+startReviewAutoStart({
+    launchFolderSession,
+    runReviewInitCmd,
+});
+
 await initAuth();
-
-function extractBearerToken(header: string | string[] | undefined): string | undefined {
-    if (typeof header !== 'string') {
-        return undefined;
-    }
-    const trimmed = header.trim();
-    const schemePrefix = 'bearer ';
-    if (trimmed.slice(0, schemePrefix.length).toLowerCase() !== schemePrefix) {
-        return undefined;
-    }
-    return trimmed.slice(schemePrefix.length).trimStart() || undefined;
-}
-
-async function runPostWorktreeCmd({
-    repoPath,
-    worktreePath,
-}: Readonly<{
-    repoPath: string;
-    worktreePath: string;
-}>): Promise<void> {
-    /**
-     * Read-only use of config — `.catch(() => undefined)` so a transient load failure (file mid-
-     * write, etc.) skips the post-worktree cmd instead of throwing through the create endpoint.
-     * `loadConfig` now throws on read/parse failure rather than silently returning defaults, which
-     * means bare `await loadConfig()` would surface those errors here; the post-worktree cmd is
-     * optional, so swallowing is appropriate.
-     */
-    const config = await loadConfig().catch(() => undefined);
-    if (!config) {
-        return;
-    }
-    const repoConfig = config.repos.find((repo) => repo.path === repoPath);
-    const cmd = repoConfig?.postWorktreeCmd || config.postWorktreeCmd;
-    if (!cmd) {
-        return;
-    }
-    const attachment = await attachPane({
-        folder: worktreePath,
-        kind: PaneKind.Shell,
-        onData() {},
-        onExit() {},
-    });
-    attachment.write(`${cmd}\n`);
-    attachment.close();
-}
-
-/**
- * Which AI one tab runs: its own override wins, then its folder's override, then the worktree
- * root's, then the global default. Config is re-read on every call so a spawn always reflects the
- * user's current choice rather than whatever was set when the pane first opened.
- *
- * Undefined when the user has defined no AI at all, or when config can't be read; the daemon falls
- * back to its built-in default in that case.
- */
-async function resolveAiForSession({
-    folder,
-    sessionId,
-}: Readonly<{
-    folder: string;
-    sessionId?: string | undefined;
-}>): Promise<AiDefinition | undefined> {
-    const config = await loadConfig().catch(() => undefined);
-    if (!config) {
-        return undefined;
-    }
-    const sessions = await getFolderSessions(folder);
-    const sessionAi = findAiDefinition({
-        config,
-        aiId: sessions.ai.find((session) => session.id === sessionId)?.aiId,
-    });
-    if (sessionAi) {
-        return sessionAi;
-    }
-    const parentRepoMatches = await Promise.all(
-        config.repos.map(async (repo) => {
-            const children = await listWorktreeChildren(repo.path);
-            return children.includes(folder) ? repo.path : undefined;
-        }),
-    );
-    return getFolderAiDefinition({
-        config,
-        folder,
-        fallbackFolders: parentRepoMatches.filter(check.isTruthy),
-    });
-}
 
 const implementor = createApiImplementor<undefined>()(agentStormService);
 
@@ -312,12 +297,36 @@ const configImplementation = implementor.implementEndpoint(configEndpoint, {
     },
 });
 
+const reviewConfigImplementation = implementor.implementEndpoint(reviewConfigEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await loadReviewConfig(),
+            },
+        };
+    },
+    async [HttpMethod.Put]({requestData}) {
+        await saveReviewConfig(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await loadReviewConfig(),
+            },
+        };
+    },
+});
+
 const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
     async [HttpMethod.Get]() {
         return {
             [HttpStatus.Ok]: {
                 responseData: {
-                    folders: await getCachedFolders(),
+                    folders: (await getCachedFolders()).map((folder) => {
+                        return {
+                            ...folder,
+                            watchMode: getWatchModeInfo(folder.path),
+                        };
+                    }),
+                    folderActivation: getFolderActivation(),
                 },
             },
         };
@@ -403,10 +412,9 @@ const sessionListImplementation = implementor.implementEndpoint(sessionListEndpo
             [HttpStatus.Ok]: {
                 responseData: await reconcileFolderSessions({
                     folder,
-                    liveSessionIds: {
-                        [PaneKind.Ai]: await getLivePaneSessionIds(folder, PaneKind.Ai),
-                        [PaneKind.Shell]: await getLivePaneSessionIds(folder, PaneKind.Shell),
-                    },
+                    liveSessionIds: await mapEnumToObject(PaneKind, (kind) => {
+                        return getLivePaneSessionIds(folder, kind);
+                    }),
                 }),
             },
         };
@@ -480,22 +488,21 @@ const sessionSetAiImplementation = implementor.implementEndpoint(sessionSetAiEnd
             sessionId: requestData.sessionId,
             aiId: requestData.aiId,
         });
-        const resolvedAis =
-            requestData.kind === PaneKind.Ai
-                ? await Promise.all(
-                      sessions.ai.map(async (session) => {
-                          return {
-                              sessionId: session.id,
-                              aiId: (
-                                  await resolveAiForSession({
-                                      folder,
-                                      sessionId: session.id,
-                                  })
-                              )?.id,
-                          };
-                      }),
-                  )
-                : [];
+        const resolvedAis = paneKindRunsAi[requestData.kind]
+            ? await Promise.all(
+                  sessions[requestData.kind].map(async (session) => {
+                      return {
+                          sessionId: session.id,
+                          aiId: (
+                              await resolveAiForSession({
+                                  folder,
+                                  sessionId: session.id,
+                              })
+                          )?.id,
+                      };
+                  }),
+              )
+            : [];
         const switchedAiId = resolvedAis.find(
             (entry) => entry.sessionId === requestData.sessionId,
         )?.aiId;
@@ -557,38 +564,67 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
             kind: requestData.kind,
             sessionId: requestData.sessionId ?? undefined,
         });
-        const aiDefinition = await resolveAiForSession({
-            folder,
-            sessionId,
-        });
-        const session = await findFolderSession({
+        const launch = await resolvePaneLaunch({
             folder,
             kind: requestData.kind,
             sessionId,
         });
-        /**
-         * A tab whose conversation hasn't started yet (its first spawn failed, or the user changed
-         * its AI before it spawned) has nothing of its own to resume, so resuming here would drop
-         * it into another tab's conversation.
-         */
-        const isNewConversation = requestData.kind === PaneKind.Ai && !!session?.isNewConversation;
         await restartPane({
             folder,
             kind: requestData.kind,
             sessionId,
-            aiCmd:
-                isNewConversation && aiDefinition?.newSessionCommand
-                    ? aiDefinition.newSessionCommand
-                    : aiDefinition?.resumeSessionCommand,
-            conversationId: session?.conversationId,
+            aiCmd: launch.aiCmd,
+            conversationId: launch.conversationId,
         });
-        if (isNewConversation) {
-            await markConversationStarted({
-                folder,
-                kind: requestData.kind,
-                sessionId,
-            });
-        }
+        await launch.markStarted(true);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const paneInputImplementation = implementor.implementEndpoint(paneInputEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await sendPaneText(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+/** Switches every open frontend to the requested folder, then launches its session. */
+async function launchRequestedSession({folder: requestedFolder, prompt}: Readonly<LaunchRequest>) {
+    /** The requester usually just created this folder, so the cached listing may predate it. */
+    await refreshFolderInfoNow();
+    const folder = normalizePath(requestedFolder);
+    const isKnownFolder = (await getCachedFolders()).some((info) => {
+        return info.path === folder;
+    });
+    if (!isKnownFolder) {
+        return `"${folder}" is not a folder agent-storm shows. Create it inside a repo agent-storm already lists, then retry.`;
+    }
+    requestFolderActivation(folder);
+    /** Starting a fresh AI can take longer than the requester should wait for an answer. */
+    launchFolderSession({
+        folder,
+        prompt,
+    }).catch((error: unknown) => {
+        log.error(`Failed to launch an AI session in "${folder}": ${String(error)}`);
+    });
+    return undefined;
+}
+
+const watchModeImplementation = implementor.implementEndpoint(watchModeEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await setWatchMode(requestData);
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -647,7 +683,9 @@ const restartDaemonImplementation = implementor.implementEndpoint(restartDaemonE
         await shutdownDaemon().catch(() => {
             /* daemon may already be down; ensureDaemon below will respawn */
         });
-        await waitForDaemonGone(3000);
+        await waitForDaemonGone({
+            seconds: 3,
+        });
         await ensureDaemon();
         return {
             [HttpStatus.Ok]: {
@@ -659,35 +697,43 @@ const restartDaemonImplementation = implementor.implementEndpoint(restartDaemonE
     },
 });
 
+/**
+ * Updates the config entry of the repo that owns `folder`: the folder's parent repo when it's a
+ * worktree, else the folder itself. Unknown folders (stale paths, freshly deleted worktrees, a race
+ * against the folder-info refresh) and unreadable configs are no-ops, since callers only record
+ * best-effort metadata.
+ */
+async function updateOwningRepoConfig({
+    folder,
+    update,
+}: Readonly<{
+    folder: string;
+    update: (repo: Readonly<RepoConfig>) => RepoConfig;
+}>) {
+    const target = normalizePath(folder);
+    const cached = (await getCachedFolders()).find((entry) => entry.path === target);
+    const repoPath = cached?.parentRepoPath ?? cached?.path ?? target;
+    await updateConfig((config) => {
+        if (!config.repos.some((repo) => repo.path === repoPath)) {
+            return undefined;
+        }
+        return {
+            ...config,
+            repos: config.repos.map((repo) => (repo.path === repoPath ? update(repo) : repo)),
+        };
+    });
+}
+
 const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        /**
-         * Stamp `lastInteractedAtMs` on the owning repo's config entry. The given path may be a
-         * top-level repo OR a worktree under one; we look up the folder in the cache and use its
-         * `parentRepoPath` to resolve the repo. Unknown folders (stale paths, freshly-deleted
-         * worktrees, race against folder-info refresh) are no-ops — never error, this is
-         * best-effort metadata.
-         */
-        const target = normalizePath(requestData.folder);
-        const cached = await getCachedFolders();
-        const folder = cached.find((entry) => entry.path === target);
-        const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
-        await updateConfig((config) => {
-            const repoIndex = config.repos.findIndex((repo) => repo.path === repoPath);
-            if (repoIndex === -1) {
-                return undefined;
-            }
-            return {
-                ...config,
-                repos: config.repos.map((repo, index) => {
-                    return index === repoIndex
-                        ? {
-                              ...repo,
-                              lastInteractedAtMs: Date.now(),
-                          }
-                        : repo;
-                }),
-            };
+        await updateOwningRepoConfig({
+            folder: requestData.folder,
+            update(repo) {
+                return {
+                    ...repo,
+                    lastInteractedAtMs: Date.now(),
+                };
+            },
         });
         return {
             [HttpStatus.Ok]: {
@@ -699,32 +745,83 @@ const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint,
     },
 });
 
+const closeEditorWindowImplementation = implementor.implementEndpoint(closeEditorWindowEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await closeReviewWindow(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const readReviewCommentsImplementation = implementor.implementEndpoint(readReviewCommentsEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    comments: await readReviewComments({
+                        folder: requestData.folder,
+                    }),
+                },
+            },
+        };
+    },
+});
+
+const addReviewCommentImplementation = implementor.implementEndpoint(addReviewCommentEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    comments: await addReviewComment(requestData),
+                },
+            },
+        };
+    },
+});
+
+const updateReviewCommentImplementation = implementor.implementEndpoint(
+    updateReviewCommentEndpoint,
+    {
+        async [HttpMethod.Post]({requestData}) {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        comments: await updateReviewComment(requestData),
+                    },
+                },
+            };
+        },
+    },
+);
+
+const deleteReviewCommentImplementation = implementor.implementEndpoint(
+    deleteReviewCommentEndpoint,
+    {
+        async [HttpMethod.Post]({requestData}) {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        comments: await deleteReviewComment(requestData),
+                    },
+                },
+            };
+        },
+    },
+);
+
 const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        /**
-         * Clear `lastInteractedAtMs` on the owning repo's config entry — the inverse of the touch
-         * endpoint. The sidebar's recency filter treats a repo with no timestamp as hidden. Resolve
-         * the owning repo exactly like `touchRepo` (a worktree resolves to its parent, else the
-         * folder itself) and no-op on unknown folders / transient load failures — best-effort,
-         * never error.
-         */
-        const target = normalizePath(requestData.folder);
-        const cached = await getCachedFolders();
-        const folder = cached.find((entry) => entry.path === target);
-        const repoPath = folder?.parentRepoPath ?? folder?.path ?? target;
-        await updateConfig((config) => {
-            const repoIndex = config.repos.findIndex((repo) => repo.path === repoPath);
-            if (repoIndex === -1) {
-                return undefined;
-            }
-            return {
-                ...config,
-                repos: config.repos.map((repo, index) => {
-                    return index === repoIndex
-                        ? omitObjectKeys(repo, ['lastInteractedAtMs'])
-                        : repo;
-                }),
-            };
+        /** The sidebar's recency filter treats a repo with no timestamp as hidden. */
+        await updateOwningRepoConfig({
+            folder: requestData.folder,
+            update(repo) {
+                return omitObjectKeys(repo, ['lastInteractedAtMs']);
+            },
         });
         return {
             [HttpStatus.Ok]: {
@@ -804,7 +901,6 @@ const gitDiffFileImplementation = implementor.implementEndpoint(gitDiffFileEndpo
                 responseData: await getDiffFileContents({
                     ...requestData,
                     folder: normalizePath(requestData.folder),
-                    oldPath: requestData.oldPath ?? undefined,
                 }),
             },
         };
@@ -848,7 +944,6 @@ const gitStageHunkImplementation = implementor.implementEndpoint(gitStageHunkEnd
         await moveHunkAcrossIndex({
             ...requestData,
             folder: normalizePath(requestData.folder),
-            oldPath: requestData.oldPath ?? undefined,
         });
         return {
             [HttpStatus.Ok]: {
@@ -865,7 +960,6 @@ const gitDiscardHunkImplementation = implementor.implementEndpoint(gitDiscardHun
         await discardHunkChanges({
             ...requestData,
             folder: normalizePath(requestData.folder),
-            oldPath: requestData.oldPath ?? undefined,
         });
         return {
             [HttpStatus.Ok]: {
@@ -915,6 +1009,100 @@ const gitHubPrImplementation = implementor.implementEndpoint(gitHubPrEndpoint, {
                         folder: normalizePath(requestData.folder),
                         forceRefresh: requestData.forceRefresh,
                     }),
+                },
+            },
+        };
+    },
+});
+
+const gitHubReviewQueueImplementation = implementor.implementEndpoint(gitHubReviewQueueEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readReviewQueue(),
+            },
+        };
+    },
+    async [HttpMethod.Post]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await refreshReviewQueue(),
+            },
+        };
+    },
+});
+
+const gitHubAssigneeQueueImplementation = implementor.implementEndpoint(
+    gitHubAssigneeQueueEndpoint,
+    {
+        async [HttpMethod.Get]() {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: await readAssigneeQueue(),
+                },
+            };
+        },
+        async [HttpMethod.Post]() {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: await refreshAssigneeQueue(),
+                },
+            };
+        },
+    },
+);
+
+const gitHubReviewFolderImplementation = implementor.implementEndpoint(gitHubReviewFolderEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await resolveReviewFolder(requestData),
+            },
+        };
+    },
+});
+
+const reviewInitImplementation = implementor.implementEndpoint(reviewInitEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await runReviewInitCmd(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const gitHubReviewPrImplementation = implementor.implementEndpoint(gitHubReviewPrEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readReviewPr(requestData),
+            },
+        };
+    },
+});
+
+const manualReviewCopyImplementation = implementor.implementEndpoint(manualReviewCopyEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    folder: await findManualReviewCopy(normalizePath(requestData.folder)),
+                },
+            },
+        };
+    },
+});
+
+const manualReviewStateImplementation = implementor.implementEndpoint(manualReviewStateEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    review: await readManualReviewState(requestData),
                 },
             },
         };
@@ -990,20 +1178,11 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
          * the first attach for the folder + kind pair) uses whatever the user has set. Failure is
          * non-fatal — the daemon falls back to its built-in default (`claude`).
          */
-        const aiDefinition = await resolveAiForSession({
-            folder,
-            sessionId,
-        });
-        const session = await findFolderSession({
+        const launch = await resolvePaneLaunch({
             folder,
             kind,
             sessionId,
         });
-        /**
-         * A tab the user just added gets the AI's new-session command, so it opens a new
-         * conversation instead of resuming the one the tab they already had is showing.
-         */
-        const isNewConversation = kind === PaneKind.Ai && !!session?.isNewConversation;
         const attachment = await attachPane({
             folder,
             kind,
@@ -1012,11 +1191,8 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 foreground: searchParams.foreground,
                 background: searchParams.background,
             },
-            aiCmd:
-                isNewConversation && aiDefinition?.newSessionCommand
-                    ? aiDefinition.newSessionCommand
-                    : aiDefinition?.resumeSessionCommand,
-            conversationId: session?.conversationId,
+            aiCmd: launch.aiCmd,
+            conversationId: launch.conversationId,
             scrollbackLimit,
             onData(data) {
                 webSocket.send(data);
@@ -1027,19 +1203,12 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 }
             },
         });
-        /** Only a spawn that produced a live PTY actually used the new-session command. */
-        if (isNewConversation && attachment.isRunning) {
-            await markConversationStarted({
-                folder,
-                kind,
-                sessionId,
-            });
-        }
+        await launch.markStarted(attachment.isRunning);
         attachmentsByWebSocket.set(webSocket, {
             attachment,
             folder,
             kind,
-            conversationId: kind === PaneKind.Ai ? session?.conversationId : undefined,
+            conversationId: paneKindRunsAi[kind] ? launch.conversationId : undefined,
         });
     },
     message({webSocket, message}) {
@@ -1062,7 +1231,7 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             socketAttachment.attachment.setColors(message.colors);
             return;
         }
-        socketAttachment.attachment.resize(message.resize.cols, message.resize.rows);
+        socketAttachment.attachment.resize(message.resize);
     },
     close({webSocket}) {
         const socketAttachment = attachmentsByWebSocket.get(webSocket);
@@ -1084,12 +1253,11 @@ const implementation = implementApi<undefined>()(agentStormService, {
     clientOriginRequirement,
     async createHostContext({requestHeaders, webSocketDefinition}) {
         const provided = webSocketDefinition
-            ? typeof requestHeaders['sec-websocket-protocol'] === 'string'
+            ? check.isString(requestHeaders['sec-websocket-protocol'])
                 ? requestHeaders['sec-websocket-protocol'].trim()
                 : undefined
             : extractBearerToken(requestHeaders.authorization);
-        const isValid = await verifyAuthToken(provided);
-        if (!isValid) {
+        if (!(await verifyAuthToken(provided))) {
             return {
                 reject: {
                     statusCode: HttpStatus.Unauthorized,
@@ -1103,12 +1271,15 @@ const implementation = implementApi<undefined>()(agentStormService, {
     },
     endpoints: [
         configImplementation,
+        reviewConfigImplementation,
         foldersImplementation,
         updateCheckImplementation,
         createWorktreeImplementation,
         deleteWorktreeImplementation,
         restartPaneImplementation,
         killPanesImplementation,
+        paneInputImplementation,
+        watchModeImplementation,
         sessionListImplementation,
         sessionCreateImplementation,
         sessionRenameImplementation,
@@ -1120,6 +1291,11 @@ const implementation = implementApi<undefined>()(agentStormService, {
         restartDaemonImplementation,
         touchRepoImplementation,
         hideRepoImplementation,
+        closeEditorWindowImplementation,
+        readReviewCommentsImplementation,
+        addReviewCommentImplementation,
+        updateReviewCommentImplementation,
+        deleteReviewCommentImplementation,
         checkPathImplementation,
         createPathImplementation,
         uploadImplementation,
@@ -1135,6 +1311,13 @@ const implementation = implementApi<undefined>()(agentStormService, {
         gitHubCommentImplementation,
         gitHubReactionImplementation,
         gitHubResolveThreadImplementation,
+        gitHubReviewQueueImplementation,
+        gitHubAssigneeQueueImplementation,
+        manualReviewStateImplementation,
+        manualReviewCopyImplementation,
+        gitHubReviewFolderImplementation,
+        reviewInitImplementation,
+        gitHubReviewPrImplementation,
     ],
     webSockets: [ptyImplementation],
 });
@@ -1179,7 +1362,14 @@ const tlsOptions = await readTlsOptions();
  * the default in a hurry.
  */
 const server = fastify({
-    bodyLimit: 25 * 1024 * 1024,
+    bodyLimit: convertByteSize(
+        {
+            megabytes: 25,
+        },
+        {
+            bytes: true,
+        },
+    ).bytes,
     ...(tlsOptions
         ? {
               https: tlsOptions,
@@ -1199,5 +1389,7 @@ const listenAddress = await server.listen({
     port,
     host: '0.0.0.0',
 });
+
+await startLaunchRequestWatch(launchRequestedSession);
 
 log.success(`agent-storm server listening on ${listenAddress}`);

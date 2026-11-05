@@ -1,23 +1,20 @@
-import {css, defineElement, html} from 'element-vir';
+import {css, html} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
-import {loadAvatarUrl, readCachedAvatarUrl} from '../../util/ai-avatar.js';
-import {reportRenderError} from '../../util/client-error-log.js';
+import {getCachedAvatarUrl, loadAvatarUrl} from '../../util/ai-avatar.js';
+import {defineAppElement} from '../define-app-element.js';
 
 /**
  * One AI's avatar at whatever size the caller needs, falling back to the first letter of its name.
  * Owns its own fetch: avatars come back through the API rather than an image URL, so each place
  * that shows one would otherwise repeat the same load-and-cache dance.
  */
-export const VirAiAvatar = defineElement<{
+export const VirAiAvatar = defineAppElement<{
     name: string;
     /** Empty renders the initial-letter fallback, which is also what a deleted image falls back to. */
     avatarFile: string;
     sizePx: number;
 }>()({
     tagName: 'vir-ai-avatar',
-    options: {
-        errorHandler: reportRenderError,
-    },
     state() {
         return {
             /** Bumped when a fetch resolves, purely to trigger a re-render off the shared cache. */
@@ -39,15 +36,18 @@ export const VirAiAvatar = defineElement<{
             overflow: hidden;
             border-radius: 50%;
             object-fit: cover;
-            font-family: ui-sans-serif, system-ui, sans-serif;
             font-weight: 600;
             text-transform: uppercase;
             background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
+
+        img.avatar {
+            background: transparent;
+        }
     `,
     render({inputs, state, updateState}) {
-        const cachedUrl = inputs.avatarFile ? readCachedAvatarUrl(inputs.avatarFile) : undefined;
+        const cachedUrl = inputs.avatarFile ? getCachedAvatarUrl(inputs.avatarFile) : undefined;
         if (inputs.avatarFile && !cachedUrl && state.requestedFile !== inputs.avatarFile) {
             updateState({
                 requestedFile: inputs.avatarFile,

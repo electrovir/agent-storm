@@ -4,7 +4,7 @@ Web-based multi-folder development environment for running AI coding sessions (C
 
 ## Migrating from an older version
 
-To carry over your repo list and preferences from the old CLI version of agent-storm, convert the old TOML file (`~/.config/agent-storm.toml`) to JSON (`~/.config/agent-storm.json`) following the schema (`configJsonSchema`) defined in `packages/common/src/api.ts`.
+To carry over your repo list and preferences from the old CLI version of agent-storm, convert the old TOML file (`~/.config/agent-storm.toml`) to JSON (`~/.agent-storm/config.json`) following the schema (`configJsonSchema`) defined in `packages/common/src/api.ts`.
 
 ## Get started
 
@@ -31,4 +31,4 @@ If you lose the secret, delete `.not-committed/auth-secret` at the repo root and
 
 ## Config
 
-User config lives at `~/.config/agent-storm.json`. The settings modal (gear icon, top of the sidebar) edits it in-place.
+User config lives at `~/.agent-storm/config.json`. The settings modal (gear icon, top of the sidebar) edits it in-place.

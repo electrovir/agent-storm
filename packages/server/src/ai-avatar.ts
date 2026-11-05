@@ -8,7 +8,7 @@ import {
     type AnyDuration,
 } from 'date-vir';
 import {mkdir, readdir, readFile, stat, unlink, writeFile} from 'node:fs/promises';
-import {extname, join} from 'node:path';
+import {basename, extname, join} from 'node:path';
 import {avatarsDir} from './file-paths.js';
 
 /**
@@ -34,9 +34,16 @@ const maxAvatarBytes = 1024 * 1024;
 /**
  * Filenames this module produces, and therefore the only ones it will read back. Matching against
  * the pattern (rather than sanitizing on read) is what keeps a crafted `avatarFile` in the config
- * from reaching outside {@link avatarsDir}.
+ * from reaching outside {@link avatarsDir}. The 16-hex-digit form is what existing avatar files on
+ * disk are named, and configs still point at them.
  */
-const avatarFileNamePattern = /^(?:[a-f0-9]{16}|[a-z0-9]{24})\.(?:png|jpe?g|webp|gif)$/;
+function isAvatarFileName(fileName: string) {
+    const extension = extname(fileName);
+    return (
+        !!avatarMimeTypes[extension] &&
+        /^(?:[a-f0-9]{16}|[a-z0-9]{24})$/.test(basename(fileName, extension))
+    );
+}
 
 /**
  * How long an avatar file is protected from pruning regardless of whether any definition references
@@ -80,7 +87,7 @@ export async function saveAiAvatar({
 export async function readAiAvatar(
     avatarFile: string,
 ): Promise<{dataBase64: string; mimeType: string}> {
-    if (!avatarFileNamePattern.test(avatarFile)) {
+    if (!isAvatarFileName(avatarFile)) {
         throw new Error(`'${avatarFile}' is not an avatar file name.`);
     }
     const mimeType = avatarMimeTypes[extname(avatarFile).toLowerCase()];
@@ -96,8 +103,8 @@ export async function readAiAvatar(
 
 /**
  * Delete avatar files no definition points at anymore, which is how replacing or removing an avatar
- * gets cleaned up. Only touches files this module wrote (see {@link avatarFileNamePattern}) and only
- * once they're past {@link pruneGracePeriod}, and swallows every failure — a stuck file is not worth
+ * gets cleaned up. Only touches files this module wrote (see {@link isAvatarFileName}) and only once
+ * they're past {@link pruneGracePeriod}, and swallows every failure — a stuck file is not worth
  * failing a config save over.
  */
 export async function pruneAiAvatars(
@@ -111,7 +118,7 @@ export async function pruneAiAvatars(
     const cutoff = calculateRelativeDate(getNowInUserTimezone(), pruneGracePeriod);
     await Promise.all(
         entries.map(async (entry) => {
-            if (!avatarFileNamePattern.test(entry) || referenced.includes(entry)) {
+            if (!isAvatarFileName(entry) || referenced.includes(entry)) {
                 return;
             }
             const filePath = join(avatarsDir, entry);

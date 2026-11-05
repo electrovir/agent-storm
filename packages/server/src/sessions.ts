@@ -1,11 +1,27 @@
-import {PaneKind, type FolderSessions, type SessionMeta} from '@agent-storm/common';
+import {
+    folderSessionsShape,
+    PaneKind,
+    paneKindRunsAi,
+    type FolderSessions,
+    type SessionMeta,
+} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {createCuid2, getObjectTypedKeys, wrapInTry} from '@augment-vir/common';
-import {mkdir, readdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
+import {
+    createCuid2,
+    getEnumValues,
+    getObjectTypedEntries,
+    getObjectTypedKeys,
+    mapEnumToObject,
+    omitObjectKeys,
+    wrapInTry,
+} from '@augment-vir/common';
+import {readdir, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
+import {checkValidShape} from 'object-shape-tester';
 import {defaultSessionId} from './daemon/protocol.js';
-import {conversationStateDir, notCommittedDir, sessionStorePath} from './file-paths.js';
+import {conversationStateDir, sessionStorePath} from './file-paths.js';
 import {normalizePath} from './paths.js';
+import {writeFileAtomically} from './write-file-atomically.js';
 
 /**
  * On-disk shape: folder path → per-kind ordered session lists. Folder keys are always normalized
@@ -22,66 +38,70 @@ const storeState: {
     pendingWrite: Promise.resolve(),
 };
 
-function isSessionMetaArray(value: unknown): value is SessionMeta[] {
-    return (
-        Array.isArray(value) &&
-        value.every((entry) => {
-            return (
-                !!entry &&
-                typeof entry === 'object' &&
-                typeof (entry as SessionMeta).id === 'string' &&
-                !!(entry as SessionMeta).id
-            );
-        })
-    );
-}
+/**
+ * The only conversation ids kept from disk. Anything else is replaced, because the id ends up in a
+ * file path under {@link conversationStateDir}.
+ */
+const conversationIdPattern = /^[a-z0-9]+$/;
 
-function normalizeStoredSession(entry: Readonly<SessionMeta>): SessionMeta {
+function createSessionMeta({
+    id,
+    isNewConversation,
+}: Readonly<Pick<SessionMeta, 'id' | 'isNewConversation'>>): SessionMeta {
     return {
-        id: entry.id,
-        name: check.isString(entry.name) ? entry.name : '',
-        /** Absent in stores written before per-tab AI overrides existed. */
-        aiId: check.isString(entry.aiId) ? entry.aiId : '',
-        /**
-         * Absent in stores written before per-tab conversations existed. Also regenerated when it
-         * isn't a plain id, because it ends up in a file path under {@link conversationStateDir}.
-         */
-        conversationId:
-            check.isString(entry.conversationId) && /^[a-z0-9]+$/.test(entry.conversationId)
-                ? entry.conversationId
-                : createCuid2(),
-        isNewConversation: check.isTrue(entry.isNewConversation),
+        id,
+        name: '',
+        aiId: '',
+        conversationId: createCuid2(),
+        isNewConversation,
     };
 }
 
 /**
- * Parse whatever is on disk into a store, dropping anything malformed. A corrupt or partially
- * written file costs the user their tab names, which is recoverable; throwing here would take the
- * whole backend down over a cache file, which is not.
+ * Parse whatever is on disk into a store, dropping any folder whose entry doesn't match
+ * {@link folderSessionsShape} and any session with an empty id. A corrupt or partially written file
+ * costs the user their tab names, which is recoverable; throwing here would take the whole backend
+ * down over a cache file, which is not.
  */
 export function parseSessionStore(contents: string): SessionStore {
     const parsed: unknown = wrapInTry(() => JSON.parse(contents) as unknown, {
         fallbackValue: undefined,
     });
-    if (!parsed || typeof parsed !== 'object') {
+    if (!check.isObject(parsed) || check.isArray(parsed)) {
         return {};
     }
-    const raw = parsed as Record<string, unknown>;
-    return getObjectTypedKeys(raw).reduce<SessionStore>((store, folder) => {
-        const value = raw[folder] as Partial<FolderSessions> | undefined;
-        const ai = isSessionMetaArray(value?.ai) ? value.ai : [];
-        const shell = isSessionMetaArray(value?.shell) ? value.shell : [];
-        if (ai.length === 0 && shell.length === 0) {
-            return store;
-        }
-        return {
-            ...store,
-            [normalizePath(folder)]: {
-                ai: ai.map((entry) => normalizeStoredSession(entry)),
-                shell: shell.map((entry) => normalizeStoredSession(entry)),
-            },
-        };
-    }, {});
+    return getObjectTypedEntries(parsed).reduce<SessionStore>(
+        (
+            store,
+            [
+                folder,
+                value,
+            ],
+        ) => {
+            if (!check.isString(folder) || !checkValidShape(value, folderSessionsShape)) {
+                return store;
+            }
+            const sessions = mapEnumToObject(PaneKind, (kind) => {
+                return value[kind]
+                    .filter((session) => session.id)
+                    .map((session) => {
+                        return conversationIdPattern.test(session.conversationId)
+                            ? session
+                            : {
+                                  ...session,
+                                  conversationId: createCuid2(),
+                              };
+                    });
+            });
+            return getEnumValues(PaneKind).some((kind) => sessions[kind].length)
+                ? {
+                      ...store,
+                      [normalizePath(folder)]: sessions,
+                  }
+                : store;
+        },
+        {},
+    );
 }
 
 async function loadStore(): Promise<SessionStore> {
@@ -92,8 +112,8 @@ async function loadStore(): Promise<SessionStore> {
     const store = contents?.trim() ? parseSessionStore(contents) : {};
     storeState.loaded = store;
     /**
-     * Parsing generates a conversation id for any tab missing one. Persist those right away, or the
-     * next backend start would generate different ones and every tab would lose its conversation.
+     * Parsing replaces unsafe conversation ids. Persist those right away, or the next backend start
+     * would generate different ones and those tabs would lose their conversation.
      */
     if (contents && JSON.stringify(store, undefined, 4) !== contents) {
         persistStore(store);
@@ -101,11 +121,7 @@ async function loadStore(): Promise<SessionStore> {
     return store;
 }
 
-/**
- * Persist the in-memory store. Writes are chained rather than concurrent, and staged through a temp
- * file then `rename`d over the destination — `rename` is atomic on POSIX within a filesystem, so a
- * crash mid-write leaves the previous version intact instead of a truncated file.
- */
+/** Writes are chained rather than concurrent, so an older snapshot can never land last. */
 function persistStore(store: Readonly<SessionStore>): void {
     const snapshot = JSON.stringify(store, undefined, 4);
     storeState.pendingWrite = storeState.pendingWrite
@@ -113,12 +129,10 @@ function persistStore(store: Readonly<SessionStore>): void {
             /* a prior write failed; carry on so this one still gets a chance */
         })
         .then(async () => {
-            await mkdir(notCommittedDir, {
-                recursive: true,
+            await writeFileAtomically({
+                path: sessionStorePath,
+                contents: snapshot,
             });
-            const tempPath = `${sessionStorePath}.tmp.${process.pid}`;
-            await writeFile(tempPath, snapshot, 'utf-8');
-            await rename(tempPath, sessionStorePath);
         })
         .catch(() => {
             /* persistence is best-effort — a lost write only costs tab names */
@@ -149,28 +163,24 @@ export async function getFolderSessions(folderPath: string): Promise<FolderSessi
     const folder = normalizePath(folderPath);
     const store = await loadStore();
     const existing = store[folder];
-    const ensured: FolderSessions = {
-        ai: existing?.ai.length ? existing.ai : [initialSession()],
-        shell: existing?.shell.length ? existing.shell : [initialSession()],
-    };
+    const ensured = mapEnumToObject(PaneKind, (kind) => {
+        return existing?.[kind].length
+            ? existing[kind]
+            : [
+                  createSessionMeta({
+                      id: defaultSessionId,
+                      isNewConversation: false,
+                  }),
+              ];
+    });
     /**
      * Only touch disk when the defaults were actually synthesized, so a plain read of an
      * already-populated folder stays read-only.
      */
-    if (!existing?.ai.length || !existing.shell.length) {
+    if (getEnumValues(PaneKind).some((kind) => !existing?.[kind].length)) {
         writeFolder(folder, ensured);
     }
     return ensured;
-}
-
-function initialSession(): SessionMeta {
-    return {
-        id: defaultSessionId,
-        name: '',
-        aiId: '',
-        conversationId: createCuid2(),
-        isNewConversation: false,
-    };
 }
 
 /**
@@ -309,18 +319,15 @@ export async function createFolderSession({
         ...current,
         [kind]: [
             ...current[kind],
-            {
+            createSessionMeta({
                 id: createCuid2(),
-                name: '',
-                aiId: '',
-                conversationId: createCuid2(),
                 /**
                  * An AI's resume command is usually written to pick the last conversation back up
                  * (`claude --continue` and the like), so a new tab launched with it would show the
                  * conversation another tab already holds.
                  */
-                isNewConversation: kind === PaneKind.Ai,
-            },
+                isNewConversation: paneKindRunsAi[kind],
+            }),
         ],
     };
     writeFolder(folder, updated);
@@ -339,21 +346,19 @@ export async function renameFolderSession({
     name: string;
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
-    const current = await getFolderSessions(folder);
-    const updated: FolderSessions = {
-        ...current,
-        [kind]: current[kind].map((session) => {
-            return session.id === sessionId
-                ? {
-                      ...session,
-                      /** Empty reverts the label to the tab's 1-based index. */
-                      name: name.trim(),
-                  }
-                : session;
-        }),
-    };
-    writeFolder(folder, updated);
-    return updated;
+    return updateFolderSession({
+        folder,
+        kind,
+        sessions: await getFolderSessions(folder),
+        sessionId,
+        update(session) {
+            return {
+                ...session,
+                /** Empty reverts the label to the tab's 1-based index. */
+                name: name.trim(),
+            };
+        },
+    });
 }
 
 /**
@@ -372,20 +377,18 @@ export async function setFolderSessionAi({
     aiId: string;
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
-    const current = await getFolderSessions(folder);
-    const updated: FolderSessions = {
-        ...current,
-        [kind]: current[kind].map((session) => {
-            return session.id === sessionId
-                ? {
-                      ...session,
-                      aiId,
-                  }
-                : session;
-        }),
-    };
-    writeFolder(folder, updated);
-    return updated;
+    return updateFolderSession({
+        folder,
+        kind,
+        sessions: await getFolderSessions(folder),
+        sessionId,
+        update(session) {
+            return {
+                ...session,
+                aiId,
+            };
+        },
+    });
 }
 
 function pruneSessionListAiIds({
@@ -414,7 +417,9 @@ export async function pruneSessionAiIds({
     const folders = getObjectTypedKeys(store);
     const hasStaleAiId = folders.some((folder) => {
         const sessions = store[folder];
-        return !!sessions?.ai.some((session) => session.aiId && !validAiIds.includes(session.aiId));
+        return !!sessions?.[PaneKind.Ai].some((session) => {
+            return session.aiId && !validAiIds.includes(session.aiId);
+        });
     });
     if (!hasStaleAiId) {
         return;
@@ -426,8 +431,8 @@ export async function pruneSessionAiIds({
                   ...next,
                   [folder]: {
                       ...sessions,
-                      ai: pruneSessionListAiIds({
-                          sessions: sessions.ai,
+                      [PaneKind.Ai]: pruneSessionListAiIds({
+                          sessions: sessions[PaneKind.Ai],
                           validAiIds,
                       }),
                   },
@@ -491,25 +496,15 @@ export async function forgetFolderSessions(folderPath: string): Promise<void> {
     if (!forgotten) {
         return;
     }
-    const updated = getObjectTypedKeys(store).reduce<SessionStore>((next, key) => {
-        if (key === folder) {
-            return next;
-        }
-        const value = store[key];
-        return value
-            ? {
-                  ...next,
-                  [key]: value,
-              }
-            : next;
-    }, {});
+    const updated = omitObjectKeys(store, [
+        folder,
+    ]);
     storeState.loaded = updated;
     persistStore(updated);
     await forgetConversationState(
-        [
-            ...forgotten.ai,
-            ...forgotten.shell,
-        ].map((session) => session.conversationId),
+        getEnumValues(PaneKind).flatMap((kind) => {
+            return forgotten[kind].map((session) => session.conversationId);
+        }),
     );
 }
 
@@ -528,36 +523,21 @@ export async function reconcileFolderSessions({
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
     const stored = await getFolderSessions(folder);
-    const merged = Object.values(PaneKind).reduce<FolderSessions>(
-        (next, kind) => {
-            const known = new Set(next[kind].map((session) => session.id));
-            const orphans = liveSessionIds[kind]
-                .filter((id) => !known.has(id))
-                .map((id): SessionMeta => {
-                    return {
+    const merged = mapEnumToObject(PaneKind, (kind) => {
+        const knownIds = stored[kind].map((session) => session.id);
+        return [
+            ...stored[kind],
+            ...liveSessionIds[kind]
+                .filter((id) => !knownIds.includes(id))
+                .map((id) => {
+                    return createSessionMeta({
                         id,
-                        name: '',
-                        aiId: '',
-                        conversationId: createCuid2(),
                         isNewConversation: false,
-                    };
-                });
-            return orphans.length === 0
-                ? next
-                : {
-                      ...next,
-                      [kind]: [
-                          ...next[kind],
-                          ...orphans,
-                      ],
-                  };
-        },
-        {
-            ai: stored.ai,
-            shell: stored.shell,
-        },
-    );
-    if (merged.ai.length !== stored.ai.length || merged.shell.length !== stored.shell.length) {
+                    });
+                }),
+        ];
+    });
+    if (getEnumValues(PaneKind).some((kind) => merged[kind].length !== stored[kind].length)) {
         writeFolder(folder, merged);
     }
     return merged;

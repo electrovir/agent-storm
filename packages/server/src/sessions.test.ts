@@ -1,4 +1,4 @@
-import {PaneKind} from '@agent-storm/common';
+import {PaneKind, type SessionMeta} from '@agent-storm/common';
 import {assert, assertWrap} from '@augment-vir/assert';
 import {omitObjectKeys} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
@@ -25,6 +25,17 @@ import {
  * tests must not share folder paths — a fixed path would accumulate sessions across runs and drift.
  * A fresh temp directory per test keeps each one hermetic.
  */
+function storedSession(overrides: Readonly<Partial<SessionMeta>>): SessionMeta {
+    return {
+        id: 'stored',
+        name: '',
+        aiId: '',
+        conversationId: 'conversation',
+        isNewConversation: false,
+        ...overrides,
+    };
+}
+
 async function withTempFolder(run: (folder: string) => Promise<void>): Promise<void> {
     const folder = await mkdtemp(join(tmpdir(), 'agent-storm-sessions-'));
     try {
@@ -394,22 +405,26 @@ describe(parseSessionStore.name, () => {
         assert.deepEquals(parseSessionStore('[]'), {});
     });
 
-    it('drops entries whose sessions are malformed', () => {
+    it('drops folders that do not match the shape, and sessions with no id', () => {
         const parsed = parseSessionStore(
             JSON.stringify({
                 '/tmp/keeps-valid': {
                     ai: [
-                        {
+                        storedSession({
                             id: 'a',
                             name: 'named',
-                        },
+                        }),
+                        storedSession({
+                            id: '',
+                        }),
                     ],
                     shell: [],
                 },
-                '/tmp/drops-no-id': {
+                '/tmp/drops-missing-fields': {
                     ai: [
                         {
-                            name: 'no id here',
+                            id: 'b',
+                            name: 'no conversation id',
                         },
                     ],
                     shell: [],
@@ -417,37 +432,17 @@ describe(parseSessionStore.name, () => {
             }),
         );
 
-        assert.deepEquals(
-            parsed['/tmp/keeps-valid']?.ai.map((session) => {
-                return omitObjectKeys(session, ['conversationId']);
-            }),
-            [
-                {
-                    id: 'a',
-                    name: 'named',
-                    aiId: '',
-                    isNewConversation: false,
-                },
-            ],
-        );
-        assert.isUndefined(parsed['/tmp/drops-no-id']);
-    });
-
-    it('defaults a missing name to empty', () => {
-        const parsed = parseSessionStore(
-            JSON.stringify({
-                '/tmp/nameless': {
-                    ai: [
-                        {
-                            id: 'a',
-                        },
-                    ],
-                    shell: [],
-                },
-            }),
-        );
-
-        assert.strictEquals(parsed['/tmp/nameless']?.ai[0]?.name, '');
+        assert.deepEquals(parsed, {
+            '/tmp/keeps-valid': {
+                ai: [
+                    storedSession({
+                        id: 'a',
+                        name: 'named',
+                    }),
+                ],
+                shell: [],
+            },
+        });
     });
 
     it('replaces a conversation id that is unsafe in a file path', () => {
@@ -455,10 +450,10 @@ describe(parseSessionStore.name, () => {
             JSON.stringify({
                 '/tmp/unsafe': {
                     ai: [
-                        {
+                        storedSession({
                             id: 'a',
                             conversationId: '../../escape',
-                        },
+                        }),
                     ],
                     shell: [],
                 },

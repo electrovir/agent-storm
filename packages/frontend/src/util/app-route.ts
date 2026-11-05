@@ -1,0 +1,268 @@
+import {PaneKind, type FolderInfo, type ReviewQueuePr} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {type FolderDataObservable} from './folder-data.js';
+import {pullRequestRouteKey} from './frontend-state.js';
+import {defaultFrontendTab} from './frontend-tab.js';
+import {
+    bareMainTabPaths,
+    defaultMainTab,
+    MainTab,
+    mainTabFromRoute,
+    rememberedSessionIndexForFolder,
+    rememberedTabForFolder,
+    router,
+    type AppRoute,
+    type AppRouteUpdate,
+    type FrontendPaths,
+} from './router.js';
+
+type PullRequestRef = Pick<ReviewQueuePr, 'owner' | 'repoName' | 'number'>;
+
+/**
+ * The folder a Build route's segments (after the main-tab segment) select, or `isInvalid` when the
+ * URL can't be valid given the current folder list (e.g. `/build/<repoName>` where that repo has
+ * worktrees, or `/build/<repoName>/<worktreeName>` where neither exists).
+ */
+function resolveBuildFolder(
+    routePaths: ReadonlyArray<string>,
+    folderInfo: ReadonlyMap<string, FolderInfo>,
+) {
+    /**
+     * Bail before folder info has loaded so we don't redirect a URL that might be perfectly valid
+     * once data arrives.
+     */
+    if (routePaths.length === 0 || folderInfo.size === 0) {
+        return {
+            folder: undefined,
+            isInvalid: false,
+        };
+    }
+    const [
+        repoName,
+        worktreeName,
+    ] = routePaths;
+    const folders = Array.from(folderInfo.values());
+    if (!worktreeName) {
+        /**
+         * Single-segment URL: only valid if it matches a standalone (non-worktree-root, no-parent)
+         * repo. Worktree-root matches are explicitly invalid per the route spec — the user must
+         * pick a worktree segment.
+         */
+        const standalone = folders.find((folder) => {
+            return folder.name === repoName && !folder.isWorktreeRoot && !folder.parentRepoPath;
+        });
+        return {
+            folder: standalone,
+            isInvalid: !standalone,
+        };
+    }
+    const repoRoot = folders.find((folder) => folder.name === repoName && folder.isWorktreeRoot);
+    const worktree =
+        repoRoot &&
+        folders.find(
+            (folder) => folder.parentRepoPath === repoRoot.path && folder.name === worktreeName,
+        );
+    return {
+        folder: worktree,
+        isInvalid: !worktree,
+    };
+}
+
+/**
+ * Compute the URL paths that should represent the given folder, always under the Build tab.
+ *
+ * - Standalone repo → `[build, folder.name]`.
+ * - Worktree child → `[build, parentRepoName, folder.name]` (we resolve the parent's name through
+ *   `folderInfo`; falls back to its basename via `parentRepoPath` if for some reason the parent
+ *   isn't in the map).
+ * - Worktree root → `[build, folder.name]` (the activation path for worktree-roots is "user clicked a
+ *   child", so this branch is mostly defensive; if it ever fires the redirect-to-root logic above
+ *   will undo it on the next render).
+ */
+function pathsForFolder(
+    folder: Readonly<FolderInfo>,
+    folderInfo: ReadonlyMap<string, FolderInfo>,
+): FrontendPaths {
+    if (folder.parentRepoPath) {
+        const parent = folderInfo.get(folder.parentRepoPath);
+        const parentName = parent?.name || folder.parentRepoPath.split('/').findLast(Boolean);
+        return [
+            MainTab.Build,
+            parentName || folder.parentRepoPath,
+            folder.name,
+        ];
+    }
+    return [
+        MainTab.Build,
+        folder.name,
+    ];
+}
+
+/**
+ * Search params restoring the pane tab and session tabs last used under `memoryKey`, rather than
+ * carrying the previous selection's params across (landing on another repo's Diff tab, or its AI
+ * session 3, is surprising) or resetting everything to the defaults (which loses the pane and
+ * session you were deliberately using there). A remembered session that no longer exists is
+ * corrected by the pane group once it has the folder's live session list.
+ */
+function rememberedPaneSearch(memoryKey: string) {
+    const rememberedTab = rememberedTabForFolder(memoryKey);
+    const aiSession = rememberedSessionIndexForFolder(memoryKey, PaneKind.Ai);
+    const shellSession = rememberedSessionIndexForFolder(memoryKey, PaneKind.Shell);
+    const search = {
+        ...(rememberedTab === defaultFrontendTab
+            ? {}
+            : {
+                  tab: [rememberedTab],
+              }),
+        ...(aiSession > 1
+            ? {
+                  aiSession: [String(aiSession)],
+              }
+            : {}),
+        ...(shellSession > 1
+            ? {
+                  shellSession: [String(shellSession)],
+              }
+            : {}),
+    };
+    return Object.keys(search).length ? search : undefined;
+}
+
+/** The route for selecting `folder`, with the pane tab and session tabs it was last on. */
+export function routeForFolder(
+    folder: Readonly<FolderInfo>,
+    folderInfo: ReadonlyMap<string, FolderInfo>,
+): AppRouteUpdate {
+    return {
+        paths: pathsForFolder(folder, folderInfo),
+        search: rememberedPaneSearch(folder.path),
+    };
+}
+
+/** The route for selecting a pull request, with the pane tab and session tabs it was last on. */
+export function routeForPullRequest(pullRequest: Readonly<PullRequestRef>): AppRouteUpdate {
+    return {
+        paths: [
+            MainTab.Review,
+            pullRequest.owner,
+            pullRequest.repoName,
+            String(pullRequest.number),
+        ],
+        search: rememberedPaneSearch(pullRequestRouteKey(pullRequest)),
+    };
+}
+
+/**
+ * Routes to the folder an AI asks to switch to. Only the visible tab follows, so a background tab
+ * doesn't change under the user, and only once per request, so the user can switch away. Returns
+ * the listener's remover.
+ */
+export function followFolderActivations(
+    folderData: Readonly<Pick<FolderDataObservable, 'listen'>>,
+): () => void {
+    const followed: {
+        requestId: string | undefined;
+    } = {
+        requestId: undefined,
+    };
+    return folderData.listen(true, ({live, folderInfo}) => {
+        const folderActivation = live?.listing.folderActivation;
+        const folder = folderActivation && folderInfo.get(folderActivation.folder);
+        if (
+            folderActivation &&
+            folder &&
+            folderActivation.requestId !== followed.requestId &&
+            document.visibilityState === 'visible'
+        ) {
+            followed.requestId = folderActivation.requestId;
+            router.setRoute(routeForFolder(folder, folderInfo));
+        }
+    });
+}
+
+/**
+ * Everything the app derives from the URL and the live data: which tab, folder, and pull request it
+ * selects, where each main tab goes when opened with nothing selected, and the route to switch to
+ * when the URL is invalid or names nothing (`redirect`).
+ *
+ * `reviewablePrs` is undefined until the review queue loads, and while it is no pull request can be
+ * selected.
+ */
+export function resolveAppRoute({
+    route,
+    folderInfo,
+    isDebugTabShown,
+    reviewablePrs,
+    rememberedFolderPath,
+    rememberedPullRequestKey,
+}: Readonly<{
+    route: AppRoute;
+    folderInfo: ReadonlyMap<string, FolderInfo>;
+    isDebugTabShown: boolean;
+    reviewablePrs: ReadonlyArray<Readonly<PullRequestRef>> | undefined;
+    rememberedFolderPath: string | undefined;
+    rememberedPullRequestKey: string | undefined;
+}>) {
+    const mainTab = mainTabFromRoute(route);
+    const buildFolder =
+        mainTab === MainTab.Build
+            ? resolveBuildFolder(route.paths.slice(1), folderInfo)
+            : {
+                  folder: undefined,
+                  isInvalid: false,
+              };
+    const reviewQueueKeys = reviewablePrs?.map((pr) => pullRequestRouteKey(pr));
+    const routedPullRequest =
+        mainTab === MainTab.Review && check.isLengthExactly(route.paths, 4)
+            ? route.paths.slice(1).join('/')
+            : undefined;
+    /**
+     * A PR that has left the review queue can't be selected, even from its URL. The cached queue
+     * isn't enough to allow one: opening a PR that has since left would respawn its AI pane.
+     */
+    const activePullRequest =
+        routedPullRequest && reviewQueueKeys?.includes(routedPullRequest)
+            ? routedPullRequest
+            : undefined;
+    const rememberedFolder = folderInfo.get(rememberedFolderPath || '');
+    const rememberedPullRequest = reviewablePrs?.find((pr) => {
+        return pullRequestRouteKey(pr) === rememberedPullRequestKey;
+    });
+    const restoredRouteByMainTab: Readonly<Record<MainTab, AppRouteUpdate | undefined>> = {
+        [MainTab.Dashboard]: undefined,
+        [MainTab.Build]: rememberedFolder && routeForFolder(rememberedFolder, folderInfo),
+        [MainTab.Review]: rememberedPullRequest && routeForPullRequest(rememberedPullRequest),
+        [MainTab.Debug]: undefined,
+    };
+    const restoredRoute = route.paths.length === 1 ? restoredRouteByMainTab[mainTab] : undefined;
+
+    const redirect =
+        mainTab === MainTab.Debug && !isDebugTabShown
+            ? {
+                  route: {
+                      paths: bareMainTabPaths[defaultMainTab],
+                  },
+                  replace: true,
+              }
+            : buildFolder.isInvalid
+              ? {
+                    route: {
+                        paths: bareMainTabPaths[MainTab.Build],
+                    },
+                    replace: false,
+                }
+              : restoredRoute && {
+                    route: restoredRoute,
+                    replace: true,
+                };
+
+    return {
+        mainTab,
+        activeFolder: buildFolder.folder,
+        activePullRequest,
+        reviewQueueKeys,
+        restoredRouteByMainTab,
+        redirect,
+    };
+}

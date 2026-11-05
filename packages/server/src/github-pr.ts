@@ -6,22 +6,30 @@ import {
     GitHubPrState,
     GitHubReaction,
     GitHubReviewState,
-    type GitHubCheck,
-    type GitHubComment,
-    type GitHubPr,
-    type GitHubReactionGroup,
-    type GitHubReview,
-    type GitHubReviewRequest,
-    type GitHubReviewThread,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {getObjectTypedEntries} from '@augment-vir/common';
+import {getObjectTypedEntries, wrapInTry} from '@augment-vir/common';
+import {convertDuration, type AnyDuration} from 'date-vir';
+import {
+    assertWrapValidShape,
+    defineShape,
+    enumShape,
+    exactShape,
+    nullableShape,
+    optionalShape,
+    parseJsonWithShape,
+    unionShape,
+    unknownShape,
+} from 'object-shape-tester';
 import {getCurrentBranch, getRepoSlug, runGh} from './git.js';
-
-/**
- * Possibly unused: only the frontend's `vir-github-pane`, which nothing renders anymore, calls into
- * this file. Delete it with that pane unless some of it gets reused soon.
- */
+import {
+    checkResultStates,
+    RawCheckContextType,
+    RawCheckResult,
+    RawCheckStatus,
+    RawPrState,
+    RawReviewState,
+} from './github-raw-enums.js';
 
 /**
  * Per-connection caps on the one PR query. Each `first:` multiplies into GitHub's GraphQL cost
@@ -34,9 +42,14 @@ const maxThreadComments = 20;
 const maxConversationComments = 50;
 const maxReviews = 20;
 
-const reactionGroupFields = 'reactionGroups { content viewerHasReacted reactors { totalCount } }';
+/** Ten names is as many as github.com lists in a reaction's hover text before "and N more". */
+const reactionGroupFields =
+    'reactionGroups { content viewerHasReacted reactors(first: 10) { totalCount nodes { ... on Actor { login } } } }';
 
-const commentFields = [
+/** The fields {@link rawReviewShape} validates. */
+export const reviewFields = 'id state body bodyHTML createdAt url author { login avatarUrl }';
+
+export const commentFields = [
     'id',
     'body',
     'bodyHTML',
@@ -67,6 +80,13 @@ const statusCheckRollupFields = [
     '}',
 ].join('\n');
 
+/**
+ * A requested reviewer is a `User`, a `Bot`, a `Mannequin`, or a `Team`; only `Team` is named
+ * rather than logged in.
+ */
+export const reviewRequestFields =
+    'requestedReviewer { __typename ... on User { login avatarUrl } ... on Bot { login avatarUrl } ... on Mannequin { login avatarUrl } ... on Team { name avatarUrl } }';
+
 const prQuery = [
     'query($owner: String!, $name: String!, $branch: String!) {',
     '  repository(owner: $owner, name: $name) {',
@@ -74,13 +94,10 @@ const prQuery = [
     '      nodes {',
     '        id number url title titleHTML body bodyHTML state isDraft baseRefName headRefName createdAt',
     '        author { login avatarUrl }',
+    '        baseRepository { name owner { login } }',
     `        commits(last: 1) { nodes { commit { ${statusCheckRollupFields} } } }`,
-    `        latestReviews(first: ${maxReviews}) { nodes { id state body bodyHTML createdAt url author { login avatarUrl } } }`,
-    /**
-     * A requested reviewer is a `User`, a `Bot`, a `Mannequin`, or a `Team`; only `Team` is named
-     * rather than logged in.
-     */
-    `        reviewRequests(first: ${maxReviews}) { nodes { requestedReviewer { __typename ... on User { login avatarUrl } ... on Bot { login avatarUrl } ... on Mannequin { login avatarUrl } ... on Team { name avatarUrl } } } }`,
+    `        latestReviews(first: ${maxReviews}) { nodes { ${reviewFields} } }`,
+    `        reviewRequests(first: ${maxReviews}) { nodes { ${reviewRequestFields} } }`,
     `        reviewThreads(first: ${maxThreads}) {`,
     '          nodes {',
     '            id path line isResolved isOutdated viewerCanResolve viewerCanUnresolve',
@@ -137,24 +154,26 @@ const unresolveThreadMutation = [
     '}',
 ].join('\n');
 
-type GraphqlResponse = {
-    data?: unknown;
-    errors?: ReadonlyArray<{message?: string}>;
-};
+const graphqlResponseShape = defineShape({
+    data: nullableShape(unknownShape()),
+    errors: nullableShape([
+        {
+            message: '',
+        },
+    ]),
+});
 
 /**
- * Run one GraphQL document through `gh api graphql` and hand back its `data`. Variables go through
- * `-f` (always strings), which GraphQL coerces into the declared variable types — including the
- * `ReactionContent` enum, whose values are already GitHub's own literals.
+ * Run one GraphQL document through `gh api graphql` and hand back its `data`, for the caller to
+ * validate against the shape of what it asked for. Variables go through `-f` (always strings),
+ * which GraphQL coerces into the declared variable types — including the `ReactionContent` enum,
+ * whose values are already GitHub's own literals.
  *
  * Throws with GitHub's own message on failure. Unlike the sidebar's polling sweep, this runs
  * because the user opened the pane, so a rate-limit or auth failure belongs on screen rather than
  * silently flipping a kill-switch.
  */
-async function runGraphql(
-    query: string,
-    variables: Readonly<Record<string, string>>,
-): Promise<unknown> {
+export async function runGraphql(query: string, variables: Readonly<Record<string, string>>) {
     const result = await runGh([
         'api',
         'graphql',
@@ -172,9 +191,21 @@ async function runGraphql(
             },
         ),
     ]);
-    const parsed: GraphqlResponse = result.stdout
-        ? (JSON.parse(result.stdout) as GraphqlResponse)
-        : {};
+    /**
+     * On an HTTP error `gh` prints the response body to stdout, and GitHub's 5xx bodies are HTML
+     * pages, not JSON.
+     */
+    const parsed = wrapInTry(
+        () => parseJsonWithShape(result.stdout || '{}', graphqlResponseShape),
+        {
+            fallbackValue: undefined,
+        },
+    );
+    if (!parsed) {
+        throw new Error(
+            `GitHub request failed: ${result.stderr.trim() || 'GitHub sent back a non-JSON response'}. Try again shortly.`,
+        );
+    }
     const errorMessage = parsed.errors?.map((error) => error.message).join('; ');
     if (errorMessage) {
         throw new Error(`GitHub rejected the request: ${errorMessage}`);
@@ -185,121 +216,196 @@ async function runGraphql(
     }
 }
 
-const prStatesByGraphqlValue: Readonly<Record<string, GitHubPrState>> = {
-    OPEN: GitHubPrState.Open,
-    MERGED: GitHubPrState.Merged,
-    CLOSED: GitHubPrState.Closed,
+const prStates: Readonly<Record<RawPrState, GitHubPrState>> = {
+    [RawPrState.Open]: GitHubPrState.Open,
+    [RawPrState.Merged]: GitHubPrState.Merged,
+    [RawPrState.Closed]: GitHubPrState.Closed,
 };
 
-const checkStatesByGraphqlValue: Readonly<Record<string, GitHubCheckState>> = {
-    SUCCESS: GitHubCheckState.Success,
-    FAILURE: GitHubCheckState.Failure,
-    ERROR: GitHubCheckState.Failure,
-    PENDING: GitHubCheckState.Pending,
-    EXPECTED: GitHubCheckState.Pending,
+const reviewStates: Readonly<Record<RawReviewState, GitHubReviewState>> = {
+    [RawReviewState.Approved]: GitHubReviewState.Approved,
+    [RawReviewState.ChangesRequested]: GitHubReviewState.ChangesRequested,
+    [RawReviewState.Commented]: GitHubReviewState.Commented,
+    [RawReviewState.Dismissed]: GitHubReviewState.Dismissed,
+    [RawReviewState.Pending]: GitHubReviewState.Pending,
 };
 
-const reviewStatesByGraphqlValue: Readonly<Record<string, GitHubReviewState>> = {
-    APPROVED: GitHubReviewState.Approved,
-    CHANGES_REQUESTED: GitHubReviewState.ChangesRequested,
-    COMMENTED: GitHubReviewState.Commented,
-    DISMISSED: GitHubReviewState.Dismissed,
-    PENDING: GitHubReviewState.Pending,
+/** Null for a deleted account. */
+const rawAuthorShape = defineShape(
+    nullableShape({
+        login: '',
+        avatarUrl: '',
+    }),
+);
+
+/**
+ * `content` stays a plain string so a reaction GitHub adds later is dropped by
+ * {@link toReactionGroups} rather than failing the whole answer.
+ */
+const rawReactionGroupShape = defineShape({
+    content: '',
+    viewerHasReacted: false,
+    reactors: {
+        totalCount: 0,
+        nodes: [
+            nullableShape({
+                login: '',
+            }),
+        ],
+    },
+});
+
+const rawCommentFields = {
+    id: '',
+    body: '',
+    bodyHTML: '',
+    createdAt: '',
+    url: '',
+    author: rawAuthorShape,
+    reactionGroups: nullableShape([
+        rawReactionGroupShape,
+    ]),
 };
 
-type RawAuthor = {
-    login?: string;
-    avatarUrl?: string;
+const rawCommentShape = defineShape(rawCommentFields);
+
+/** The fields of a review thread that {@link toThread} reads. */
+export const rawThreadFields = {
+    id: '',
+    path: '',
+    line: nullableShape(0),
+    isResolved: false,
+    isOutdated: false,
+    viewerCanResolve: false,
+    viewerCanUnresolve: false,
+    comments: {
+        nodes: [
+            defineShape({
+                ...rawCommentFields,
+                diffHunk: '',
+            }),
+        ],
+    },
 };
 
-type RawReactionGroup = {
-    content?: string;
-    viewerHasReacted?: boolean;
-    reactors?: {totalCount?: number};
-};
+const rawThreadShape = defineShape(rawThreadFields);
 
-type RawComment = {
-    id?: string;
-    body?: string;
-    bodyHTML?: string;
-    createdAt?: string;
-    url?: string;
-    diffHunk?: string;
-    author?: RawAuthor | null;
-    reactionGroups?: ReadonlyArray<RawReactionGroup>;
-};
+/**
+ * The fields of {@link reviewFields}. `state` stays a plain string so a state GitHub adds later
+ * reads as a comment instead of failing the whole answer.
+ */
+export const rawReviewShape = defineShape({
+    id: '',
+    state: '',
+    body: '',
+    bodyHTML: '',
+    createdAt: '',
+    url: '',
+    author: rawAuthorShape,
+});
 
-type RawThread = {
-    id?: string;
-    path?: string;
-    line?: number | null;
-    isResolved?: boolean;
-    isOutdated?: boolean;
-    viewerCanResolve?: boolean;
-    viewerCanUnresolve?: boolean;
-    comments?: {nodes?: ReadonlyArray<RawComment>};
-};
+/** Null for a deleted account. Users, bots, and mannequins have a `login`; teams have a `name`. */
+export const rawReviewRequestShape = defineShape({
+    requestedReviewer: nullableShape({
+        login: optionalShape(''),
+        name: optionalShape(''),
+        avatarUrl: nullableShape(''),
+    }),
+});
 
-type RawReview = {
-    id?: string;
-    state?: string;
-    body?: string;
-    bodyHTML?: string;
-    createdAt?: string;
-    url?: string;
-    author?: RawAuthor | null;
-};
+const rawCheckRunShape = defineShape({
+    __typename: exactShape(RawCheckContextType.CheckRun),
+    name: '',
+    /** Null until the run finishes. */
+    conclusion: nullableShape(enumShape(RawCheckResult)),
+    status: enumShape(RawCheckStatus),
+    detailsUrl: nullableShape(''),
+    checkSuite: {
+        workflowRun: nullableShape({
+            workflow: {
+                name: '',
+            },
+        }),
+    },
+});
 
-type RawReviewRequest = {
-    requestedReviewer?: {
-        /** Users, bots, and mannequins have a `login`; teams have a `name`. */
-        login?: string;
-        name?: string;
-        avatarUrl?: string;
-    } | null;
-};
+const rawStatusContextShape = defineShape({
+    __typename: exactShape(RawCheckContextType.StatusContext),
+    context: '',
+    state: enumShape(RawCheckResult),
+    targetUrl: nullableShape(''),
+    description: nullableShape(''),
+});
 
-/** One `contexts` union member — the `CheckRun` fields and `StatusContext` fields both land here. */
-type RawCheckContext = {
-    __typename?: string;
-    /** `CheckRun`. */
-    name?: string;
-    conclusion?: string | null;
-    status?: string;
-    detailsUrl?: string;
-    checkSuite?: {workflowRun?: {workflow?: {name?: string}} | null} | null;
-    /** `StatusContext`. */
-    context?: string;
-    state?: string;
-    targetUrl?: string | null;
-    description?: string | null;
-};
+const rawCheckContextShape = defineShape(unionShape(rawCheckRunShape, rawStatusContextShape));
 
-type RawStatusCheckRollup = {
-    state?: string;
-    contexts?: {nodes?: ReadonlyArray<RawCheckContext>};
-};
+export const rawPrShape = defineShape({
+    id: '',
+    number: 0,
+    url: '',
+    title: '',
+    titleHTML: '',
+    body: '',
+    bodyHTML: '',
+    state: enumShape(RawPrState),
+    isDraft: false,
+    baseRefName: '',
+    headRefName: '',
+    createdAt: '',
+    author: rawAuthorShape,
+    baseRepository: nullableShape({
+        name: '',
+        owner: {
+            login: '',
+        },
+    }),
+    commits: {
+        nodes: [
+            {
+                commit: {
+                    statusCheckRollup: nullableShape({
+                        state: enumShape(RawCheckResult),
+                        contexts: {
+                            nodes: [
+                                rawCheckContextShape,
+                            ],
+                        },
+                    }),
+                },
+            },
+        ],
+    },
+    latestReviews: {
+        nodes: [
+            rawReviewShape,
+        ],
+    },
+    reviewRequests: {
+        nodes: [
+            rawReviewRequestShape,
+        ],
+    },
+    reviewThreads: {
+        nodes: [
+            rawThreadShape,
+        ],
+    },
+    comments: {
+        nodes: [
+            rawCommentShape,
+        ],
+    },
+});
 
-type RawPr = {
-    id?: string;
-    number?: number;
-    url?: string;
-    title?: string;
-    titleHTML?: string;
-    body?: string;
-    bodyHTML?: string;
-    state?: string;
-    isDraft?: boolean;
-    baseRefName?: string;
-    headRefName?: string;
-    createdAt?: string;
-    author?: RawAuthor | null;
-    commits?: {nodes?: ReadonlyArray<{commit?: {statusCheckRollup?: RawStatusCheckRollup | null}}>};
-    latestReviews?: {nodes?: ReadonlyArray<RawReview>};
-    reviewRequests?: {nodes?: ReadonlyArray<RawReviewRequest>};
-    reviewThreads?: {nodes?: ReadonlyArray<RawThread>};
-    comments?: {nodes?: ReadonlyArray<RawComment>};
-};
+const prQueryResponseShape = defineShape({
+    repository: nullableShape({
+        pullRequests: {
+            nodes: [
+                rawPrShape,
+            ],
+        },
+    }),
+});
 
 /**
  * GitHub returns a null `author` for comments left by a deleted account. "ghost" is what github.com
@@ -307,7 +413,9 @@ type RawPr = {
  */
 const deletedAuthorLogin = 'ghost';
 
-function toReactionGroups(raw: ReadonlyArray<RawReactionGroup> | undefined): GitHubReactionGroup[] {
+function toReactionGroups(
+    raw: ReadonlyArray<Readonly<typeof rawReactionGroupShape.runtimeType>> | null | undefined,
+) {
     return (
         (raw || [])
             .map((group) => {
@@ -317,8 +425,11 @@ function toReactionGroups(raw: ReadonlyArray<RawReactionGroup> | undefined): Git
                 }
                 return {
                     reaction: group.content,
-                    count: group.reactors?.totalCount || 0,
-                    viewerHasReacted: !!group.viewerHasReacted,
+                    count: group.reactors.totalCount,
+                    viewerHasReacted: group.viewerHasReacted,
+                    reactors: group.reactors.nodes
+                        .map((node) => node?.login)
+                        .filter(check.isTruthy),
                 };
             })
             .filter(check.isTruthy)
@@ -327,44 +438,45 @@ function toReactionGroups(raw: ReadonlyArray<RawReactionGroup> | undefined): Git
     );
 }
 
-function toComment(raw: Readonly<RawComment>): GitHubComment {
+function toComment(raw: Readonly<typeof rawCommentShape.runtimeType>) {
     return {
-        id: raw.id || '',
+        id: raw.id,
         author: raw.author?.login || deletedAuthorLogin,
         authorAvatarUrl: raw.author?.avatarUrl || '',
-        body: raw.body || '',
-        bodyHtml: raw.bodyHTML || '',
-        createdAt: raw.createdAt || '',
-        url: raw.url || '',
+        body: raw.body,
+        bodyHtml: raw.bodyHTML,
+        createdAt: raw.createdAt,
+        url: raw.url,
         reactions: toReactionGroups(raw.reactionGroups),
     };
 }
 
-function toThread(raw: Readonly<RawThread>): GitHubReviewThread {
-    const comments = (raw.comments?.nodes || []).map(toComment);
+export function toThread(raw: Readonly<typeof rawThreadShape.runtimeType>) {
     return {
-        id: raw.id || '',
-        path: raw.path || '',
+        id: raw.id,
+        path: raw.path,
         line: raw.line ?? null,
-        isResolved: !!raw.isResolved,
-        isOutdated: !!raw.isOutdated,
+        isResolved: raw.isResolved,
+        isOutdated: raw.isOutdated,
         /** Which permission matters depends on which direction the button would move the thread. */
-        viewerCanResolve: raw.isResolved ? !!raw.viewerCanUnresolve : !!raw.viewerCanResolve,
-        diffHunk: raw.comments?.nodes?.[0]?.diffHunk || '',
-        comments,
+        viewerCanResolve: raw.isResolved ? raw.viewerCanUnresolve : raw.viewerCanResolve,
+        diffHunk: raw.comments.nodes[0]?.diffHunk || '',
+        comments: raw.comments.nodes.map(toComment),
     };
 }
 
-function toReview(raw: Readonly<RawReview>): GitHubReview {
+export function toReview(raw: Readonly<typeof rawReviewShape.runtimeType>) {
     return {
-        id: raw.id || '',
+        id: raw.id,
         author: raw.author?.login || deletedAuthorLogin,
         authorAvatarUrl: raw.author?.avatarUrl || '',
-        state: reviewStatesByGraphqlValue[raw.state || ''] || GitHubReviewState.Commented,
-        body: raw.body || '',
-        bodyHtml: raw.bodyHTML || '',
-        createdAt: raw.createdAt || '',
-        url: raw.url || '',
+        state: check.isEnumValue(raw.state, RawReviewState)
+            ? reviewStates[raw.state]
+            : GitHubReviewState.Commented,
+        body: raw.body,
+        bodyHtml: raw.bodyHTML,
+        createdAt: raw.createdAt,
+        url: raw.url,
     };
 }
 
@@ -372,8 +484,10 @@ function toReview(raw: Readonly<RawReview>): GitHubReview {
  * Requests whose reviewer GitHub won't name — a deleted account, or a team the token can't see —
  * are dropped rather than rendered as a blank row.
  */
-function toReviewRequests(raw: ReadonlyArray<RawReviewRequest> | undefined): GitHubReviewRequest[] {
-    return (raw || [])
+export function toReviewRequests(
+    raw: ReadonlyArray<Readonly<typeof rawReviewRequestShape.runtimeType>>,
+) {
+    return raw
         .map((node) => {
             return {
                 reviewer: node.requestedReviewer?.login || node.requestedReviewer?.name || '',
@@ -383,38 +497,50 @@ function toReviewRequests(raw: ReadonlyArray<RawReviewRequest> | undefined): Git
         .filter((request) => !!request.reviewer);
 }
 
-/**
- * A `CheckRun`'s verdict lives in `conclusion` once it finishes and is null while it runs, so an
- * unfinished run reads as pending regardless of its `status`. A `StatusContext` only ever has
- * `state`. Both vocabularies share {@link checkStatesByGraphqlValue} because their values overlap
- * (`SUCCESS`, `FAILURE`, `PENDING`) — the ones that don't are handled here.
- */
-const checkRunConclusions: Readonly<Record<string, GitHubCheckState>> = {
-    SUCCESS: GitHubCheckState.Success,
-    FAILURE: GitHubCheckState.Failure,
-    TIMED_OUT: GitHubCheckState.Failure,
-    STARTUP_FAILURE: GitHubCheckState.Failure,
-    ACTION_REQUIRED: GitHubCheckState.Failure,
-    /** Cancelled, skipped, neutral, and stale aren't failures — they're "nothing to report". */
-    CANCELLED: GitHubCheckState.None,
-    SKIPPED: GitHubCheckState.None,
-    NEUTRAL: GitHubCheckState.None,
-    STALE: GitHubCheckState.None,
+type RawCheckContext = typeof rawCheckContextShape.runtimeType;
+
+const checkConverters: {
+    [ContextType in RawCheckContextType]: (
+        raw: Readonly<Extract<RawCheckContext, {__typename: ContextType}>>,
+    ) => {
+        name: string;
+        workflow: string;
+        state: GitHubCheckState;
+        url: string;
+        description: string;
+    };
+} = {
+    /**
+     * A run's verdict lives in `conclusion` once it finishes and is null while it runs, so an
+     * unfinished run reads as pending regardless of its `status`.
+     */
+    [RawCheckContextType.CheckRun](raw) {
+        return {
+            name: raw.name,
+            workflow: raw.checkSuite.workflowRun?.workflow.name || '',
+            state: raw.conclusion ? checkResultStates[raw.conclusion] : GitHubCheckState.Pending,
+            url: raw.detailsUrl || '',
+            description: '',
+        };
+    },
+    [RawCheckContextType.StatusContext](raw) {
+        return {
+            name: raw.context,
+            workflow: '',
+            state: checkResultStates[raw.state],
+            url: raw.targetUrl || '',
+            description: raw.description || '',
+        };
+    },
 };
 
-function toCheck(raw: Readonly<RawCheckContext>): GitHubCheck {
-    const isCheckRun = raw.__typename === 'CheckRun';
-    return {
-        name: (isCheckRun ? raw.name : raw.context) || '',
-        workflow: raw.checkSuite?.workflowRun?.workflow?.name || '',
-        state: isCheckRun
-            ? raw.conclusion
-                ? checkRunConclusions[raw.conclusion] || GitHubCheckState.None
-                : GitHubCheckState.Pending
-            : checkStatesByGraphqlValue[raw.state || ''] || GitHubCheckState.None,
-        url: (isCheckRun ? raw.detailsUrl : raw.targetUrl) || '',
-        description: raw.description || '',
-    };
+function toCheck(raw: Readonly<RawCheckContext>) {
+    /** TypeScript can't pair each converter with its own union member through the index. */
+    return (
+        checkConverters[raw.__typename] satisfies (raw: any) => unknown as (
+            raw: Readonly<RawCheckContext>,
+        ) => ReturnType<(typeof checkConverters)[RawCheckContextType]>
+    )(raw);
 }
 
 /**
@@ -422,31 +548,33 @@ function toCheck(raw: Readonly<RawCheckContext>): GitHubCheck {
  * only part of the GitHub integration that can be exercised without a network call, and it's where
  * the enum translations and null-author fallbacks live.
  */
-export function toPr(raw: Readonly<RawPr>): GitHubPr {
-    const graphqlState = prStatesByGraphqlValue[raw.state || ''] || GitHubPrState.Closed;
-    const rollup = raw.commits?.nodes?.[0]?.commit?.statusCheckRollup;
+export function toPr(raw: Readonly<typeof rawPrShape.runtimeType>) {
+    const graphqlState = prStates[raw.state];
+    const rollup = raw.commits.nodes[0]?.commit.statusCheckRollup;
     return {
-        id: raw.id || '',
-        number: raw.number || 0,
-        url: raw.url || '',
-        title: raw.title || '',
-        titleHtml: raw.titleHTML || '',
-        body: raw.body || '',
-        bodyHtml: raw.bodyHTML || '',
+        id: raw.id,
+        owner: raw.baseRepository?.owner.login || '',
+        repoName: raw.baseRepository?.name || '',
+        number: raw.number,
+        url: raw.url,
+        title: raw.title,
+        titleHtml: raw.titleHTML,
+        body: raw.body,
+        bodyHtml: raw.bodyHTML,
         /** Draft isn't a GraphQL `state` — it's a flag on top of `OPEN`. */
         state:
             graphqlState === GitHubPrState.Open && raw.isDraft ? GitHubPrState.Draft : graphqlState,
         author: raw.author?.login || deletedAuthorLogin,
         authorAvatarUrl: raw.author?.avatarUrl || '',
-        baseRefName: raw.baseRefName || '',
-        headRefName: raw.headRefName || '',
-        createdAt: raw.createdAt || '',
-        checks: checkStatesByGraphqlValue[rollup?.state || ''] || GitHubCheckState.None,
-        checkRuns: (rollup?.contexts?.nodes || []).map(toCheck),
-        reviews: (raw.latestReviews?.nodes || []).map(toReview),
-        reviewRequests: toReviewRequests(raw.reviewRequests?.nodes),
-        threads: (raw.reviewThreads?.nodes || []).map(toThread),
-        comments: (raw.comments?.nodes || []).map(toComment),
+        baseRefName: raw.baseRefName,
+        headRefName: raw.headRefName,
+        createdAt: raw.createdAt,
+        checks: rollup ? checkResultStates[rollup.state] : GitHubCheckState.None,
+        checkRuns: (rollup?.contexts.nodes || []).map(toCheck),
+        reviews: raw.latestReviews.nodes.map(toReview),
+        reviewRequests: toReviewRequests(raw.reviewRequests.nodes),
+        threads: raw.reviewThreads.nodes.map(toThread),
+        comments: raw.comments.nodes.map(toComment),
     };
 }
 
@@ -455,7 +583,9 @@ export function toPr(raw: Readonly<RawPr>): GitHubPr {
  * cadence, so re-opening the tab or switching folders back and forth costs nothing, while the
  * pane's timer still lands on a real query each time it fires.
  */
-const prCacheTtlMs = 5 * 60 * 1000;
+const prCacheTtl: AnyDuration = {
+    minutes: 5,
+};
 
 /**
  * Last PR fetched per folder. Lives here rather than in the browser so every client — and a reload
@@ -465,7 +595,7 @@ const prCacheTtlMs = 5 * 60 * 1000;
 const prCacheByFolder = new Map<
     string,
     {
-        pr: GitHubPr | null;
+        pr: ReturnType<typeof toPr> | null;
         fetchedAt: number;
     }
 >();
@@ -480,9 +610,16 @@ export async function fetchFolderPr({
 }: Readonly<{
     folder: string;
     forceRefresh?: boolean | undefined;
-}>): Promise<GitHubPr | null> {
+}>) {
     const cached = prCacheByFolder.get(folder);
-    if (cached && !forceRefresh && Date.now() - cached.fetchedAt < prCacheTtlMs) {
+    if (
+        cached &&
+        !forceRefresh &&
+        Date.now() - cached.fetchedAt <
+            convertDuration(prCacheTtl, {
+                milliseconds: true,
+            }).milliseconds
+    ) {
         return cached.pr;
     }
     const pr = await queryFolderPr(folder);
@@ -493,7 +630,7 @@ export async function fetchFolderPr({
     return pr;
 }
 
-async function queryFolderPr(folder: string): Promise<GitHubPr | null> {
+async function queryFolderPr(folder: string) {
     const [
         slug,
         branch,
@@ -504,16 +641,14 @@ async function queryFolderPr(folder: string): Promise<GitHubPr | null> {
     if (!slug || !branch) {
         return null;
     }
-    const data = (await runGraphql(prQuery, {
-        owner: slug.owner,
-        name: slug.name,
-        branch,
-    })) as
-        | {
-              repository?: {pullRequests?: {nodes?: ReadonlyArray<RawPr>}};
-          }
-        | undefined;
-    const node = data?.repository?.pullRequests?.nodes?.[0];
+    const node = assertWrapValidShape(
+        await runGraphql(prQuery, {
+            owner: slug.owner,
+            name: slug.name,
+            branch,
+        }),
+        prQueryResponseShape,
+    ).repository?.pullRequests.nodes[0];
     return node ? toPr(node) : null;
 }
 
@@ -525,7 +660,7 @@ export async function postComment({
     target: GitHubCommentTarget;
     subjectId: string;
     body: string;
-}>): Promise<void> {
+}>) {
     await runGraphql(commentMutations[target], {
         subjectId,
         body,
@@ -540,7 +675,7 @@ export async function setReaction({
     subjectId: string;
     reaction: GitHubReaction;
     add: boolean;
-}>): Promise<void> {
+}>) {
     await runGraphql(add ? addReactionMutation : removeReactionMutation, {
         subjectId,
         content: reaction,
@@ -553,7 +688,7 @@ export async function setThreadResolved({
 }: Readonly<{
     threadId: string;
     resolved: boolean;
-}>): Promise<void> {
+}>) {
     await runGraphql(resolved ? resolveThreadMutation : unresolveThreadMutation, {
         threadId,
     });

@@ -16,6 +16,8 @@
         }
     ],
     "name": "AgentStorm",
+    "scope": "/",
     "short_name": "AGS",
+    "start_url": "/",
     "theme_color": "#ffffff"
 }

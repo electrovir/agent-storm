@@ -4,7 +4,7 @@ import {defaultConfig, type AiDefinition, type Config} from '@agent-storm/common
 import {assert} from '@augment-vir/assert';
 import {selectFrom} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
-import {getFolderAiDefinition, migrateAiConfig, setFolderAiId} from './config.js';
+import {getFolderAiDefinition, setFolderAiId, withFallbackAi} from './config.js';
 
 function aiDefinition({
     name,
@@ -176,82 +176,35 @@ describe(setFolderAiId.name, () => {
     });
 });
 
-describe(migrateAiConfig.name, () => {
-    it('converts legacy commands into definitions and folder overrides', () => {
-        const migrated = migrateAiConfig({
-            ...defaultConfig,
-            aiCmd: 'claude --continue',
-            resetAiSessionCmd: '/clear',
-            folderAiCmds: [
-                {
-                    folder: '/tmp/project-a',
-                    aiCmd: 'codex',
-                },
-                /** Same commands as the global pair, so it needs no definition of its own. */
-                {
-                    folder: '/tmp/project-b',
-                    aiCmd: 'claude --continue',
-                    resetAiSessionCmd: '/clear',
-                },
-            ],
-        });
+describe(withFallbackAi.name, () => {
+    it('stands in a claude definition, and makes it the default, when none is defined', () => {
+        const config = withFallbackAi(defaultConfig);
 
         assert.deepEquals(
             {
-                definitions: migrated.aiDefinitions.map((definition) => {
+                definitions: config.aiDefinitions.map((definition) => {
                     return selectFrom(definition, {
                         name: true,
                         resumeSessionCommand: true,
-                        newSessionCommand: true,
                     });
                 }),
-                overriddenFolders: migrated.folderAiIds.map((entry) => entry.folder),
-                defaultIsGlobalPair:
-                    migrated.aiDefinitions.find(
-                        (definition) => definition.id === migrated.defaultAiId,
-                    )?.resumeSessionCommand === 'claude --continue',
+                isDefault: config.defaultAiId === config.aiDefinitions[0]?.id,
             },
             {
                 definitions: [
                     {
                         name: 'Claude',
-                        resumeSessionCommand: 'claude --continue',
-                        newSessionCommand: '/clear',
-                    },
-                    {
-                        name: 'Codex',
-                        resumeSessionCommand: 'codex',
-                        newSessionCommand: '/clear',
+                        resumeSessionCommand: 'claude',
                     },
                 ],
-                overriddenFolders: ['/tmp/project-a'],
-                defaultIsGlobalPair: true,
+                isDefault: true,
             },
-        );
-    });
-
-    it('seeds a claude definition for a config with nothing configured', () => {
-        const migrated = migrateAiConfig(defaultConfig);
-
-        assert.deepEquals(
-            migrated.aiDefinitions.map((definition) => {
-                return selectFrom(definition, {
-                    name: true,
-                    resumeSessionCommand: true,
-                });
-            }),
-            [
-                {
-                    name: 'Claude',
-                    resumeSessionCommand: 'claude',
-                },
-            ],
         );
     });
 
     it('leaves a config that already has definitions alone', () => {
         const config = configWithAis({});
 
-        assert.deepEquals(migrateAiConfig(config), config);
+        assert.deepEquals(withFallbackAi(config), config);
     });
 });

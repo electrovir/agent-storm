@@ -2,11 +2,10 @@
 
 /**
  * Sweeps up orphan processes from any prior `npm start` (see {@link killPriorInstances}), then
- * allocates free ports for the backend (rest-vir + Fastify) and the frontend (vite dev server),
- * then spawns runstorm with the chosen ports injected as env vars. Both processes see the same
- * ports so they can talk to each other.
+ * spawns runstorm with the backend (rest-vir + Fastify) and frontend (vite dev server) ports
+ * injected as env vars. Both processes see the same ports so they can talk to each other.
  *
- * Honored env (override the auto-allocation): BACKEND_PORT port the backend listens on
+ * Honored env (overrides the fixed default ports): BACKEND_PORT port the backend listens on
  * FRONTEND_PORT port vite serves the frontend on
  *
  * Always exported into the child env (consumed by the workspaces): BACKEND_PORT read by
@@ -16,8 +15,9 @@
  * packages/frontend/configs/vite.config.ts (vite's listen port)
  */
 import {monorepoRoot} from '@agent-storm/server/src/file-paths.js';
+import {defaultPorts, PortEnvVar, readEnvPort} from '@agent-storm/server/src/ports.js';
 import {filterMap, log} from '@augment-vir/common';
-import {execSync, spawn} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
 
 type Signals = NodeJS.Signals;
 
@@ -59,10 +59,18 @@ function killPriorInstances(): void {
      * Absolute path to `ps` (rather than `'ps'` resolved through `PATH`) so a hostile entry on the
      * user's `PATH` can't supplant the system binary we depend on.
      */
-    // eslint-disable-next-line sonarjs/no-os-command-from-path
-    const psOutput = execSync('ps -A -ww -o pid=,command=', {
-        encoding: 'utf8',
-    });
+    const psOutput = execFileSync(
+        '/bin/ps',
+        [
+            '-A',
+            '-ww',
+            '-o',
+            'pid=,command=',
+        ],
+        {
+            encoding: 'utf8',
+        },
+    );
     const orphanPids = filterMap(
         psOutput.split('\n'),
         (line: string) => {
@@ -116,37 +124,13 @@ function killPriorInstances(): void {
 
 killPriorInstances();
 
-/**
- * Fixed ports. Picked from the upper IANA unassigned range — above the noisy dev-tool defaults
- * (3000/4000/5173/8000/8080/9000) and below the ephemeral range macOS uses for outbound connections
- * (49152+), with no nearby IANA-registered services. Hard-coded (no auto-walk-up on a busy port) so
- * the URL the user has bookmarked / open in their browser is stable across restarts. If a stale
- * process is squatting on the port, the relevant server fails loudly with EADDRINUSE rather than
- * silently moving — that's the desired behavior: free the port and try again instead of producing a
- * session where the browser is pointed at the wrong port and quietly fails CORS.
- */
-const defaultBackendPort = 41_880;
-const defaultFrontendPort = 41_881;
-
-function envPort(name: string): number | undefined {
-    const raw = process.env[name];
-    if (!raw) {
-        return undefined;
-    }
-    const parsed = Number(raw);
-    if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65_535) {
-        return undefined;
-    }
-    return parsed;
-}
-
-const backendPort = envPort('BACKEND_PORT') ?? defaultBackendPort;
-const frontendPort = envPort('FRONTEND_PORT') ?? defaultFrontendPort;
+const backendPort = readEnvPort(PortEnvVar.Backend) ?? defaultPorts[PortEnvVar.Backend];
+const frontendPort = readEnvPort(PortEnvVar.Frontend) ?? defaultPorts[PortEnvVar.Frontend];
 
 const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    BACKEND_PORT: String(backendPort),
-    FRONTEND_PORT: String(frontendPort),
+    [PortEnvVar.Backend]: String(backendPort),
+    [PortEnvVar.Frontend]: String(frontendPort),
 };
 
 log.faint(

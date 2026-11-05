@@ -1,14 +1,11 @@
 import {PaneKind, PaneStatus, type RepoConfig} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {computeRepoPrRefreshTtlByRepo} from './folder-info.js';
+import {coldRepoPrTtl, computeRepoPrRefreshTtlByRepo, hotRepoPrTtl} from './folder-info.js';
 
 const nowMs = 1_800_000_000_000;
 const minuteMs = 60 * 1000;
 const dayMs = 24 * 60 * minuteMs;
-
-const hotTtlMs = 5 * minuteMs;
-const coldTtlMs = 30 * minuteMs;
 
 const repoPath = '/repos/solo';
 const rootPath = '/repos/root';
@@ -83,7 +80,7 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
             everHadPrPaths: new Set([repoPath]),
             nowMs,
         });
-        assert.strictEquals(ttlByRepo.get(repoPath), coldTtlMs);
+        assert.strictEquals(ttlByRepo.get(repoPath), coldRepoPrTtl);
     });
 
     it('polls a never-PR repo while it is active, so a first PR can be discovered', () => {
@@ -99,7 +96,7 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
             everHadPrPaths: noPrHistory,
             nowMs,
         });
-        assert.strictEquals(ttlByRepo.get(repoPath), hotTtlMs);
+        assert.strictEquals(ttlByRepo.get(repoPath), hotRepoPrTtl);
     });
 
     it('treats a recent activation as active even with no pane running', () => {
@@ -111,7 +108,7 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
             everHadPrPaths: noPrHistory,
             nowMs,
         });
-        assert.strictEquals(ttlByRepo.get(repoPath), hotTtlMs);
+        assert.strictEquals(ttlByRepo.get(repoPath), hotRepoPrTtl);
     });
 
     it('polls a worktree group that has never shown a PR', () => {
@@ -126,7 +123,7 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
         assert.deepEquals(Array.from(ttlByRepo.entries()), [
             [
                 rootPath,
-                coldTtlMs,
+                coldRepoPrTtl,
             ],
         ]);
     });
@@ -142,7 +139,7 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
             everHadPrPaths: noPrHistory,
             nowMs,
         });
-        assert.strictEquals(ttlByRepo.get(rootPath), hotTtlMs);
+        assert.strictEquals(ttlByRepo.get(rootPath), hotRepoPrTtl);
     });
 
     it('skips a PR-having repo that the sidebar is hiding', () => {

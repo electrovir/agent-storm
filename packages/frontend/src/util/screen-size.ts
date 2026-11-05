@@ -1,3 +1,5 @@
+import {attachOnResize} from 'element-vir';
+
 export enum ScreenSize {
     Desktop = 'desktop',
     Mobile = 'mobile',
@@ -59,4 +61,31 @@ export function determineScreenSize({
     })
         ? ScreenSize.Mobile
         : ScreenSize.Desktop;
+}
+
+/**
+ * Calls `onChange` with `element`'s {@link ScreenSize} right away, then again whenever a resize
+ * (window resize, devtools open, iPad rotation, etc.) moves it into another size. Returns the
+ * disconnect.
+ */
+export function observeScreenSize(
+    element: HTMLElement,
+    onChange: (screenSize: ScreenSize) => void,
+) {
+    let trackedScreenSize = determineScreenSize({
+        currentScreenSize: undefined,
+        elementWidth: element.clientWidth,
+    });
+    onChange(trackedScreenSize);
+    const {resizeObserver} = attachOnResize(element, ({contentRect}) => {
+        const nextScreenSize = determineScreenSize({
+            currentScreenSize: trackedScreenSize,
+            elementWidth: contentRect.width,
+        });
+        if (nextScreenSize !== trackedScreenSize) {
+            trackedScreenSize = nextScreenSize;
+            onChange(nextScreenSize);
+        }
+    });
+    return () => resizeObserver.disconnect();
 }

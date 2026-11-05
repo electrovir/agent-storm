@@ -1,225 +1,88 @@
-// cspell:words titlebar, grabbable
-
+import {PaneKind, type ReviewQueuePr} from '@agent-storm/common';
+import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {type AppContext} from '../../util/app-context.js';
+import {createFolderSessions, type FolderSessionsObservable} from '../../util/folder-sessions.js';
+import {localStorageClient} from '../../util/local-storage-client.js';
+import {DiffView, resolveDiffView, resolvePaneLayout} from '../../util/pane-layout.js';
+import {paneRestartKey} from '../../util/pane-restarts.js';
 import {
-    PaneKind,
-    PaneStatus,
-    type AiDefinition,
-    type Config,
-    type FolderSessions,
-    type PaneSessionStatus,
-    type SessionMeta,
-} from '@agent-storm/common';
-import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
-import {
-    createSizedIcon,
-    LucideEllipsisVerticalIcon,
-    LucideHourglassIcon,
-    LucideLoaderIcon,
-    noUserSelect,
-    renderMenuItemEntries,
-    ViraButton,
-    ViraColorVariant,
-    ViraEmphasis,
-    ViraIcon,
-    ViraMenuTrigger,
-    ViraSize,
-    viraThemeByKeys,
-    type ViraIconSvg,
-    type ViraMenuItemEntry,
-} from 'vira';
-import {
-    closeSession,
-    createSession,
-    getConfig,
-    getFolderSessions,
-    renameSession,
-    restartPane,
-    setSessionAi,
-} from '../../util/api-client.js';
-import {reportRenderError} from '../../util/client-error-log.js';
-import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
-import {localStorageClient, paneSplit} from '../../util/local-storage-client.js';
-import {type FrontendTab} from '../../util/router.js';
+    createPaneReview,
+    type PaneReviewObservable,
+    type ReviewStart,
+} from '../../util/pane-review.js';
+import {selectPaneTab, sessionIndexFromRoute, tabFromRoute} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
-import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
-import {VirAiAvatar} from './vir-ai-avatar.element.js';
-import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
-import {VirDiffPane} from './vir-diff-pane.element.js';
-import {VirTerminal} from './vir-terminal.element.js';
+import {defineAppElement} from '../define-app-element.js';
+import {VirPaneDiff} from './vir-pane-diff.element.js';
+import {VirPaneHeader} from './vir-pane-header.element.js';
+import {VirPaneReview} from './vir-pane-review.element.js';
+import {VirPaneSplit} from './vir-pane-split.element.js';
+import {VirReviewPane} from './vir-review-pane.element.js';
+import {VirSessionPane} from './vir-session-pane.element.js';
 
-const sessionMenuIcon = createSizedIcon(LucideEllipsisVerticalIcon, 12);
-const sessionActivityIndicators: Record<
-    PaneStatus,
-    | {
-          icon: ViraIconSvg;
-          title: string;
-      }
-    | undefined
-> = {
-    [PaneStatus.None]: undefined,
-    [PaneStatus.Busy]: {
-        icon: createSizedIcon(LucideLoaderIcon, 12),
-        title: 'Working',
-    },
-    [PaneStatus.Stalled]: {
-        icon: createSizedIcon(LucideHourglassIcon, 12),
-        title: 'Unfinished work, but no sign of activity for a while. It may be stuck.',
-    },
-    [PaneStatus.Idle]: undefined,
-    [PaneStatus.Exited]: undefined,
-};
-
-/** Tab label: the user's name when set, otherwise the tab's 1-based position. */
-function sessionLabel(session: Readonly<SessionMeta>, index: number): string {
-    return session.name || String(index + 1);
-}
-
-/**
- * Resolve a 1-based URL index to a live session. An index can outlive the session it referenced
- * (the tab was closed, or the folder's list shrank), so anything out of range falls back to the
- * first session rather than rendering an empty pane.
- */
-function sessionAtIndex(
-    sessions: ReadonlyArray<Readonly<SessionMeta>>,
-    oneBasedIndex: number,
-): SessionMeta | undefined {
-    return sessions[oneBasedIndex - 1] || sessions[0];
-}
-
-type TabButton = {
-    label: string;
-    tab: FrontendTab;
-    isActive: boolean;
-};
-
-function clampSplit(value: number): number {
-    if (!Number.isFinite(value)) {
-        return paneSplit.default;
-    }
-    return Math.min(paneSplit.max, Math.max(paneSplit.min, value));
-}
-
-export const VirPaneGroup = defineElement<{
+/** A folder's panes: AI and Shell terminals, its diff, and its PR's review. */
+export const VirPaneGroup = defineAppElement<{
     folder: string;
     /**
-     * True when this pane-group is the user's currently focused folder. Forwarded to each
-     * `VirTerminal` so they can re-fit and push a fresh size to the server when transitioning to
-     * visible — a CSS-hidden pane may have missed window-resize events while it was `display:
-     * none`.
+     * What the pane tab and session tabs are remembered under. A review is keyed by its PR because
+     * its folder isn't known until the server resolves it.
      */
+    memoryKey: string;
+    /** True when this pane-group is the user's currently focused folder. */
     active: boolean;
+    context: AppContext;
     /**
-     * Currently-active tab. Driven by the `?tab=...` param at the app level so the URL is the
-     * source of truth. On desktop, both `ai` and `shell` render the CLI layout (split panes); on
-     * mobile each value shows exactly one pane.
+     * Set when the folder is a pull request's review folder. Swaps the shell pane for the review
+     * UI, and holds the Diff tab back until the manual review's startup has finished.
      */
-    activeTab: FrontendTab;
-    /**
-     * Coarse viewport bucket from `vir-app`'s state. Controls whether the CLI panes get one shared
-     * tab or one each, and the pane-visibility rules. Updates as the user resizes the window.
-     */
-    screenSize: ScreenSize;
-    /**
-     * Per-kind counter bumped by `vir-app` whenever something outside this element restarts the
-     * folder's panes (the sidebar's "Change AI" and "Restart panes"). Folded into each terminal's
-     * mount key so the element is recreated — `VirTerminal` opens its socket in `onDomCreated`,
-     * which never re-runs for a reused element.
-     */
-    folderRestartKeys: Readonly<Record<PaneKind, number>>;
-    /**
-     * 1-based index of the active session tab for each pane, straight from the URL. Two values
-     * because desktop shows both panes at once, so each has its own independent selection. An index
-     * past the end of the folder's list falls back to the first session.
-     */
-    aiSessionIndex: number;
-    shellSessionIndex: number;
-    /**
-     * Backend-resolved AI id for this folder (per-folder override → worktree-root → global
-     * default). Each AI tab uses it unless the tab carries an override of its own. Empty when the
-     * user has defined no AI at all.
-     */
-    folderAiId: string;
-    /**
-     * Live status of each session the daemon holds a PTY for, refreshed by `vir-app`'s folder poll.
-     * {@link PaneStatus.Busy} is what spins that tab's activity indicator. A session with no entry
-     * (no PTY yet) reads as not busy.
-     */
-    sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>;
-    parentRepoPath: string;
-    aiConfigRevision: number;
+    reviewPullRequest?: Readonly<ReviewQueuePr> | undefined;
+    /** Typed into the AI pane once its first session loads, unless it's already been sent. */
+    reviewStart?: Readonly<ReviewStart> | undefined;
 }>()({
     tagName: 'vir-pane-group',
-    options: {
-        errorHandler: reportRenderError,
-    },
     events: {
-        /**
-         * Emitted when the user clicks one of the tab buttons. Parent should update the `?tab=...`
-         * URL param to the requested value (the actual route paths stay the same).
-         */
-        tabRequested: defineElementEvent<FrontendTab>(),
-        /**
-         * Emitted when the user selects (or creates, or closes into) a different session tab.
-         * Carries the 1-based index the URL should now hold for that pane kind.
-         */
-        sessionRequested: defineElementEvent<{kind: PaneKind; index: number}>(),
+        /** The parent should set the `reviewStart` it passed in as sent. */
+        reviewStartSent: defineElementEvent<void>(),
     },
     state() {
         return {
-            split: localStorageClient.paneSplit.read(),
-            dragging: false,
+            /** Created in `init`, which has the folder. */
+            folderSessions: undefined as FolderSessionsObservable | undefined,
+            paneReview: undefined as PaneReviewObservable | undefined,
             /**
-             * Session tab lists for this folder, both kinds. Undefined until the first `/sessions`
-             * load resolves; the panes render nothing until then so a terminal never mounts against
-             * a guessed session id.
+             * The last pane to receive focus, rather than `:focus-within`, which xterm's hidden
+             * textarea loses on a cmd+tab away and back. Defaults to the AI pane so the initial
+             * render doesn't show both panes dimmed.
              */
-            sessions: undefined as FolderSessions | undefined,
-            sessionsRequested: false,
-            sessionsError: undefined as string | undefined,
+            focusedKind: PaneKind.Ai as PaneKind,
             /**
-             * Per-session remount counters, keyed `${kind}:${sessionId}`. Bumping one forces its
-             * `VirTerminal` to unmount and remount, which is how a restart gets a fresh socket
-             * against the newly-spawned PTY (the terminal bakes its connection into `onDomCreated`,
-             * which does not re-run on input changes).
-             */
-            restartKeys: {} as Record<string, number | undefined>,
-            /**
-             * Which pane last received focus inside this group. Sticky across window blur/focus
-             * cycles: a `:focus-within` CSS-based highlight loses match when the user cmd+tabs away
-             * (xterm's hidden textarea blurs and doesn't reliably regain focus through the shadow
-             * boundary on return), so we mirror focus into local state and drive the highlight off
-             * that instead. Undefined before the user has clicked into either pane.
-             */
-            focusedKind: undefined as PaneKind | undefined,
-            /**
-             * The tab just created by this group, whose terminal should grab focus when it mounts.
-             * Cleared by the next `focusin` in either pane, so switching back to that tab later
-             * doesn't steal focus again.
-             */
-            sessionToFocus: undefined as
-                | {
-                      kind: PaneKind;
-                      sessionId: string;
-                  }
-                | undefined,
-            /**
-             * Set true the first time the user opens the Diff tab, and never reset. The diff pane
-             * costs nothing while hidden (it holds no socket and no subprocess), so keeping it
-             * mounted preserves its selected file and scroll position across tab switches.
+             * Set the first time the Diff tab opens. The diff costs nothing while hidden (no
+             * socket, no subprocess), so staying mounted keeps its selected file and scroll
+             * position.
              */
             diffMounted: false,
-            /**
-             * The user's AI definitions, needed to show each AI tab's avatar and to populate the
-             * "Change AI" picker. Loaded once per mount and re-read after a change, since this
-             * element is keyed by folder and remounts on a folder switch anyway.
-             */
-            aiDefinitions: [] as ReadonlyArray<AiDefinition>,
-            resolvedFolderAiId: undefined as string | undefined,
-            loadedAiConfigRevision: undefined as number | undefined,
-            /** Session the "Change AI" picker is open for, and its kind. Undefined when closed. */
-            changeAiSession: undefined as {kind: PaneKind; sessionId: string} | undefined,
-            changeAiSubmitting: false,
+            /** Which checkout a Build folder's Diff tab shows. */
+            diffView: DiffView.Source as DiffView,
+            /** Keeps the Diff tab on the manual review while its copy is still being made. */
+            isManualReviewStarting: false,
         };
+    },
+    init({inputs, updateState}) {
+        const folderSessions = createFolderSessions(inputs.folder);
+        updateState({
+            folderSessions,
+            paneReview: createPaneReview({
+                folder: inputs.folder,
+                memoryKey: inputs.memoryKey,
+                folderSessions,
+            }),
+            diffView:
+                localStorageClient.diffViewByFolder.readFolder(inputs.folder) ?? DiffView.Source,
+        });
+    },
+    cleanup({state}) {
+        state.folderSessions?.destroy();
+        state.paneReview?.destroy();
     },
     styles: css`
         :host {
@@ -229,1108 +92,218 @@ export const VirPaneGroup = defineElement<{
             height: 100%;
         }
 
-        /*
-         * Mobile-only strip naming the active folder. Sits above the tab bar and has to fully
-         * contain vir-app's absolutely-positioned hamburger (top-left of the stage, 6px inset on a
-         * 24px button), so the tab bar below it stays clear of the hamburger and needs no left
-         * padding of its own. 32px is that button's extent and nothing more — this strip is pure
-         * overhead on a phone screen. The symmetric horizontal padding keeps the name centered
-         * while clearing the hamburger.
-         */
-        .folder-name-bar {
-            flex-grow: 0;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-sizing: border-box;
-            min-height: 32px;
-            padding: 0 34px;
-            border-bottom: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-        }
-
-        .folder-name-label {
-            min-width: 0;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 12px;
-            font-weight: 600;
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-        }
-
-        .tab-bar {
-            display: flex;
-            flex: 0 0 auto;
-            border-bottom: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 12px;
-        }
-
-        .tab {
-            ${noUserSelect};
-            appearance: none;
-            background: transparent;
-            border: none;
-            border-bottom: 2px solid transparent;
-            padding: 6px 14px;
-            cursor: pointer;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            font: inherit;
-            letter-spacing: 0.02em;
-            transition:
-                color 120ms ease,
-                border-bottom-color 120ms ease;
-        }
-
-        .tab:hover {
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-        }
-
-        .tab[data-selected] {
-            color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-            border-bottom-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-        }
-
         .body {
             display: flex;
             flex-direction: row;
-            flex: 1 1 auto;
+            flex-grow: 1;
+            flex-shrink: 1;
             min-height: 0;
             width: 100%;
             position: relative;
         }
-
-        .diff-pane,
-        .cli-panes {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            flex-direction: row;
-            overflow: hidden;
-        }
-
-        .diff-pane[data-hidden],
-        .cli-panes[data-hidden] {
-            /*
-             * Keep the hidden side mounted so its scroll position and, for the terminals, their
-             * live PTY sockets survive a tab switch. Hiding by visibility preserves all of that,
-             * and killing pointer events makes the hidden side inert to clicks.
-             */
-            visibility: hidden;
-            pointer-events: none;
-        }
-
-        .pane {
-            flex-basis: 0;
-            min-width: 0;
-            min-height: 0;
-            overflow: hidden;
-            transition: filter 120ms ease;
-            /* Column so the session sub-tab strip sits above the terminal in normal flow. */
-            display: flex;
-            flex-direction: column;
-            /* Anchor for .session-add-floating. */
-            position: relative;
-        }
-
-        .ai-pane {
-            flex-grow: var(--ai-grow, 0.5);
-        }
-
-        .shell-pane {
-            flex-grow: var(--shell-grow, 0.5);
-            border-left: 1px solid ${viraThemeByKeys.grey.foreground.body.foreground.value};
-        }
-
-        /* Dim whichever pane isn't the last-focused one so it's obvious which one keystrokes
-           will land in. Driven by an explicit data attribute (see focusedKind in state) rather
-           than :focus-within so the highlight survives cmd+tab away/back — xterm's hidden
-           textarea blurs on window blur and doesn't reliably refocus on return, which would
-           otherwise drop the indicator. */
-        .pane[data-pane-focused='false'] {
-            filter: brightness(0.75) saturate(0.9);
-        }
-
-        /*
-         * Session sub-tab strip, nested under the CLI/Code (or AI/Shell/Code) tab bar. Rendered only
-         * when a pane has more than one session so single-session users lose no vertical space; the
-         * "+" control lives in the pane's hover affordance instead (see .session-add).
-         */
-        .session-bar {
-            flex-grow: 0;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            gap: 2px;
-            padding: 2px 4px;
-            box-sizing: border-box;
-            /*
-             * Must stay overflow: visible. Any scroll/hidden value here establishes a clipping box
-             * that cuts off each tab's pop-up menu — and setting only overflow-x makes overflow-y
-             * compute to auto, so it clips vertically too. Tabs wrap to a second line instead of
-             * scrolling; their labels are usually a single digit, so wrapping is rare.
-             */
-            flex-wrap: wrap;
-            border-bottom: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 11px;
-            /* Keep the strip from being squeezed out when the terminal wants all the height. */
-            min-height: 26px;
-        }
-
-        .session-tab {
-            ${noUserSelect};
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            flex-shrink: 0;
-            padding: 1px 2px;
-            border: 1px solid transparent;
-            border-radius: 4px;
-            cursor: pointer;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            background: transparent;
-            font: inherit;
-            max-width: 160px;
-        }
-
-        .session-tab:hover {
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-            background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
-        }
-
-        .session-tab[data-selected] {
-            color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-            border-color: ${viraThemeByKeys.blue.foreground.decoration.foreground.value};
-        }
-
-        .session-tab-label {
-            min-width: 0;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-            padding: 0 2px;
-        }
-
-        /*
-         * "This tab's process is working" indicator. Sized whether or not it holds a spinner so a tab
-         * keeps its width when activity starts and stops — the strip wraps, so a tab that grew
-         * mid-run could reflow the whole row.
-         */
-        .session-activity {
-            flex-grow: 0;
-            flex-shrink: 0;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 12px;
-            height: 12px;
-            color: ${viraThemeByKeys.pink.foreground.header.foreground.value};
-        }
-
-        .session-activity[data-busy] ${ViraIcon} {
-            ${spinAnimationCss}
-        }
-
-        ${spinKeyframesCss}
-
-        .session-activity[data-stalled] {
-            color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
-        }
-
-        /* Hidden rather than unrendered so the tab's width doesn't change when activity starts. */
-        .session-activity[data-idle] {
-            visibility: hidden;
-        }
-
-        .pane-body {
-            /* Fill whatever the session strip leaves behind. */
-            flex-grow: 1;
-            flex-shrink: 1;
-            min-height: 0;
-        }
-
-        /*
-         * When a pane has a single session there's no tab strip, so this is the only way to create a
-         * second one. Floated over the terminal's top-right rather than taking flow space, and only
-         * opaque on pane hover, so a user who never wants multiple sessions never sees it. Absolute
-         * positioning (rather than collapsing the strip's height) avoids re-triggering an xterm refit
-         * on every hover.
-         */
-        .session-add-floating {
-            position: absolute;
-            top: 2px;
-            right: 2px;
-            z-index: 2;
-            opacity: 0;
-            transition: opacity 120ms ease;
-        }
-
-        .pane:hover .session-add-floating,
-        .session-add-floating:focus-within {
-            opacity: 1;
-        }
-
-        .session-error {
-            padding: 2px 6px;
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
-            font-family: ui-sans-serif, system-ui, sans-serif;
-            font-size: 11px;
-        }
-
-        .divider {
-            flex: 0 0 4px;
-            position: relative;
-            cursor: col-resize;
-            background: ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            transition: background 120ms ease;
-            /* Sit above the panes so the hit-area extension below catches the pointer
-               instead of being eaten by terminal mousedown handlers. */
-            z-index: 1;
-            touch-action: none;
-        }
-
-        /* Visible bar stays a thin 4px, but the user gets ~14px of grabbable surface. */
-        .divider::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            bottom: 0;
-            left: -5px;
-            right: -5px;
-        }
-
-        .divider:hover,
-        .divider.dragging {
-            background: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-        }
-
-        /*
-         * Mobile layout overrides: hide the inactive pane and the resize divider so the active
-         * pane fills the available area. Driven by a data-mobile attribute on .cli-panes (toggled
-         * from the render based on the screenSize input).
-         */
-        .cli-panes[data-mobile] .divider,
-        .cli-panes[data-mobile] .pane[data-hidden] {
-            display: none;
-        }
-
-        .cli-panes[data-mobile] .pane:not([data-hidden]) {
-            flex-grow: 1;
-        }
     `,
-    render({inputs, state, updateState, host, dispatch, events}) {
-        /**
-         * Load this folder's session tabs once per mount. The pane group is keyed by folder up in
-         * `vir-app`, so a folder switch mounts a fresh element and re-runs this.
-         */
-        if (!state.sessionsRequested) {
-            updateState({
-                sessionsRequested: true,
-            });
-            void getFolderSessions({
-                folder: inputs.folder,
-            })
-                .then((sessions) => {
-                    updateState({
-                        sessions,
-                        sessionsError: undefined,
-                    });
-                })
-                .catch((error: unknown) => {
-                    updateState({
-                        sessionsError: error instanceof Error ? error.message : String(error),
-                    });
-                });
+    render({inputs, state, updateState, dispatch, events}) {
+        const {folderSessions, paneReview} = state;
+        if (!folderSessions || !paneReview) {
+            return '';
         }
+        const info = inputs.context.folderData.value.folderInfo.get(inputs.folder);
+        const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
+        const hasPr = !!info?.prUrl;
+        const layout = resolvePaneLayout({
+            activeTab: tabFromRoute(inputs.context.route),
+            isMobile,
+            isReviewFolder: !!inputs.reviewPullRequest,
+            hasPr,
+            review: paneReview.value.review,
+        });
 
-        /** Replace the local list after any mutation so tab order and names match the server. */
-        function applySessions(sessions: FolderSessions) {
-            updateState({
-                sessions,
-                sessionsError: undefined,
-            });
-        }
-
-        function reportSessionError(error: unknown) {
-            updateState({
-                sessionsError: error instanceof Error ? error.message : String(error),
-            });
-        }
-
-        function resolveFolderAiId(config: Readonly<Config>) {
-            const folderOverrideId = config.folderAiIds.find(
-                (entry) => entry.folder === inputs.folder,
-            )?.aiId;
-            const parentOverrideId = inputs.parentRepoPath
-                ? config.folderAiIds.find((entry) => entry.folder === inputs.parentRepoPath)?.aiId
-                : undefined;
-            return (
-                folderOverrideId ||
-                parentOverrideId ||
-                config.defaultAiId ||
-                config.aiDefinitions[0]?.id ||
-                ''
-            );
-        }
-
-        async function loadAiDefinitions() {
-            try {
-                const config = await getConfig();
-                updateState({
-                    aiDefinitions: config.aiDefinitions,
-                    resolvedFolderAiId: resolveFolderAiId(config),
-                });
-            } catch (error: unknown) {
-                reportSessionError(error);
-            }
-        }
-
-        const currentFolderAiId = state.resolvedFolderAiId || inputs.folderAiId;
-
-        /**
-         * The AI a tab runs: its own override, else whatever the folder resolved to. Undefined when
-         * the definitions haven't loaded yet or the user has defined no AI.
-         */
-        function aiForSession(session: Readonly<SessionMeta>): AiDefinition | undefined {
-            return (
-                state.aiDefinitions.find((definition) => definition.id === session.aiId) ||
-                state.aiDefinitions.find((definition) => definition.id === currentFolderAiId)
-            );
-        }
-
-        if (state.loadedAiConfigRevision !== inputs.aiConfigRevision) {
-            updateState({
-                loadedAiConfigRevision: inputs.aiConfigRevision,
-            });
-            void loadAiDefinitions();
-        }
-
-        function bumpRestartKey(kind: PaneKind, sessionId: string) {
-            const key = `${kind}:${sessionId}`;
-            updateState({
-                restartKeys: {
-                    ...state.restartKeys,
-                    [key]: (state.restartKeys[key] || 0) + 1,
-                },
-            });
-        }
-
-        function sessionIndexFor(kind: PaneKind): number {
-            return kind === PaneKind.Ai ? inputs.aiSessionIndex : inputs.shellSessionIndex;
-        }
-
-        /**
-         * The incoming index is a hint — it comes from the URL, which in turn comes from what this
-         * folder was last on, and either can name a session that has since been closed. Correcting
-         * it back to the first session here rather than only falling back at render time is what
-         * makes the route and the remembered value agree with what's on screen; `vir-app` persists
-         * whatever `sessionRequested` reports, so this is also what clears the stale memory.
-         */
-        /** Only the active folder owns the URL, so an inactive group correcting it would clobber. */
-        if (state.sessions && inputs.active) {
-            const staleKinds = [
-                PaneKind.Ai,
-                PaneKind.Shell,
-            ].filter((kind) => {
-                return (
-                    sessionIndexFor(kind) > 1 &&
-                    sessionIndexFor(kind) > (state.sessions?.[kind].length ?? 0)
-                );
-            });
-            staleKinds.forEach((kind) => {
-                dispatch(
-                    new events.sessionRequested({
-                        detail: {
-                            kind,
-                            index: 1,
-                        },
-                    }),
-                );
-            });
-        }
-
-        function onAddSession(kind: PaneKind) {
-            void createSession({
-                folder: inputs.folder,
-                kind,
-            })
-                .then((sessions) => {
-                    applySessions(sessions);
-                    const createdSession = sessions[kind].at(-1);
-                    updateState({
-                        sessionToFocus: createdSession && {
-                            kind,
-                            sessionId: createdSession.id,
-                        },
-                    });
-                    /** Jump to the session just created — it's appended, so it's the last one. */
-                    dispatch(
-                        new events.sessionRequested({
-                            detail: {
-                                kind,
-                                index: sessions[kind].length,
-                            },
-                        }),
-                    );
-                })
-                .catch(reportSessionError);
-        }
-
-        function onNewTabKeydown(event: Event, kind: PaneKind) {
-            if (!(event instanceof KeyboardEvent) || !isNewTabShortcut(event)) {
-                return;
-            }
-            event.preventDefault();
-            onAddSession(kind);
-        }
-
-        function onRenameSession(kind: PaneKind, session: Readonly<SessionMeta>, index: number) {
-            /**
-             * A native prompt rather than a modal: it's the smallest thing that does the job, and
-             * `vir-terminal` already uses `window.prompt` for its paste fallback. Worth upgrading
-             * to an inline input if renaming turns out to be frequent.
-             */
-            const nextName = window.prompt(
-                'Session name (empty to use its number):',
-                session.name || String(index + 1),
-            );
-            if (nextName == undefined) {
-                return;
-            }
-            void renameSession({
-                folder: inputs.folder,
-                kind,
-                sessionId: session.id,
-                name: nextName,
-            })
-                .then(applySessions)
-                .catch(reportSessionError);
-        }
-
-        function onRestartSession(kind: PaneKind, session: Readonly<SessionMeta>) {
-            void restartPane({
-                folder: inputs.folder,
-                kind,
-                sessionId: session.id,
-            })
-                .then(() => bumpRestartKey(kind, session.id))
-                .catch(reportSessionError);
-        }
-
-        function openSessionAiPicker({
-            kind,
-            sessionId,
-        }: Readonly<{
-            kind: PaneKind;
-            sessionId: string;
-        }>) {
-            updateState({
-                changeAiSession: {
-                    kind,
-                    sessionId,
-                },
-                changeAiSubmitting: false,
-            });
-            void loadAiDefinitions();
-        }
-
-        /**
-         * Save a tab's AI, then restart it: a running pane keeps whatever command it was spawned
-         * with, so without the restart the new avatar would disagree with what's actually running.
-         */
-        function onChangeSessionAi(aiId: string) {
-            const target = state.changeAiSession;
-            if (!target || state.changeAiSubmitting) {
-                return;
-            }
-            updateState({
-                changeAiSubmitting: true,
-            });
-            void setSessionAi({
-                folder: inputs.folder,
-                kind: target.kind,
-                sessionId: target.sessionId,
-                aiId,
-            })
-                .then(async (sessions) => {
-                    applySessions(sessions);
-                    await restartPane({
-                        folder: inputs.folder,
-                        kind: target.kind,
-                        sessionId: target.sessionId,
-                    });
-                    bumpRestartKey(target.kind, target.sessionId);
-                    updateState({
-                        changeAiSession: undefined,
-                        changeAiSubmitting: false,
-                    });
-                })
-                .catch((error: unknown) => {
-                    updateState({
-                        changeAiSubmitting: false,
-                    });
-                    reportSessionError(error);
-                });
-        }
-
-        function onCloseSession(kind: PaneKind, session: Readonly<SessionMeta>, index: number) {
-            void closeSession({
-                folder: inputs.folder,
-                kind,
-                sessionId: session.id,
-            })
-                .then((sessions) => {
-                    applySessions(sessions);
-                    /**
-                     * Keep the selection in range after a removal. Closing the active tab (or any
-                     * tab before it) shifts everything left, so clamp to the new length.
-                     */
-                    const nextIndex = Math.min(
-                        Math.max(
-                            1,
-                            sessionIndexFor(kind) > index
-                                ? sessionIndexFor(kind) - 1
-                                : sessionIndexFor(kind),
-                        ),
-                        sessions[kind].length,
-                    );
-                    dispatch(
-                        new events.sessionRequested({
-                            detail: {
-                                kind,
-                                index: nextIndex,
-                            },
-                        }),
-                    );
-                })
-                .catch(reportSessionError);
-        }
-
-        /**
-         * Per-tab menu. Restart / reset live here rather than on the folder's sidebar row because
-         * with several sessions per pane, "restart the AI" is only meaningful against a specific
-         * one.
-         */
-        function buildSessionMenuEntries({
-            kind,
-            session,
-            index,
-            sessionCount,
-        }: Readonly<{
-            kind: PaneKind;
-            session: Readonly<SessionMeta>;
-            index: number;
-            sessionCount: number;
-        }>): ReadonlyArray<ViraMenuItemEntry> {
-            /**
-             * Annotated so each literal widens to `ViraMenuItemEntry` (whose `content` is an
-             * `HtmlInterpolation`, not a `string`) before the conditional entries are filtered
-             * out.
-             */
-            const entries: ReadonlyArray<ViraMenuItemEntry | undefined> = [
-                {
-                    content: 'Rename',
-                    onClick() {
-                        return onRenameSession(kind, session, index);
-                    },
-                },
-                {
-                    content: 'Restart',
-                    onClick() {
-                        return onRestartSession(kind, session);
-                    },
-                },
-                kind === PaneKind.Ai
-                    ? {
-                          content: 'Change AI',
-                          onClick() {
-                              return openSessionAiPicker({
-                                  kind,
-                                  sessionId: session.id,
-                              });
-                          },
-                      }
-                    : undefined,
-                /** The last remaining tab can't be closed — a pane with no tabs has nothing to show. */
-                sessionCount > 1
-                    ? {
-                          content: 'Close',
-                          onClick() {
-                              return onCloseSession(kind, session, index);
-                          },
-                      }
-                    : undefined,
-            ];
-            return entries.filter((entry): entry is ViraMenuItemEntry => !!entry);
-        }
-
-        /**
-         * Activity slot for one tab: a spinner while the pane is working, an hourglass while its
-         * work has gone quiet for too long, empty space otherwise. The element is always rendered
-         * so the tab doesn't change width when activity starts. `floating` picks the placement for
-         * a pane with no tab strip to hold it.
-         */
-        function renderActivitySpinner(kind: PaneKind, session: Readonly<SessionMeta>) {
-            const status =
-                inputs.sessionStatuses.find(
-                    (entry) => entry.kind === kind && entry.sessionId === session.id,
-                )?.status ?? PaneStatus.None;
-            const indicator = sessionActivityIndicators[status];
-            return html`
-                <span
-                    class="session-activity"
-                    ?data-idle=${!indicator}
-                    ?data-busy=${status === PaneStatus.Busy}
-                    ?data-stalled=${status === PaneStatus.Stalled}
-                    title=${indicator?.title || ''}
-                >
-                    <${ViraIcon.assign({
-                        icon: indicator?.icon,
-                    })}></${ViraIcon}>
-                </span>
-            `;
-        }
-
-        /**
-         * Sole "new session" affordance for a pane showing one session, where the tab strip (and so
-         * its `+`) is hidden.
-         */
-        function renderFloatingAddSession(kind: PaneKind) {
-            return html`
-                <span class="session-add-floating">
-                    <${ViraButton.assign({
-                        buttonSize: ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
-                        text: '+',
-                    })}
-                        title="New session"
-                        ${listen('click', () => onAddSession(kind))}
-                    ></${ViraButton}>
-                </span>
-            `;
-        }
-
-        /** Nothing renders until the definitions load, which keeps the strip from jumping around. */
-        function renderSessionAvatar(session: Readonly<SessionMeta>, sizePx: number) {
-            const definition = aiForSession(session);
-            return definition
-                ? html`
-                      <${VirAiAvatar.assign({
-                          name: definition.name,
-                          avatarFile: definition.avatarFile || '',
-                          sizePx,
-                      })}
-                          title=${definition.name}
-                      ></${VirAiAvatar}>
-                  `
-                : '';
-        }
-
-        function renderSessionBar(kind: PaneKind, sessions: ReadonlyArray<Readonly<SessionMeta>>) {
-            const activeSession = sessionAtIndex(sessions, sessionIndexFor(kind));
-            return html`
-                <div class="session-bar" role="tablist" aria-label="Sessions">
-                    ${repeat(
-                        sessions,
-                        (session) => session.id,
-                        (session, index) => {
-                            return html`
-                                <div
-                                    class="session-tab"
-                                    role="tab"
-                                    ?data-selected=${session.id === activeSession?.id}
-                                    aria-selected=${session.id === activeSession?.id}
-                                    title=${session.name || `Session ${index + 1}`}
-                                    ${listen('click', () => {
-                                        return dispatch(
-                                            new events.sessionRequested({
-                                                detail: {
-                                                    kind,
-                                                    index: index + 1,
-                                                },
-                                            }),
-                                        );
-                                    })}
-                                >
-                                    ${renderActivitySpinner(kind, session)}
-                                    ${kind === PaneKind.Ai ? renderSessionAvatar(session, 12) : ''}
-                                    <span class="session-tab-label">
-                                        ${sessionLabel(session, index)}
-                                    </span>
-                                    <span ${listen('click', (event) => event.stopPropagation())}>
-                                        <${ViraMenuTrigger}>
-                                            <${ViraButton.assign({
-                                                buttonSize: ViraSize.Small,
-                                                buttonEmphasis: ViraEmphasis.Subtle,
-                                                color: ViraColorVariant.Neutral,
-                                                icon: sessionMenuIcon,
-                                            })}
-                                                slot=${ViraMenuTrigger.slotNames[
-                                                    'vira-menu-trigger-trigger'
-                                                ]}
-                                                title="Session actions"
-                                            ></${ViraButton}>
-                                            ${renderMenuItemEntries(
-                                                buildSessionMenuEntries({
-                                                    kind,
-                                                    session,
-                                                    index,
-                                                    sessionCount: sessions.length,
-                                                }),
-                                            )}
-                                        </${ViraMenuTrigger}>
-                                    </span>
-                                </div>
-                            `;
-                        },
-                    )}
-                    <${ViraButton.assign({
-                        buttonSize: ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
-                        text: '+',
-                    })}
-                        class="session-add"
-                        title="New session"
-                        ${listen('click', () => onAddSession(kind))}
-                    ></${ViraButton}>
-                </div>
-            `;
-        }
-
-        /**
-         * Mount exactly one terminal per pane: the active session's. Inactive sessions keep their
-         * PTY alive on the daemon and replay scrollback on reattach, so holding a socket open for
-         * each would buy nothing but idle connections. The `repeat` key combines the session id
-         * with its restart counter so both switching tabs and restarting force a fresh element —
-         * `VirTerminal` opens its socket in `onDomCreated`, which never re-runs for a reused
-         * element.
-         */
-        function renderPaneTerminal(
-            kind: PaneKind,
-            sessions: ReadonlyArray<Readonly<SessionMeta>>,
-        ) {
-            const session = sessionAtIndex(sessions, sessionIndexFor(kind));
-            if (!session) {
-                return '';
-            }
-            const folderRestartKey = inputs.folderRestartKeys[kind];
-            const sessionRestartKey = state.restartKeys[`${kind}:${session.id}`] || 0;
-            const mountKey = `${session.id}:${sessionRestartKey + folderRestartKey}`;
-            return repeat(
-                [mountKey],
-                (key) => key,
-                () => {
-                    return html`
-                        <${VirTerminal.assign({
-                            folder: inputs.folder,
-                            kind,
-                            sessionId: session.id,
-                            active: inputs.active,
-                            showAccessoryKeys: inputs.screenSize === ScreenSize.Mobile,
-                            focusOnMount:
-                                state.sessionToFocus?.kind === kind &&
-                                state.sessionToFocus.sessionId === session.id,
-                        })}></${VirTerminal}>
-                    `;
-                },
-            );
-        }
-
-        const split = clampSplit(state.split);
-        host.style.setProperty('--ai-grow', String(split));
-        host.style.setProperty('--shell-grow', String(1 - split));
-
-        function onDividerPointerDown(event: PointerEvent) {
-            event.preventDefault();
-            /**
-             * Pointer Events unify mouse, touch, and pen so the same handler covers desktop and
-             * iPad. `setPointerCapture` keeps `pointermove`/`pointerup` flowing to this element
-             * even if the finger drifts off it mid-drag.
-             */
-            const divider = event.currentTarget;
-            if (divider instanceof Element) {
-                divider.setPointerCapture(event.pointerId);
-            }
-
-            // Mute selection + force resize cursor globally during drag — otherwise crossing
-            // into the xterm canvas flips the cursor to i-beam and selects terminal text.
-            const previousUserSelect = document.body.style.userSelect;
-            const previousCursor = document.body.style.cursor;
-            document.body.style.userSelect = 'none';
-            document.body.style.cursor = 'col-resize';
-
-            let latestSplit = split;
-            updateState({
-                dragging: true,
-            });
-
-            function onMove(moveEvent: PointerEvent) {
-                if (moveEvent.pointerId !== event.pointerId) {
-                    return;
-                }
-                const rect = host.getBoundingClientRect();
-                if (rect.width <= 0) {
-                    return;
-                }
-                latestSplit = clampSplit((moveEvent.clientX - rect.left) / rect.width);
-                updateState({
-                    split: latestSplit,
-                });
-            }
-
-            function onUp(upEvent: PointerEvent) {
-                if (upEvent.pointerId !== event.pointerId) {
-                    return;
-                }
-                window.removeEventListener('pointermove', onMove);
-                window.removeEventListener('pointerup', onUp);
-                window.removeEventListener('pointercancel', onUp);
-                document.body.style.userSelect = previousUserSelect;
-                document.body.style.cursor = previousCursor;
-                updateState({
-                    dragging: false,
-                });
-                localStorageClient.paneSplit.write(latestSplit);
-            }
-
-            window.addEventListener('pointermove', onMove);
-            window.addEventListener('pointerup', onUp);
-            window.addEventListener('pointercancel', onUp);
-        }
-
-        function onDividerDoubleClick() {
-            updateState({
-                split: paneSplit.default,
-            });
-            localStorageClient.paneSplit.write(paneSplit.default);
-        }
-
-        /**
-         * `focusin` bubbles through the shadow boundary (composed events), so xterm's hidden
-         * textarea gaining focus reaches this listener via the outer `.pane` div. Default the
-         * highlight to the AI pane when nothing has been focused yet, so the initial render doesn't
-         * show both panes dimmed.
-         */
-        const focusedKind = state.focusedKind ?? PaneKind.Ai;
-        const aiFocused = focusedKind === PaneKind.Ai;
-        const shellFocused = focusedKind === PaneKind.Shell;
-
-        /**
-         * What the picker shows for the tab it's open against: the tab's own override (empty when
-         * it inherits) and the name of the folder's AI, which is what "Inherit" means here.
-         */
-        const changeAiTargetSession = state.changeAiSession
-            ? state.sessions?.[state.changeAiSession.kind].find(
-                  (session) => session.id === state.changeAiSession?.sessionId,
-              )
-            : undefined;
-        const activeSessionAiOverride = changeAiTargetSession?.aiId || '';
-        const folderAiName =
-            state.aiDefinitions.find((definition) => definition.id === currentFolderAiId)?.name ||
-            '';
-
-        const isDiffTab = inputs.activeTab === 'diff';
-        const isMobile = inputs.screenSize === ScreenSize.Mobile;
-        /** Basename of the folder path — matches how folder names are derived elsewhere. */
-        const folderName = inputs.folder.split('/').findLast(Boolean) || inputs.folder;
-        /**
-         * Pane visibility decision matrix:
-         *
-         * - Desktop, tab=ai|shell → both AI + Shell visible (the existing split layout).
-         * - Desktop, tab=diff → diff pane visible (both terminals hidden).
-         * - Mobile, tab=ai → only AI pane visible.
-         * - Mobile, tab=shell → only Shell pane visible.
-         * - Mobile, tab=diff → only diff pane visible.
-         */
-        const showCliPanes = !isDiffTab;
-        const showAiPane = showCliPanes && (!isMobile || inputs.activeTab === 'ai');
-        const showShellPane = showCliPanes && (!isMobile || inputs.activeTab === 'shell');
-
-        /**
-         * Whether to actually mount each terminal (vs. just hide it with CSS). On desktop both are
-         * always mounted so the split view is live and switching tabs is instant. On mobile only
-         * the visible pane's terminal is mounted, so an inactive folder never holds a socket and
-         * even the active folder holds at most one `/pty` WebSocket at a time — switching
-         * tabs/panes closes the old socket (the daemon keeps the PTY and replays scrollback on the
-         * next attach). This keeps phones from accumulating idle sockets.
-         */
-        const mountAiTerminal = !isMobile || showAiPane;
-        const mountShellTerminal = !isMobile || showShellPane;
-
-        if (isDiffTab && !state.diffMounted) {
+        if (layout.isDiffTab && !state.diffMounted) {
             updateState({
                 diffMounted: true,
             });
         }
+        folderSessions.sync(info?.sessionStatuses || []);
+        paneReview.sync({
+            active: inputs.active,
+            hasPr,
+            isPrNeeded: layout.isDiffTab || layout.isReviewPaneTab,
+            isReviewPaneOpen: layout.isReviewPaneTab && inputs.active,
+            isDiffMounted: state.diffMounted,
+            reviewPullRequest: inputs.reviewPullRequest,
+            frontendState: inputs.context.frontendState,
+        });
 
-        /**
-         * Tab bar layout differs by screen size:
-         *
-         * - Desktop: CLI + Diff. The CLI tab is the active one when `activeTab` is `ai` or `shell` —
-         *   the user can't tell them apart on desktop (both panes are visible) so we collapse them
-         *   into one button. Clicking CLI sets `tab=ai` as a stable default.
-         * - Mobile: AI, Shell, Diff, each mapping directly to the URL param.
-         */
-        const cliTabButtons: ReadonlyArray<TabButton> = isMobile
-            ? [
-                  {
-                      label: 'AI',
-                      tab: 'ai',
-                      isActive: inputs.activeTab === 'ai',
-                  },
-                  {
-                      label: 'Shell',
-                      tab: 'shell',
-                      isActive: inputs.activeTab === 'shell',
-                  },
-              ]
-            : [
-                  {
-                      label: 'CLI',
-                      tab: 'ai',
-                      isActive: showCliPanes,
-                  },
-              ];
-        const tabButtons: ReadonlyArray<TabButton> = [
-            ...cliTabButtons,
-            {
-                label: 'Diff',
-                tab: 'diff',
-                isActive: isDiffTab,
-            },
-        ];
+        const diff = resolveDiffView({
+            chosen: state.diffView,
+            hasChanges: !!info?.git.dirty,
+            reviewCopyFolder: paneReview.value.reviewCopyFolder,
+            review: paneReview.value.review,
+            isManualReviewStarting: state.isManualReviewStarting,
+        });
+        if (state.isManualReviewStarting && diff.isAvailable[DiffView.ManualReview]) {
+            updateState({
+                isManualReviewStarting: false,
+            });
+        }
 
-        function requestTab(tab: FrontendTab) {
+        if (
+            inputs.reviewStart &&
+            paneReview.sendReviewStart({
+                reviewStart: inputs.reviewStart,
+                isMobile,
+            })
+        ) {
             dispatch(
-                new events.tabRequested({
-                    detail: tab,
+                new events.reviewStartSent({
+                    detail: undefined,
                 }),
             );
         }
 
+        const sessionPaneInputs = {
+            folder: inputs.folder,
+            memoryKey: inputs.memoryKey,
+            folderSessions,
+            active: inputs.active,
+            isMobile,
+            sessionStatuses: info?.sessionStatuses || [],
+        };
+
         return html`
-            ${isMobile
-                ? html`
-                      <div class="folder-name-bar" title=${inputs.folder}>
-                          <span class="folder-name-label">${folderName}</span>
-                      </div>
-                  `
-                : ''}
-            <div class="tab-bar" role="tablist" ?data-mobile=${isMobile}>
-                ${tabButtons.map(({label, tab, isActive}) => {
-                    return html`
-                        <button
-                            type="button"
-                            class="tab"
-                            role="tab"
-                            ?data-selected=${isActive}
-                            aria-selected=${isActive}
-                            ${listen('click', () => requestTab(tab))}
-                        >
-                            ${label}
-                        </button>
-                    `;
+            <${VirPaneHeader.assign({
+                folder: inputs.folder,
+                isMobile,
+                tabButtons: layout.tabButtons,
+                diffViewPicker:
+                    layout.isDiffTab && !inputs.reviewPullRequest
+                        ? {
+                              selected: diff.diffView,
+                              isSelectable: {
+                                  [DiffView.Source]: diff.isAvailable[DiffView.Source],
+                                  [DiffView.ManualReview]: diff.isManualReviewSelectable,
+                              },
+                          }
+                        : undefined,
+            })}
+                ${listen(VirPaneHeader.events.tabRequested, (event) => {
+                    selectPaneTab({
+                        memoryKey: inputs.memoryKey,
+                        tab: event.detail,
+                    });
                 })}
-            </div>
+                ${listen(VirPaneHeader.events.diffViewSelected, (event) => {
+                    localStorageClient.diffViewByFolder.writeFolder({
+                        folder: inputs.folder,
+                        value: event.detail,
+                    });
+                    updateState({
+                        diffView: event.detail,
+                        isManualReviewStarting: false,
+                    });
+                })}
+            ></${VirPaneHeader}>
             <div class="body">
                 ${state.diffMounted
                     ? html`
-                          <div class="diff-pane" ?data-hidden=${!isDiffTab}>
-                              <${VirDiffPane.assign({
-                                  folder: inputs.folder,
-                                  active: isDiffTab && inputs.active,
-                                  screenSize: inputs.screenSize,
-                              })}></${VirDiffPane}>
-                          </div>
+                          <${VirPaneDiff.assign({
+                              folder: inputs.folder,
+                              isShown: layout.isDiffTab && inputs.active,
+                              diffView: diff.diffView,
+                              paneReview,
+                              isReviewCopyReady: diff.isAvailable[DiffView.ManualReview],
+                              isReviewFolder: !!inputs.reviewPullRequest,
+                              frontendState: inputs.context.frontendState,
+                              screenSize: inputs.context.screenSize,
+                          })}></${VirPaneDiff}>
                       `
-                    : ''}
-                <div class="cli-panes" ?data-hidden=${!showCliPanes} ?data-mobile=${isMobile}>
-                    <div
-                        class="pane ai-pane"
-                        ?data-hidden=${!showAiPane}
-                        data-pane-focused=${aiFocused ? 'true' : 'false'}
-                        ${listen('focusin', () => {
-                            return updateState({
-                                focusedKind: PaneKind.Ai,
-                                sessionToFocus: undefined,
-                            });
-                        })}
-                        ${listen('keydown', (event) => onNewTabKeydown(event, PaneKind.Ai))}
-                    >
-                        ${state.sessions && state.sessions.ai.length > 1
-                            ? renderSessionBar(PaneKind.Ai, state.sessions.ai)
-                            : renderFloatingAddSession(PaneKind.Ai)}
-                        ${state.sessionsError
-                            ? html`
-                                  <div class="session-error" role="alert">
-                                      ${state.sessionsError}
-                                  </div>
-                              `
-                            : ''}
-                        <div class="pane-body">
-                            ${mountAiTerminal && state.sessions
-                                ? renderPaneTerminal(PaneKind.Ai, state.sessions.ai)
-                                : ''}
-                        </div>
-                    </div>
-                    <div
-                        class="divider ${state.dragging ? 'dragging' : ''}"
-                        role="separator"
-                        aria-orientation="vertical"
-                        title="Drag to resize. Double-click to reset."
-                        ${listen('pointerdown', onDividerPointerDown)}
-                        ${listen('dblclick', onDividerDoubleClick)}
-                    ></div>
-                    <${VirAiPickerModal.assign({
-                        open: !!state.changeAiSession,
-                        modalTitle: 'Change AI for this tab',
-                        aiDefinitions: state.aiDefinitions,
-                        selectedAiId: activeSessionAiOverride,
-                        inheritedName: folderAiName,
-                        submitting: state.changeAiSubmitting,
+                    : nothing}
+                <${VirPaneSplit.assign({
+                    /**
+                     * Review folders remember their own split, so resizing one leaves the other
+                     * alone.
+                     */
+                    splitSetting: inputs.reviewPullRequest
+                        ? localStorageClient.reviewPaneSplit
+                        : localStorageClient.paneSplit,
+                    isMobile,
+                })}
+                    ?data-hidden=${layout.isDiffTab}
+                >
+                    <${VirSessionPane.assign({
+                        ...sessionPaneInputs,
+                        kind: PaneKind.Ai,
+                        sessionIndex: sessionIndexFromRoute(inputs.context.route, PaneKind.Ai),
+                        mountTerminal: layout.mountAiTerminal,
+                        folderRestartKey:
+                            inputs.context.paneRestarts.value.keys[
+                                paneRestartKey({
+                                    folder: inputs.folder,
+                                    kind: PaneKind.Ai,
+                                })
+                            ] || 0,
+                        showError: true,
+                        ai: {
+                            folderAiId: info?.aiId || '',
+                            parentRepoPath: info?.parentRepoPath || '',
+                            aiConfigRevision: inputs.context.paneRestarts.value.aiConfigRevision,
+                        },
                     })}
-                        ${listen(VirAiPickerModal.events.closeRequested, () => {
-                            return updateState({
-                                changeAiSession: undefined,
-                                changeAiSubmitting: false,
-                            });
-                        })}
-                        ${listen(VirAiPickerModal.events.aiSaveRequested, (event) => {
-                            return onChangeSessionAi(event.detail);
-                        })}
-                    ></${VirAiPickerModal}>
-                    <div
-                        class="pane shell-pane"
-                        ?data-hidden=${!showShellPane}
-                        data-pane-focused=${shellFocused ? 'true' : 'false'}
+                        slot=${VirPaneSplit.slotNames['vir-pane-split-start']}
+                        ?data-hidden=${!layout.showAiPane}
+                        data-pane-focused=${state.focusedKind === PaneKind.Ai}
                         ${listen('focusin', () => {
-                            return updateState({
-                                focusedKind: PaneKind.Shell,
-                                sessionToFocus: undefined,
+                            updateState({
+                                focusedKind: PaneKind.Ai,
                             });
                         })}
-                        ${listen('keydown', (event) => onNewTabKeydown(event, PaneKind.Shell))}
-                    >
-                        ${state.sessions && state.sessions.shell.length > 1
-                            ? renderSessionBar(PaneKind.Shell, state.sessions.shell)
-                            : html`
-                                  ${renderFloatingAddSession(PaneKind.Shell)}
-                              `}
-                        <div class="pane-body">
-                            ${mountShellTerminal && state.sessions
-                                ? renderPaneTerminal(PaneKind.Shell, state.sessions.shell)
-                                : ''}
-                        </div>
-                    </div>
-                </div>
+                    ></${VirSessionPane}>
+                    <${VirSessionPane.assign({
+                        ...sessionPaneInputs,
+                        kind: PaneKind.Shell,
+                        sessionIndex: sessionIndexFromRoute(inputs.context.route, PaneKind.Shell),
+                        mountTerminal: layout.mountShellTerminal,
+                        folderRestartKey:
+                            inputs.context.paneRestarts.value.keys[
+                                paneRestartKey({
+                                    folder: inputs.folder,
+                                    kind: PaneKind.Shell,
+                                })
+                            ] || 0,
+                        showError: false,
+                    })}
+                        ?data-hidden=${!layout.showShellPane}
+                        ?data-collapsed=${layout.isReviewPaneTab}
+                        data-pane-focused=${state.focusedKind === PaneKind.Shell}
+                        ${listen('focusin', () => {
+                            updateState({
+                                focusedKind: PaneKind.Shell,
+                            });
+                        })}
+                    ></${VirSessionPane}>
+                    ${layout.hasReviewTab
+                        ? html`
+                              <${VirPaneReview.assign({
+                                  folder: inputs.folder,
+                                  paneReview,
+                                  frontendState: inputs.context.frontendState,
+                                  isMobile,
+                                  initialPromptSentAt: inputs.reviewStart?.reviewUpdatedAt,
+                              })}
+                                  ?data-hidden=${!layout.isReviewPaneTab}
+                                  ?data-collapsed=${!layout.isReviewPaneTab}
+                                  ${listen(VirReviewPane.events.manualReviewStarted, () => {
+                                      if (!inputs.reviewPullRequest) {
+                                          updateState({
+                                              diffView: DiffView.ManualReview,
+                                              isManualReviewStarting: true,
+                                          });
+                                      }
+                                  })}
+                              ></${VirPaneReview}>
+                          `
+                        : nothing}
+                </${VirPaneSplit}>
             </div>
         `;
     },

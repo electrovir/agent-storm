@@ -1,4 +1,11 @@
-import {configJsonSchema, defaultConfig, type Config} from '@agent-storm/common';
+import {
+    checkPathEndpoint,
+    configEndpoint,
+    configJsonSchema,
+    defaultConfig,
+    restartDaemonEndpoint,
+    type Config,
+} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
     getObjectTypedKeys,
@@ -6,7 +13,8 @@ import {
     pickObjectKeys,
     type JsonValue,
 } from '@augment-vir/common';
-import {css, defineElement, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
+import {HttpMethod} from '@rest-vir/api';
+import {css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
     ViraButton,
     ViraColorVariant,
@@ -21,9 +29,10 @@ import {
     type ViraJsonSchema,
     type ViraJsonSchemaObject,
 } from 'vira';
-import {checkPath, getConfig, putConfig, restartDaemon} from '../../util/api-client.js';
-import {reportRenderError} from '../../util/client-error-log.js';
+import {fetchApi} from '../../util/api-client.js';
 import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
+import {defineAppElement} from '../define-app-element.js';
+import {savingIcon} from '../icons/saving-icon.js';
 
 /**
  * Config properties that round-trip through `/config` (so the backend can persist them across
@@ -109,13 +118,10 @@ function fromJsonValue(value: JsonValue, current: Readonly<Config>): Config {
     };
 }
 
-export const VirSettingsModal = defineElement<{
+export const VirSettingsModal = defineAppElement<{
     open: boolean;
 }>()({
     tagName: 'vir-settings-modal',
-    options: {
-        errorHandler: reportRenderError,
-    },
     events: {
         /**
          * Emitted when the user dismisses the modal (clicks the underlying scrim, hits Cancel /
@@ -136,6 +142,8 @@ export const VirSettingsModal = defineElement<{
              * persisted value and written straight back on every change.
              */
             scrollbackLimit: localStorageClient.scrollbackLimit.read(),
+            /** Client-only like `scrollbackLimit`. */
+            showDebugTab: localStorageClient.showDebugTab.read(),
             pending: undefined as JsonValue | undefined,
             /**
              * Snapshot of the Config we loaded from the backend. Needed at save() time so we can
@@ -257,7 +265,7 @@ export const VirSettingsModal = defineElement<{
                 daemonRestartError: undefined,
             });
             try {
-                await restartDaemon();
+                await fetchApi(restartDaemonEndpoint, HttpMethod.Post);
                 updateState({
                     restartingDaemon: false,
                 });
@@ -271,7 +279,7 @@ export const VirSettingsModal = defineElement<{
 
         async function load() {
             try {
-                const config = await getConfig();
+                const config = await fetchApi(configEndpoint, HttpMethod.Get);
                 updateState({
                     pending: toJsonValue(config),
                     loaded: config,
@@ -303,13 +311,15 @@ export const VirSettingsModal = defineElement<{
                  * AI" modal write config too, and the hidden keys this form preserves would
                  * otherwise be whatever they were when the modal opened.
                  */
-                const current = await getConfig();
+                const current = await fetchApi(configEndpoint, HttpMethod.Get);
                 const next: Config = {
                     ...fromJsonValue(state.pending, current),
                     defaultAiId: state.defaultAiId ?? current.defaultAiId,
                     tlsCertPath: state.tlsCertPath ?? current.tlsCertPath,
                 };
-                await putConfig(next);
+                await fetchApi(configEndpoint, HttpMethod.Put, {
+                    requestData: next,
+                });
                 /**
                  * Checked after the write, not before it: the certificate lives on the server's
                  * filesystem, so only the backend can stat it, and a typo here shouldn't cost the
@@ -317,9 +327,15 @@ export const VirSettingsModal = defineElement<{
                  * be corrected in place.
                  */
                 if (next.tlsCertPath) {
-                    const {resolvedPath, exists} = await checkPath({
-                        path: next.tlsCertPath,
-                    });
+                    const {resolvedPath, exists} = await fetchApi(
+                        checkPathEndpoint,
+                        HttpMethod.Post,
+                        {
+                            requestData: {
+                                path: next.tlsCertPath,
+                            },
+                        },
+                    );
                     if (!exists) {
                         updateState({
                             saving: false,
@@ -391,6 +407,11 @@ export const VirSettingsModal = defineElement<{
                                               placeholder: 'Leave empty to serve over http',
                                               hasError: !!state.tlsCertPathError,
                                           },
+                                          showDebugTab: {
+                                              type: ViraFormFieldType.Checkbox,
+                                              label: 'Show Debug tab',
+                                              value: state.showDebugTab,
+                                          },
                                       },
                                   })}
                                       ${listen(ViraForm.events.valueChange, (event) => {
@@ -401,6 +422,13 @@ export const VirSettingsModal = defineElement<{
                                                       : '',
                                                   tlsCertPathError: undefined,
                                               });
+                                              return;
+                                          } else if (event.detail.key === 'showDebugTab') {
+                                              const showDebugTab = event.detail.value === true;
+                                              updateState({
+                                                  showDebugTab,
+                                              });
+                                              localStorageClient.showDebugTab.write(showDebugTab);
                                               return;
                                           }
                                           const nextValue = event.detail.value;
@@ -424,7 +452,7 @@ export const VirSettingsModal = defineElement<{
                                       ? html`
                                             <div class="field-error">${state.tlsCertPathError}</div>
                                         `
-                                      : ''}
+                                      : nothing}
                               </div>
                               <div class="ai-row">
                                   <${ViraDropdown.assign({
@@ -466,17 +494,17 @@ export const VirSettingsModal = defineElement<{
                                   ? html`
                                         <div class="error">${state.loadError}</div>
                                     `
-                                  : ''}
+                                  : nothing}
                               ${state.saveError
                                   ? html`
                                         <div class="error">${state.saveError}</div>
                                     `
-                                  : ''}
+                                  : nothing}
                               ${state.daemonRestartError
                                   ? html`
                                         <div class="error">${state.daemonRestartError}</div>
                                     `
-                                  : ''}
+                                  : nothing}
                               ${state.pending
                                   ? html`
                                         <${ViraJsonForm.assign({
@@ -492,7 +520,7 @@ export const VirSettingsModal = defineElement<{
                                         ></${ViraJsonForm}>
                                     `
                                   : state.loadError
-                                    ? ''
+                                    ? nothing
                                     : html`
                                           <div class="loading">Loading config...</div>
                                       `}
@@ -522,7 +550,8 @@ export const VirSettingsModal = defineElement<{
                                       })}
                                   ></${ViraButton}>
                                   <${ViraButton.assign({
-                                      text: state.saving ? 'Saving...' : 'Save',
+                                      text: 'Save',
+                                      icon: state.saving ? savingIcon : undefined,
                                       color: ViraColorVariant.Brand,
                                       isDisabled: state.saving || !state.pending,
                                   })}
@@ -531,7 +560,7 @@ export const VirSettingsModal = defineElement<{
                               </div>
                           </div>
                       `
-                    : ''}
+                    : nothing}
             </${ViraModal}>
         `;
     },

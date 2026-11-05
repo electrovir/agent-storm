@@ -1,0 +1,290 @@
+// cspell:words meslo menlo
+
+import {type ReviewQueuePr} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {colorCss} from '@electrovir/color';
+import {css, defineElementEvent, html, listen, nothing, unsafeHTML} from 'element-vir';
+import {
+    LucideEllipsisIcon,
+    LucideRotateCwIcon,
+    renderMenuItemEntries,
+    tooltip,
+    ViraButton,
+    ViraColorVariant,
+    ViraEmphasis,
+    ViraIcon,
+    ViraLink,
+    ViraMenuTrigger,
+    ViraSize,
+    viraThemeByKeys,
+} from 'vira';
+import {type PrQueueKind} from '../../util/frontend-state.js';
+import {sanitizeGitHubHtml} from '../../util/github-markdown.js';
+import {prStatusIcons, renderPaneChip, sidebarTooltipOptions} from '../../util/sidebar-display.js';
+import {defineAppElement} from '../define-app-element.js';
+import {queuePrStatusDisplays} from './review-sidebar-display.js';
+import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
+
+/** One pull request in the Review sidebar, with its pane chips, assignees, status, and menu. */
+export const VirReviewSidebarRow = defineAppElement<{
+    pr: Readonly<ReviewQueuePr>;
+    /** Decides which statuses get an icon and what their tooltips say. */
+    queueKind: PrQueueKind;
+    isActive: boolean;
+    canRestartPanes: boolean;
+    mobileModal?: boolean | undefined;
+}>()({
+    tagName: 'vir-review-sidebar-row',
+    events: {
+        rowClicked: defineElementEvent<ReviewQueuePr>(),
+        restartPanesRequested: defineElementEvent<ReviewQueuePr>(),
+    },
+    state() {
+        return {
+            isMenuOpen: false,
+        };
+    },
+    styles: css`
+        :host {
+            display: block;
+        }
+
+        ${spinKeyframesCss}
+
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0 5px 0 0;
+            cursor: pointer;
+            user-select: none;
+
+            &:hover {
+                background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
+                    .value};
+            }
+
+            &[data-active] {
+                background-color: ${viraThemeByKeys.blue['behind-fg']['small-body'].background
+                    .value};
+            }
+
+            &[data-draft] {
+                opacity: 0.5;
+            }
+
+            &[data-mobile] {
+                min-height: 34px;
+                padding: 4px 16px 4px 30px;
+            }
+        }
+
+        .chain-connector {
+            align-self: flex-start;
+            flex-shrink: 0;
+            width: 8px;
+            height: 0.7em;
+            border-left: 1px solid ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
+            border-bottom: 1px solid ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
+        }
+
+        .avatars,
+        .chips {
+            display: flex;
+            align-items: center;
+            align-self: flex-start;
+            flex-shrink: 0;
+            height: 1lh;
+            padding-top: 2px;
+        }
+
+        /* Pulls the avatars in closer than the row's gap allows. */
+        .chips {
+            margin-right: -4px;
+        }
+
+        .chip {
+            width: 12px;
+            height: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chip[data-busy] ${ViraIcon} {
+            ${spinAnimationCss}
+        }
+
+        .pr-status {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .avatar {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+
+            & + & {
+                margin-left: -4px;
+            }
+        }
+
+        .name {
+            flex-grow: 1;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            padding: 2px 0;
+
+            /* The title is one line of markdown, so only its inline code needs styling. */
+            & code {
+                padding: 0 3px;
+                border-radius: 3px;
+                font-family: 'MesloLGS NF', Menlo, monospace;
+                font-size: 0.85em;
+                ${colorCss(viraThemeByKeys.grey['behind-fg']['small-body'])};
+            }
+        }
+
+        .row .actions {
+            display: inline-flex;
+            opacity: 0.35;
+        }
+
+        .row:hover .actions,
+        .row[data-menu-open] .actions {
+            opacity: 1;
+        }
+
+        .row[data-mobile] .name {
+            padding: 4px 0;
+        }
+
+        .row[data-mobile] .avatars,
+        .row[data-mobile] .chips {
+            padding-top: 4px;
+        }
+    `,
+    render({inputs, state, updateState, dispatch, events}) {
+        const statusDisplay = queuePrStatusDisplays[inputs.queueKind];
+        const statusIcon = statusDisplay.shownStatuses.includes(inputs.pr.prStatus)
+            ? prStatusIcons[inputs.pr.prStatus]
+            : undefined;
+
+        const menuTemplate = html`
+            <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
+                <${ViraMenuTrigger}
+                    ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                        updateState({
+                            isMenuOpen: event.detail,
+                        });
+                    })}
+                >
+                    <${ViraButton.assign({
+                        icon: LucideEllipsisIcon,
+                        buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        color: ViraColorVariant.Neutral,
+                    })}
+                        slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                        ${tooltip('Pull request actions', sidebarTooltipOptions)}
+                    ></${ViraButton}>
+                    ${renderMenuItemEntries(
+                        [
+                            {
+                                content: html`
+                                    <${ViraLink.assign({
+                                        link: {
+                                            url: inputs.pr.url,
+                                            newTab: true,
+                                        },
+                                        disableLinkStyles: true,
+                                    })}>
+                                        Open PR
+                                    </${ViraLink}>
+                                `,
+                            },
+                            /** The viewer's own PRs open on GitHub, so they have no panes. */
+                            inputs.canRestartPanes &&
+                                !inputs.pr.isViewerAuthor && {
+                                    content: 'Restart panes',
+                                    iconOverride: LucideRotateCwIcon,
+                                    onClick() {
+                                        dispatch(
+                                            new events.restartPanesRequested({
+                                                detail: inputs.pr,
+                                            }),
+                                        );
+                                    },
+                                },
+                        ].filter(check.isTruthy),
+                    )}
+                </${ViraMenuTrigger}>
+            </span>
+        `;
+
+        return html`
+            <div
+                class="row"
+                ?data-active=${inputs.isActive}
+                ?data-draft=${inputs.pr.isDraft}
+                ?data-menu-open=${state.isMenuOpen}
+                ?data-mobile=${inputs.mobileModal}
+                ${listen('click', () => {
+                    dispatch(
+                        new events.rowClicked({
+                            detail: inputs.pr,
+                        }),
+                    );
+                })}
+            >
+                <span class="chips">
+                    ${renderPaneChip('AI', inputs.pr.panes.ai)}
+                    ${renderPaneChip('Shell', inputs.pr.panes.shell)}
+                </span>
+                ${inputs.pr.chainDepth
+                    ? html`
+                          <span class="chain-connector"></span>
+                      `
+                    : nothing}
+                <span class="avatars">
+                    ${inputs.pr.assignees.map((assignee) => {
+                        return html`
+                            <img
+                                class="avatar"
+                                src=${assignee.avatarUrl}
+                                alt=${assignee.login}
+                                ${tooltip(assignee.login, sidebarTooltipOptions)}
+                            />
+                        `;
+                    })}
+                </span>
+                <span class="name">
+                    ${inputs.pr.titleHtml
+                        ? unsafeHTML(sanitizeGitHubHtml(inputs.pr.titleHtml))
+                        : inputs.pr.title}
+                </span>
+                ${statusIcon
+                    ? html`
+                          <span
+                              class="pr-status"
+                              ${tooltip(
+                                  statusDisplay.tooltips[inputs.pr.prStatus],
+                                  sidebarTooltipOptions,
+                              )}
+                          >
+                              <${ViraIcon.assign({
+                                  icon: statusIcon,
+                              })}></${ViraIcon}>
+                          </span>
+                      `
+                    : nothing}
+                ${menuTemplate}
+            </div>
+        `;
+    },
+});

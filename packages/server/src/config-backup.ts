@@ -5,17 +5,11 @@ import {
     createFullDate,
     getNowInUserTimezone,
     isDateAfter,
+    toSimpleDatePartString,
 } from 'date-vir';
 import {copyFile, mkdir, readdir, stat, unlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {configBackupDir, configPath} from './file-paths.js';
-
-/**
- * How many days of backups to keep on disk. Generous enough that a user noticing a config reset
- * weeks later can still recover, small enough to keep the backup directory tiny (each backup is a
- * few kilobytes).
- */
-const backupRetentionDays = 30;
 
 /**
  * How often the loop wakes up to consider whether a new backup is needed. Hourly is plenty: the
@@ -26,21 +20,20 @@ const checkInterval: AnyDuration = {
     hours: 1,
 };
 
+/**
+ * How far back backups are kept, as a negative offset from now. Generous enough that a user
+ * noticing a config reset weeks later can still recover, small enough to keep the backup directory
+ * tiny (each backup is a few kilobytes).
+ */
 const retentionWindow: AnyDuration = {
-    days: -backupRetentionDays,
+    days: -30,
 };
 
-function formatDateString(): string {
-    const now = getNowInUserTimezone();
-    return [
-        now.year,
-        String(now.month).padStart(2, '0'),
-        String(now.day).padStart(2, '0'),
-    ].join('-');
-}
-
 function backupPathForToday(): string {
-    return join(configBackupDir, `agent-storm-${formatDateString()}.json`);
+    return join(
+        configBackupDir,
+        `agent-storm-${toSimpleDatePartString(getNowInUserTimezone())}.json`,
+    );
 }
 
 /**
@@ -92,7 +85,7 @@ async function pruneOldBackups(): Promise<void> {
             const backupDate = createFullDate(datePart, cutoff.timezone);
             /**
              * Delete only files strictly older than the cutoff (cutoff is _after_ the backup's
-             * date). Today and the last `backupRetentionDays - 1` days are always preserved.
+             * date). Every backup inside {@link retentionWindow} is preserved.
              */
             if (
                 isDateAfter({

@@ -10,7 +10,7 @@
 # nothing: whatever a UserPromptSubmit hook prints is added to Claude's context.
 [[ "$AGENT_STORM_CONVERSATION_ID" =~ ^[a-z0-9]+$ ]] || exit 0
 input="$(cat)"
-dir="${XDG_STATE_HOME:-$HOME/.local/state}/agent-storm/claude-activity"
+dir="$HOME/.agent-storm/conversations/claude-activity"
 file="$dir/$AGENT_STORM_CONVERSATION_ID"
 mkdir -p "$dir" || exit 0
 
@@ -51,6 +51,12 @@ jq -c \
                 end
             elif $event == "SessionStart" or .agent_id then ($previous.turnActive // false)
             else true
+            end
+        ),
+        isAwaitingPermission: (
+            if $event == "Notification" and (.notification_type | IN("permission_prompt", "elicitation_dialog", "elicitation_url_dialog")) then true
+            elif $event == "Notification" or ($event == "SessionStart" and .source == "compact") then ($previous.isAwaitingPermission // false)
+            else false
             end
         ),
         backgroundTaskCount: (

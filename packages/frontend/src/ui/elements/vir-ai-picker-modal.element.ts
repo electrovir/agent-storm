@@ -1,7 +1,7 @@
 import {type AiDefinition} from '@agent-storm/common';
-import {css, defineElement, defineElementEvent, html, listen, repeat} from 'element-vir';
+import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
 import {ViraModal, viraThemeByKeys} from 'vira';
-import {reportRenderError} from '../../util/client-error-log.js';
+import {defineAppElement} from '../define-app-element.js';
 import {VirAiAvatar} from './vir-ai-avatar.element.js';
 
 /**
@@ -10,7 +10,7 @@ import {VirAiAvatar} from './vir-ai-avatar.element.js';
  * changing anything is closing the modal. Applying restarts the target's AI pane, since a new
  * command only takes effect on a fresh spawn.
  */
-export const VirAiPickerModal = defineElement<{
+export const VirAiPickerModal = defineAppElement<{
     open: boolean;
     modalTitle: string;
     aiDefinitions: ReadonlyArray<Readonly<AiDefinition>>;
@@ -24,9 +24,6 @@ export const VirAiPickerModal = defineElement<{
     submitting: boolean;
 }>()({
     tagName: 'vir-ai-picker-modal',
-    options: {
-        errorHandler: reportRenderError,
-    },
     events: {
         /** Detail is the chosen id, or empty to clear the override and inherit again. */
         aiSaveRequested: defineElementEvent<string>(),
@@ -152,7 +149,7 @@ export const VirAiPickerModal = defineElement<{
                                   detail: inputs.inheritedName,
                                   avatarFile: '',
                               })
-                            : ''}
+                            : nothing}
                         ${repeat(
                             inputs.aiDefinitions,
                             (definition) => definition.id,
@@ -167,7 +164,7 @@ export const VirAiPickerModal = defineElement<{
                         )}
                     </div>
                     ${inputs.aiDefinitions.length
-                        ? ''
+                        ? nothing
                         : html`
                               <div class="empty">
                                   No AI defined yet. Add one from Settings → Define AI.

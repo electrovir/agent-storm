@@ -1,11 +1,44 @@
-import {wait} from '@augment-vir/common';
-import {maybeCreateFullDate, toTimestamp, utcTimezone} from 'date-vir';
-import {execFile} from 'node:child_process';
-import {lstat, readdir, realpath, rm, stat} from 'node:fs/promises';
+import {GitHubPollingDisableReason, PrStatus} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {
+    convertByteSize,
+    extractErrorMessage,
+    log,
+    removeDuplicates,
+    wait,
+    type AnyByteSize,
+    type Overwrite,
+} from '@augment-vir/common';
+import {
+    calculateRelativeDate,
+    convertDuration,
+    getNowInUtcTimezone,
+    maybeCreateFullDate,
+    toTimestamp,
+    utcTimezone,
+    type AnyDuration,
+} from 'date-vir';
+import {lstat, mkdir, readdir, realpath, rename, rm, stat} from 'node:fs/promises';
 import {basename, dirname, join} from 'node:path';
-import {promisify} from 'node:util';
-
-const exec = promisify(execFile);
+import {
+    defineShape,
+    enumShape,
+    nullableShape,
+    optionalShape,
+    parseJsonWithShape,
+} from 'object-shape-tester';
+import {isSafeBranchName} from './branch-name.js';
+import {deletingReviewFoldersDir, manualReviewSkillDir} from './file-paths.js';
+import {
+    failedCheckResults,
+    RawCheckResult,
+    RawMergeState,
+    RawPrState,
+    RawReviewDecision,
+    RawReviewState,
+} from './github-raw-enums.js';
+import {reviewBranchPrefix} from './manual-review-state.js';
+import {runCommand} from './run-command.js';
 
 type GitInfo = {
     branch: string | null;
@@ -24,7 +57,7 @@ const cleanGitInfo: GitInfo = {
  * (which has no branch name to match a PR against).
  */
 export async function getCurrentBranch(folder: string): Promise<string | null> {
-    const branch = await runGit(folder, [
+    const branch = await tryGit(folder, [
         'rev-parse',
         '--abbrev-ref',
         'HEAD',
@@ -39,13 +72,13 @@ export async function getGitInfo(folder: string): Promise<GitInfo> {
         return cleanGitInfo;
     }
 
-    const status = await runGit(folder, [
+    const status = await tryGit(folder, [
         'status',
         '--porcelain',
     ]);
     const dirty = !!status && status.length > 0;
 
-    const hasUpstream = await runGit(folder, [
+    const hasUpstream = await tryGit(folder, [
         'rev-parse',
         '--abbrev-ref',
         '--symbolic-full-name',
@@ -53,7 +86,7 @@ export async function getGitInfo(folder: string): Promise<GitInfo> {
     ]).then((output) => output != undefined);
 
     const notPushed = hasUpstream
-        ? await runGit(folder, [
+        ? await tryGit(folder, [
               'log',
               '--oneline',
               '@{upstream}..HEAD',
@@ -67,34 +100,117 @@ export async function getGitInfo(folder: string): Promise<GitInfo> {
     };
 }
 
-async function runGit(cwd: string, args: ReadonlyArray<string>): Promise<string | undefined> {
-    const result = await exec('git', [...args], {
+/**
+ * Environment for git calls that only read. `git status` otherwise takes `index.lock` to save the
+ * stat info it refreshed, and while it holds it every write to the index in that checkout fails,
+ * including the user staging a file and an agent committing. Required locks are unaffected.
+ */
+export const readOnlyGitEnv = {
+    ...process.env,
+    GIT_OPTIONAL_LOCKS: '0',
+};
+
+/**
+ * Deadline for a git call that isn't expected to take long, including a `fetch`. Generous, because
+ * it only exists so a network stall or a credential prompt can't hold a caller forever.
+ */
+export const gitTimeout: AnyDuration = {
+    minutes: 2,
+};
+
+/**
+ * The stderr of a failed {@link runCommand}, or the error's message when there's none (git missing,
+ * a timeout).
+ */
+export function extractCommandStderr(error: unknown) {
+    return (
+        (check.isObject(error) && check.hasKey(error, 'stderr')
+            ? String(error.stderr).trim()
+            : '') || extractErrorMessage(error)
+    );
+}
+
+/** Runs a read-only git command in `cwd`. Its stdout, or undefined when git fails for any reason. */
+export async function tryGit(cwd: string, args: ReadonlyArray<string>) {
+    const result = await runCommand('git', [...args], {
         cwd,
+        env: readOnlyGitEnv,
+        timeout: gitTimeout,
     }).catch(() => undefined);
     return result?.stdout;
 }
 
-export async function isWorktreeRoot(folder: string): Promise<boolean> {
+/**
+ * The copy of the folder's branch that `/manual-review here` reviews in, named the way the skill's
+ * `run-here.sh` names it. Null when the folder isn't on a safe branch or the skill hasn't made a
+ * copy yet.
+ */
+export async function findManualReviewCopy(folder: string) {
+    const branch = await getCurrentBranch(folder);
+    const commonDir = (
+        await tryGit(folder, [
+            'rev-parse',
+            '--path-format=absolute',
+            '--git-common-dir',
+        ])
+    )?.trim();
+    if (!branch || !commonDir) {
+        return null;
+    } else if (isSafeBranchName(branch)) {
+        const copy = join(
+            manualReviewSkillDir,
+            basename(dirname(commonDir)),
+            `${reviewBranchPrefix}${branch.replaceAll('/', '-')}`,
+        );
+        return (await tryGit(copy, [
+            'rev-parse',
+            '--git-dir',
+        ])) == undefined
+            ? null
+            : copy;
+    } else {
+        log.warning(
+            `Not looking for a review copy of ${folder}: unsafe branch name ${JSON.stringify(branch)}.`,
+        );
+        return null;
+    }
+}
+
+/** The folder's visible subfolders that hold a `.git`, file or folder alike. */
+async function findChildCheckouts(folder: string) {
     const entries = await readdir(folder).catch(() => []);
-    const checks = await Promise.all(
+    const checkouts = await Promise.all(
         entries.map(async (name) => {
             if (name.startsWith('.')) {
-                return false;
+                return undefined;
             }
-            const childPath = join(folder, name);
-            const childStat = await stat(childPath).catch(() => undefined);
-            if (!childStat?.isDirectory()) {
-                return false;
-            }
-            const dotGit = join(childPath, '.git');
-            const dotGitStat = await lstat(dotGit).catch(() => undefined);
-            if (!dotGitStat) {
-                return false;
-            } else if (dotGitStat.isFile()) {
+            const path = join(folder, name);
+            const childStat = await stat(path).catch(() => undefined);
+            const dotGitPath = join(path, '.git');
+            const dotGitStat = childStat?.isDirectory()
+                ? await lstat(dotGitPath).catch(() => undefined)
+                : undefined;
+            return dotGitStat
+                ? {
+                      path,
+                      dotGitPath,
+                      dotGitStat,
+                  }
+                : undefined;
+        }),
+    );
+    return checkouts.filter(check.isTruthy);
+}
+
+export async function isWorktreeRoot(folder: string): Promise<boolean> {
+    const checks = await Promise.all(
+        (await findChildCheckouts(folder)).map(async ({dotGitPath, dotGitStat}) => {
+            if (dotGitStat.isFile()) {
                 return true;
             } else if (dotGitStat.isDirectory()) {
-                const worktreesDir = join(dotGit, 'worktrees');
-                const worktreesStat = await stat(worktreesDir).catch(() => undefined);
+                const worktreesStat = await stat(join(dotGitPath, 'worktrees')).catch(
+                    () => undefined,
+                );
                 return worktreesStat?.isDirectory() || false;
             } else {
                 return false;
@@ -105,23 +221,12 @@ export async function isWorktreeRoot(folder: string): Promise<boolean> {
 }
 
 export async function listWorktreeChildren(folder: string): Promise<string[]> {
-    const entries = await readdir(folder).catch(() => []);
     const results = await Promise.all(
-        entries.map(async (name) => {
-            if (name.startsWith('.')) {
-                return undefined;
-            }
-            const childPath = join(folder, name);
-            const childStat = await stat(childPath).catch(() => undefined);
-            if (!childStat?.isDirectory() || (await isBareGitRepo(childPath))) {
-                return undefined;
-            }
-            const dotGit = join(childPath, '.git');
-            const dotGitStat = await lstat(dotGit).catch(() => undefined);
-            return dotGitStat ? childPath : undefined;
+        (await findChildCheckouts(folder)).map(async ({path}) => {
+            return (await isBareGitRepo(path)) ? undefined : path;
         }),
     );
-    return results.filter((path): path is string => !!path);
+    return results.filter(check.isTruthy);
 }
 
 async function isBareGitRepo(folder: string): Promise<boolean> {
@@ -165,7 +270,7 @@ export async function addWorktree({
             `${worktreePath} is still being checked out by an earlier attempt. Try again once it finishes.`,
         );
     } else if (!existing) {
-        await exec(
+        await runCommand(
             'git',
             [
                 'worktree',
@@ -174,6 +279,10 @@ export async function addWorktree({
             ],
             {
                 cwd: anyChild,
+                /** Checks out the whole tree, which takes a while in a big repo. */
+                timeout: {
+                    minutes: 10,
+                },
             },
         );
     }
@@ -198,7 +307,7 @@ async function findRegisteredWorktree({
     if (!realWorktreePath) {
         return undefined;
     }
-    const output = await runGit(cwd, [
+    const output = await tryGit(cwd, [
         'worktree',
         'list',
         '--porcelain',
@@ -223,17 +332,20 @@ export async function removeWorktree({
     if (!sibling) {
         throw new Error(`Refusing to remove last worktree at ${worktreePath}.`);
     }
+    /** {@link listWorktreeChildren} skips hidden folders. */
+    const movedPath = await moveAside({
+        folder: worktreePath,
+        deletingDir: join(parent, '.agent-storm-deleting'),
+    });
     await runRemoveWorktree({
         cwd: sibling,
         worktreePath,
     });
-    await rm(worktreePath, {
-        recursive: true,
-        force: true,
-        maxRetries: 3,
-        retryDelay: 250,
+    await deleteMovedFolder({
+        folder: worktreePath,
+        movedPath,
     });
-    await exec(
+    await runCommand(
         'git',
         [
             'worktree',
@@ -241,8 +353,48 @@ export async function removeWorktree({
         ],
         {
             cwd: sibling,
+            timeout: gitTimeout,
         },
     ).catch(() => undefined);
+}
+
+/**
+ * Deleting a checkout file by file (`git worktree remove` or `rm -rf`) takes several seconds for a
+ * big `node_modules`, and the folder keeps showing up until it finishes. A rename is instant, so
+ * the folder gets moved out of sight first and git only drops its record of the missing folder.
+ *
+ * Undefined when the move fails, such as across volumes.
+ */
+async function moveAside({folder, deletingDir}: Readonly<{folder: string; deletingDir: string}>) {
+    const movedPath = join(deletingDir, `${basename(folder)}-${Date.now()}`);
+    return await mkdir(deletingDir, {
+        recursive: true,
+    })
+        .then(async () => await rename(folder, movedPath))
+        .then(
+            () => movedPath,
+            () => undefined,
+        );
+}
+
+/** Deletes a folder moved by {@link moveAside} in the background, or `folder` in place otherwise. */
+async function deleteMovedFolder({
+    folder,
+    movedPath,
+}: Readonly<{folder: string; movedPath: string | undefined}>) {
+    const deletion = rm(movedPath || folder, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 250,
+    });
+    if (movedPath) {
+        void deletion.catch((error: unknown) => {
+            log.warning(`Failed to delete ${movedPath}: ${extractErrorMessage(error)}`);
+        });
+    } else {
+        await deletion;
+    }
 }
 
 async function runRemoveWorktree({
@@ -252,7 +404,7 @@ async function runRemoveWorktree({
     cwd: string;
     worktreePath: string;
 }>): Promise<void> {
-    const firstError = await exec(
+    const firstError = await runCommand(
         'git',
         [
             'worktree',
@@ -262,6 +414,7 @@ async function runRemoveWorktree({
         ],
         {
             cwd,
+            timeout: gitTimeout,
         },
     )
         .then(() => undefined)
@@ -274,7 +427,8 @@ async function runRemoveWorktree({
         milliseconds: 250,
     });
 
-    const secondError = await exec(
+    /** The folder itself is deleted either way; a failure here only leaves git's record behind. */
+    await runCommand(
         'git',
         [
             'worktree',
@@ -285,47 +439,138 @@ async function runRemoveWorktree({
         ],
         {
             cwd,
+            timeout: gitTimeout,
         },
-    )
-        .then(() => undefined)
-        .catch((error: unknown) => error);
+    ).catch((error: unknown) => {
+        log.warning(
+            `git worktree remove failed for ${worktreePath}: ${extractCommandStderr(error)}`,
+        );
+    });
+}
 
-    if (!secondError) {
+/**
+ * Deletes a review folder along with its `review__` branch. Unlike {@link removeWorktree}, it also
+ * handles a folder that's a full clone, the last worktree of its repo, or no checkout at all.
+ */
+export async function deleteReviewFolder(folder: string) {
+    const isCheckout = !!(await lstat(join(folder, '.git')).catch(() => undefined));
+    const [
+        commonDir,
+        branch,
+    ] = isCheckout
+        ? await Promise.all([
+              tryGit(folder, [
+                  'rev-parse',
+                  '--path-format=absolute',
+                  '--git-common-dir',
+              ]),
+              tryGit(folder, [
+                  'branch',
+                  '--show-current',
+              ]),
+          ])
+        : [];
+    const gitDir = commonDir?.trim();
+    const movedPath = await moveAside({
+        folder,
+        deletingDir: deletingReviewFoldersDir,
+    });
+    if (gitDir) {
+        await tryGit(gitDir, [
+            '--git-dir',
+            gitDir,
+            'worktree',
+            'remove',
+            '--force',
+            '--force',
+            folder,
+        ]);
+    }
+    await deleteMovedFolder({
+        folder,
+        movedPath,
+    });
+    if (!gitDir) {
         return;
     }
+    await tryGit(gitDir, [
+        '--git-dir',
+        gitDir,
+        'worktree',
+        'prune',
+    ]);
+    const reviewBranch = branch?.trim();
+    if (reviewBranch?.startsWith(reviewBranchPrefix)) {
+        await tryGit(gitDir, [
+            '--git-dir',
+            gitDir,
+            'branch',
+            '-D',
+            reviewBranch,
+        ]);
+    }
 }
 
-let cachedGhAvailable: boolean | undefined;
+/**
+ * Deletes what {@link deleteReviewFolder} moved aside but didn't finish deleting before the server
+ * stopped.
+ */
+export async function sweepDeletingReviewFolders() {
+    const names = await readdir(deletingReviewFoldersDir).catch(() => []);
+    await Promise.all(
+        names.map(async (name) => {
+            const path = join(deletingReviewFoldersDir, name);
+            await rm(path, {
+                recursive: true,
+                force: true,
+                maxRetries: 3,
+                retryDelay: 250,
+            }).catch((error: unknown) => {
+                log.warning(`Failed to delete ${path}: ${extractErrorMessage(error)}`);
+            });
+        }),
+    );
+}
+
+/** Only a positive answer is kept, so running `gh auth login` after startup is noticed. */
+const ghAvailability: {isAvailable: boolean} = {
+    isAvailable: false,
+};
 
 async function isGhAvailable(): Promise<boolean> {
-    if (cachedGhAvailable != undefined) {
-        return cachedGhAvailable;
+    if (!ghAvailability.isAvailable) {
+        ghAvailability.isAvailable = await runCommand(
+            'gh',
+            [
+                'auth',
+                'status',
+            ],
+            {
+                timeout: ghTimeout,
+            },
+        ).then(
+            () => true,
+            () => false,
+        );
     }
-    cachedGhAvailable = await exec('gh', [
-        'auth',
-        'status',
-    ])
-        .then(() => true)
-        .catch(() => false);
-    return cachedGhAvailable;
+    return ghAvailability.isAvailable;
 }
 
-export type PrInfo = {
-    url: string;
+export const prInfoShape = defineShape({
+    url: '',
     /**
-     * True when the PR is merged or closed (and within the 7-day display window — older
-     * terminal-state PRs are dropped from the response entirely, so this is never true for stale
-     * data). False for still-open PRs, including drafts.
+     * Never {@link PrStatus.None}. Merged and closed PRs only appear within
+     * {@link terminalPrDisplayWindow}; older ones are dropped from the response entirely.
      */
-    closed: boolean;
-};
+    status: enumShape(PrStatus),
+});
+
+export type PrInfo = typeof prInfoShape.runtimeType;
 
 export type RepoSlug = {
     owner: string;
     name: string;
 };
-
-export type GitHubPollingDisableReason = 'rate-limited' | 'unauthenticated';
 
 /**
  * Thrown by {@link fetchRepoPrs} when `gh` surfaces a rate-limit or auth failure. Callers use this
@@ -337,6 +582,8 @@ export class GitHubPollingError extends Error {
     constructor(
         public readonly reason: GitHubPollingDisableReason,
         message: string,
+        /** When GitHub says polling can resume. Undefined when GitHub's answer couldn't be read. */
+        public readonly resumeAtMs?: number | undefined,
     ) {
         super(message);
     }
@@ -379,7 +626,50 @@ function looksUnauthenticated(stderr: string): boolean {
     );
 }
 
-const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+/**
+ * GitHub's docs say to wait at least this long after a secondary rate limit that sends no
+ * `retry-after` header, which `gh` never shows us anyway.
+ */
+const secondaryRateLimitWait: AnyDuration = {
+    minutes: 1,
+};
+
+/**
+ * When GitHub's GraphQL budget refills, read from `gh api rate_limit`, which doesn't spend any of
+ * that budget. A rate-limit error with points still remaining is a secondary limit, which has no
+ * reset time to read. Undefined when the budget can't be read.
+ */
+async function readRateLimitResumeAtMs(): Promise<number | undefined> {
+    const result = await runGh([
+        'api',
+        'rate_limit',
+        '--jq',
+        '.resources.graphql',
+    ]);
+    if (result.exitCode !== 0) {
+        return undefined;
+    }
+    try {
+        const graphql = parseJsonWithShape(
+            result.stdout,
+            defineShape({
+                remaining: 0,
+                /** Unix seconds. */
+                reset: 0,
+            }),
+        );
+        return graphql.remaining
+            ? toTimestamp(calculateRelativeDate(getNowInUtcTimezone(), secondaryRateLimitWait))
+            : graphql.reset * 1000;
+    } catch {
+        return undefined;
+    }
+}
+
+/** How long a merged or closed PR keeps its branch's "this branch had a PR" marker. */
+const terminalPrDisplayWindow: AnyDuration = {
+    days: 7,
+};
 
 /**
  * Match the three GitHub remote URL shapes we expect to see in a developer's `.git/config`:
@@ -420,7 +710,7 @@ function parseGithubRemote(url: string): RepoSlug | null {
  * has no `origin`, the remote points somewhere other than github.com, or the URL doesn't parse.
  */
 export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
-    const output = await runGit(folder, [
+    const output = await tryGit(folder, [
         'remote',
         'get-url',
         'origin',
@@ -437,16 +727,15 @@ export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
  * off the end: a repo where twenty PRs merged this week would return zero open ones, and every
  * worktree branch would silently lose its sidebar marker.
  *
- * Both connections are fetched in one call. GitHub charges this query 1 point either way — the
- * GraphQL cost formula divides total nodes by 100 and floors at 1 — so the open-PR cap costs
- * nothing to raise and is set high enough to cover every branch a user could have worktrees
- * against.
+ * Both connections are fetched in one call. GitHub charges by how many nested lists the query could
+ * return, so each open PR's nested lists count against the open-PR cap: past this cap the query
+ * costs 2 points instead of 1.
  */
-const openPrsBatchSize = 100;
-/** Terminal PRs are only used for the 7-day "recently merged" marker, so a short list is plenty. */
+const openPrsBatchSize = 70;
+/** Terminal PRs only feed the "recently merged" marker, so a short list is plenty. */
 const terminalPrsBatchSize = 20;
 
-const prNodeFields = [
+const terminalPrNodeFields = [
     '      nodes {',
     '        url',
     '        headRefName',
@@ -455,25 +744,240 @@ const prNodeFields = [
     '      }',
 ].join('\n');
 
+const openPrNodeFields = [
+    '      nodes {',
+    '        url',
+    '        headRefName',
+    '        state',
+    '        mergeStateStatus',
+    '        reviewDecision',
+    '        body',
+    '        author { login }',
+    /** Not `commits(last: 1)`, which is a nested list and takes the query from 1 point to 2. */
+    '        headRef { target { ... on Commit { statusCheckRollup { state } } } }',
+    '        latestOpinionatedReviews(first: 20) { nodes { state viewerDidAuthor author { login } } }',
+    '        viewerLatestReviewRequest { id }',
+    '        viewerDidAuthor',
+    '        reviewThreads(first: 100) { nodes { isResolved } }',
+    '      }',
+].join('\n');
+
 const repoPrsGraphqlQuery = [
     'query($owner: String!, $name: String!) {',
     '  repository(owner: $owner, name: $name) {',
     `    open: pullRequests(states: [OPEN], first: ${openPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
-    prNodeFields,
+    openPrNodeFields,
     '    }',
     `    terminal: pullRequests(states: [CLOSED, MERGED], first: ${terminalPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
-    prNodeFields,
+    terminalPrNodeFields,
     '    }',
     '  }',
     '}',
 ].join('\n');
 
-export type RawPrNode = {
-    url?: string;
-    headRefName?: string;
-    state?: string;
-    closedAt?: string | null;
+/** One node of {@link terminalPrNodeFields}. */
+const terminalPrNodeShape = defineShape({
+    url: '',
+    headRefName: '',
+    state: enumShape(RawPrState),
+    closedAt: nullableShape(''),
+});
+
+/** One node of {@link openPrNodeFields}. */
+const openPrNodeShape = defineShape({
+    url: '',
+    headRefName: '',
+    state: enumShape(RawPrState),
+    mergeStateStatus: '',
+    reviewDecision: nullableShape(''),
+    body: '',
+    author: nullableShape({
+        login: '',
+    }),
+    headRef: nullableShape({
+        /** Empty when the branch points at something other than a commit. */
+        target: nullableShape({
+            statusCheckRollup: optionalShape(
+                nullableShape({
+                    state: '',
+                }),
+            ),
+        }),
+    }),
+    latestOpinionatedReviews: {
+        nodes: [
+            {
+                state: '',
+                viewerDidAuthor: false,
+                author: nullableShape({
+                    login: '',
+                }),
+            },
+        ],
+    },
+    viewerLatestReviewRequest: nullableShape({
+        id: '',
+    }),
+    viewerDidAuthor: false,
+    reviewThreads: {
+        nodes: [
+            {
+                isResolved: false,
+            },
+        ],
+    },
+});
+
+export type OpenPrNode = typeof openPrNodeShape.runtimeType;
+
+const repoPrsResponseShape = defineShape({
+    data: {
+        /** Null when GitHub has no such repository, or the viewer can't see it. */
+        repository: nullableShape({
+            open: {
+                nodes: [
+                    openPrNodeShape,
+                ],
+            },
+            terminal: {
+                nodes: [
+                    terminalPrNodeShape,
+                ],
+            },
+        }),
+    },
+});
+
+/** The verdict each review state gives. Undefined still awaits one. */
+const viewerReviewPrStatuses: Readonly<Record<RawReviewState, PrStatus | undefined>> = {
+    [RawReviewState.Approved]: PrStatus.Approved,
+    [RawReviewState.ChangesRequested]: PrStatus.ChangesRequested,
+    [RawReviewState.Commented]: undefined,
+    [RawReviewState.Dismissed]: undefined,
+    [RawReviewState.Pending]: undefined,
 };
+
+/**
+ * Review-vir's `parseInsertedCodeOwners`: the logins pull-request-vir lists in the code owners
+ * block it writes into a PR's raw markdown body. `undefined` when there's no block.
+ */
+export function parseInsertedCodeOwners(body: string) {
+    const block = /<!-- code owners start -->([\S\s]*?)<!-- code owners end -->/i.exec(body)?.[1];
+    if (block == undefined) {
+        return undefined;
+    }
+    /** Owned-file link lines are dropped so scoped paths (`@types/...`) aren't read as owners. */
+    const ownerLines = block
+        .split('\n')
+        .filter((line) => !/^\s*-\s/.test(line))
+        .join('\n');
+    return removeDuplicates(
+        Array.from(ownerLines.matchAll(/@[\w-]+/g)).map((tag) => tag[0].slice(1)),
+    );
+}
+
+/**
+ * GitHub drops the viewer's review request once they submit a review, so a request that exists
+ * means they never reviewed it or were asked to look again.
+ *
+ * Reads `latestOpinionatedReviews` rather than `viewerLatestReview`: replying to a review thread
+ * files a comment-only review, which `viewerLatestReview` would return in place of an approval.
+ */
+export function toOpenPrStatus({
+    mergeStateStatus,
+    reviewDecision,
+    body,
+    author,
+    headRef,
+    latestOpinionatedReviews,
+    viewerLatestReviewRequest,
+    viewerDidAuthor,
+    reviewThreads,
+}: Readonly<
+    Overwrite<
+        Pick<
+            OpenPrNode,
+            | 'mergeStateStatus'
+            | 'reviewDecision'
+            | 'body'
+            | 'author'
+            | 'headRef'
+            | 'viewerLatestReviewRequest'
+            | 'viewerDidAuthor'
+        >,
+        {
+            latestOpinionatedReviews: Readonly<{
+                nodes: ReadonlyArray<OpenPrNode['latestOpinionatedReviews']['nodes'][number]>;
+            }>;
+            reviewThreads: Readonly<{
+                nodes: ReadonlyArray<OpenPrNode['reviewThreads']['nodes'][number]>;
+            }>;
+        }
+    >
+>) {
+    const reviews = latestOpinionatedReviews.nodes;
+    const viewerReviewState = reviews.find((review) => review.viewerDidAuthor)?.state;
+    /** GitHub doesn't let a PR's author approve or request changes on it. */
+    const viewerVerdict =
+        !viewerDidAuthor && check.isEnumValue(viewerReviewState, RawReviewState)
+            ? viewerReviewPrStatuses[viewerReviewState]
+            : undefined;
+    const rollupState = headRef?.target?.statusCheckRollup?.state;
+    const hasUnresolvedThread = reviewThreads.nodes.some((thread) => !thread.isResolved);
+    const isViewerSignedOff = viewerDidAuthor || viewerVerdict === PrStatus.Approved;
+    const isViewerDone = isViewerSignedOff && !hasUnresolvedThread;
+    /** Pull-request-vir skips the author's own rules and counts only approvals. */
+    const hasUnapprovedCodeOwner = (parseInsertedCodeOwners(body) || []).some((owner) => {
+        return (
+            owner.toLowerCase() !== author?.login.toLowerCase() &&
+            !reviews.some((review) => {
+                return (
+                    review.state === RawReviewState.Approved &&
+                    review.author?.login.toLowerCase() === owner.toLowerCase()
+                );
+            })
+        );
+    });
+    /**
+     * `CLEAN` only means GitHub would allow the merge, which it does with the viewer's review
+     * request still open when the repo doesn't require reviews.
+     */
+    if (viewerLatestReviewRequest) {
+        return viewerVerdict === PrStatus.ChangesRequested
+            ? PrStatus.ReReviewRequested
+            : PrStatus.AwaitingReview;
+    } else if (mergeStateStatus === RawMergeState.Clean) {
+        return PrStatus.ReadyToMerge;
+    } else if (
+        isViewerSignedOff &&
+        reviews.some((review) => {
+            return !review.viewerDidAuthor && review.state === RawReviewState.ChangesRequested;
+        })
+    ) {
+        return PrStatus.OthersRequestedChanges;
+    } else if (
+        isViewerDone &&
+        /**
+         * Pull-request-vir enforces code-owner review with a CI check rather than GitHub's own
+         * rule, which leaves `reviewDecision` at `APPROVED` while a code owner still hasn't.
+         */
+        (reviewDecision === RawReviewDecision.ReviewRequired || hasUnapprovedCodeOwner)
+    ) {
+        return PrStatus.AwaitingOtherReviews;
+    } else if (
+        isViewerDone &&
+        check.isEnumValue(rollupState, RawCheckResult) &&
+        failedCheckResults[rollupState]
+    ) {
+        return PrStatus.ChecksFailed;
+    } else if (viewerVerdict === PrStatus.ChangesRequested) {
+        return viewerVerdict;
+    } else {
+        return hasUnresolvedThread
+            ? PrStatus.UnresolvedComments
+            : viewerVerdict || PrStatus.AwaitingReview;
+    }
+}
 
 export type GhExecResult = {
     exitCode: number;
@@ -481,41 +985,62 @@ export type GhExecResult = {
     stderr: string;
 };
 
+/** Deadline for one `gh` call. A timed-out call fails like any other. */
+const ghTimeout: AnyDuration = {
+    minutes: 1,
+};
+
+/**
+ * Node's 1 MB default cuts off big GraphQL answers, such as a PR with many long review threads,
+ * which then fail as unparsable JSON.
+ */
+const ghMaxBuffer: AnyByteSize = {
+    megabytes: 50,
+};
+
 export async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
     try {
-        const result = await exec('gh', [...args]);
+        const result = await runCommand('gh', [...args], {
+            maxBuffer: convertByteSize(ghMaxBuffer, {
+                bytes: true,
+            }).bytes,
+            timeout: ghTimeout,
+        });
         return {
             exitCode: 0,
             stdout: result.stdout,
             stderr: result.stderr,
         };
-    } catch (caught) {
-        const error = caught as {
-            code?: number | string;
-            stdout?: string;
-            stderr?: string;
-        };
+    } catch (error) {
         return {
-            exitCode: typeof error.code === 'number' ? error.code : 1,
-            stdout: error.stdout || '',
-            stderr: error.stderr || '',
+            exitCode:
+                check.isObject(error) && check.hasKey(error, 'code') && check.isNumber(error.code)
+                    ? error.code
+                    : 1,
+            stdout:
+                check.isObject(error) && check.hasKey(error, 'stdout') ? String(error.stdout) : '',
+            stderr: extractCommandStderr(error),
         };
     }
 }
 
 /**
- * Fetch the recent open + (terminal within 7 days) PRs for a single repo in one GraphQL call.
- * Returns a `Map<headRefName, PrInfo>` so callers can resolve a folder's branch to its PR with an
- * O(1) lookup, no further API traffic. Terminal-state PRs (closed/merged) older than 7 days are
- * dropped from the returned map so they don't show stale "this branch had a PR" markers in the UI.
+ * Fetch a single repo's open PRs, plus the terminal ones within {@link terminalPrDisplayWindow}, in
+ * one GraphQL call. Returns a `Map<headRefName, PrInfo>` so callers can resolve a folder's branch
+ * to its PR with an O(1) lookup, no further API traffic. Older terminal-state PRs (closed/merged)
+ * are dropped from the returned map so they don't show stale "this branch had a PR" markers in the
+ * UI.
  *
  * Throws {@link GitHubPollingError} on rate-limit or auth failure so the caller can flip the polling
- * kill-switch instead of retrying immediately. Other failure modes (network, repo doesn't exist,
- * etc.) return an empty map and let the sweep proceed.
+ * kill-switch instead of retrying immediately. Other failures (no `gh`, repo not on GitHub, network
+ * blip, a timeout, an answer that doesn't match the query) return `undefined`, so the caller keeps
+ * what it already knows instead of treating the repo as having no PRs.
  */
-export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string, PrInfo>> {
+export async function fetchRepoPrs(
+    slug: Readonly<RepoSlug>,
+): Promise<Map<string, PrInfo> | undefined> {
     if (!(await isGhAvailable())) {
-        return new Map();
+        return undefined;
     }
     const result = await runGh([
         'api',
@@ -530,32 +1055,50 @@ export async function fetchRepoPrs(slug: Readonly<RepoSlug>): Promise<Map<string
     if (result.exitCode !== 0) {
         if (looksRateLimited(result.stderr)) {
             throw new GitHubPollingError(
-                'rate-limited',
+                GitHubPollingDisableReason.RateLimited,
                 `GitHub API rate limit hit: ${result.stderr.trim()}`,
+                await readRateLimitResumeAtMs(),
             );
         } else if (looksUnauthenticated(result.stderr)) {
             throw new GitHubPollingError(
-                'unauthenticated',
+                GitHubPollingDisableReason.Unauthenticated,
                 `GitHub authentication failed: ${result.stderr.trim()}`,
             );
         } else {
-            /** Benign (repo not on GitHub, network blip, etc.) — treat as "no PRs known" for now. */
-            return new Map();
+            return undefined;
         }
     }
-    const parsed = JSON.parse(result.stdout) as {
-        data?: {
-            repository?: {
-                open?: {nodes?: ReadonlyArray<RawPrNode>};
-                terminal?: {nodes?: ReadonlyArray<RawPrNode>};
-            };
-        };
-    };
+    try {
+        return parsePrsByBranch(result.stdout);
+    } catch (error) {
+        log.warning(
+            `Unreadable PR list for ${slug.owner}/${slug.name}: ${extractErrorMessage(error)}`,
+        );
+        return undefined;
+    }
+}
+
+/**
+ * {@link buildPrsByBranch} over the raw answer to {@link repoPrsGraphqlQuery}. Throws when the answer
+ * doesn't match the query.
+ */
+export function parsePrsByBranch(graphqlOutput: string) {
+    const repository = parseJsonWithShape(graphqlOutput, repoPrsResponseShape).data.repository;
     return buildPrsByBranch({
-        openNodes: parsed.data?.repository?.open?.nodes || [],
-        terminalNodes: parsed.data?.repository?.terminal?.nodes || [],
+        openNodes: repository?.open.nodes || [],
+        terminalNodes: repository?.terminal.nodes || [],
     });
 }
+
+/**
+ * How each PR state reads in the sidebar. Undefined for an open PR, whose status depends on
+ * reviews.
+ */
+const terminalPrStatuses: Readonly<Record<RawPrState, PrStatus | undefined>> = {
+    [RawPrState.Open]: undefined,
+    [RawPrState.Closed]: PrStatus.Closed,
+    [RawPrState.Merged]: PrStatus.Merged,
+};
 
 /**
  * Collapse both PR connections into one branch → PR lookup. Open PRs are walked first so a branch
@@ -568,32 +1111,41 @@ export function buildPrsByBranch({
     openNodes,
     terminalNodes,
 }: Readonly<{
-    openNodes: ReadonlyArray<RawPrNode>;
-    terminalNodes: ReadonlyArray<RawPrNode>;
+    openNodes: ReadonlyArray<Readonly<OpenPrNode>>;
+    terminalNodes: ReadonlyArray<Readonly<typeof terminalPrNodeShape.runtimeType>>;
 }>): Map<string, PrInfo> {
-    const cutoff = Date.now() - sevenDaysMs;
+    const cutoff =
+        Date.now() -
+        convertDuration(terminalPrDisplayWindow, {
+            milliseconds: true,
+        }).milliseconds;
     const map = new Map<string, PrInfo>();
-    [
-        ...openNodes,
-        ...terminalNodes,
-    ].forEach((node) => {
+    openNodes.forEach((node) => {
         if (!node.url || !node.headRefName || map.has(node.headRefName)) {
             return;
         }
-        const isTerminal = node.state === 'CLOSED' || node.state === 'MERGED';
-        if (!isTerminal && node.state !== 'OPEN') {
+        map.set(node.headRefName, {
+            url: node.url,
+            status: terminalPrStatuses[node.state] || toOpenPrStatus(node),
+        });
+    });
+    terminalNodes.forEach((node) => {
+        const status = terminalPrStatuses[node.state];
+        /** Terminal PRs past the window would show a stale "this branch had a PR" marker. */
+        const closedAt = maybeCreateFullDate(node.closedAt, utcTimezone);
+        if (
+            !node.url ||
+            !node.headRefName ||
+            map.has(node.headRefName) ||
+            !status ||
+            !closedAt ||
+            toTimestamp(closedAt) < cutoff
+        ) {
             return;
-        }
-        if (isTerminal) {
-            /** Terminal PRs past the window would show a stale "this branch had a PR" marker. */
-            const closedAt = maybeCreateFullDate(node.closedAt, utcTimezone);
-            if (!closedAt || toTimestamp(closedAt) < cutoff) {
-                return;
-            }
         }
         map.set(node.headRefName, {
             url: node.url,
-            closed: isTerminal,
+            status,
         });
     });
     return map;

@@ -8,16 +8,23 @@ import {
 import {assert} from '@augment-vir/assert';
 import {selectFrom} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
-import {toPr} from './github-pr.js';
+import {checkValidShape} from 'object-shape-tester';
+import {rawPrShape, toPr} from './github-pr.js';
+import {
+    RawCheckContextType,
+    RawCheckResult,
+    RawCheckStatus,
+    RawPrState,
+} from './github-raw-enums.js';
 
 /** Minimal PR node; each test overrides only the fields it exercises. */
-const baseRawPr = {
+const baseRawPr: typeof rawPrShape.runtimeType = {
+    ...rawPrShape.default,
     id: 'PR_1',
     number: 7,
     url: 'https://github.com/owner/name/pull/7',
     title: 'Add a thing',
-    state: 'OPEN',
-    isDraft: false,
+    state: RawPrState.Open,
     baseRefName: 'dev',
     headRefName: 'feature',
     author: {
@@ -25,6 +32,43 @@ const baseRawPr = {
         avatarUrl: 'https://avatars.example/electrovir',
     },
 };
+
+const baseRawComment = {
+    id: 'IC_1',
+    body: '',
+    bodyHTML: '',
+    createdAt: '2026-08-01T00:00:00Z',
+    url: 'https://github.com/owner/name/pull/7#issuecomment-1',
+    author: {
+        login: 'reviewer',
+        avatarUrl: '',
+    },
+};
+
+const baseRawCheckRun = {
+    __typename: RawCheckContextType.CheckRun,
+    name: '',
+    status: RawCheckStatus.Completed,
+    checkSuite: {
+        workflowRun: null,
+    },
+} as const;
+
+function createRollup(
+    rollup: NonNullable<
+        (typeof rawPrShape.runtimeType)['commits']['nodes'][number]['commit']['statusCheckRollup']
+    >,
+) {
+    return {
+        nodes: [
+            {
+                commit: {
+                    statusCheckRollup: rollup,
+                },
+            },
+        ],
+    };
+}
 
 describe(toPr.name, () => {
     it('reads a draft as its own state rather than open', () => {
@@ -39,22 +83,17 @@ describe(toPr.name, () => {
 
     it('maps every rollup failure variant onto one failure state', () => {
         const states = [
-            'FAILURE',
-            'ERROR',
+            RawCheckResult.Failure,
+            RawCheckResult.Error,
         ].map((state) => {
             return toPr({
                 ...baseRawPr,
-                commits: {
-                    nodes: [
-                        {
-                            commit: {
-                                statusCheckRollup: {
-                                    state,
-                                },
-                            },
-                        },
-                    ],
-                },
+                commits: createRollup({
+                    state,
+                    contexts: {
+                        nodes: [],
+                    },
+                }),
             }).checks;
         });
         assert.deepEquals(states, [
@@ -73,19 +112,22 @@ describe(toPr.name, () => {
             comments: {
                 nodes: [
                     {
-                        id: 'IC_1',
+                        ...baseRawComment,
                         body: 'looks good',
-                        createdAt: '2026-08-01T00:00:00Z',
-                        url: 'https://github.com/owner/name/pull/7#issuecomment-1',
-                        author: {
-                            login: 'reviewer',
-                        },
                         reactionGroups: [
                             {
                                 content: 'THUMBS_UP',
                                 viewerHasReacted: true,
                                 reactors: {
                                     totalCount: 2,
+                                    nodes: [
+                                        {
+                                            login: 'reviewer',
+                                        },
+                                        {
+                                            login: 'author',
+                                        },
+                                    ],
                                 },
                             },
                             {
@@ -93,6 +135,7 @@ describe(toPr.name, () => {
                                 viewerHasReacted: false,
                                 reactors: {
                                     totalCount: 0,
+                                    nodes: [],
                                 },
                             },
                         ],
@@ -105,6 +148,10 @@ describe(toPr.name, () => {
                 reaction: GitHubReaction.ThumbsUp,
                 count: 2,
                 viewerHasReacted: true,
+                reactors: [
+                    'reviewer',
+                    'author',
+                ],
             },
         ]);
     });
@@ -115,7 +162,7 @@ describe(toPr.name, () => {
             comments: {
                 nodes: [
                     {
-                        id: 'IC_1',
+                        ...baseRawComment,
                         author: null,
                     },
                 ],
@@ -140,10 +187,12 @@ describe(toPr.name, () => {
                         comments: {
                             nodes: [
                                 {
+                                    ...baseRawComment,
                                     id: 'RC_1',
                                     diffHunk: '@@ -1 +1 @@',
                                 },
                                 {
+                                    ...baseRawComment,
                                     id: 'RC_2',
                                     diffHunk: '@@ -9 +9 @@',
                                 },
@@ -177,35 +226,27 @@ describe(toPr.name, () => {
     it('reads a still-running check run as pending, since its conclusion is null', () => {
         const pr = toPr({
             ...baseRawPr,
-            commits: {
-                nodes: [
-                    {
-                        commit: {
-                            statusCheckRollup: {
-                                state: 'PENDING',
-                                contexts: {
-                                    nodes: [
-                                        {
-                                            __typename: 'CheckRun',
-                                            name: 'build (ubuntu-latest)',
-                                            conclusion: null,
-                                            status: 'IN_PROGRESS',
-                                            detailsUrl: 'https://github.com/owner/name/runs/1',
-                                            checkSuite: {
-                                                workflowRun: {
-                                                    workflow: {
-                                                        name: 'Tests',
-                                                    },
-                                                },
-                                            },
-                                        },
-                                    ],
+            commits: createRollup({
+                state: RawCheckResult.Pending,
+                contexts: {
+                    nodes: [
+                        {
+                            __typename: RawCheckContextType.CheckRun,
+                            name: 'build (ubuntu-latest)',
+                            conclusion: null,
+                            status: RawCheckStatus.InProgress,
+                            detailsUrl: 'https://github.com/owner/name/runs/1',
+                            checkSuite: {
+                                workflowRun: {
+                                    workflow: {
+                                        name: 'Tests',
+                                    },
                                 },
                             },
                         },
-                    },
-                ],
-            },
+                    ],
+                },
+            }),
         });
         assert.deepEquals(pr.checkRuns, [
             {
@@ -218,41 +259,38 @@ describe(toPr.name, () => {
         ]);
     });
 
-    it('separates real check failures from cancelled and skipped runs', () => {
+    it('counts timed out and cancelled runs as failed but not skipped ones', () => {
         const pr = toPr({
             ...baseRawPr,
-            commits: {
-                nodes: [
-                    {
-                        commit: {
-                            statusCheckRollup: {
-                                state: 'FAILURE',
-                                contexts: {
-                                    nodes: [
-                                        {
-                                            __typename: 'CheckRun',
-                                            name: 'lint',
-                                            conclusion: 'TIMED_OUT',
-                                        },
-                                        {
-                                            __typename: 'CheckRun',
-                                            name: 'docs',
-                                            conclusion: 'SKIPPED',
-                                        },
-                                        {
-                                            __typename: 'StatusContext',
-                                            context: 'ci/external',
-                                            state: 'SUCCESS',
-                                            targetUrl: 'https://ci.example/1',
-                                            description: 'all good',
-                                        },
-                                    ],
-                                },
-                            },
+            commits: createRollup({
+                state: RawCheckResult.Failure,
+                contexts: {
+                    nodes: [
+                        {
+                            ...baseRawCheckRun,
+                            name: 'lint',
+                            conclusion: RawCheckResult.TimedOut,
                         },
-                    },
-                ],
-            },
+                        {
+                            ...baseRawCheckRun,
+                            name: 'e2e',
+                            conclusion: RawCheckResult.Cancelled,
+                        },
+                        {
+                            ...baseRawCheckRun,
+                            name: 'docs',
+                            conclusion: RawCheckResult.Skipped,
+                        },
+                        {
+                            __typename: RawCheckContextType.StatusContext,
+                            context: 'ci/external',
+                            state: RawCheckResult.Success,
+                            targetUrl: 'https://ci.example/1',
+                            description: 'all good',
+                        },
+                    ],
+                },
+            }),
         });
         assert.deepEquals(
             pr.checkRuns.map((checkRun) => {
@@ -264,6 +302,10 @@ describe(toPr.name, () => {
             [
                 {
                     name: 'lint',
+                    state: GitHubCheckState.Failure,
+                },
+                {
+                    name: 'e2e',
                     state: GitHubCheckState.Failure,
                 },
                 {
@@ -318,15 +360,54 @@ describe(toPr.name, () => {
             latestReviews: {
                 nodes: [
                     {
+                        ...baseRawComment,
                         id: 'PRR_1',
                         state: 'SOMETHING_NEW',
-                        author: {
-                            login: 'reviewer',
-                        },
                     },
                 ],
             },
         });
         assert.strictEquals(pr.reviews[0]?.state, GitHubReviewState.Commented);
+    });
+});
+
+describe('rawPrShape', () => {
+    it('rejects an answer whose PR state or check type it does not know', () => {
+        assert.deepEquals(
+            [
+                {
+                    ...baseRawPr,
+                    state: 'SOMETHING_NEW',
+                },
+                {
+                    ...baseRawPr,
+                    commits: {
+                        nodes: [
+                            {
+                                commit: {
+                                    statusCheckRollup: {
+                                        state: RawCheckResult.Success,
+                                        contexts: {
+                                            nodes: [
+                                                {
+                                                    ...baseRawCheckRun,
+                                                    __typename: 'SomethingNew',
+                                                },
+                                            ],
+                                        },
+                                    },
+                                },
+                            },
+                        ],
+                    },
+                },
+                baseRawPr,
+            ].map((pr) => checkValidShape(pr, rawPrShape)),
+            [
+                false,
+                false,
+                true,
+            ],
+        );
     });
 });

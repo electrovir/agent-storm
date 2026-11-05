@@ -1,7 +1,13 @@
 import {PaneStatus} from '@agent-storm/common';
-import {assert} from '@augment-vir/assert';
+import {assert, check} from '@augment-vir/assert';
+import {awaitedBlockingMap} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
+import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {parseCpuTime, resolveQuietClaudeStatus} from './claude-activity.js';
+import {claudeHookSourceDir} from './file-paths.js';
+import {runCommand} from './run-command.js';
 
 const now = 10_000_000;
 
@@ -101,5 +107,75 @@ describe(parseCpuTime.name, () => {
                 3723.5,
             ],
         );
+    });
+});
+
+describe('agent-storm-activity.sh', () => {
+    it('marks a permission prompt until Claude moves on, keeping it through compaction', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'claude-activity-hook-'));
+        try {
+            const awaitingPermission = await awaitedBlockingMap(
+                [
+                    {
+                        hook_event_name: 'UserPromptSubmit',
+                    },
+                    {
+                        hook_event_name: 'Notification',
+                        notification_type: 'permission_prompt',
+                    },
+                    {
+                        hook_event_name: 'Notification',
+                        notification_type: 'auth_success',
+                    },
+                    {
+                        hook_event_name: 'SessionStart',
+                        source: 'compact',
+                    },
+                    {
+                        hook_event_name: 'PostToolUse',
+                    },
+                ],
+                async (event) => {
+                    await runCommand(
+                        'bash',
+                        [
+                            '-c',
+                            'bash "$0" <<<"$1"',
+                            join(claudeHookSourceDir, 'agent-storm-activity.sh'),
+                            JSON.stringify(event),
+                        ],
+                        {
+                            env: {
+                                ...process.env,
+                                HOME: home,
+                                AGENT_STORM_CONVERSATION_ID: 'abc',
+                            },
+                            timeout: {
+                                seconds: 30,
+                            },
+                        },
+                    );
+                    const written: unknown = JSON.parse(
+                        await readFile(
+                            join(home, '.agent-storm', 'conversations', 'claude-activity', 'abc'),
+                            'utf8',
+                        ),
+                    );
+                    return check.isObject(written) && written.isAwaitingPermission;
+                },
+            );
+            assert.deepEquals(awaitingPermission, [
+                false,
+                true,
+                true,
+                true,
+                false,
+            ]);
+        } finally {
+            await rm(home, {
+                recursive: true,
+                force: true,
+            });
+        }
     });
 });

@@ -6,3 +6,8 @@ export function normalizePath(path: string): string {
         path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
     return resolve(expanded);
 }
+
+/** Whether a failed `node:fs` call failed for the given reason, such as `ENOENT`. */
+export function hasErrorCode(error: unknown, code: string) {
+    return error instanceof Error && 'code' in error && error.code === code;
+}

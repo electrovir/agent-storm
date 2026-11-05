@@ -2,6 +2,7 @@ html,
 body {
     margin: 0;
     padding: 0;
+    font-family: 'Atkinson Hyperlegible Next', ui-sans-serif, system-ui, sans-serif;
     /* `--app-viewport-height` is set in pixels from `window.visualViewport.height` by vir-app's
        `init` hook. iOS Safari does not consistently shrink `100dvh` when the on-screen keyboard
        opens — relying on `dvh` alone meant the textarea xterm focuses ended up under the keyboard

@@ -1,4 +1,6 @@
-import {reportClientError} from './api-client.js';
+import {clientErrorEndpoint} from '@agent-storm/common';
+import {HttpMethod} from '@rest-vir/api';
+import {fetchApi} from './api-client.js';
 
 /**
  * Errors already sent, keyed by message + stack. A render error repeats on every re-render (and a
@@ -10,7 +12,8 @@ const reported = new Set<string>();
 /** Ceiling on distinct errors per page load, so a pathological loop can't hammer the backend. */
 const maxReportedErrors = 50;
 
-function send({
+/** Send an error to the backend log. `source` names where it was caught. */
+export function reportClientError({
     error,
     source,
 }: Readonly<{
@@ -24,11 +27,13 @@ function send({
         return;
     }
     reported.add(key);
-    void reportClientError({
-        message,
-        stack,
-        source,
-        pageUrl: globalThis.location.href,
+    void fetchApi(clientErrorEndpoint, HttpMethod.Post, {
+        requestData: {
+            message,
+            stack,
+            source,
+            pageUrl: globalThis.location.href,
+        },
     }).catch(() => {
         /* the backend is the thing that logs failures; a failed report has nowhere left to go */
     });
@@ -36,7 +41,7 @@ function send({
 
 /** Passed as every element's `errorHandler` so render failures reach the backend log. */
 export function reportRenderError(error: Error): void {
-    send({
+    reportClientError({
         error,
         /**
          * Element-vir already prefixes the message with `Failed to render <tag-name>`, so the tag
@@ -54,13 +59,13 @@ export function reportRenderError(error: Error): void {
  */
 export function installClientErrorLog(): void {
     globalThis.addEventListener('error', (event) => {
-        send({
+        reportClientError({
             error: event.error ?? event.message,
             source: 'uncaught',
         });
     });
     globalThis.addEventListener('unhandledrejection', (event) => {
-        send({
+        reportClientError({
             error: event.reason,
             source: 'unhandledRejection',
         });

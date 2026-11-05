@@ -1,4 +1,4 @@
-import {readInjectedGlobalData} from './global-data.js';
+import {getInjectedGlobalData} from './global-data.js';
 
 /**
  * Backend port. Injected by `packages/scripts/src/start.script.ts` at npm-start time as
@@ -7,7 +7,7 @@ import {readInjectedGlobalData} from './global-data.js';
  * 41880 if the global isn't present (e.g. you ran vite directly without going through the
  * orchestrator).
  */
-const backendPort = readInjectedGlobalData().backendPort || 41_880;
+const backendPort = getInjectedGlobalData().backendPort || 41_880;
 
 /**
  * The origin the backend is reachable at: whatever host the page itself is served from, on the
