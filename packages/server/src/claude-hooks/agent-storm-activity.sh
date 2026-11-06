@@ -10,7 +10,7 @@
 # nothing: whatever a UserPromptSubmit hook prints is added to Claude's context.
 [[ "$AGENT_STORM_CONVERSATION_ID" =~ ^[a-z0-9]+$ ]] || exit 0
 input="$(cat)"
-dir="$HOME/.agent-storm/conversations/claude-activity"
+dir="${AGENT_STORM_DATA_DIR:-$HOME/.agent-storm}/conversations/claude-activity"
 file="$dir/$AGENT_STORM_CONVERSATION_ID"
 mkdir -p "$dir" || exit 0
 

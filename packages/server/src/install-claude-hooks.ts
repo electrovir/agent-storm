@@ -2,7 +2,12 @@ import {check} from '@augment-vir/assert';
 import {getObjectTypedEntries, getObjectTypedValues, log} from '@augment-vir/common';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {claudeHookInstallDir, claudeHookSourceDir, claudeSettingsPath} from './file-paths.js';
+import {
+    claudeHookInstallDir,
+    claudeHookSourceDir,
+    claudeSettingsPath,
+    instanceName,
+} from './file-paths.js';
 import {writeFileAtomically} from './write-file-atomically.js';
 
 enum ClaudeHookScript {
@@ -105,6 +110,14 @@ export function addMissingClaudeHooks(
  * parse are left alone rather than replaced.
  */
 export async function installClaudeHooks(): Promise<void> {
+    /**
+     * `~/.claude` belongs to the default instance, and a named one may run from a checkout with
+     * different hook scripts. Its tabs run the default instance's hooks, which write wherever the
+     * tab's `AGENT_STORM_DATA_DIR` points.
+     */
+    if (instanceName) {
+        return;
+    }
     try {
         await mkdir(claudeHookInstallDir, {
             recursive: true,

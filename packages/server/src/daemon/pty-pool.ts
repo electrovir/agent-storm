@@ -8,7 +8,12 @@ import {spawn, type IPty} from 'node-pty';
 import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
 import {homedir} from 'node:os';
 import {basename, join, resolve} from 'node:path';
-import {agentLaunchScriptPath} from '../file-paths.js';
+import {
+    agentLaunchScriptPath,
+    defaultUserDataDir,
+    InstanceEnvVar,
+    userDataDir,
+} from '../file-paths.js';
 import {createDaemonLog} from './daemon-log.js';
 import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
 import {defaultSessionId, type StatusEntry, type TerminalColors} from './protocol.js';
@@ -259,7 +264,8 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
  * - `BACKEND_PORT` / `FRONTEND_PORT` because those are internal agent-storm orchestration env vars
  *   set in `packages/scripts/src/start.script.ts`. They have no business leaking into the user's
  *   shell — a `claude` session that inspects `env` would otherwise see them and could be tricked
- *   into talking to the backend, and any subshell the user starts would inherit them too.
+ *   into talking to the backend, and any subshell the user starts would inherit them too. The same
+ *   goes for `AGENT_STORM_INSTANCE`: a debug instance started from a tab must not inherit it.
  * - Every `npm_*` var (`npm_config_*`, `npm_lifecycle_*`, `npm_package_*`, `npm_execpath`, …). npm
  *   exports its entire resolved config to child processes, so because the daemon was launched via
  *   `npm exec` / `npx`, those vars are frozen into the daemon's environment — including
@@ -285,6 +291,8 @@ function spawnEnv({
     const base = omitObjectKeys(process.env, [
         'BACKEND_PORT',
         'FRONTEND_PORT',
+        InstanceEnvVar.Name,
+        InstanceEnvVar.DataDir,
         /**
          * A daemon started from inside an agent-storm pane inherits that pane's id, which would
          * otherwise leak into every pane spawned without one.
@@ -328,6 +336,17 @@ function spawnEnv({
                   [launchScriptEnvKey]: agentLaunchScriptPath,
               }
             : {}),
+        /**
+         * Tells the Claude hooks, `launch-session.script.ts`, the manual-review skill, and the
+         * `claude` shell wrapper which instance's files to use. Left unset for the default folder,
+         * which they all fall back to: a test that points `HOME` at a temp folder would otherwise
+         * still write to the real one.
+         */
+        ...(userDataDir === defaultUserDataDir
+            ? {}
+            : {
+                  [InstanceEnvVar.DataDir]: userDataDir,
+              }),
     };
 }
 

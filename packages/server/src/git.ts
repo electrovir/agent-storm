@@ -27,8 +27,7 @@ import {
     optionalShape,
     parseJsonWithShape,
 } from 'object-shape-tester';
-import {isSafeBranchName} from './branch-name.js';
-import {deletingReviewFoldersDir, manualReviewSkillDir} from './file-paths.js';
+import {deletingReviewFoldersDir} from './file-paths.js';
 import {
     failedCheckResults,
     RawCheckResult,
@@ -37,7 +36,8 @@ import {
     RawReviewDecision,
     RawReviewState,
 } from './github-raw-enums.js';
-import {reviewBranchPrefix} from './manual-review-state.js';
+import {readManualReviewEntry, reviewBranchPrefix, toReviewFolder} from './manual-review-state.js';
+import {normalizePath} from './paths.js';
 import {runCommand} from './run-command.js';
 
 type GitInfo = {
@@ -57,45 +57,134 @@ const cleanGitInfo: GitInfo = {
  * (which has no branch name to match a PR against).
  */
 export async function getCurrentBranch(folder: string): Promise<string | null> {
-    const branch = await tryGit(folder, [
-        'rev-parse',
-        '--abbrev-ref',
-        'HEAD',
-    ]).then((output) => output?.trim() || null);
-    return !branch || branch === 'HEAD' ? null : branch;
+    return (await getGitInfo(folder)).branch;
 }
 
-export async function getGitInfo(folder: string): Promise<GitInfo> {
-    const branch = await getCurrentBranch(folder);
-
-    if (!branch) {
-        return cleanGitInfo;
+/**
+ * Every folder's last-read git state, keyed by normalized path. Every read of a folder's branch,
+ * dirty state, or push state goes through {@link getGitInfo}, so a read by any feature refreshes it
+ * for all of them.
+ */
+const gitInfoStore = new Map<
+    string,
+    {
+        info: GitInfo;
+        readAtMs: number;
     }
+>();
+/** Reads in flight, so callers asking at the same time share one `git status`. */
+const pendingGitInfoReads = new Map<string, Promise<GitInfo>>();
 
+type GitInfoChange = {
+    /** Normalized path. */
+    folder: string;
+    previous: GitInfo;
+    info: GitInfo;
+};
+
+const gitInfoListeners = new Set<(change: Readonly<GitInfoChange>) => void>();
+
+/**
+ * Calls `listener` whenever a read finds a folder's git state changed, whichever feature did the
+ * read. A folder's first read doesn't count.
+ */
+export function listenToGitInfoChanges(listener: (change: Readonly<GitInfoChange>) => void) {
+    gitInfoListeners.add(listener);
+}
+
+/** Drops a folder that's no longer shown from the git state and slug stores. */
+export function forgetGitInfo(folder: string) {
+    gitInfoStore.delete(normalizePath(folder));
+    repoSlugStore.delete(normalizePath(folder));
+}
+
+/**
+ * The folder's branch, dirty state, and push state from the shared store, read from git first when
+ * the stored copy is older than `maxAge`.
+ */
+export async function getGitInfo(
+    folder: string,
+    {
+        maxAge = {
+            seconds: 2,
+        },
+    }: Readonly<{
+        maxAge?: AnyDuration | undefined;
+    }> = {},
+): Promise<GitInfo> {
+    const key = normalizePath(folder);
+    const stored = gitInfoStore.get(key);
+    if (
+        stored &&
+        Date.now() - stored.readAtMs <
+            convertDuration(maxAge, {
+                milliseconds: true,
+            }).milliseconds
+    ) {
+        return stored.info;
+    }
+    const pending =
+        pendingGitInfoReads.get(key) ||
+        readGitInfo(key).finally(() => pendingGitInfoReads.delete(key));
+    pendingGitInfoReads.set(key, pending);
+    return await pending;
+}
+
+async function readGitInfo(folder: string) {
+    const info = await readGitInfoFromGit(folder);
+    const previous = gitInfoStore.get(folder)?.info;
+    gitInfoStore.set(folder, {
+        info,
+        readAtMs: Date.now(),
+    });
+    if (previous && !check.deepEquals(previous, info)) {
+        gitInfoListeners.forEach((listener) => {
+            listener({
+                folder,
+                previous,
+                info,
+            });
+        });
+    }
+    return info;
+}
+
+async function readGitInfoFromGit(folder: string): Promise<GitInfo> {
     const status = await tryGit(folder, [
         'status',
-        '--porcelain',
+        '--porcelain=v2',
+        '--branch',
     ]);
-    const dirty = !!status && status.length > 0;
+    const lines = (status || '').split('\n').filter(Boolean);
 
-    const hasUpstream = await tryGit(folder, [
-        'rev-parse',
-        '--abbrev-ref',
-        '--symbolic-full-name',
-        '@{upstream}',
-    ]).then((output) => output != undefined);
+    function readBranchHeader(name: string) {
+        const prefix = `# branch.${name} `;
+        return lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
+    }
 
-    const notPushed = hasUpstream
-        ? await tryGit(folder, [
-              'log',
-              '--oneline',
-              '@{upstream}..HEAD',
-          ]).then((output) => !!output && output.length > 0)
-        : false;
+    const branch = readBranchHeader('head');
+    /** `(initial)` is a branch with no commits yet, which `rev-parse HEAD` can't resolve either. */
+    if (!branch || branch === '(detached)' || readBranchHeader('oid') === '(initial)') {
+        return cleanGitInfo;
+    }
+    /**
+     * Missing when there's no upstream, and also when the upstream is configured but its remote
+     * branch is gone. Both fall back to commits no remote has.
+     */
+    const aheadBehind = readBranchHeader('ab');
+    const notPushed = aheadBehind
+        ? !aheadBehind.startsWith('+0 ')
+        : await tryGit(folder, [
+              'rev-list',
+              '--max-count=1',
+              'HEAD',
+              '--not',
+              '--remotes',
+          ]).then((output) => !!output?.trim());
 
     return {
         branch,
-        dirty,
+        dirty: lines.some((line) => !line.startsWith('#')),
         notPushed,
     };
 }
@@ -141,39 +230,60 @@ export async function tryGit(cwd: string, args: ReadonlyArray<string>) {
 }
 
 /**
- * The copy of the folder's branch that `/manual-review here` reviews in, named the way the skill's
- * `run-here.sh` names it. Null when the folder isn't on a safe branch or the skill hasn't made a
- * copy yet.
+ * The checkout the PR of the folder's branch is being reviewed in, made by `/manual-review here` or
+ * by the Review tab. Null when the folder isn't on a branch, the skill has no PR recorded for that
+ * branch, or the review folder isn't a checkout yet.
  */
 export async function findManualReviewCopy(folder: string) {
-    const branch = await getCurrentBranch(folder);
-    const commonDir = (
-        await tryGit(folder, [
-            'rev-parse',
-            '--path-format=absolute',
-            '--git-common-dir',
-        ])
-    )?.trim();
-    if (!branch || !commonDir) {
-        return null;
-    } else if (isSafeBranchName(branch)) {
-        const copy = join(
-            manualReviewSkillDir,
-            basename(dirname(commonDir)),
-            `${reviewBranchPrefix}${branch.replaceAll('/', '-')}`,
-        );
-        return (await tryGit(copy, [
-            'rev-parse',
-            '--git-dir',
-        ])) == undefined
-            ? null
-            : copy;
-    } else {
-        log.warning(
-            `Not looking for a review copy of ${folder}: unsafe branch name ${JSON.stringify(branch)}.`,
-        );
+    const [
+        branch,
+        slug,
+    ] = await Promise.all([
+        getCurrentBranch(folder),
+        getRepoSlug(folder),
+    ]);
+    if (!branch || !slug) {
         return null;
     }
+    const prNumber = (
+        await readManualReviewEntry({
+            owner: slug.owner,
+            repoName: slug.name,
+            branchName: branch,
+        })
+    )?.prNumber;
+    if (!prNumber) {
+        return null;
+    }
+    const copy = toReviewFolder({
+        owner: slug.owner,
+        repoName: slug.name,
+        number: prNumber,
+    });
+    return (await tryGit(copy, [
+        'rev-parse',
+        '--git-dir',
+    ])) == undefined
+        ? null
+        : copy;
+}
+
+/**
+ * Whether the folder is a copy `/manual-review here` made, which `run-here.sh` marks with a
+ * `<reviewer name>-review-pr` note in the copy's git dir. A review the Review tab started lives at
+ * the same kind of path but has no note.
+ */
+export async function isManualReviewHereCopy(folder: string) {
+    const gitDir = (
+        await tryGit(folder, [
+            'rev-parse',
+            '--absolute-git-dir',
+        ])
+    )?.trim();
+    return (
+        !!gitDir &&
+        (await readdir(gitDir).catch(() => [])).some((name) => name.endsWith('-review-pr'))
+    );
 }
 
 /** The folder's visible subfolders that hold a `.git`, file or folder alike. */
@@ -709,16 +819,46 @@ function parseGithubRemote(url: string): RepoSlug | null {
  * this only needs to read `.git/config` via `git remote get-url origin`. Returns null if the folder
  * has no `origin`, the remote points somewhere other than github.com, or the URL doesn't parse.
  */
+/**
+ * Every folder's GitHub slug, keyed by normalized path. A slug is kept for good, since `origin`
+ * only changes by hand. A folder without one is asked again after {@link missingSlugRecheck},
+ * because a checkout can still be cloned into it.
+ */
+const repoSlugStore = new Map<
+    string,
+    {
+        slug: RepoSlug | null;
+        readAtMs: number;
+    }
+>();
+const missingSlugRecheck: AnyDuration = {
+    minutes: 2,
+};
+
 export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
-    const output = await tryGit(folder, [
+    const key = normalizePath(folder);
+    const stored = repoSlugStore.get(key);
+    if (
+        stored &&
+        (stored.slug ||
+            Date.now() - stored.readAtMs <
+                convertDuration(missingSlugRecheck, {
+                    milliseconds: true,
+                }).milliseconds)
+    ) {
+        return stored.slug;
+    }
+    const output = await tryGit(key, [
         'remote',
         'get-url',
         'origin',
     ]);
-    if (!output) {
-        return null;
-    }
-    return parseGithubRemote(output);
+    const slug = output ? parseGithubRemote(output) : null;
+    repoSlugStore.set(key, {
+        slug,
+        readAtMs: Date.now(),
+    });
+    return slug;
 }
 
 /**

@@ -20,9 +20,18 @@ function envPort(name: string): number | undefined {
  * The same file the settings modal writes through `PUT /config`. Re-derived here rather than
  * imported from `packages/server/src/file-paths.ts`: this package doesn't depend on the server
  * package, and the constant can't move to `@agent-storm/common` without dragging `node:os` into the
- * browser bundle.
+ * browser bundle. `start.script.ts` exports the instance's data dir as `AGENT_STORM_DATA_DIR`.
  */
-const configPath = resolve(homedir(), '.agent-storm', 'config.json');
+const configPath = resolve(
+    process.env.AGENT_STORM_DATA_DIR || resolve(homedir(), '.agent-storm'),
+    'config.json',
+);
+
+/**
+ * `--force` empties vite's deps cache on startup, which would pull the optimized deps out from
+ * under another instance's dev server running from this checkout.
+ */
+const instanceName = process.env.AGENT_STORM_INSTANCE;
 /**
  * Where {@link configPath} used to live. The server moves it on startup, which can land after vite
  * has already read the config.
@@ -118,6 +127,16 @@ export default defineConfig(
 
         return {
             ...baseConfig,
+            ...(instanceName
+                ? {
+                      cacheDir: resolve(
+                          import.meta.dirname,
+                          '..',
+                          'node_modules',
+                          `.vite-${instanceName}`,
+                      ),
+                  }
+                : {}),
             plugins: [
                 ...(baseConfig.plugins || []),
                 tlsRestartPlugin(certPath),

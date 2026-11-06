@@ -8,6 +8,6 @@
 [[ "$AGENT_STORM_CONVERSATION_ID" =~ ^[a-z0-9-]+$ ]] || exit 0
 session_id="$(jq -r '.session_id // empty')"
 [[ -n "$session_id" ]] || exit 0
-dir="$HOME/.agent-storm/conversations/claude"
+dir="${AGENT_STORM_DATA_DIR:-$HOME/.agent-storm}/conversations/claude"
 mkdir -p "$dir" && printf '%s\n' "$session_id" > "$dir/$AGENT_STORM_CONVERSATION_ID"
 exit 0

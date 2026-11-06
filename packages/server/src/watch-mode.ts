@@ -5,9 +5,11 @@ import {
     WatchModeStatus,
     type FolderInfo,
     type PullRequestBranch,
+    type ReviewQueuePr,
 } from '@agent-storm/common';
 import {assertWrap, check, waitUntil} from '@augment-vir/assert';
 import {
+    awaitedFilter,
     extractErrorMessage,
     getEnumValues,
     getObjectTypedEntries,
@@ -19,7 +21,7 @@ import {
 import {doesPathContain} from '@augment-vir/node';
 import {convertDuration} from 'date-vir';
 import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
-import {basename, join} from 'node:path';
+import {join} from 'node:path';
 import {
     checkValidShape,
     defineShape,
@@ -30,14 +32,15 @@ import {
 import {isSafeBranchName} from './branch-name.js';
 import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
 import {
+    instanceName,
     manualReviewSkillDir,
     watchModeInstructionsPath,
     watchModePassDir,
     watchModeStatePath,
 } from './file-paths.js';
-import {getCurrentBranch, getRepoSlug, tryGit} from './git.js';
+import {getCurrentBranch, getRepoSlug, isManualReviewHereCopy, tryGit} from './git.js';
 import {RawPrState} from './github-raw-enums.js';
-import {readViewerLogin} from './github-review-queue.js';
+import {listenToAssigneeQueue, readViewerLogin} from './github-review-queue.js';
 import {
     listenToManualReviewState,
     postedVerdictStatuses,
@@ -224,16 +227,15 @@ export async function setWatchMode({
     }
 }
 
-function isHereCopy(folder: string) {
-    return (
-        doesPathContain({
-            potentialParentPath: manualReviewSkillDir,
-            potentialChildPath: folder,
-        }) && basename(folder).startsWith(reviewBranchPrefix)
-    );
+/** Any folder a PR is reviewed in, whether `/manual-review here` or the Review tab made it. */
+function isReviewFolder(folder: string) {
+    return doesPathContain({
+        potentialParentPath: manualReviewSkillDir,
+        potentialChildPath: folder,
+    });
 }
 
-/** The checkout a here copy was made from: the sidebar folder on the same branch of the same repo. */
+/** The sidebar folder, outside review folders, checked out on the branch of the same repo. */
 async function findReviewedCheckout({
     deps,
     branch,
@@ -244,7 +246,7 @@ async function findReviewedCheckout({
     const folders = await deps.listFolders();
     const candidates = await Promise.all(
         folders
-            .filter((folder) => folder.branch === branch.branchName && !isHereCopy(folder.path))
+            .filter((folder) => folder.branch === branch.branchName && !isReviewFolder(folder.path))
             .map(async (folder) => {
                 const slug = await getRepoSlug(folder.path);
                 return slug?.owner === branch.owner && slug.name === branch.repoName
@@ -266,28 +268,61 @@ async function watchNewlyReviewedCheckouts({
     deps: Readonly<WatchModeDeps>;
     changedEntries: ReadonlyArray<ListedManualReviewEntry>;
 }>) {
+    const hereCopyEntries = await awaitedFilter(changedEntries, async ({entry}) => {
+        return (
+            !!entry.folder &&
+            !entry.isPending &&
+            !!entry.status &&
+            postedVerdictStatuses[entry.status] &&
+            isReviewFolder(entry.folder) &&
+            (await isManualReviewHereCopy(entry.folder))
+        );
+    });
     await Promise.all(
-        changedEntries
-            .filter(({entry}) => {
-                return (
-                    !!entry.folder &&
-                    isHereCopy(entry.folder) &&
-                    !entry.isPending &&
-                    !!entry.status &&
-                    postedVerdictStatuses[entry.status]
-                );
-            })
+        hereCopyEntries.map(async (branch) => {
+            const folder = await findReviewedCheckout({
+                deps,
+                branch,
+            });
+            if (folder && !watchState.entries[folder]?.isEnabled) {
+                await setWatchMode({
+                    folder,
+                    isEnabled: true,
+                });
+            }
+        }),
+    );
+}
+
+/**
+ * Turns watch mode on in the sidebar checkout of each PR in the Assignee list. Only a folder watch
+ * mode has never tracked qualifies, so turning watch mode off, or it stopping on its own, sticks.
+ */
+async function watchAssignedCheckouts({
+    deps,
+    pullRequests,
+}: Readonly<{
+    deps: Readonly<WatchModeDeps>;
+    pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>;
+}>) {
+    const folders = await Promise.all(
+        pullRequests
+            .filter((pullRequest) => pullRequest.branchName)
             .map(async (branch) => {
-                const folder = await findReviewedCheckout({
+                return await findReviewedCheckout({
                     deps,
                     branch,
                 });
-                if (folder && !watchState.entries[folder]?.isEnabled) {
-                    await setWatchMode({
-                        folder,
-                        isEnabled: true,
-                    });
-                }
+            }),
+    );
+    await Promise.all(
+        removeDuplicates(folders.filter(check.isTruthy).map((folder) => normalizePath(folder)))
+            .filter((folder) => !watchState.entries[folder])
+            .map(async (folder) => {
+                await setWatchMode({
+                    folder,
+                    isEnabled: true,
+                });
             }),
     );
 }
@@ -792,7 +827,7 @@ function createIdleStateKey(prCheck: Readonly<PrCheck>) {
     ]);
 }
 
-/** A manual review in one of these pauses watch mode until it's done. */
+/** A manual review in one of these holds back the merge until it's done. */
 const inProgressReviewStatuses: Readonly<Record<ManualReviewStatus, boolean>> = {
     [ManualReviewStatus.Started]: true,
     [ManualReviewStatus.PostFailed]: true,
@@ -835,7 +870,7 @@ async function checkFolder({
             message: 'The branch name has characters watch mode does not allow.',
         });
         return;
-    } else if (isHereCopy(folder) || branch.startsWith(reviewBranchPrefix)) {
+    } else if (isReviewFolder(folder) || branch.startsWith(reviewBranchPrefix)) {
         await stopWatching({
             folder,
             message: 'This is a manual-review copy, not a branch to watch.',
@@ -853,13 +888,12 @@ async function checkFolder({
         repoName: slug.name,
         branchName: branch,
     });
-    if (manualReview && (manualReview.isPending || inProgressReviewStatuses[manualReview.status])) {
-        await updateEntry(folder, {
-            status: WatchModeStatus.Paused,
-            message: 'Paused while your manual review of this branch is in progress.',
-        });
-        return;
-    }
+    /**
+     * The review runs in its own checkout, so passes can keep pushing fixes under it. Only the
+     * merge waits for the verdict.
+     */
+    const isManualReviewOpen =
+        !!manualReview && (manualReview.isPending || inProgressReviewStatuses[manualReview.status]);
     const viewerLogin = await readViewerLogin();
     const prCheck = await fetchPrCheck({
         folder,
@@ -1031,6 +1065,12 @@ async function checkFolder({
                 ],
                 prCheck,
                 branch,
+            });
+            return;
+        } else if (isManualReviewOpen) {
+            await updateEntry(folder, {
+                status: WatchModeStatus.Watching,
+                message: 'Ready to merge once your manual review of this branch is finished.',
             });
             return;
         } else if (watchState.entries[folder]?.isEnabled) {
@@ -1256,12 +1296,24 @@ export async function startWatchMode(deps: Readonly<WatchModeDeps>) {
     watchState.deps = deps;
     watchState.entries = await loadEntries();
     await resumeIdleStoppedFolders();
-    listenToManualReviewState(async (changedEntries) => {
-        await watchNewlyReviewedCheckouts({
-            deps,
-            changedEntries,
+    /**
+     * A named instance is a debug copy using the user's own GitHub login. Watching PRs it wasn't
+     * asked to would push to and merge the user's real PRs.
+     */
+    if (!instanceName) {
+        listenToManualReviewState(async (changedEntries) => {
+            await watchNewlyReviewedCheckouts({
+                deps,
+                changedEntries,
+            });
         });
-    });
+        listenToAssigneeQueue(async (pullRequests) => {
+            await watchAssignedCheckouts({
+                deps,
+                pullRequests,
+            });
+        });
+    }
     setInterval(
         () => {
             getObjectTypedEntries(watchState.entries)

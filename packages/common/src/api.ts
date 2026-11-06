@@ -64,9 +64,15 @@ const ptyClientMessageShape = defineShape(
 /**
  * The settings for each git forge, nested under `forges` in {@link configJsonSchema}. A complete
  * `Record` so a new {@link ForgeType} doesn't compile until someone decides its settings.
+ *
+ * Keys, and the matching `required` entries, are template literals so their types are plain
+ * strings. Emitted declarations turn enum-keyed properties into string keys while an enum member in
+ * `required` stays an enum type. json-schema-to-ts then no longer matches them, which makes every
+ * forge optional in `Config` for the packages that read this one's declarations.
  */
+/* eslint-disable @typescript-eslint/no-unnecessary-template-expression -- the template literals change each key's type from the enum member to a plain string, which is their whole point. */
 const forgeSettingsJsonSchemas = {
-    [ForgeType.Github]: {
+    [`${ForgeType.Github}`]: {
         type: 'object',
         additionalProperties: false,
         title: 'GitHub',
@@ -127,25 +133,26 @@ const forgeSettingsJsonSchemas = {
             'trustedBotLogins',
         ],
     },
-    [ForgeType.Gitea]: {
+    [`${ForgeType.Gitea}`]: {
         type: 'object',
         additionalProperties: false,
         title: 'Gitea',
         properties: {},
     },
-    [ForgeType.Forgejo]: {
+    [`${ForgeType.Forgejo}`]: {
         type: 'object',
         additionalProperties: false,
         title: 'Forgejo',
         properties: {},
     },
-    [ForgeType.Gitlab]: {
+    [`${ForgeType.Gitlab}`]: {
         type: 'object',
         additionalProperties: false,
         title: 'GitLab',
         properties: {},
     },
 } as const satisfies Record<ForgeType, JSONSchema>;
+/* eslint-enable @typescript-eslint/no-unnecessary-template-expression */
 
 /**
  * Single source of truth for the user-editable config. Defined as a JSON Schema so:
@@ -325,12 +332,14 @@ export const configJsonSchema = {
             additionalProperties: false,
             title: 'Git forges',
             properties: forgeSettingsJsonSchemas,
+            /* eslint-disable @typescript-eslint/no-unnecessary-template-expression -- plain string types to match the keys, see `forgeSettingsJsonSchemas`. */
             required: [
-                ForgeType.Github,
-                ForgeType.Gitea,
-                ForgeType.Forgejo,
-                ForgeType.Gitlab,
+                `${ForgeType.Github}`,
+                `${ForgeType.Gitea}`,
+                `${ForgeType.Forgejo}`,
+                `${ForgeType.Gitlab}`,
             ],
+            /* eslint-enable @typescript-eslint/no-unnecessary-template-expression */
         },
         useWebgl: {
             type: 'boolean',
@@ -537,6 +546,8 @@ const folderActivationShape = defineShape({
 
 const foldersResponseShape = defineShape({
     folders: [folderInfoShape],
+    /** Changes whenever the config does, so a poller only fetches `/config` again when it changed. */
+    configRevision: 0,
     /** Only set for a short while after the request is made. */
     folderActivation: nullableShape(folderActivationShape),
 });
@@ -986,6 +997,8 @@ const reviewQueuePrShape = defineShape({
     ...pullRequestTextShape.default,
     /** The head branch. */
     branchName: '',
+    /** The commit the head branch points at. */
+    headSha: '',
     isDraft: false,
     /**
      * How many listed PRs this one is stacked under, through its base branch being another listed
@@ -1097,6 +1110,13 @@ export const manualReviewStateShape = defineShape({
     isPending: false,
     /** Unix milliseconds. */
     lastUpdatedAt: 0,
+    /**
+     * The PR head commit the review's working tree was staged from. Missing for reviews started
+     * before the skill recorded it.
+     */
+    headSha: optionalShape('', {
+        alsoUndefined: true,
+    }),
 });
 
 export type ManualReviewState = typeof manualReviewStateShape.runtimeType;
@@ -1352,7 +1372,7 @@ export const gitHubAssigneeQueueEndpoint = defineEndpoint({
 });
 
 /**
- * Answers with the folder one queued PR is reviewed in, `~/.agent-storm/reviews/<owner>/<repo
+ * Answers with the folder one queued PR is reviewed in, `~/.agent-storm/manual-review/<owner>/<repo
  * name>/<PR number>`, creating it when asked, plus where the manual-review skill says its review
  * stands. The PR is looked up in the server's cached queue, so a client never names the path.
  * Errors when the PR isn't in the queue.
@@ -1413,7 +1433,10 @@ const manualReviewCopyResponseShape = defineShape({
     folder: nullableShape(''),
 });
 
-/** Finds the copy of a folder's branch that `/manual-review here` reviews in. */
+/**
+ * Finds the folder the PR of a folder's branch is reviewed in, whether `/manual-review here` or the
+ * Review tab made it.
+ */
 export const manualReviewCopyEndpoint = defineEndpoint({
     path: '/git/manual-review-copy',
     requests: {

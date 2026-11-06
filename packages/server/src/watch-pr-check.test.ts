@@ -188,6 +188,51 @@ describe(classifyPrCheck.name, () => {
         );
     });
 
+    it('takes the newest workflow run as latest even when its job started first', () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        mergeStateStatus: RawMergeState.Blocked,
+                        statusCheckRollup: [
+                            {
+                                name: 'QA Pull Request',
+                                conclusion: RawCheckResult.Failure,
+                                startedAt: '2026-10-01T00:00:01Z',
+                                detailsUrl:
+                                    'https://github.com/owner/name/actions/runs/300/job/3000',
+                            },
+                            {
+                                name: 'QA Pull Request',
+                                conclusion: RawCheckResult.Success,
+                                startedAt: '2026-10-01T00:01:00Z',
+                                detailsUrl:
+                                    'https://github.com/owner/name/actions/runs/200/job/2000',
+                            },
+                        ],
+                    },
+                    threads: [],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    failingChecks: true,
+                    needs: true,
+                },
+            ),
+            {
+                failingChecks: [
+                    'QA Pull Request',
+                ],
+                needs: [
+                    PrNeed.Tests,
+                ],
+            },
+        );
+    });
+
     it('merges past a cancelled check', () => {
         assert.deepEquals(
             selectFrom(

@@ -1,23 +1,66 @@
 import {homedir, tmpdir} from 'node:os';
 import {basename, resolve} from 'node:path';
+import {normalizePath} from './paths.js';
 
 export const monorepoRoot = resolve(import.meta.dirname, '..', '..', '..');
 
 /** Git-ignored directory at the repo root for runtime secrets and on-disk caches. */
 export const notCommittedDir = resolve(monorepoRoot, '.not-committed');
 
+/**
+ * The env vars that keep one running agent-storm apart from another, so a debug copy can run beside
+ * the everyday one. With both unset, every path is the default instance's.
+ */
+export enum InstanceEnvVar {
+    /**
+     * Names the instance. Its name is appended to everything it would otherwise share with the
+     * default instance outside {@link userDataDir}: the pty daemon's socket, the logs, uploads, and
+     * {@link checkoutStateDir}.
+     */
+    Name = 'AGENT_STORM_INSTANCE',
+    /** Overrides {@link userDataDir}. */
+    DataDir = 'AGENT_STORM_DATA_DIR',
+}
+
+function readInstanceName() {
+    const name = process.env[InstanceEnvVar.Name] || '';
+    if (name && !/^[a-z0-9-]+$/.test(name)) {
+        throw new Error(
+            `${InstanceEnvVar.Name} may only hold lowercase letters, digits, and dashes, got "${name}".`,
+        );
+    }
+    return name;
+}
+
+/** Empty for the default instance. */
+export const instanceName = readInstanceName();
+const instanceSuffix = instanceName ? `-${instanceName}` : '';
+
+/** The default instance's {@link userDataDir}. */
+export const defaultUserDataDir = resolve(homedir(), '.agent-storm');
+
 /** Agent-storm's user-level files: config, its backups, and anything else that outlives a checkout. */
-export const userDataDir = resolve(homedir(), '.agent-storm');
+export const userDataDir = normalizePath(
+    process.env[InstanceEnvVar.DataDir] || resolve(homedir(), `.agent-storm${instanceSuffix}`),
+);
+
+/**
+ * This instance's files inside {@link notCommittedDir}. Two instances run from one checkout must not
+ * share pane sessions or caches, so a named instance gets a subdirectory.
+ */
+export const checkoutStateDir = instanceName
+    ? resolve(notCommittedDir, 'instances', instanceName)
+    : notCommittedDir;
 
 /**
  * Argon2id hash of the bearer secret used for browser ↔ backend auth. Only the hash is stored on
  * disk; the cleartext is shown once at startup and is required by the client.
  */
-export const authSecretPath = resolve(notCommittedDir, 'auth-secret');
+export const authSecretPath = resolve(checkoutStateDir, 'auth-secret');
 
 /**
  * Filename portion of {@link authSecretPath}, used to filter `fs.watch` events on
- * {@link notCommittedDir} (the watcher delivers basenames, not full paths).
+ * {@link checkoutStateDir} (the watcher delivers basenames, not full paths).
  */
 export const authSecretFileName = basename(authSecretPath);
 
@@ -25,7 +68,7 @@ export const authSecretFileName = basename(authSecretPath);
  * Persisted folder-info cache so the sidebar reappears with last-known git/PR/pane state on server
  * restart instead of waiting a full sweep cycle to repopulate.
  */
-export const folderInfoCachePath = resolve(notCommittedDir, 'folder-info-cache.json');
+export const folderInfoCachePath = resolve(checkoutStateDir, 'folder-info-cache.json');
 
 /**
  * Persisted GitHub PR cache + auto-disable state. Survives server restarts so `tsx --watch` reloads
@@ -33,7 +76,7 @@ export const folderInfoCachePath = resolve(notCommittedDir, 'folder-info-cache.j
  * every file save, and so a rate-limit/auth auto-disable sticks until its expiry rather than
  * resetting on every restart.
  */
-export const githubCachePath = resolve(notCommittedDir, 'github-cache.json');
+export const githubCachePath = resolve(checkoutStateDir, 'github-cache.json');
 
 /**
  * Per-folder session tab lists (order + user-assigned names) for each pane kind. Lives here rather
@@ -41,14 +84,18 @@ export const githubCachePath = resolve(notCommittedDir, 'github-cache.json');
  * to survive daemon and server restarts, since a tab name the user typed can't be regenerated the
  * way git or PR state can.
  */
-export const sessionStorePath = resolve(notCommittedDir, 'pane-sessions.json');
+export const sessionStorePath = resolve(userDataDir, 'folder-state', 'pane-sessions.json');
+/** Where {@link sessionStorePath} was kept before it moved, read only to migrate it. */
+export const legacySessionStorePath = resolve(checkoutStateDir, 'pane-sessions.json');
 
 /**
  * Per-folder timestamp of the last keystroke the user sent to one of that folder's panes, backing
  * the sidebar's "Sort by activity" option. Persisted because the ordering it produces is only
  * useful if it spans the days the user has been working, not the current server process.
  */
-export const folderActivityPath = resolve(notCommittedDir, 'folder-activity.json');
+export const folderActivityPath = resolve(userDataDir, 'folder-state', 'folder-activity.json');
+/** Where {@link folderActivityPath} was kept before it moved, read only to migrate it. */
+export const legacyFolderActivityPath = resolve(checkoutStateDir, 'folder-activity.json');
 
 /**
  * Where wrapper scripts record which CLI session each tab's conversation maps to, one file per
@@ -73,36 +120,40 @@ export const claudeHookInstallDir = resolve(homedir(), '.claude');
 export const claudeSettingsPath = resolve(claudeHookInstallDir, 'settings.json');
 
 /** Unix domain socket the pty daemon listens on for new pane attachments. */
-export const daemonSocketPath = resolve(tmpdir(), 'agent-storm-pty.sock');
+export const daemonSocketPath = resolve(tmpdir(), `agent-storm${instanceSuffix}-pty.sock`);
 
 /** Where the pty daemon's stdout/stderr is redirected (it runs detached from the server). */
-export const daemonLogPath = resolve(tmpdir(), 'agent-storm-pty-daemon.log');
+export const daemonLogPath = resolve(tmpdir(), `agent-storm${instanceSuffix}-pty-daemon.log`);
 
 /**
  * Mirror of the backend's stdout/stderr written from `index.ts`. Lets the assistant tail a file
  * instead of asking the user to copy/paste console output, especially when debugging WS / proxy
  * flows where the relevant log lines are dense and time-ordered.
  */
-export const serverLogPath = resolve(tmpdir(), 'agent-storm-server.log');
+export const serverLogPath = resolve(tmpdir(), `agent-storm${instanceSuffix}-server.log`);
 
 /**
  * Browser-side errors, shipped to the backend by the frontend's error reporter. The app is used as
  * an installed PWA, which has no reachable devtools console, so this file is the only place a
  * frontend stack can be read after the fact.
  */
-export const clientErrorLogPath = resolve(tmpdir(), 'agent-storm-client-errors.log');
+export const clientErrorLogPath = resolve(
+    tmpdir(),
+    `agent-storm${instanceSuffix}-client-errors.log`,
+);
 
 /** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocketPath}. */
 export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts');
 
-/** Where each queued PR gets a folder to be reviewed in, at `<owner>/<repo>/<PR number>`. */
-export const reviewsDir = resolve(userDataDir, 'reviews');
+/** Where review folders were kept before they moved into {@link manualReviewSkillDir}. */
+export const legacyReviewsDir = resolve(userDataDir, 'reviews');
 /** Review folders get moved here to be deleted in the background. */
 export const deletingReviewFoldersDir = resolve(userDataDir, 'deleting');
 /**
- * The manual-review skill's folder. It holds the skill's {@link manualReviewStatePath} and the
- * copies `/manual-review here` makes of a checkout's branch, at `<main checkout's folder
- * name>/review__<branch>`.
+ * The manual-review skill's folder. It holds the skill's {@link manualReviewStatePath}, the folder
+ * each PR is reviewed in at `<owner>/<repo>/<PR number>` (made by the Review tab or by
+ * `/manual-review here`), and the copies `/manual-review local` makes at `<main checkout's folder
+ * name>/<branch>`.
  */
 export const manualReviewSkillDir = resolve(userDataDir, 'manual-review');
 /** Written by the manual-review skill, keyed by `<owner>/<repo>` then head branch. */
@@ -144,7 +195,7 @@ export const reviewConfigPath = resolve(userDataDir, 'review-config.json');
 export const configBackupDir = resolve(userDataDir, 'config-backups');
 
 /** Directory where dragged-in screenshot uploads land before being attached to a pane. */
-export const uploadsDir = resolve(tmpdir(), 'agent-storm-uploads');
+export const uploadsDir = resolve(tmpdir(), `agent-storm${instanceSuffix}-uploads`);
 
 /**
  * Avatar images for the user's AI definitions. Lives next to {@link configPath} rather than in

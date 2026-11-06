@@ -4,6 +4,7 @@ import {
     reviewCommentShape,
     type ManualReviewState,
     type PullRequestBranch,
+    type PullRequestRef,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
@@ -14,6 +15,7 @@ import {
     type MaybePromise,
 } from '@augment-vir/common';
 import {readFileIfExists} from '@augment-vir/node';
+import {resolve} from 'node:path';
 import {
     checkValidShape,
     defineShape,
@@ -23,7 +25,15 @@ import {
     recordShape,
     unknownShape,
 } from 'object-shape-tester';
-import {manualReviewStatePath} from './file-paths.js';
+import {manualReviewSkillDir, manualReviewStatePath} from './file-paths.js';
+
+/**
+ * The folder a PR is reviewed in, whether Agent Storm's Review tab or the skill's `/manual-review
+ * here` makes it.
+ */
+export function toReviewFolder({owner, repoName, number}: Readonly<PullRequestRef>) {
+    return resolve(manualReviewSkillDir, owner, repoName, String(number));
+}
 
 /** The prefix the manual-review skill puts on the branch it reviews a PR's head branch on. */
 export const reviewBranchPrefix = 'review__';
@@ -139,6 +149,7 @@ export async function readManualReviewState(branch: Readonly<PullRequestBranch>)
               status: entry.status,
               isPending: entry.isPending,
               lastUpdatedAt: entry.lastUpdatedAt,
+              headSha: entry.headSha,
           } satisfies ManualReviewState)
         : undefined;
 }

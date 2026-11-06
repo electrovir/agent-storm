@@ -10,6 +10,7 @@ import {
     type FolderInfo,
     type RepoConfig,
 } from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {
     awaitedForEach,
     extractErrorMessage,
@@ -37,16 +38,19 @@ import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {
     fetchRepoPrs,
+    forgetGitInfo,
     getGitInfo,
     getRepoSlug,
     GitHubPollingError,
     isWorktreeRoot,
+    listenToGitInfoChanges,
     listWorktreeChildren,
     prInfoShape,
     type PrInfo,
     type RepoSlug,
 } from './git.js';
 import {applyManualReviewStatus} from './github-review-queue.js';
+import {normalizePath} from './paths.js';
 import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
 import {writeFileAtomically} from './write-file-atomically.js';
 
@@ -121,14 +125,6 @@ function markRepoHadPr(repoPath: string): void {
         persistGithubCache();
     }
 }
-
-/**
- * Per-folder resolved GitHub slug. The slug comes from `git remote get-url origin` and never
- * changes during a single server run, so we resolve it once and reuse forever. `null` entries cache
- * "folder isn't a GitHub repo" answers so we don't shell out to git on every sweep just to
- * re-confirm.
- */
-const repoSlugByFolder = new Map<string, RepoSlug | null>();
 
 /** How long polling backs off for each failure when GitHub doesn't say when to resume. */
 const autoDisableDurationByReason: Readonly<Record<GitHubPollingDisableReason, AnyDuration>> = {
@@ -271,16 +267,6 @@ function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
     return config.forges[ForgeType.Github].disabledGitHubPolling || isAutoDisabled();
 }
 
-async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {
-    const cached = repoSlugByFolder.get(folder);
-    if (cached !== undefined) {
-        return cached;
-    }
-    const slug = await getRepoSlug(folder);
-    repoSlugByFolder.set(folder, slug);
-    return slug;
-}
-
 /**
  * The repo's branch → PR lookup, refreshing it first if the cached copy is older than `refreshTtl`.
  * An `undefined` TTL means "never refresh this repo" (it isn't visible in the sidebar).
@@ -341,7 +327,7 @@ async function getCachedPrInfo(
     if (!branch) {
         return null;
     }
-    const slug = await ensureRepoSlug(folder);
+    const slug = await getRepoSlug(folder);
     if (!slug) {
         return null;
     }
@@ -493,10 +479,19 @@ const cache = new Map<string, FolderInfo>();
 const refreshState: {
     targets: ReadonlyArray<RefreshTarget>;
     loopStarted: boolean;
+    /** Whether `cache` changed since it was last written to disk. */
+    hasUnsavedChanges: boolean;
+    /** The folder the sweep is rebuilding, which needs no separate rebuild for its git changes. */
+    sweepingFolder: string | undefined;
 } = {
     targets: [],
     loopStarted: false,
+    hasUnsavedChanges: false,
+    sweepingFolder: undefined,
 };
+
+/** When each folder's git state was last read, which is what spaces out refreshes of idle folders. */
+const lastRefreshedAtMsByFolder = new Map<string, number>();
 
 /**
  * Synthesize a FolderInfo with the bits we can know without running git or talking to the daemon.
@@ -712,22 +707,72 @@ async function loadPersistedGithubCache(): Promise<void> {
 }
 
 /**
- * Pause between consecutive folder refreshes within a sweep. Each folder costs a handful of git
- * subprocesses (`rev-parse`, `status --porcelain`, upstream check, `log` ahead-count); spreading
- * them out keeps the backend from pegging a core when the user has many configured repos.
+ * Pause between consecutive folder refreshes within a sweep. Each folder costs a `git status`, plus
+ * a `rev-list` when the branch has no upstream; spreading them out keeps the backend from pegging a
+ * core when the user has many configured repos.
  */
 const perFolderDelay: AnyDuration = {
     milliseconds: 100,
 };
 /**
- * Idle pause after each complete sweep through every folder. Short enough that the sidebar's `*` /
- * `+` markers reflect dirty / not pushed state soon after git activity. PR fetches piggy-back on
- * this sweep but are gated by {@link hotRepoPrTtl} / {@link coldRepoPrTtl}, so a faster sweep does
- * not mean more GitHub traffic.
+ * Idle pause after each complete sweep. Short enough that the sidebar's `*` / `+` markers reflect
+ * dirty / not pushed state soon after git activity in a folder being worked in. PR fetches
+ * piggy-back on this sweep but are gated by {@link hotRepoPrTtl} / {@link coldRepoPrTtl}, so a faster
+ * sweep does not mean more GitHub traffic.
  */
 const sweepIdle: AnyDuration = {
     seconds: 5,
 };
+
+/**
+ * How often a sweep re-reads a folder nobody is working in. Only something outside agent-storm (an
+ * editor, another terminal) changes such a folder, so its markers may lag a little in exchange for
+ * not running git in every configured folder on every sweep.
+ */
+const idleFolderRefreshInterval: AnyDuration = {
+    minutes: 2,
+};
+
+/**
+ * Whether a sweep re-reads this folder's git state: always for a folder never read yet, one with a
+ * live pane, or one typed in or activated recently, and otherwise once
+ * {@link idleFolderRefreshInterval} has passed. Exported for tests.
+ */
+export function isFolderRefreshDue({
+    target,
+    statusLookup,
+    repos,
+    folderActivityAtMs,
+    lastRefreshedAtMs,
+    nowMs,
+}: Readonly<{
+    target: RefreshTarget;
+    statusLookup: PaneStatusLookup;
+    repos: ReadonlyArray<RepoConfig>;
+    folderActivityAtMs: number;
+    lastRefreshedAtMs: number | undefined;
+    nowMs: number;
+}>) {
+    if (lastRefreshedAtMs == undefined) {
+        return true;
+    }
+    const hasLivePane = getEnumValues(PaneKind).some(
+        (kind) => livePaneStatuses[statusLookup(target.folder, kind)],
+    );
+    const lastInteractedAtMs =
+        repos.find((repo) => repo.path === repoActivityKey(target))?.lastInteractedAtMs || 0;
+    return (
+        hasLivePane ||
+        nowMs - Math.max(folderActivityAtMs, lastInteractedAtMs) <
+            convertDuration(recentInteraction, {
+                milliseconds: true,
+            }).milliseconds ||
+        nowMs - lastRefreshedAtMs >=
+            convertDuration(idleFolderRefreshInterval, {
+                milliseconds: true,
+            }).milliseconds
+    );
+}
 
 /**
  * The last refresh error logged per folder, so a repo that keeps failing logs once rather than on
@@ -759,19 +804,18 @@ async function refreshOnce({
     statusLookup: PaneStatusLookup;
     prRefreshTtl: AnyDuration | undefined;
 }>): Promise<void> {
+    /** Stamped up front so a failing folder waits like any other instead of retrying every sweep. */
+    lastRefreshedAtMsByFolder.set(target.folder, Date.now());
+    refreshState.sweepingFolder = target.folder;
     try {
-        const info = await buildFolderInfo({
-            target,
-            statusLookup,
-            prRefreshTtl,
-        });
+        storeFolderInfo(
+            await buildFolderInfo({
+                target,
+                statusLookup,
+                prRefreshTtl,
+            }),
+        );
         loggedRefreshErrors.delete(target.folder);
-        const previous = cache.get(target.folder);
-        cache.set(target.folder, info);
-        persistCache();
-        if (previous && !previous.prUrl && info.prUrl) {
-            folderPrHooks.onNewPr?.(info);
-        }
     } catch (error) {
         /** Swallowed so one bad repo doesn't stop the sweep. */
         const message = extractErrorMessage(error);
@@ -779,6 +823,45 @@ async function refreshOnce({
             loggedRefreshErrors.set(target.folder, message);
             log.warning(`Failed to refresh ${target.folder}: ${message}`);
         }
+    } finally {
+        refreshState.sweepingFolder = undefined;
+    }
+}
+
+function storeFolderInfo(info: Readonly<FolderInfo>) {
+    const previous = cache.get(info.path);
+    if (!check.deepEquals(previous, info)) {
+        cache.set(info.path, info);
+        refreshState.hasUnsavedChanges = true;
+    }
+    if (previous && !previous.prUrl && info.prUrl) {
+        folderPrHooks.onNewPr?.(info);
+    }
+}
+
+/**
+ * Rebuilds a folder whose git state changed in a read outside the sweep, so the sidebar shows it
+ * without waiting for the sweep to come around. Serves only cached PRs and the panes already shown,
+ * so it never calls GitHub or the daemon.
+ */
+async function applyGitInfoChange(folder: string) {
+    const target = refreshState.targets.find((each) => normalizePath(each.folder) === folder);
+    const previous = target && cache.get(target.folder);
+    if (!target || !previous || refreshState.sweepingFolder === target.folder) {
+        return;
+    }
+    try {
+        storeFolderInfo(
+            await buildFolderInfo({
+                target,
+                statusLookup(_folder, kind) {
+                    return previous.panes[kind];
+                },
+                prRefreshTtl: undefined,
+            }),
+        );
+    } catch (error) {
+        log.warning(`Failed to update ${folder}: ${extractErrorMessage(error)}`);
     }
 }
 
@@ -880,12 +963,15 @@ async function runSweep(): Promise<void> {
     }
     await clearExpiredAutoDisable();
     const targets = await enumerateTargets(config);
+    const haveTargetsChanged = !check.deepEquals(refreshState.targets, targets);
     /**
      * Publish the target list before the slow per-folder loop runs so `/folders` can return
      * placeholders for every configured folder immediately, without waiting for git to finish.
      */
     refreshState.targets = targets;
-    persistCache();
+    if (haveTargetsChanged) {
+        persistCache();
+    }
     const statusLookup = await getPaneStatusLookup();
     const disabledGitHubPolling = isGitHubPollingDisabled(config);
     /**
@@ -906,6 +992,18 @@ async function runSweep(): Promise<void> {
      * at one folder at a time.
      */
     await awaitedForEach(targets, async (target) => {
+        if (
+            !isFolderRefreshDue({
+                target,
+                statusLookup,
+                repos: config.repos,
+                folderActivityAtMs: getFolderActivityAtMs(target.folder),
+                lastRefreshedAtMs: lastRefreshedAtMsByFolder.get(target.folder),
+                nowMs: Date.now(),
+            })
+        ) {
+            return;
+        }
         await refreshOnce({
             target,
             statusLookup,
@@ -918,8 +1016,14 @@ async function runSweep(): Promise<void> {
     });
     const validPaths = new Set(targets.map((target) => target.folder));
     const stale = Array.from(cache.keys()).filter((path) => !validPaths.has(path));
-    stale.forEach((path) => cache.delete(path));
-    if (stale.length > 0) {
+    stale.forEach((path) => {
+        cache.delete(path);
+        lastRefreshedAtMsByFolder.delete(path);
+        forgetGitInfo(path);
+    });
+    /** Once per sweep rather than per folder: each write is the whole cache. */
+    if (stale.length > 0 || refreshState.hasUnsavedChanges) {
+        refreshState.hasUnsavedChanges = false;
         persistCache();
     }
 }
@@ -982,5 +1086,8 @@ export async function startFolderInfoRefreshLoop(): Promise<void> {
     if (initialConfig) {
         loadAutoDisableFromConfig(initialConfig);
     }
+    listenToGitInfoChanges(async ({folder}) => {
+        await applyGitInfoChange(folder);
+    });
     runSweep().catch(logSweepFailure).finally(scheduleNextSweep);
 }

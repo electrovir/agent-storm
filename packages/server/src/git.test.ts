@@ -12,6 +12,8 @@ import {join} from 'node:path';
 import {promisify} from 'node:util';
 import {
     buildPrsByBranch,
+    getGitInfo,
+    listenToGitInfoChanges,
     listWorktreeChildren,
     parsePrsByBranch,
     removeWorktree,
@@ -641,6 +643,70 @@ describe(removeWorktree.name, () => {
             );
         } finally {
             await rm(parent, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+});
+
+describe(getGitInfo.name, () => {
+    it('serves the stored state until a fresh read, which notifies listeners', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-git-'));
+        const changes: unknown[] = [];
+        listenToGitInfoChanges((change) => {
+            if (change.folder === folder) {
+                changes.push(change);
+            }
+        });
+        try {
+            await git({
+                cwd: folder,
+                args: [
+                    'init',
+                    '--initial-branch=main',
+                ],
+            });
+            await git({
+                cwd: folder,
+                args: [
+                    '-c',
+                    'user.name=Test User',
+                    '-c',
+                    'user.email=test@example.com',
+                    'commit',
+                    '--allow-empty',
+                    '-m',
+                    'Initial commit',
+                ],
+            });
+            const clean = await getGitInfo(folder);
+            await writeFile(join(folder, 'new.txt'), 'new\n');
+            assert.deepEquals(
+                [
+                    await getGitInfo(folder),
+                    changes,
+                ],
+                [
+                    clean,
+                    [],
+                ],
+            );
+            const dirty = await getGitInfo(folder, {
+                maxAge: {
+                    milliseconds: 0,
+                },
+            });
+            assert.deepEquals(changes, [
+                {
+                    folder,
+                    previous: clean,
+                    info: dirty,
+                },
+            ]);
+            assert.isTrue(dirty.dirty);
+        } finally {
+            await rm(folder, {
                 recursive: true,
                 force: true,
             });

@@ -4,7 +4,7 @@ import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
 import {randomBytes} from 'node:crypto';
 import {watch, type FSWatcher} from 'node:fs';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {authSecretFileName, authSecretPath, notCommittedDir} from './file-paths.js';
+import {authSecretFileName, authSecretPath, checkoutStateDir} from './file-paths.js';
 
 /**
  * Argon2 encoded hashes always start with `$argon2`. Any other content (e.g. a plain-text key left
@@ -40,7 +40,7 @@ async function readStoredHash(): Promise<string | undefined> {
 async function generateAndStoreSecret(): Promise<string> {
     const cleartext = randomBytes(32).toString('hex');
     const hash = await hashPassword(cleartext);
-    await mkdir(notCommittedDir, {
+    await mkdir(checkoutStateDir, {
         recursive: true,
     });
     authState.isWritingSelf = true;
@@ -91,12 +91,12 @@ function handleWatchEvent(filename: string | null): void {
 }
 
 export async function initAuth(): Promise<void> {
-    await mkdir(notCommittedDir, {
+    await mkdir(checkoutStateDir, {
         recursive: true,
     });
     await loadOrGenerateSecret();
     authState.watcher?.close();
-    authState.watcher = watch(notCommittedDir, (_eventType, filename) => {
+    authState.watcher = watch(checkoutStateDir, (_eventType, filename) => {
         handleWatchEvent(filename);
     });
 }

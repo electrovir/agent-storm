@@ -10,8 +10,8 @@ export const sidebarFolderMenuStyles = css`
 `;
 
 /**
- * For a context menu whose trigger is a whole sidebar row. Vira gives a popover a minimum width
- * of its trigger's width minus this right offset, so a large offset lets the menu fit its items
+ * For a context menu whose trigger is a whole sidebar row. Vira gives a popover a minimum width of
+ * its trigger's width minus this right offset, so a large offset lets the menu fit its items
  * instead of stretching across the row.
  */
 export const sidebarContextMenuOffset: PopoverOffset = {

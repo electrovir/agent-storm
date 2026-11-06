@@ -73,17 +73,12 @@ import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
 import {appendFile, mkdir, readFile, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
-import {
-    getFolderActivation,
-    requestFolderActivation,
-    startLaunchRequestWatch,
-    type LaunchRequest,
-} from './agent-launch.js';
+import {getFolderActivation, startLaunchRequestWatch, type LaunchRequest} from './agent-launch.js';
 import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
 import {extractBearerToken, initAuth, verifyAuthToken} from './auth.js';
 import {recordClaudeInterrupt} from './claude-activity.js';
 import {startConfigBackupLoop} from './config-backup.js';
-import {loadConfig, saveConfig, setFolderAiId, updateConfig} from './config.js';
+import {loadConfig, readConfigRevision, saveConfig, setFolderAiId, updateConfig} from './config.js';
 import {
     attachPane,
     killFolderPanes,
@@ -93,7 +88,17 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {clientErrorLogPath, manualReviewSkillDir, reviewsDir, serverLogPath} from './file-paths.js';
+import {
+    clientErrorLogPath,
+    folderActivityPath,
+    instanceName,
+    legacyFolderActivityPath,
+    legacyReviewsDir,
+    legacySessionStorePath,
+    manualReviewSkillDir,
+    serverLogPath,
+    sessionStorePath,
+} from './file-paths.js';
 import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {
@@ -240,8 +245,18 @@ const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 await installClaudeHooks();
 
 await migrateReviewFolders({
-    skillDir: manualReviewSkillDir,
-    reviewsDir,
+    reviewsDir: manualReviewSkillDir,
+    legacyReviewsDir,
+    folderKeyedFiles: [
+        {
+            legacyPath: legacySessionStorePath,
+            path: sessionStorePath,
+        },
+        {
+            legacyPath: legacyFolderActivityPath,
+            path: folderActivityPath,
+        },
+    ],
 });
 void sweepDeletingReviewFolders();
 
@@ -260,10 +275,16 @@ await startWatchMode({
     spawnPane,
     sendPaneText,
 });
-startReviewAutoStart({
-    launchFolderSession,
-    runReviewInitCmd,
-});
+/**
+ * A named instance is a debug copy using the user's own GitHub login, so auto-started reviews would
+ * act on the user's real PRs.
+ */
+if (!instanceName) {
+    startReviewAutoStart({
+        launchFolderSession,
+        runReviewInitCmd,
+    });
+}
 
 await initAuth();
 
@@ -329,6 +350,7 @@ const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
                         };
                     }),
                     folderActivation: getFolderActivation(),
+                    configRevision: await readConfigRevision(),
                 },
             },
         };
@@ -624,7 +646,6 @@ async function launchRequestedSession({folder: requestedFolder, prompt}: Readonl
     if (!isKnownFolder) {
         return `"${folder}" is not a folder agent-storm shows. Create it inside a repo agent-storm already lists, then retry.`;
     }
-    requestFolderActivation(folder);
     /** Starting a fresh AI can take longer than the requester should wait for an answer. */
     launchFolderSession({
         folder,

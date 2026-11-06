@@ -56,6 +56,8 @@ const rawStatusCheckShape = defineShape(
         state: unionShape(enumShape(RawCheckResult), exactShape('')),
         startedAt: '',
         createdAt: '',
+        /** An Actions job's is `…/actions/runs/<run id>/job/<job id>`. */
+        detailsUrl: '',
     }),
 );
 
@@ -301,6 +303,25 @@ function checkStartedAt(statusCheck: Readonly<RawStatusCheck>) {
     return statusCheck.startedAt || statusCheck.createdAt || '9999';
 }
 
+function workflowRunId(statusCheck: Readonly<RawStatusCheck>) {
+    const runId = /\/actions\/runs\/(\d+)/.exec(statusCheck.detailsUrl || '')?.[1];
+    return runId ? Number(runId) : undefined;
+}
+
+/**
+ * A newer workflow run's job can start before an older run's job does, which made a stale pass look
+ * like the latest run while GitHub blocked the merge on the newer failure. GitHub hands out run ids
+ * in creation order, so those decide. A re-run attempt keeps its run id, so start time breaks
+ * ties.
+ */
+function isNewerCheck(statusCheck: Readonly<RawStatusCheck>, than: Readonly<RawStatusCheck>) {
+    const runId = workflowRunId(statusCheck);
+    const otherRunId = workflowRunId(than);
+    return runId != undefined && otherRunId != undefined && runId !== otherRunId
+        ? runId > otherRunId
+        : checkStartedAt(statusCheck) > checkStartedAt(than);
+}
+
 /**
  * A `CheckRun` reports `conclusion` and a `StatusContext` reports `state`. A cancelled run is
  * usually one a newer run superseded and has nothing for a pass to fix; when it does block the
@@ -332,7 +353,7 @@ function getLatestByName(rollup: ReadonlyArray<Readonly<RawStatusCheck>>) {
         return rollup
             .filter((statusCheck) => checkName(statusCheck) === name)
             .reduce((latest, statusCheck) => {
-                return checkStartedAt(statusCheck) > checkStartedAt(latest) ? statusCheck : latest;
+                return isNewerCheck(statusCheck, latest) ? statusCheck : latest;
             });
     });
 }

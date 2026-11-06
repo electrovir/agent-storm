@@ -148,6 +148,7 @@ describe('agent-storm-activity.sh', () => {
                             env: {
                                 ...process.env,
                                 HOME: home,
+                                AGENT_STORM_DATA_DIR: join(home, '.agent-storm'),
                                 AGENT_STORM_CONVERSATION_ID: 'abc',
                             },
                             timeout: {

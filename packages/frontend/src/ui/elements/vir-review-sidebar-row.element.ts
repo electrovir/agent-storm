@@ -197,9 +197,7 @@ export const VirReviewSidebarRow = defineAppElement<{
                         );
                     })}
                 >
-                    <span class="chips">
-                        ${renderPaneChip('AI', inputs.pr.panes.ai)}
-                    </span>
+                    <span class="chips">${renderPaneChip('AI', inputs.pr.panes.ai)}</span>
                     ${inputs.pr.chainDepth
                         ? html`
                               <span class="chain-connector"></span>

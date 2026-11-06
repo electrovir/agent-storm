@@ -17,6 +17,8 @@ npm start
 
 Then open the logged localhost URL in your browser.
 
+To run a second, separate instance beside it (say, to debug agent-storm from inside agent-storm), run `npm run start:debug`. It gets its own ports (`BACKEND_PORT`, `FRONTEND_PORT`), pty daemon (`AGENT_STORM_INSTANCE`), and data folder (`AGENT_STORM_DATA_DIR`, `~/.agent-storm-debug`), and its auth secret and caches live under `.not-committed/instances/debug/`. Set those env vars on `npm start` yourself for any other instance.
+
 ## Auth
 
 On first launch the backend generates a random bearer secret and prints it once to the terminal:

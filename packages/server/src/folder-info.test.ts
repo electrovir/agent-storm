@@ -1,7 +1,12 @@
 import {PaneKind, PaneStatus, type RepoConfig} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {coldRepoPrTtl, computeRepoPrRefreshTtlByRepo, hotRepoPrTtl} from './folder-info.js';
+import {
+    coldRepoPrTtl,
+    computeRepoPrRefreshTtlByRepo,
+    hotRepoPrTtl,
+    isFolderRefreshDue,
+} from './folder-info.js';
 
 const nowMs = 1_800_000_000_000;
 const minuteMs = 60 * 1000;
@@ -57,6 +62,36 @@ function repoConfig(lastInteractedAtMs: number): RepoConfig {
 
 /** Untouched for two months — inactive by every measure. */
 const staleRepoConfig = repoConfig(nowMs - 60 * dayMs);
+
+describe(isFolderRefreshDue.name, () => {
+    it('skips an idle folder that was read recently', () => {
+        assert.isFalse(
+            isFolderRefreshDue({
+                target: soloRepoTarget(),
+                statusLookup: noLivePanes,
+                repos: [staleRepoConfig],
+                folderActivityAtMs: 0,
+                lastRefreshedAtMs: nowMs - 10 * 1000,
+                nowMs,
+            }),
+        );
+    });
+
+    it('reads a folder with a live pane on every sweep', () => {
+        assert.isTrue(
+            isFolderRefreshDue({
+                target: soloRepoTarget(),
+                statusLookup() {
+                    return PaneStatus.Idle;
+                },
+                repos: [staleRepoConfig],
+                folderActivityAtMs: 0,
+                lastRefreshedAtMs: nowMs - 10 * 1000,
+                nowMs,
+            }),
+        );
+    });
+});
 
 describe(computeRepoPrRefreshTtlByRepo.name, () => {
     it('skips a plain repo with no worktrees that has never shown a PR', () => {

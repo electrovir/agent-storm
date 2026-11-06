@@ -15,11 +15,17 @@ import {
     type ReviewQueue,
     type ReviewQueuePr,
 } from '@agent-storm/common';
-import {awaitedBlockingMap, extractErrorMessage, log, removeDuplicates} from '@augment-vir/common';
+import {
+    awaitedBlockingMap,
+    extractErrorMessage,
+    log,
+    removeDuplicates,
+    type MaybePromise,
+} from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
 import {convertDuration, type AnyDuration} from 'date-vir';
-import {mkdir, readdir, stat} from 'node:fs/promises';
-import {basename, join, resolve} from 'node:path';
+import {mkdir, readdir} from 'node:fs/promises';
+import {join} from 'node:path';
 import {
     assertWrapValidShape,
     defineShape,
@@ -32,7 +38,7 @@ import {readBranchPrStatus, recordBranchPr} from './branch-prs.js';
 import {loadConfig} from './config.js';
 import {fetchPaneStatuses, killFolderPanes} from './daemon/daemon-client.js';
 import {closeEditorWindow} from './editor-window.js';
-import {manualReviewSkillDir, reviewsDir} from './file-paths.js';
+import {manualReviewSkillDir} from './file-paths.js';
 import {deleteReviewFolder, parseInsertedCodeOwners, toOpenPrStatus} from './git.js';
 import {
     commentFields,
@@ -63,7 +69,7 @@ import {
     postedVerdictStatuses,
     readManualReviewEntry,
     readManualReviewState,
-    reviewBranchPrefix,
+    toReviewFolder,
 } from './manual-review-state.js';
 import {getPaneStatusLookup} from './pty.js';
 
@@ -137,6 +143,7 @@ const rawReviewPrShape = defineShape({
     baseRef: nullableShape({
         name: '',
     }),
+    headRefOid: '',
     headRef: nullableShape({
         name: '',
         /** Has no `statusCheckRollup` when the branch points at something other than a commit. */
@@ -185,7 +192,7 @@ const searchGraphql = [
     '    pageInfo { endCursor hasNextPage }',
     '    nodes {',
     '      ... on PullRequest {',
-    '        number url title titleHTML body bodyHTML bodyText createdAt isDraft reviewDecision mergeStateStatus viewerDidAuthor authorAssociation',
+    '        number url title titleHTML body bodyHTML bodyText createdAt isDraft reviewDecision mergeStateStatus viewerDidAuthor authorAssociation headRefOid',
     '        viewerLatestReview { submittedAt }',
     '        viewerLatestReviewRequest { id }',
     '        reviewThreads(first: 100) { nodes { isResolved } }',
@@ -239,6 +246,14 @@ const baseUpdateInterval: AnyDuration = {
 const maxQueryCostPerInterval = 3;
 
 /**
+ * How long a queue that only feeds the UI keeps updating after the last browser read it. Past this
+ * it stops spending rate limit until the next read.
+ */
+const unreadQueueTimeout: AnyDuration = {
+    minutes: 5,
+};
+
+/**
  * A server-side cache of one GitHub PR list. Nothing is fetched until the first `read`, which
  * starts review-vir's update cadence: the next update is scheduled only once the current one lands,
  * and the wait grows with the cost of the last successful update.
@@ -267,6 +282,7 @@ function createPrQueue({
         latestQueryCost: number;
         inFlightUpdate: Promise<void> | undefined;
         hasStartedAutoUpdates: boolean;
+        lastReadAt: number;
     } = {
         pullRequests: [],
         updatedAt: 0,
@@ -275,6 +291,7 @@ function createPrQueue({
         latestQueryCost: 0,
         inFlightUpdate: undefined,
         hasStartedAutoUpdates: false,
+        lastReadAt: 0,
     };
 
     /**
@@ -286,7 +303,7 @@ function createPrQueue({
         return {
             pullRequests: await Promise.all(
                 cache.pullRequests.map(async (pr) => {
-                    const folder = (await findReviewCopyFolder(pr)) || toReviewFolder(pr);
+                    const folder = toReviewFolder(pr);
                     return {
                         ...pr,
                         panes: {
@@ -368,6 +385,16 @@ function createPrQueue({
 
     async function runScheduledUpdate() {
         await update();
+        if (
+            !afterUpdate &&
+            Date.now() - cache.lastReadAt >
+                convertDuration(unreadQueueTimeout, {
+                    milliseconds: true,
+                }).milliseconds
+        ) {
+            cache.hasStartedAutoUpdates = false;
+            return;
+        }
         const costMultiplier = Math.max(1, cache.latestQueryCost / maxQueryCostPerInterval);
         setTimeout(
             () => {
@@ -381,6 +408,7 @@ function createPrQueue({
 
     /** The cached list. The first call starts the auto-refresh loop. */
     async function read() {
+        cache.lastReadAt = Date.now();
         if (!cache.hasStartedAutoUpdates) {
             cache.hasStartedAutoUpdates = true;
             void runScheduledUpdate();
@@ -415,12 +443,12 @@ const reviewQueue = createPrQueue({
 
 const queueHooks: {
     afterReviewUpdate: ((pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => void) | undefined;
-    afterAssigneeUpdate:
-        | ((pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => void)
-        | undefined;
+    afterAssigneeUpdate: ReadonlyArray<
+        (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => MaybePromise<void>
+    >;
 } = {
     afterReviewUpdate: undefined,
-    afterAssigneeUpdate: undefined,
+    afterAssigneeUpdate: [],
 };
 
 /** Calls `listener` after every update of the Reviewer list. Replaces any earlier listener. */
@@ -430,11 +458,14 @@ export function listenToReviewQueue(
     queueHooks.afterReviewUpdate = listener;
 }
 
-/** Calls `listener` after every update of the Assignee list. Replaces any earlier listener. */
+/** Calls `listener` after every update of the Assignee list, alongside any earlier listeners. */
 export function listenToAssigneeQueue(
-    listener: (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => void,
+    listener: (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => MaybePromise<void>,
 ) {
-    queueHooks.afterAssigneeUpdate = listener;
+    queueHooks.afterAssigneeUpdate = [
+        ...queueHooks.afterAssigneeUpdate,
+        listener,
+    ];
 }
 
 /**
@@ -449,7 +480,11 @@ const assigneeQueue = createPrQueue({
     organize: organizeAssigneeQueue,
     async afterUpdate(pullRequests) {
         await handleDroppedReviewFolders();
-        queueHooks.afterAssigneeUpdate?.(pullRequests);
+        await Promise.all(
+            queueHooks.afterAssigneeUpdate.map(async (listener) => {
+                await listener(pullRequests);
+            }),
+        );
     },
 });
 
@@ -524,10 +559,6 @@ export async function readViewerLogin() {
     return reviewQueue.cache.viewerLogin;
 }
 
-function toReviewFolder({owner, repoName, number}: Readonly<PullRequestRef>) {
-    return resolve(reviewsDir, owner, repoName, String(number));
-}
-
 async function handleDroppedReviewFolders() {
     /** Until both queues have loaded, a folder missing from them may only be in the other one. */
     if (!reviewQueue.cache.updatedAt || !assigneeQueue.cache.updatedAt) {
@@ -550,7 +581,7 @@ async function killDroppedReviewPanes(queuedFolders: ReadonlyArray<string>) {
         ).filter((folder) => {
             return (
                 doesPathContain({
-                    potentialParentPath: reviewsDir,
+                    potentialParentPath: manualReviewSkillDir,
                     potentialChildPath: folder,
                 }) && !queuedFolders.includes(folder)
             );
@@ -629,17 +660,21 @@ async function listSubfolderNames(folder: string) {
         .map((entry) => entry.name);
 }
 
-/** Every `<owner>/<repo>/<PR number>` folder in {@link reviewsDir}. */
+/** Every `<owner>/<repo>/<PR number>` folder in {@link manualReviewSkillDir}. */
 async function listReviewFolders() {
-    const owners = await listSubfolderNames(reviewsDir);
+    const owners = await listSubfolderNames(manualReviewSkillDir);
     return (
         await Promise.all(
             owners.map(async (owner) => {
-                const repoNames = await listSubfolderNames(join(reviewsDir, owner));
+                const repoNames = await listSubfolderNames(join(manualReviewSkillDir, owner));
                 return (
                     await Promise.all(
                         repoNames.map(async (repoName) => {
-                            return (await listSubfolderNames(join(reviewsDir, owner, repoName)))
+                            return (
+                                await listSubfolderNames(
+                                    join(manualReviewSkillDir, owner, repoName),
+                                )
+                            )
                                 .filter((name) => /^[1-9]\d*$/.test(name))
                                 .map((name) => {
                                     return {
@@ -717,28 +752,6 @@ export async function applyManualReviewStatus({
 }
 
 /**
- * The `/manual-review here` copy a branch was reviewed in, which the skill records as the entry's
- * `folder`. Undefined unless that folder is one of the skill's copies and still exists.
- */
-async function findReviewCopyFolder(branch: Readonly<PullRequestBranch>) {
-    const folder = (await readManualReviewEntry(branch))?.folder || '';
-    if (
-        !basename(folder).startsWith(reviewBranchPrefix) ||
-        !doesPathContain({
-            potentialParentPath: manualReviewSkillDir,
-            potentialChildPath: folder,
-        })
-    ) {
-        return undefined;
-    }
-    try {
-        return (await stat(folder)).isDirectory() ? folder : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
-/**
  * Closes the editor window the manual-review skill recorded for the branch's review, without
  * waiting for the skill to post the verdict.
  */
@@ -768,7 +781,7 @@ export function startPostedVerdictWatch() {
             } else if (
                 entry.folder &&
                 doesPathContain({
-                    potentialParentPath: reviewsDir,
+                    potentialParentPath: manualReviewSkillDir,
                     potentialChildPath: entry.folder,
                 })
             ) {
@@ -833,21 +846,18 @@ export async function resolveReviewFolder({
             `${owner}/${repoName}#${number} isn't in your Review or Assignee queue, or you wrote it.`,
         );
     }
-    /** Otherwise the panes would open in an empty folder instead of the reviewed copy. */
-    const copyFolder = await findReviewCopyFolder(pullRequest);
-    const folder = copyFolder || toReviewFolder(pullRequest);
+    const folder = toReviewFolder(pullRequest);
     if (
-        !copyFolder &&
         !doesPathContain({
-            potentialParentPath: reviewsDir,
+            potentialParentPath: manualReviewSkillDir,
             potentialChildPath: folder,
         })
     ) {
         throw new Error(
-            `${owner}/${repoName}#${number} doesn't name a folder inside ${reviewsDir}.`,
+            `${owner}/${repoName}#${number} doesn't name a folder inside ${manualReviewSkillDir}.`,
         );
     }
-    if (createFolder && !copyFolder) {
+    if (createFolder) {
         await mkdir(folder, {
             recursive: true,
         });
@@ -1280,6 +1290,7 @@ function organizePrs({
                 url: pr.url,
                 bodyHtml: pr.bodyHTML,
                 branchName: pr.headRef?.name || '',
+                headSha: pr.headRefOid,
                 isDraft: pr.isDraft,
                 chainDepth,
                 prStatus: toOpenPrStatus(pr),

@@ -1,12 +1,15 @@
 // cspell:words libexec logd pids
 
 /**
- * Sweeps up orphan processes from any prior `npm start` (see {@link killPriorInstances}), then
- * spawns runstorm with the backend (rest-vir + Fastify) and frontend (vite dev server) ports
- * injected as env vars. Both processes see the same ports so they can talk to each other.
+ * Sweeps up orphan processes from any prior `npm start` of the same instance (see
+ * {@link killPriorInstances}), then spawns runstorm with the backend (rest-vir + Fastify) and
+ * frontend (vite dev server) ports injected as env vars. Both processes see the same ports so they
+ * can talk to each other.
  *
  * Honored env (overrides the fixed default ports): BACKEND_PORT port the backend listens on
- * FRONTEND_PORT port vite serves the frontend on
+ * FRONTEND_PORT port vite serves the frontend on. AGENT_STORM_INSTANCE and AGENT_STORM_DATA_DIR
+ * (see `InstanceEnvVar`) run a separate instance with its own pty daemon and files; a named
+ * instance must also set both ports.
  *
  * Always exported into the child env (consumed by the workspaces): BACKEND_PORT read by
  * packages/server/src/index.ts and packages/frontend/configs/vite.config.ts (inlined into the
@@ -14,10 +17,16 @@
  * FRONTEND_PORT read by packages/server/src/index.ts (CORS origin guard) and
  * packages/frontend/configs/vite.config.ts (vite's listen port)
  */
-import {monorepoRoot} from '@agent-storm/server/src/file-paths.js';
+import {
+    defaultUserDataDir,
+    InstanceEnvVar,
+    instanceName,
+    monorepoRoot,
+    userDataDir,
+} from '@agent-storm/server/src/file-paths.js';
 import {defaultPorts, PortEnvVar, readEnvPort} from '@agent-storm/server/src/ports.js';
 import {filterMap, log} from '@augment-vir/common';
-import {execFileSync, spawn} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 
 type Signals = NodeJS.Signals;
 
@@ -45,33 +54,33 @@ const orphanExclusions = [
     'pty-daemon',
 ];
 
+type ProcessEntry = {
+    pid: number;
+    command: string;
+};
+
 /**
- * Runstorm spawns its children in detached process groups and tears them down via
- * `process.kill(-pid, 'SIGTERM')` on shutdown — which works when the orchestrator gets a clean
- * chance to run its handler. In practice, the `npm start --workspace ...` shim sometimes swallows
- * SIGTERM, or the terminal closes abruptly, leaving the vite / tsx tree alive with `ppid=1` and
- * still holding the dev ports. That stale tree forces the next `npm start` onto different ports and
- * causes CORS drift between the browser tab (pointed at the old vite) and the new backend's
- * port-scoped origin guard. This sweep clears any prior survivors before we allocate fresh ports.
+ * `ps` output as pid and command line, selected by `selectArgs`. `spawnSync` rather than
+ * `execFileSync` because `ps -p` exits non-zero when every listed process has already exited.
  */
-function killPriorInstances(): void {
+function listProcesses(selectArgs: ReadonlyArray<string>) {
     /**
      * Absolute path to `ps` (rather than `'ps'` resolved through `PATH`) so a hostile entry on the
      * user's `PATH` can't supplant the system binary we depend on.
      */
-    const psOutput = execFileSync(
+    const psOutput = spawnSync(
         '/bin/ps',
         [
-            '-A',
             '-ww',
+            ...selectArgs,
             '-o',
             'pid=,command=',
         ],
         {
             encoding: 'utf8',
         },
-    );
-    const orphanPids = filterMap(
+    ).stdout;
+    return filterMap(
         psOutput.split('\n'),
         (line: string) => {
             /**
@@ -94,16 +103,76 @@ function killPriorInstances(): void {
                 command: trimmed.slice(separatorIndex + 1).trimStart(),
             };
         },
-        (entry): entry is {pid: number; command: string} => {
+        (entry): entry is ProcessEntry => entry != undefined,
+    );
+}
+
+/**
+ * The instance a process was started for. Every instance runs the same commands from the same
+ * checkout, so only the process's environment tells them apart; `ps -E` appends it after the
+ * command line. Processes without `AGENT_STORM_INSTANCE` belong to the default instance.
+ */
+function readProcessInstance({
+    command,
+    commandWithEnvironment,
+}: Readonly<{
+    command: string;
+    commandWithEnvironment: string;
+}>) {
+    const prefix = `${InstanceEnvVar.Name}=`;
+    const variable = commandWithEnvironment
+        .slice(command.length)
+        .split(' ')
+        .find((part) => part.startsWith(prefix));
+    return variable?.slice(prefix.length) || '';
+}
+
+/**
+ * Runstorm spawns its children in detached process groups and tears them down via
+ * `process.kill(-pid, 'SIGTERM')` on shutdown — which works when the orchestrator gets a clean
+ * chance to run its handler. In practice, the `npm start --workspace ...` shim sometimes swallows
+ * SIGTERM, or the terminal closes abruptly, leaving the vite / tsx tree alive with `ppid=1` and
+ * still holding the dev ports. That stale tree forces the next `npm start` onto different ports and
+ * causes CORS drift between the browser tab (pointed at the old vite) and the new backend's
+ * port-scoped origin guard. This sweep clears any prior survivors before we allocate fresh ports.
+ */
+function killPriorInstances(): void {
+    const candidates = listProcesses([
+        '-A',
+    ]).filter((entry) => {
+        return (
+            entry.pid !== process.pid &&
+            entry.command.includes(monorepoRoot) &&
+            orphanIndicators.some((indicator) => entry.command.includes(indicator)) &&
+            !orphanExclusions.some((exclusion) => entry.command.includes(exclusion))
+        );
+    });
+    if (!candidates.length) {
+        return;
+    }
+    /**
+     * Only for the candidates: every process's environment together overflows `spawnSync`'s default
+     * output buffer.
+     */
+    const withEnvironment = listProcesses([
+        '-E',
+        '-p',
+        candidates.map((entry) => entry.pid).join(','),
+    ]);
+    const orphanPids = candidates
+        .filter((candidate) => {
+            const commandWithEnvironment = withEnvironment.find(
+                (entry) => entry.pid === candidate.pid,
+            )?.command;
             return (
-                entry != undefined &&
-                entry.pid !== process.pid &&
-                entry.command.includes(monorepoRoot) &&
-                orphanIndicators.some((indicator) => entry.command.includes(indicator)) &&
-                !orphanExclusions.some((exclusion) => entry.command.includes(exclusion))
+                commandWithEnvironment?.startsWith(candidate.command) === true &&
+                readProcessInstance({
+                    command: candidate.command,
+                    commandWithEnvironment,
+                }) === instanceName
             );
-        },
-    ).map((entry) => entry.pid);
+        })
+        .map((entry) => entry.pid);
 
     if (orphanPids.length === 0) {
         return;
@@ -122,20 +191,35 @@ function killPriorInstances(): void {
     });
 }
 
-killPriorInstances();
-
 const backendPort = readEnvPort(PortEnvVar.Backend) ?? defaultPorts[PortEnvVar.Backend];
 const frontendPort = readEnvPort(PortEnvVar.Frontend) ?? defaultPorts[PortEnvVar.Frontend];
+
+if (
+    instanceName &&
+    (backendPort === defaultPorts[PortEnvVar.Backend] ||
+        frontendPort === defaultPorts[PortEnvVar.Frontend] ||
+        userDataDir === defaultUserDataDir)
+) {
+    throw new Error(
+        `Instance "${instanceName}" would share ports or ${defaultUserDataDir} with the default instance. Set ${PortEnvVar.Backend}, ${PortEnvVar.Frontend}, and ${InstanceEnvVar.DataDir} to values of its own.`,
+    );
+}
+
+killPriorInstances();
 
 const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     [PortEnvVar.Backend]: String(backendPort),
     [PortEnvVar.Frontend]: String(frontendPort),
+    [InstanceEnvVar.Name]: instanceName,
+    [InstanceEnvVar.DataDir]: userDataDir,
 };
 
+const instanceLabel = instanceName ? ` instance "${instanceName}"` : '';
+
 log.faint(
-    `agent-storm ports: backend=${backendPort} frontend=${frontendPort}` +
-        ' (override with BACKEND_PORT / FRONTEND_PORT env vars)',
+    `agent-storm${instanceLabel}: backend=${backendPort} frontend=${frontendPort} data=${userDataDir}` +
+        ' (override with BACKEND_PORT / FRONTEND_PORT / AGENT_STORM_INSTANCE / AGENT_STORM_DATA_DIR env vars)',
 );
 
 /**

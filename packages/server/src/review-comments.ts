@@ -106,14 +106,16 @@ async function tryTakeLock(lockPath: string) {
     return false;
 }
 
-async function updateEntryComments({
-    folder,
+/**
+ * Runs `callback` while holding the lock the skill's `review-state.ts` takes before rewriting its
+ * state file, so neither side's rewrite drops the other's.
+ */
+export async function withManualReviewStateLock<T>({
     statePath,
-    update,
+    callback,
 }: Readonly<{
-    folder: string;
     statePath: string;
-    update: (comments: ReadonlyArray<ReviewComment>) => ReviewComment[];
+    callback: () => Promise<T>;
 }>) {
     const lockPath = `${statePath}.lock`;
     await mkdir(dirname(lockPath), {
@@ -132,41 +134,58 @@ async function updateEntryComments({
         `Timed out waiting for another process to release ${lockPath}.`,
     );
     try {
-        const state = await readManualReviewFile(statePath);
-        const key = await resolveEntryKey(folder, state);
-        if (!key) {
-            throw new Error(`Cannot tell which review ${folder} holds: it is not on a branch.`);
-        }
-        const entry = getEntry({
-            state,
-            repo: key.repo,
-            branch: key.branch,
-        });
-        const comments = update(getEntryComments(entry));
-        await writeFileAtomically({
-            path: statePath,
-            contents: `${JSON.stringify(
-                {
-                    ...state,
-                    [key.repo]: {
-                        ...state[key.repo],
-                        [key.branch]: {
-                            ...entry,
-                            comments,
-                        },
-                    },
-                },
-                undefined,
-                4,
-            )}\n`,
-        });
-        return comments;
+        return await callback();
     } finally {
         await rm(lockPath, {
             recursive: true,
             force: true,
         });
     }
+}
+
+async function updateEntryComments({
+    folder,
+    statePath,
+    update,
+}: Readonly<{
+    folder: string;
+    statePath: string;
+    update: (comments: ReadonlyArray<ReviewComment>) => ReviewComment[];
+}>) {
+    return await withManualReviewStateLock({
+        statePath,
+        async callback() {
+            const state = await readManualReviewFile(statePath);
+            const key = await resolveEntryKey(folder, state);
+            if (!key) {
+                throw new Error(`Cannot tell which review ${folder} holds: it is not on a branch.`);
+            }
+            const entry = getEntry({
+                state,
+                repo: key.repo,
+                branch: key.branch,
+            });
+            const comments = update(getEntryComments(entry));
+            await writeFileAtomically({
+                path: statePath,
+                contents: `${JSON.stringify(
+                    {
+                        ...state,
+                        [key.repo]: {
+                            ...state[key.repo],
+                            [key.branch]: {
+                                ...entry,
+                                comments,
+                            },
+                        },
+                    },
+                    undefined,
+                    4,
+                )}\n`,
+            });
+            return comments;
+        },
+    });
 }
 
 /**

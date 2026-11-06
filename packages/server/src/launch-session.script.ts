@@ -7,9 +7,9 @@ import {join} from 'node:path';
 import {parseArgs} from 'node:util';
 
 /**
- * Asks the running agent-storm to switch its open windows to `--folder` and type `--prompt` into
- * that folder's first AI tab. Only works inside an agent-storm AI tab, whose environment holds the
- * key that signs the request.
+ * Asks the running agent-storm to type `--prompt` into `--folder`'s first AI tab without moving any
+ * window's focus to it. Only works inside an agent-storm AI tab, whose environment holds the key
+ * that signs the request.
  *
  * Exits 0 once agent-storm accepts the request, 1 when it refuses (printing why), and 2 when
  * nothing picks the request up, which means agent-storm is not running or predates signed
@@ -18,10 +18,13 @@ import {parseArgs} from 'node:util';
 
 /**
  * AI tabs run this with plain `node`, which cannot resolve this package's `.js` imports to their
- * `.ts` sources, so `agentLaunchRequestsDir` from `file-paths.ts` is restated rather than
- * imported.
+ * `.ts` sources, so `agentLaunchRequestsDir` from `file-paths.ts` is restated rather than imported.
+ * Agent-storm gives every tab its instance's data dir as `AGENT_STORM_DATA_DIR`.
  */
-const requestsDir = join(homedir(), '.agent-storm', 'launch-requests');
+const requestsDir = join(
+    process.env.AGENT_STORM_DATA_DIR || join(homedir(), '.agent-storm'),
+    'launch-requests',
+);
 
 async function exists(path: string) {
     try {

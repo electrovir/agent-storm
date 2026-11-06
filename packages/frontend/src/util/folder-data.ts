@@ -9,7 +9,7 @@ import {
 import {check} from '@augment-vir/assert';
 import {extractErrorMessage, type PartialWithUndefined} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
-import {convertDuration} from 'date-vir';
+import {convertDuration, type AnyDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
 import {localStorageClient, type SidebarSnapshot} from './local-storage-client.js';
@@ -37,10 +37,17 @@ export type FolderData = PartialWithUndefined<{
 
 export type FolderDataObservable = ReturnType<typeof createFolderData>;
 
+/** The server re-checks for updates on its own schedule, so asking more often finds nothing new. */
+const updateCheckInterval: AnyDuration = {
+    minutes: 5,
+};
+
 /**
  * Polls the server's folder list, config, and update status for the whole app, so every sidebar and
- * `vir-app` share one set of requests. Every poll notifies listeners, even when nothing changed,
- * which is what clears a sidebar's action error on the next poll.
+ * `vir-app` share one set of requests. The config is only fetched again when the folder list
+ * reports a new revision, and the update status on its own slower schedule. Every poll notifies
+ * listeners, even when nothing changed, which is what clears a sidebar's action error on the next
+ * poll.
  */
 export function createFolderData() {
     const observable = new Observable<FolderData>({
@@ -51,18 +58,53 @@ export function createFolderData() {
         },
     });
     const destroyObservable = observable.destroy.bind(observable);
+    const fetched: {
+        config: Config | undefined;
+        configRevision: number;
+        updateStatus: UpdateStatus | undefined;
+        updateCheckedAtMs: number;
+    } = {
+        config: undefined,
+        configRevision: 0,
+        updateStatus: undefined,
+        updateCheckedAtMs: 0,
+    };
+
+    async function fetchUpdateStatus() {
+        if (
+            Date.now() - fetched.updateCheckedAtMs <
+            convertDuration(updateCheckInterval, {
+                milliseconds: true,
+            }).milliseconds
+        ) {
+            return fetched.updateStatus;
+        }
+        fetched.updateCheckedAtMs = Date.now();
+        fetched.updateStatus = await fetchApi(updateCheckEndpoint, HttpMethod.Get).catch(
+            () => undefined,
+        );
+        return fetched.updateStatus;
+    }
 
     async function refresh() {
         try {
             const [
                 listing,
-                config,
                 updateStatus,
             ] = await Promise.all([
                 fetchApi(foldersEndpoint, HttpMethod.Get),
-                fetchApi(configEndpoint, HttpMethod.Get),
-                fetchApi(updateCheckEndpoint, HttpMethod.Get).catch(() => undefined),
+                fetchUpdateStatus(),
             ]);
+            /**
+             * Fetched after the listing, so a change landing in between shows up as a newer
+             * revision next poll.
+             */
+            const config =
+                fetched.config && fetched.configRevision === listing.configRevision
+                    ? fetched.config
+                    : await fetchApi(configEndpoint, HttpMethod.Get);
+            fetched.config = config;
+            fetched.configRevision = listing.configRevision;
             const snapshot = {
                 folders: listing.folders,
                 config,

@@ -21,7 +21,7 @@ import {
     unionShape,
     unknownShape,
 } from 'object-shape-tester';
-import {getCurrentBranch, getRepoSlug, runGh} from './git.js';
+import {getCurrentBranch, getRepoSlug, listenToGitInfoChanges, runGh} from './git.js';
 import {
     checkResultStates,
     RawCheckContextType,
@@ -30,6 +30,7 @@ import {
     RawPrState,
     RawReviewState,
 } from './github-raw-enums.js';
+import {normalizePath} from './paths.js';
 
 /**
  * Per-connection caps on the one PR query. Each `first:` multiplies into GitHub's GraphQL cost
@@ -600,6 +601,12 @@ const prCacheByFolder = new Map<
     }
 >();
 
+listenToGitInfoChanges(({folder, previous, info}) => {
+    if (previous.branch !== info.branch) {
+        prCacheByFolder.delete(folder);
+    }
+});
+
 /**
  * Everything the GitHub pane needs for one folder, or null when there's nothing to show: the folder
  * isn't a git checkout, its `origin` isn't on github.com, or the branch has no PR.
@@ -611,7 +618,7 @@ export async function fetchFolderPr({
     folder: string;
     forceRefresh?: boolean | undefined;
 }>) {
-    const cached = prCacheByFolder.get(folder);
+    const cached = prCacheByFolder.get(normalizePath(folder));
     if (
         cached &&
         !forceRefresh &&
@@ -623,7 +630,7 @@ export async function fetchFolderPr({
         return cached.pr;
     }
     const pr = await queryFolderPr(folder);
-    prCacheByFolder.set(folder, {
+    prCacheByFolder.set(normalizePath(folder), {
         pr,
         fetchedAt: Date.now(),
     });

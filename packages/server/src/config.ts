@@ -205,6 +205,11 @@ export function withFallbackAi(config: Readonly<Config>): Config {
  * unparsable JSON, contents that don't match {@link configShape}) throws, and load-modify-save
  * callers catch it and skip their save so the existing file is preserved.
  */
+/** Changes whenever the config file does. 0 while there's no config file. */
+export async function readConfigRevision() {
+    return (await stat(configPath).catch(() => undefined))?.mtimeMs ?? 0;
+}
+
 export async function loadConfig(): Promise<Config> {
     const exists = await stat(configPath)
         .then(() => true)
@@ -222,7 +227,7 @@ export async function loadConfig(): Promise<Config> {
     }
     const parsed: unknown = JSON.parse(contents);
     if (!check.isObject(parsed)) {
-        throw new Error(`Config file at ${configPath} is not a JSON object.`);
+        throw new TypeError(`Config file at ${configPath} is not a JSON object.`);
     }
     const migrated = migrateLegacyGitHubKeys(parsed);
     const merged = withConfigDefaults(migrated || parsed);

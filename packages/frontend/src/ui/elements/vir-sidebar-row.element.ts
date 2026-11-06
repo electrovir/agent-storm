@@ -235,9 +235,7 @@ export const VirSidebarRow = defineAppElement<{
                         );
                     })}
                 >
-                    <span class="chips">
-                        ${renderPaneChip('AI', inputs.folder.panes.ai)}
-                    </span>
+                    <span class="chips">${renderPaneChip('AI', inputs.folder.panes.ai)}</span>
                     <span
                         class="name"
                         ?data-pr-open=${hasPr && !isPrFinished}

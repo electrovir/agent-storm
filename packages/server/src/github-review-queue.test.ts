@@ -73,6 +73,7 @@ function createPr({
         bodyText: '',
         createdAt: '2026-01-01T00:00:00Z',
         isDraft: false,
+        headRefOid: `sha-${number}`,
         reviewDecision: null,
         mergeStateStatus: RawMergeState.Blocked,
         reviewThreads: {
