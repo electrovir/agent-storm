@@ -7,6 +7,13 @@ import {defineAppElement} from '../define-app-element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
 
 /**
+ * How many folders keep their panes mounted on desktop. Every mounted terminal holds its own WebGL
+ * context, and Chrome drops the oldest context once a page has more than 16, so this times the
+ * usual two terminals per folder has to stay under that.
+ */
+const maxMountedFolders = 6;
+
+/**
  * The Build tab's stage: the pane group of every folder opened this session, showing the active
  * one.
  */
@@ -24,6 +31,12 @@ export const VirBuildStage = defineAppElement<{
              * list are dropped, and only come back once selected again.
              */
             openedFolders: [] as ReadonlyArray<string>,
+            /**
+             * The same folders, least recently active first, so the oldest can be unmounted. Kept
+             * apart from `openedFolders` because reordering that would make `repeat` move the pane
+             * slots, which remounts their terminals.
+             */
+            recentFolders: [] as ReadonlyArray<string>,
         };
     },
     styles: css`
@@ -54,17 +67,27 @@ export const VirBuildStage = defineAppElement<{
     `,
     render({inputs, state, updateState}) {
         const folderInfo = inputs.context.folderData.value.folderInfo;
-        const openedFolders = [
-            ...state.openedFolders.filter((folder) => folderInfo.has(folder)),
-            ...(inputs.activeFolder && !state.openedFolders.includes(inputs.activeFolder)
+        const recentFolders = [
+            ...state.recentFolders.filter((folder) => {
+                return folderInfo.has(folder) && folder !== inputs.activeFolder;
+            }),
+            ...(inputs.activeFolder
                 ? [
                       inputs.activeFolder,
                   ]
                 : []),
+        ].slice(-maxMountedFolders);
+        const openedFolders = [
+            ...state.openedFolders.filter((folder) => recentFolders.includes(folder)),
+            ...recentFolders.filter((folder) => !state.openedFolders.includes(folder)),
         ];
-        if (!check.deepEquals(state.openedFolders, openedFolders)) {
+        if (
+            !check.deepEquals(state.openedFolders, openedFolders) ||
+            !check.deepEquals(state.recentFolders, recentFolders)
+        ) {
             updateState({
                 openedFolders,
+                recentFolders,
             });
         }
 
