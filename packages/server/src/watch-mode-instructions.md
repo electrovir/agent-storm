@@ -2,7 +2,7 @@
 
 # Agent-storm watch mode
 
-Agent-storm's watch mode keeps this checkout's pull request moving without supervision. Agent-storm itself polls the PR, merges it once GitHub's merge button is green, counts pushes, re-requests the current GitHub user's review after each push that is not just a rebase, and decides when to stop. It only hands you a pass when the PR needs work. The pass file you were pointed at lists that work and holds the latest PR check. Do exactly that work, then end your turn. Do not wait for checks, do not poll, do not start another pass, do not merge, and do not run `/compact`: agent-storm does all of those.
+Agent-storm's watch mode keeps this checkout's pull request moving without supervision. Agent-storm itself polls the PR, merges it once GitHub's merge button is green, counts pushes, re-requests the current GitHub user's review after each push that changes more than a rebase, tests, test baselines, or whitespace, and decides when to stop. It only hands you a pass when the PR needs work. The pass file you were pointed at lists that work and holds the latest PR check. Do exactly that work, then end your turn. Do not wait for checks, do not poll, do not start another pass, do not merge, and do not run `/compact`: agent-storm does all of those.
 
 ## Committing and pushing
 

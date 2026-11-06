@@ -121,6 +121,7 @@ function createPr({
 
 function listedNumbers(prs: ReadonlyArray<RawReviewPr>) {
     return organizeReviewQueue({
+        trustedBotLogins: [],
         prs,
         login,
     }).map((pr) => pr.number);
@@ -130,6 +131,7 @@ describe(organizeReviewQueue.name, () => {
     it('lists the author as the assignee when there are none', () => {
         assert.deepEquals(
             organizeReviewQueue({
+                trustedBotLogins: [],
                 prs: [
                     createPr({
                         number: 1,
@@ -153,6 +155,7 @@ describe(organizeReviewQueue.name, () => {
         };
         assert.deepEquals(
             organizeReviewQueue({
+                trustedBotLogins: [],
                 prs: [
                     createPr({
                         number: 1,
@@ -234,6 +237,7 @@ describe(organizeReviewQueue.name, () => {
     it('nests each stacked PR one level under its parent', () => {
         assert.deepEquals(
             organizeReviewQueue({
+                trustedBotLogins: [],
                 prs: [
                     createPr({
                         number: 1,
@@ -400,6 +404,7 @@ describe(organizeAssigneeQueue.name, () => {
     it('marks the PRs the viewer wrote', () => {
         assert.deepEquals(
             organizeAssigneeQueue({
+                trustedBotLogins: [],
                 login,
                 prs: [
                     createPr({
@@ -425,6 +430,7 @@ describe(organizeAssigneeQueue.name, () => {
     it('puts drafts after ready PRs', () => {
         assert.deepEquals(
             organizeAssigneeQueue({
+                trustedBotLogins: [],
                 login,
                 prs: [
                     createPr({
@@ -447,6 +453,7 @@ describe(organizeAssigneeQueue.name, () => {
     it('gives each PR the same status the Build tab gives it', () => {
         assert.deepEquals(
             organizeAssigneeQueue({
+                trustedBotLogins: [],
                 login,
                 prs: [
                     createPr({

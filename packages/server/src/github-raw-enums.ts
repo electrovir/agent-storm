@@ -1,5 +1,5 @@
 import {GitHubCheckState} from '@agent-storm/common';
-import {mapEnumToObject} from '@augment-vir/common';
+import {mapEnumToObject, removeSuffix} from '@augment-vir/common';
 
 /**
  * Values GitHub's GraphQL API (and `gh --json`, which passes them through) uses, so code that
@@ -87,9 +87,10 @@ export enum RawActorType {
 /**
  * Review bots trusted like collaborators: their comments are work without anyone's 👍, and their
  * PRs auto-start reviews. GitHub reserves an app's login for that app, and a user can't take it,
- * but a comment only counts once GitHub also says its author is a `Bot`.
+ * but a comment only counts once GitHub also says its author is a `Bot`. The config's
+ * `trustedBotLogins` adds to these.
  */
-const trustedBotLogins: ReadonlyArray<string> = [
+const builtInTrustedBotLogins: ReadonlyArray<string> = [
     'copilot-pull-request-reviewer',
     'copilot',
     'claude',
@@ -97,19 +98,39 @@ const trustedBotLogins: ReadonlyArray<string> = [
     'openai-codex',
 ];
 
-/** A trusted review bot. GitHub has to say the account is a `Bot` as well as match the login. */
-export function isTrustedBot(
+/** GitHub's GraphQL API names an app `flax-bot` where its REST API says `flax-bot[bot]`. */
+function normalizeBotLogin(login: string) {
+    return removeSuffix({
+        value: login.trim().toLowerCase(),
+        suffix: '[bot]',
+    });
+}
+
+/**
+ * A built-in review bot or one in the config's `trustedBotLogins`. GitHub has to say the account is
+ * a `Bot` as well as match the login.
+ */
+export function isTrustedBot({
+    author,
+    trustedBotLogins,
+}: Readonly<{
     author:
         | Readonly<{
               __typename: RawActorType;
               login: string;
           }>
         | null
-        | undefined,
-) {
+        | undefined;
+    trustedBotLogins: ReadonlyArray<string>;
+}>) {
     return (
         author?.__typename === RawActorType.Bot &&
-        trustedBotLogins.includes(author.login.toLowerCase())
+        [
+            ...builtInTrustedBotLogins,
+            ...trustedBotLogins,
+        ]
+            .map(normalizeBotLogin)
+            .includes(normalizeBotLogin(author.login))
     );
 }
 

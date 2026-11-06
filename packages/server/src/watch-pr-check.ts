@@ -12,6 +12,7 @@ import {
     partialShape,
     unionShape,
 } from 'object-shape-tester';
+import {loadConfig} from './config.js';
 import {runGraphql} from './github-pr.js';
 import {
     collaboratorAssociations,
@@ -200,8 +201,20 @@ function isAiBody(body: string) {
 }
 
 /** Written by someone GitHub lists as having access to the repo, or by a trusted review bot. */
-function isTrustedComment(comment: Readonly<RawThreadComment>) {
-    return collaboratorAssociations[comment.authorAssociation] || isTrustedBot(comment.author);
+function isTrustedComment({
+    comment,
+    trustedBotLogins,
+}: Readonly<{
+    comment: Readonly<RawThreadComment>;
+    trustedBotLogins: ReadonlyArray<string>;
+}>) {
+    return (
+        collaboratorAssociations[comment.authorAssociation] ||
+        isTrustedBot({
+            author: comment.author,
+            trustedBotLogins,
+        })
+    );
 }
 
 /** A collaborator writing as themselves, not through the AI. */
@@ -233,15 +246,20 @@ function mentionsAny({body, logins}: Readonly<{body: string; logins: ReadonlyArr
 export function classifyThread({
     thread,
     assignees,
+    trustedBotLogins,
 }: Readonly<{
     thread: Readonly<RawReviewThread>;
     assignees: ReadonlyArray<string>;
+    trustedBotLogins: ReadonlyArray<string>;
 }>) {
     const comments = thread.comments.nodes;
     const first = comments[0];
     const lastHandOffIndex = comments.findLastIndex((comment) => {
         return (
-            isTrustedComment(comment) &&
+            isTrustedComment({
+                comment,
+                trustedBotLogins,
+            }) &&
             isAiBody(comment.body) &&
             mentionsAny({
                 body: comment.body,
@@ -256,8 +274,14 @@ export function classifyThread({
     } else if (
         first &&
         (hasViewerThumbsUp(first) ||
-            (isTrustedComment(first) &&
-                (isTrustedBot(first.author) ||
+            (isTrustedComment({
+                comment: first,
+                trustedBotLogins,
+            }) &&
+                (isTrustedBot({
+                    author: first.author,
+                    trustedBotLogins,
+                }) ||
                     isAiBody(first.body) ||
                     first.body.includes('<!-- do-later-review-comment -->') ||
                     assignees.includes(toLogin(first.author)))))
@@ -317,11 +341,13 @@ export function classifyPrCheck({
     threads,
     viewerLogin,
     checkedAt,
+    trustedBotLogins,
 }: Readonly<{
     pr: Readonly<RawPrView>;
     threads: ReadonlyArray<Readonly<RawReviewThread>>;
     viewerLogin: string;
     checkedAt: string;
+    trustedBotLogins: ReadonlyArray<string>;
 }>) {
     const assignees = pr.assignees.map(toLogin).filter(check.isTruthy);
     const authorLogin = toLogin(pr.author);
@@ -333,6 +359,7 @@ export function classifyPrCheck({
                 status: classifyThread({
                     thread,
                     assignees,
+                    trustedBotLogins,
                 }),
                 openedBy: toLogin(thread.comments.nodes[0]?.author) || 'unknown',
                 participants: removeDuplicates(
@@ -608,5 +635,6 @@ export async function fetchPrCheck({
         threads: threadsResponse.repository?.pullRequest?.reviewThreads.nodes || [],
         viewerLogin,
         checkedAt,
+        trustedBotLogins: (await loadConfig()).trustedBotLogins || [],
     });
 }

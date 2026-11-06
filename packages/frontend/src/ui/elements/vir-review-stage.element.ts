@@ -189,16 +189,28 @@ export const VirReviewStage = defineAppElement<{
                             },
                         ],
                     });
-                    /** A started review's first visit opens on its diff instead of the AI pane. */
-                    if (isStarted && localStorageClient.tabByFolder.readFolder(key) == undefined) {
+                    /**
+                     * A PR the viewer already reviewed opens on its Review pane, which shows what
+                     * happened since. Otherwise a started review's first visit opens on its diff
+                     * instead of the AI pane.
+                     */
+                    const openingTab = reviewFolder.pullRequest.hasViewerReviewed
+                        ? host.instanceInputs.context.screenSize === ScreenSize.Mobile
+                            ? FrontendTab.Review
+                            : FrontendTab.Ai
+                        : isStarted && localStorageClient.tabByFolder.readFolder(key) == undefined
+                          ? FrontendTab.Diff
+                          : undefined;
+                    if (openingTab) {
                         localStorageClient.tabByFolder.writeFolder({
                             folder: key,
-                            value: FrontendTab.Diff,
+                            value: openingTab,
                         });
                         const currentRoute = host.instanceInputs.context.route;
                         if (
                             currentRoute.paths.slice(1).join('/') === key &&
-                            !currentRoute.search?.tab
+                            (reviewFolder.pullRequest.hasViewerReviewed ||
+                                !currentRoute.search?.tab)
                         ) {
                             router.setRoute(
                                 {
@@ -206,7 +218,7 @@ export const VirReviewStage = defineAppElement<{
                                     search: {
                                         ...currentRoute.search,
                                         tab: [
-                                            FrontendTab.Diff,
+                                            openingTab,
                                         ],
                                     },
                                 },

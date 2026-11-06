@@ -47,6 +47,7 @@ import {
 } from './manual-review-state.js';
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds, getPaneSessionStatusLookup} from './pty.js';
+import {hasReviewableChanges} from './push-review.js';
 import {
     createFolderSession,
     findFolderSession,
@@ -917,6 +918,12 @@ async function checkFolder({
     if (
         isNewPush &&
         !(await isRebaseOnlyPush({
+            folder,
+            baseBranch: prCheck.baseBranch,
+            oldHeadSha: finishedPass.headSha,
+            newHeadSha: prCheck.headSha,
+        })) &&
+        (await hasReviewableChanges({
             folder,
             baseBranch: prCheck.baseBranch,
             oldHeadSha: finishedPass.headSha,

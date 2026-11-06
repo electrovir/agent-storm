@@ -372,6 +372,23 @@ export const configJsonSchema = {
          * path that doesn't exist can report an error under the input. Intentionally absent from
          * `required` so configs written by older builds still load.
          */
+        /**
+         * Extra bot logins, beside the built-in review bots in `github-raw-enums.ts`, whose PR
+         * review threads watch mode works on without the viewer's 👍 and whose PRs count as trusted
+         * authors. Intentionally absent from `required` so configs written by older builds still
+         * load.
+         */
+        trustedBotLogins: {
+            type: 'array',
+            default: [],
+            title: 'Trusted bots',
+            description:
+                'GitHub logins of bots to trust like repo collaborators, as GitHub shows them on a review comment (e.g. "flax-bot"; a trailing "[bot]" is ignored). Watch mode acts on their review threads without your 👍. Copilot, Claude, and Codex are always trusted.',
+            items: {
+                type: 'string',
+                title: 'Bot login',
+            },
+        },
         tlsCertPath: {
             type: 'string',
             default: '',
@@ -931,6 +948,8 @@ const reviewQueuePrShape = defineShape({
     isViewerAuthor: false,
     /** GitHub has an open request for the viewer's review. */
     isAwaitingViewerReview: false,
+    /** The viewer has submitted a review of the PR before. A pending review doesn't count. */
+    hasViewerReviewed: false,
     /** Live pane statuses of the PR's review folder, like a Build folder's `panes`. */
     panes: paneStatusesShape,
     /** Empty when the author's account was deleted. */

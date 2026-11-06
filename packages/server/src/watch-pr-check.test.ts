@@ -89,6 +89,7 @@ function createThread(comments: ReadonlyArray<TestComment>): RawReviewThread {
 
 function classify(comments: ReadonlyArray<TestComment>) {
     return classifyThread({
+        trustedBotLogins: [],
         thread: createThread(comments),
         assignees,
     });
@@ -114,6 +115,7 @@ describe(classifyPrCheck.name, () => {
         assert.deepEquals(
             selectFrom(
                 classifyPrCheck({
+                    trustedBotLogins: [],
                     pr: baseRawPr,
                     threads: [],
                     viewerLogin: 'viewer',
@@ -137,6 +139,7 @@ describe(classifyPrCheck.name, () => {
         assert.deepEquals(
             selectFrom(
                 classifyPrCheck({
+                    trustedBotLogins: [],
                     pr: {
                         ...baseRawPr,
                         mergeStateStatus: RawMergeState.Unstable,
@@ -189,6 +192,7 @@ describe(classifyPrCheck.name, () => {
         assert.deepEquals(
             selectFrom(
                 classifyPrCheck({
+                    trustedBotLogins: [],
                     pr: {
                         ...baseRawPr,
                         latestReviews: [
@@ -312,6 +316,7 @@ describe(classifyThread.name, () => {
                     },
                 ]),
                 classifyThread({
+                    trustedBotLogins: [],
                     thread: {
                         ...thread,
                         comments: {
@@ -336,6 +341,58 @@ describe(classifyThread.name, () => {
                 }),
             ],
             [
+                ThreadStatus.Actionable,
+                ThreadStatus.NeedsViewerThumbsUp,
+            ],
+        );
+    });
+
+    it('trusts a bot listed in the config', () => {
+        const botComment: TestComment = {
+            login: 'flax-bot',
+            body: 'AI: Regenerate this baseline.',
+            actorType: RawActorType.Bot,
+            association: RawAuthorAssociation.None,
+        };
+        assert.deepEquals(
+            [
+                {
+                    comment: botComment,
+                    trustedBotLogins: [],
+                },
+                {
+                    comment: botComment,
+                    trustedBotLogins: [
+                        'flax-bot',
+                    ],
+                },
+                {
+                    comment: botComment,
+                    trustedBotLogins: [
+                        'Flax-Bot[bot]',
+                    ],
+                },
+                {
+                    comment: {
+                        ...botComment,
+                        actorType: RawActorType.User,
+                    },
+                    trustedBotLogins: [
+                        'flax-bot',
+                    ],
+                },
+            ].map((testCase) => {
+                return classifyThread({
+                    thread: createThread([
+                        testCase.comment,
+                    ]),
+                    assignees,
+                    trustedBotLogins: testCase.trustedBotLogins,
+                });
+            }),
+            [
+                ThreadStatus.NeedsViewerThumbsUp,
+                ThreadStatus.Actionable,
                 ThreadStatus.Actionable,
                 ThreadStatus.NeedsViewerThumbsUp,
             ],

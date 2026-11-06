@@ -28,6 +28,7 @@ import {
 } from 'object-shape-tester';
 import {isSafeBranchName} from './branch-name.js';
 import {readBranchPrStatus, recordBranchPr} from './branch-prs.js';
+import {loadConfig} from './config.js';
 import {fetchPaneStatuses, killFolderPanes} from './daemon/daemon-client.js';
 import {closeEditorWindow} from './editor-window.js';
 import {manualReviewSkillDir, reviewsDir} from './file-paths.js';
@@ -252,6 +253,7 @@ function createPrQueue({
         params: Readonly<{
             prs: ReadonlyArray<Readonly<RawReviewPr>>;
             login: string;
+            trustedBotLogins: ReadonlyArray<string>;
         }>,
     ) => ReviewQueuePr[];
     afterUpdate?:
@@ -331,6 +333,7 @@ function createPrQueue({
                     (pr) => pr.url,
                 ),
                 login: cache.viewerLogin,
+                trustedBotLogins: (await loadConfig()).trustedBotLogins || [],
             });
             cache.pullRequests
                 .filter((pr) => pr.branchName)
@@ -1191,13 +1194,16 @@ async function fetchSearchPages({
 export function organizeReviewQueue({
     prs,
     login,
+    trustedBotLogins,
 }: Readonly<{
     prs: ReadonlyArray<Readonly<RawReviewPr>>;
     login: string;
+    trustedBotLogins: ReadonlyArray<string>;
 }>) {
     return organizePrs({
         prs,
         login,
+        trustedBotLogins,
         sortNumber(pr) {
             return reviewerSortNumber(pr, login);
         },
@@ -1212,13 +1218,16 @@ export function organizeReviewQueue({
 export function organizeAssigneeQueue({
     prs,
     login,
+    trustedBotLogins,
 }: Readonly<{
     prs: ReadonlyArray<Readonly<RawReviewPr>>;
     login: string;
+    trustedBotLogins: ReadonlyArray<string>;
 }>) {
     return organizePrs({
         prs,
         login,
+        trustedBotLogins,
         sortNumber(pr) {
             return pr.isDraft ? 0 : 10_000;
         },
@@ -1231,10 +1240,12 @@ const loggedUnsafeBranchPrUrls = new Set<string>();
 function organizePrs({
     prs,
     login,
+    trustedBotLogins,
     sortNumber,
 }: Readonly<{
     prs: ReadonlyArray<Readonly<RawReviewPr>>;
     login: string;
+    trustedBotLogins: ReadonlyArray<string>;
     sortNumber: (pr: Readonly<RawReviewPr>) => number;
 }>): ReviewQueuePr[] {
     const safePrs = prs.filter((pr) => {
@@ -1273,6 +1284,7 @@ function organizePrs({
                 prStatus: toOpenPrStatus(pr),
                 isViewerAuthor: !!login && pr.author?.login === login,
                 isAwaitingViewerReview: !!pr.viewerLatestReviewRequest,
+                hasViewerReviewed: latestReviewTime(pr) != undefined,
                 panes: {
                     [PaneKind.Ai]: PaneStatus.None,
                     [PaneKind.Shell]: PaneStatus.None,
@@ -1280,7 +1292,11 @@ function organizePrs({
                 author: pr.author?.login || '',
                 authorAvatarUrl: pr.author?.avatarUrl || '',
                 isAuthorTrusted:
-                    collaboratorAssociations[pr.authorAssociation] || isTrustedBot(pr.author),
+                    collaboratorAssociations[pr.authorAssociation] ||
+                    isTrustedBot({
+                        author: pr.author,
+                        trustedBotLogins,
+                    }),
                 assignees: assigneesOf(pr).map((user) => {
                     return {
                         login: user.login,
