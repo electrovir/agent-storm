@@ -18,7 +18,7 @@ import {
 } from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
 import {convertDuration} from 'date-vir';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
 import {basename, join} from 'node:path';
 import {
     checkValidShape,
@@ -95,8 +95,11 @@ const watchEntryShape = defineShape({
     hasChecked: false,
     /** Consecutive checks that found checks pending and nothing else to do. */
     pendingPolls: 0,
-    /** Consecutive passes that pushed nothing while the PR still needed work. */
-    idlePassCount: 0,
+    /**
+     * The PR state, from {@link createIdleStateKey}, that the last pass pushed nothing for. No pass
+     * is sent again until the PR moves on from it.
+     */
+    idleStateKey: '',
     failureCount: 0,
     /** The AI tab passes run in. Empty until the first pass. */
     watchSessionId: '',
@@ -137,7 +140,6 @@ const watchState: {
 
 const maxPushCount = 10;
 const maxPendingPolls = 36;
-const maxIdlePassCount = 3;
 
 /**
  * The shape's default, minus the placeholders a shape default carries for its array and nullable
@@ -774,6 +776,22 @@ async function compactWatchSession({
     }
 }
 
+/**
+ * Everything whose change could give a pass that found nothing to push something new to work on.
+ * Pending checks count only as a yes or no, so a pass that waited on them gets one more look once
+ * they all finish.
+ */
+function createIdleStateKey(prCheck: Readonly<PrCheck>) {
+    return JSON.stringify([
+        prCheck.headSha,
+        prCheck.needs,
+        prCheck.failingChecks,
+        prCheck.unresolvedThreads.map((thread) => `${thread.id} ${thread.status}`),
+        prCheck.pendingCount > 0,
+        prCheck.humanActivityAt,
+    ]);
+}
+
 /** A manual review in one of these pauses watch mode until it's done. */
 const inProgressReviewStatuses: Readonly<Record<ManualReviewStatus, boolean>> = {
     [ManualReviewStatus.Started]: true,
@@ -906,11 +924,12 @@ async function checkFolder({
               ]
             : []),
     ];
-    const idlePassCount = finishedPass && !isNewPush ? entry.idlePassCount + 1 : 0;
+    const idleStateKey =
+        finishedPass && !isNewPush ? createIdleStateKey(prCheck) : entry.idleStateKey;
     await updateEntry(folder, {
         pushCount,
         pushLog,
-        idlePassCount,
+        idleStateKey,
         lastHumanActivityAt: hasNewHumanActivity
             ? prCheck.humanActivityAt
             : entry.lastHumanActivityAt,
@@ -979,10 +998,10 @@ async function checkFolder({
     }
 
     const needTaskList = prCheck.needs.map((need) => needTasks[need]).filter(check.isTruthy);
-    if (needTaskList.length && idlePassCount >= maxIdlePassCount) {
-        await stopWatching({
-            folder,
-            message: `${maxIdlePassCount} passes in a row pushed nothing while the PR still needed: ${needTaskList.join(', ')}. Check the Watch tab.`,
+    if (needTaskList.length && idleStateKey === createIdleStateKey(prCheck)) {
+        await updateEntry(folder, {
+            status: WatchModeStatus.Watching,
+            message: `The last pass found nothing to push for: ${needTaskList.join(', ')}. Waiting for the PR to change. Check the Watch tab.`,
         });
         return;
     } else if (needTaskList.length) {
@@ -1061,7 +1080,6 @@ async function checkFolder({
     await updateEntry(folder, {
         status: WatchModeStatus.Watching,
         pendingPolls,
-        idlePassCount: 0,
         message: prCheck.isBlockedOnHuman
             ? 'Waiting on a human to answer or 👍 a review thread.'
             : prCheck.pendingCount
@@ -1177,11 +1195,18 @@ async function loadEntries() {
                           folder,
                           entry,
                       ]) => {
-                          return checkValidShape(entry, watchEntryShape)
+                          /** Entries saved before a field existed get its default. */
+                          const withDefaults = check.isObject(entry)
+                              ? {
+                                    ...defaultEntry,
+                                    ...entry,
+                                }
+                              : entry;
+                          return checkValidShape(withDefaults, watchEntryShape)
                               ? [
                                     [
                                         String(folder),
-                                        entry,
+                                        withDefaults,
                                     ] as const,
                                 ]
                               : [];
@@ -1196,6 +1221,33 @@ async function loadEntries() {
 }
 
 /**
+ * Turns watch mode back on for folders the removed "passes in a row pushed nothing" limit stopped,
+ * since a pass that pushes nothing now just waits for the PR to change.
+ */
+async function resumeIdleStoppedFolders() {
+    await Promise.all(
+        getObjectTypedEntries(watchState.entries)
+            .filter(
+                ([
+                    ,
+                    entry,
+                ]) => !entry.isEnabled && entry.message.includes('passes in a row pushed nothing'),
+            )
+            .map(async ([folder]) => {
+                const isFolder = await stat(folder)
+                    .then((stats) => stats.isDirectory())
+                    .catch(() => false);
+                if (isFolder) {
+                    await setWatchMode({
+                        folder,
+                        isEnabled: true,
+                    });
+                }
+            }),
+    );
+}
+
+/**
  * Agent-storm's built-in `/watch-pr`: polls each watched folder's PR, merges it once it's ready,
  * and hands the work it can't do in code to an AI pass in the folder's Watch tab. Survives server
  * restarts, picking a pass that was running back up where it left off.
@@ -1203,6 +1255,7 @@ async function loadEntries() {
 export async function startWatchMode(deps: Readonly<WatchModeDeps>) {
     watchState.deps = deps;
     watchState.entries = await loadEntries();
+    await resumeIdleStoppedFolders();
     listenToManualReviewState(async (changedEntries) => {
         await watchNewlyReviewedCheckouts({
             deps,

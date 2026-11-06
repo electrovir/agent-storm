@@ -1,4 +1,4 @@
-// cspell:words numstat, unstages
+// cspell:words forgejo, gitea, numstat, unstages
 
 import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from '@rest-vir/api';
 import {
@@ -16,6 +16,7 @@ import {
 } from 'schema-vir';
 import {
     DiffLayout,
+    ForgeType,
     GitDiffSide,
     GitFileChange,
     GitHubCheckState,
@@ -59,6 +60,92 @@ const ptyClientMessageShape = defineShape(
         },
     ),
 );
+
+/**
+ * The settings for each git forge, nested under `forges` in {@link configJsonSchema}. A complete
+ * `Record` so a new {@link ForgeType} doesn't compile until someone decides its settings.
+ */
+const forgeSettingsJsonSchemas = {
+    [ForgeType.Github]: {
+        type: 'object',
+        additionalProperties: false,
+        title: 'GitHub',
+        properties: {
+            disabledGitHubPolling: {
+                type: 'boolean',
+                default: false,
+                title: 'Disable GitHub polling',
+                description:
+                    'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
+            },
+            githubPollingAutoDisable: {
+                type: [
+                    'null',
+                    'object',
+                ],
+                default: null,
+                title: 'GitHub polling auto-disable',
+                description:
+                    "Runtime-set auto-disable state for GitHub polling, persisted across server restarts. Backend-managed; users shouldn't need to edit this.",
+                properties: {
+                    reason: {
+                        type: 'string',
+                        enum: [
+                            GitHubPollingDisableReason.RateLimited,
+                            GitHubPollingDisableReason.Unauthenticated,
+                        ],
+                    },
+                    disabledUntilMs: {
+                        type: 'number',
+                    },
+                },
+                required: [
+                    'reason',
+                    'disabledUntilMs',
+                ],
+            },
+            /**
+             * Extra bot logins, beside the built-in review bots in `github-raw-enums.ts`, whose PR
+             * review threads watch mode works on without the viewer's 👍 and whose PRs count as
+             * trusted authors.
+             */
+            trustedBotLogins: {
+                type: 'array',
+                default: [],
+                title: 'Trusted bots',
+                description:
+                    'GitHub logins of bots to trust like repo collaborators, as GitHub shows them on a review comment (e.g. "flax-bot"; a trailing "[bot]" is ignored). Watch mode acts on their review threads without your 👍. Copilot, Claude, and Codex are always trusted.',
+                items: {
+                    type: 'string',
+                    title: 'Bot login',
+                },
+            },
+        },
+        required: [
+            'disabledGitHubPolling',
+            'githubPollingAutoDisable',
+            'trustedBotLogins',
+        ],
+    },
+    [ForgeType.Gitea]: {
+        type: 'object',
+        additionalProperties: false,
+        title: 'Gitea',
+        properties: {},
+    },
+    [ForgeType.Forgejo]: {
+        type: 'object',
+        additionalProperties: false,
+        title: 'Forgejo',
+        properties: {},
+    },
+    [ForgeType.Gitlab]: {
+        type: 'object',
+        additionalProperties: false,
+        title: 'GitLab',
+        properties: {},
+    },
+} as const satisfies Record<ForgeType, JSONSchema>;
 
 /**
  * Single source of truth for the user-editable config. Defined as a JSON Schema so:
@@ -228,37 +315,21 @@ export const configJsonSchema = {
                 ],
             },
         },
-        disabledGitHubPolling: {
-            type: 'boolean',
-            default: false,
-            title: 'Disable GitHub polling',
-            description:
-                'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
-        },
-        githubPollingAutoDisable: {
-            type: [
-                'null',
-                'object',
-            ],
-            default: null,
-            title: 'GitHub polling auto-disable',
-            description:
-                "Runtime-set auto-disable state for GitHub polling, persisted across server restarts. Backend-managed; users shouldn't need to edit this.",
-            properties: {
-                reason: {
-                    type: 'string',
-                    enum: [
-                        GitHubPollingDisableReason.RateLimited,
-                        GitHubPollingDisableReason.Unauthenticated,
-                    ],
-                },
-                disabledUntilMs: {
-                    type: 'number',
-                },
-            },
+        /**
+         * Settings scoped to one git forge. Each forge gets its own shape rather than one shared
+         * shape, because forges name and mark things differently (GitHub's `[bot]` login suffix is
+         * GitHub's alone).
+         */
+        forges: {
+            type: 'object',
+            additionalProperties: false,
+            title: 'Git forges',
+            properties: forgeSettingsJsonSchemas,
             required: [
-                'reason',
-                'disabledUntilMs',
+                ForgeType.Github,
+                ForgeType.Gitea,
+                ForgeType.Forgejo,
+                ForgeType.Gitlab,
             ],
         },
         useWebgl: {
@@ -372,23 +443,6 @@ export const configJsonSchema = {
          * path that doesn't exist can report an error under the input. Intentionally absent from
          * `required` so configs written by older builds still load.
          */
-        /**
-         * Extra bot logins, beside the built-in review bots in `github-raw-enums.ts`, whose PR
-         * review threads watch mode works on without the viewer's 👍 and whose PRs count as trusted
-         * authors. Intentionally absent from `required` so configs written by older builds still
-         * load.
-         */
-        trustedBotLogins: {
-            type: 'array',
-            default: [],
-            title: 'Trusted bots',
-            description:
-                'GitHub logins of bots to trust like repo collaborators, as GitHub shows them on a review comment (e.g. "flax-bot"; a trailing "[bot]" is ignored). Watch mode acts on their review threads without your 👍. Copilot, Claude, and Codex are always trusted.',
-            items: {
-                type: 'string',
-                title: 'Bot login',
-            },
-        },
         tlsCertPath: {
             type: 'string',
             default: '',
@@ -403,8 +457,7 @@ export const configJsonSchema = {
         'postWorktreeCmd',
         'repos',
         'folderAiIds',
-        'disabledGitHubPolling',
-        'githubPollingAutoDisable',
+        'forges',
         'useWebgl',
         'terminalClickableLinks',
         'sidebarGrouping',

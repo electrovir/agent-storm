@@ -1,5 +1,5 @@
 import {css} from 'element-vir';
-import {ViraMenuItem, viraThemeByKeys} from 'vira';
+import {type PopoverOffset, ViraMenuItem, viraThemeByKeys} from 'vira';
 
 /** Styles for the per-folder menus that a sidebar row and a repo header both render. */
 export const sidebarFolderMenuStyles = css`
@@ -7,9 +7,13 @@ export const sidebarFolderMenuStyles = css`
     ${ViraMenuItem}:has(.danger-menu-item) {
         color: ${viraThemeByKeys.red.foreground.body.foreground.value};
     }
-
-    .actions {
-        display: inline-flex;
-        gap: 2px;
-    }
 `;
+
+/**
+ * For a context menu whose trigger is a whole sidebar row. Vira gives a popover a minimum width
+ * of its trigger's width minus this right offset, so a large offset lets the menu fit its items
+ * instead of stretching across the row.
+ */
+export const sidebarContextMenuOffset: PopoverOffset = {
+    right: 10_000,
+};

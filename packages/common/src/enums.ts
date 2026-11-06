@@ -1,3 +1,5 @@
+// cspell:words forgejo, gitea
+
 export enum PaneKind {
     Ai = 'ai',
     Shell = 'shell',
@@ -148,6 +150,17 @@ export enum GitHubReaction {
     Heart = 'HEART',
     Rocket = 'ROCKET',
     Eyes = 'EYES',
+}
+
+/**
+ * A git host that a repo's remote can point at. Values match `ForgeType` in `forge-adapter`, which
+ * replaces this once that package is published.
+ */
+export enum ForgeType {
+    Github = 'github',
+    Gitea = 'gitea',
+    Forgejo = 'forgejo',
+    Gitlab = 'gitlab',
 }
 
 /** Why the backend switched GitHub polling off on its own. */

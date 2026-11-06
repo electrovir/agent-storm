@@ -1,11 +1,79 @@
-import {configShape, defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
-import {log, PromiseQueue} from '@augment-vir/common';
+import {
+    configShape,
+    defaultConfig,
+    ForgeType,
+    type AiDefinition,
+    type Config,
+} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {
+    getObjectTypedKeys,
+    log,
+    mapObjectValues,
+    omitObjectKeys,
+    pickObjectKeys,
+    PromiseQueue,
+} from '@augment-vir/common';
 import {readFile, stat} from 'node:fs/promises';
 import {assertValidShape} from 'object-shape-tester';
 import {pruneAiAvatars} from './ai-avatar.js';
 import {configPath} from './file-paths.js';
 import {normalizePath} from './paths.js';
 import {writeFileAtomically} from './write-file-atomically.js';
+
+/**
+ * Keys that older builds wrote at the top level of the config, before they moved to
+ * `forges.github`.
+ */
+const legacyGitHubConfigKeys = [
+    'disabledGitHubPolling',
+    'githubPollingAutoDisable',
+    'trustedBotLogins',
+] as const satisfies ReadonlyArray<keyof Config['forges'][ForgeType.Github]>;
+
+/**
+ * Moves {@link legacyGitHubConfigKeys} under `forges.github`. Returns `undefined` when the file has
+ * none of them, so the caller knows whether the file needs rewriting.
+ */
+export function migrateLegacyGitHubKeys(
+    parsed: Readonly<Record<string, unknown>>,
+): Record<string, unknown> | undefined {
+    const legacyValues = pickObjectKeys(parsed, legacyGitHubConfigKeys);
+    if (!getObjectTypedKeys(legacyValues).length) {
+        return undefined;
+    }
+    const forges = check.isObject(parsed.forges) ? parsed.forges : {};
+    const github = check.isObject(forges[ForgeType.Github]) ? forges[ForgeType.Github] : {};
+    return {
+        ...omitObjectKeys(parsed, legacyGitHubConfigKeys),
+        forges: {
+            ...forges,
+            [ForgeType.Github]: {
+                ...legacyValues,
+                ...github,
+            },
+        },
+    };
+}
+
+/**
+ * Fills in defaults one level into `forges` as well as at the top level, so a file missing one
+ * forge's section, or one setting inside it, still loads.
+ */
+export function withConfigDefaults(parsed: Readonly<Record<string, unknown>>) {
+    const forges = check.isObject(parsed.forges) ? parsed.forges : {};
+    return {
+        ...defaultConfig,
+        ...parsed,
+        forges: mapObjectValues(defaultConfig.forges, (forgeType, defaults) => {
+            const saved = forges[forgeType];
+            return {
+                ...defaults,
+                ...(check.isObject(saved) ? saved : {}),
+            };
+        }),
+    };
+}
 
 function normalizeConfig(config: Readonly<Config>): Config {
     const definitionIds = config.aiDefinitions.map((definition) => definition.id);
@@ -152,12 +220,18 @@ export async function loadConfig(): Promise<Config> {
             `Config file at ${configPath} exists but is empty; refusing to overwrite with defaults.`,
         );
     }
-    const merged: unknown = {
-        ...defaultConfig,
-        ...JSON.parse(contents),
-    };
+    const parsed: unknown = JSON.parse(contents);
+    if (!check.isObject(parsed)) {
+        throw new Error(`Config file at ${configPath} is not a JSON object.`);
+    }
+    const migrated = migrateLegacyGitHubKeys(parsed);
+    const merged = withConfigDefaults(migrated || parsed);
     assertValidShape(merged, configShape, {}, `Config file at ${configPath} is invalid.`);
-    return normalizeConfig(withFallbackAi(merged));
+    const config = normalizeConfig(withFallbackAi(merged));
+    if (migrated) {
+        await writeConfig(config);
+    }
+    return config;
 }
 
 /**

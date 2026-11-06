@@ -1,10 +1,24 @@
 // cspell:words opencode
 
-import {defaultConfig, type AiDefinition, type Config} from '@agent-storm/common';
+import {
+    configShape,
+    defaultConfig,
+    ForgeType,
+    GitHubPollingDisableReason,
+    type AiDefinition,
+    type Config,
+} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
-import {selectFrom} from '@augment-vir/common';
+import {getObjectTypedKeys, selectFrom} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
-import {getFolderAiDefinition, setFolderAiId, withFallbackAi} from './config.js';
+import {checkValidShape} from 'object-shape-tester';
+import {
+    getFolderAiDefinition,
+    migrateLegacyGitHubKeys,
+    setFolderAiId,
+    withConfigDefaults,
+    withFallbackAi,
+} from './config.js';
 
 function aiDefinition({
     name,
@@ -206,5 +220,82 @@ describe(withFallbackAi.name, () => {
         const config = configWithAis({});
 
         assert.deepEquals(withFallbackAi(config), config);
+    });
+});
+
+describe(migrateLegacyGitHubKeys.name, () => {
+    it('moves top-level GitHub settings under forges.github', () => {
+        const migrated = migrateLegacyGitHubKeys({
+            useWebgl: false,
+            disabledGitHubPolling: true,
+            githubPollingAutoDisable: {
+                reason: GitHubPollingDisableReason.RateLimited,
+                disabledUntilMs: 1000,
+            },
+            trustedBotLogins: [
+                'flax-bot',
+            ],
+        });
+        const config = withConfigDefaults(migrated || {});
+
+        assert.isTrue(checkValidShape(config, configShape));
+        assert.deepEquals(
+            {
+                topLevelKeys: getObjectTypedKeys(migrated || {}),
+                github: config.forges[ForgeType.Github],
+            },
+            {
+                topLevelKeys: [
+                    'useWebgl',
+                    'forges',
+                ],
+                github: {
+                    disabledGitHubPolling: true,
+                    githubPollingAutoDisable: {
+                        reason: GitHubPollingDisableReason.RateLimited,
+                        disabledUntilMs: 1000,
+                    },
+                    trustedBotLogins: [
+                        'flax-bot',
+                    ],
+                },
+            },
+        );
+    });
+    it('leaves a config without legacy keys alone', () => {
+        assert.isUndefined(
+            migrateLegacyGitHubKeys({
+                forges: {
+                    [ForgeType.Github]: {
+                        trustedBotLogins: [],
+                    },
+                },
+            }),
+        );
+    });
+});
+
+describe(withConfigDefaults.name, () => {
+    it('fills in missing forges and missing settings inside a forge', () => {
+        const config = withConfigDefaults({
+            forges: {
+                [ForgeType.Github]: {
+                    trustedBotLogins: [
+                        'flax-bot',
+                    ],
+                },
+            },
+        });
+
+        assert.isTrue(checkValidShape(config, configShape));
+        assert.deepEquals(config.forges, {
+            ...defaultConfig.forges,
+            [ForgeType.Github]: {
+                ...defaultConfig.forges[ForgeType.Github],
+                trustedBotLogins: [
+                    'flax-bot',
+                ],
+            },
+        });
     });
 });

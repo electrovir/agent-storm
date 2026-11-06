@@ -1,4 +1,4 @@
-import {GitHubReaction} from '@agent-storm/common';
+import {ForgeType, GitHubReaction} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, removeDuplicates} from '@augment-vir/common';
 import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
@@ -301,10 +301,14 @@ function checkStartedAt(statusCheck: Readonly<RawStatusCheck>) {
     return statusCheck.startedAt || statusCheck.createdAt || '9999';
 }
 
-/** A `CheckRun` reports `conclusion` and a `StatusContext` reports `state`. */
+/**
+ * A `CheckRun` reports `conclusion` and a `StatusContext` reports `state`. A cancelled run is
+ * usually one a newer run superseded and has nothing for a pass to fix; when it does block the
+ * merge, the PR reads as merge blocked instead.
+ */
 function isFailed(statusCheck: Readonly<RawStatusCheck>) {
     const result = statusCheck.conclusion || statusCheck.state;
-    return !!result && failedCheckResults[result];
+    return !!result && result !== RawCheckResult.Cancelled && failedCheckResults[result];
 }
 
 function isStatusRunning(status: RawStatusCheck['status']) {
@@ -635,6 +639,6 @@ export async function fetchPrCheck({
         threads: threadsResponse.repository?.pullRequest?.reviewThreads.nodes || [],
         viewerLogin,
         checkedAt,
-        trustedBotLogins: (await loadConfig()).trustedBotLogins || [],
+        trustedBotLogins: (await loadConfig()).forges[ForgeType.Github].trustedBotLogins,
     });
 }

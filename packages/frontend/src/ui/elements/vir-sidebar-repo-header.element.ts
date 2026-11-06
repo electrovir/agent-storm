@@ -1,19 +1,8 @@
 import {type FolderInfo} from '@agent-storm/common';
 import {css, defineElementEvent, html, listen} from 'element-vir';
-import {
-    LucideEllipsisIcon,
-    renderMenuItemEntries,
-    tooltip,
-    ViraButton,
-    ViraColorVariant,
-    ViraEmphasis,
-    ViraMenuTrigger,
-    ViraSize,
-    viraThemeByKeys,
-} from 'vira';
-import {sidebarTooltipOptions} from '../../util/sidebar-display.js';
+import {PopoverTrigger, renderMenuItemEntries, ViraMenuTrigger, viraThemeByKeys} from 'vira';
 import {defineAppElement} from '../define-app-element.js';
-import {sidebarFolderMenuStyles} from './sidebar-menu-styles.js';
+import {sidebarContextMenuOffset, sidebarFolderMenuStyles} from './sidebar-menu-styles.js';
 import {buildRepoMenuEntries, type SidebarFolderAction} from './sidebar-menus.js';
 
 /** The heading above a worktree root's rows, with the menu for the repo as a whole. */
@@ -37,25 +26,27 @@ export const VirSidebarRepoHeader = defineAppElement<{
     styles({hostClasses}) {
         return css`
             :host {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 6px;
-                padding: 6px 5px 2px;
-                font-weight: 600;
+                display: block;
             }
 
             ${sidebarFolderMenuStyles}
 
-            .actions {
-                opacity: 0;
-                /* The menu pops up inside the header, so it would inherit the repo name's bold. */
-                font-weight: 300;
+            /* A menu trigger is inline by default, which would shrink the row to its content. */
+            ${ViraMenuTrigger} {
+                display: flex;
             }
 
-            :host(:hover) .actions,
-            .actions[data-menu-open] {
-                opacity: 1;
+            /* The menu trigger wraps the header in a button, which centers its text. */
+            .header {
+                flex-grow: 1;
+                text-align: start;
+                padding: 6px 5px 2px;
+                font-weight: 600;
+
+                &[data-menu-open] {
+                    background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
+                        .value};
+                }
             }
 
             /* Deliberately outside the header's bold weight so only the repo name reads as a heading. */
@@ -64,47 +55,43 @@ export const VirSidebarRepoHeader = defineAppElement<{
                 color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
             }
 
-            ${hostClasses['vir-sidebar-repo-header-mobile'].selector} {
+            ${hostClasses['vir-sidebar-repo-header-mobile'].selector} .header {
                 padding: 10px 16px 4px;
             }
         `;
     },
     render({inputs, dispatch, events}) {
         return html`
-            <span>
-                ${inputs.root.name}
-                <span class="worktree-count">(${inputs.worktreeCount})</span>
-            </span>
-            <span class="actions" ?data-menu-open=${inputs.isMenuOpen}>
-                <${ViraMenuTrigger}
-                    ${listen(ViraMenuTrigger.events.openChange, (event) => {
+            <${ViraMenuTrigger.assign({
+                trigger: PopoverTrigger.ContextMenu,
+                popoverOffset: sidebarContextMenuOffset,
+            })}
+                ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                    dispatch(
+                        new events.menuOpenChange({
+                            detail: event.detail,
+                        }),
+                    );
+                })}
+            >
+                <div
+                    class="header"
+                    slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                    ?data-menu-open=${inputs.isMenuOpen}
+                >
+                    ${inputs.root.name}
+                    <span class="worktree-count">(${inputs.worktreeCount})</span>
+                </div>
+                ${renderMenuItemEntries(
+                    buildRepoMenuEntries((action) => {
                         dispatch(
-                            new events.menuOpenChange({
-                                detail: event.detail,
+                            new events.actionSelect({
+                                detail: action,
                             }),
                         );
-                    })}
-                >
-                    <${ViraButton.assign({
-                        icon: LucideEllipsisIcon,
-                        buttonSize: ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
-                    })}
-                        slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                        ${tooltip('Repo actions', sidebarTooltipOptions)}
-                    ></${ViraButton}>
-                    ${renderMenuItemEntries(
-                        buildRepoMenuEntries((action) => {
-                            dispatch(
-                                new events.actionSelect({
-                                    detail: action,
-                                }),
-                            );
-                        }),
-                    )}
-                </${ViraMenuTrigger}>
-            </span>
+                    }),
+                )}
+            </${ViraMenuTrigger}>
         `;
     },
 });

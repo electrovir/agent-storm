@@ -252,7 +252,8 @@ export const localStorageClient = {
     }),
     /**
      * Which side each folder's diff pane was last reading as one stacked review, or `false` for a
-     * folder that was last on a single-file diff. A folder with no entry opens the unstaged review.
+     * folder that was last on a single-file diff. A folder with no entry opens the unstaged
+     * review.
      */
     diffReviewSideByFolder: defineFolderSetting({
         key: 'agent-storm:diff-review-side-by-folder',

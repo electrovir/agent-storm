@@ -1,5 +1,6 @@
 import {
     folderInfoShape,
+    ForgeType,
     GitHubPollingDisableReason,
     PaneKind,
     PaneStatus,
@@ -152,8 +153,8 @@ const autoDisableDurationByReason: Readonly<Record<GitHubPollingDisableReason, A
  * Auto-disable state for GitHub polling. Set when a GraphQL call surfaces rate-limit or auth
  * failure; GitHub calls are skipped until `disabledUntilMs` elapses. Persisted to the config so
  * `tsx --watch` restarts during dev don't immediately re-poll GitHub and hit the same rate limit
- * again. The user's explicit `disabledGitHubPolling: true` config takes precedence either way; this
- * only flips an implicit off-switch.
+ * again. The user's explicit `forges.github.disabledGitHubPolling: true` config takes precedence
+ * either way; this only flips an implicit off-switch.
  */
 const githubPollingState: {
     autoDisable:
@@ -185,7 +186,13 @@ async function persistAutoDisableToConfig(): Promise<void> {
     await updateConfig((config) => {
         return {
             ...config,
-            githubPollingAutoDisable: githubPollingState.autoDisable || null,
+            forges: {
+                ...config.forges,
+                [ForgeType.Github]: {
+                    ...config.forges[ForgeType.Github],
+                    githubPollingAutoDisable: githubPollingState.autoDisable || null,
+                },
+            },
         };
     }).catch((error: unknown) => {
         log.warning(`Failed to save GitHub polling auto-disable: ${extractErrorMessage(error)}`);
@@ -193,7 +200,7 @@ async function persistAutoDisableToConfig(): Promise<void> {
 }
 
 function loadAutoDisableFromConfig(config: Readonly<Config>): void {
-    const saved = config.githubPollingAutoDisable;
+    const saved = config.forges[ForgeType.Github].githubPollingAutoDisable;
     if (!saved || Date.now() >= saved.disabledUntilMs) {
         return;
     }
@@ -261,7 +268,7 @@ function markAutoDisabled({
 }
 
 function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
-    return config.disabledGitHubPolling || isAutoDisabled();
+    return config.forges[ForgeType.Github].disabledGitHubPolling || isAutoDisabled();
 }
 
 async function ensureRepoSlug(folder: string): Promise<RepoSlug | null> {

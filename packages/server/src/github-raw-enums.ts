@@ -88,7 +88,7 @@ export enum RawActorType {
  * Review bots trusted like collaborators: their comments are work without anyone's 👍, and their
  * PRs auto-start reviews. GitHub reserves an app's login for that app, and a user can't take it,
  * but a comment only counts once GitHub also says its author is a `Bot`. The config's
- * `trustedBotLogins` adds to these.
+ * `forges.github.trustedBotLogins` adds to these.
  */
 const builtInTrustedBotLogins: ReadonlyArray<string> = [
     'copilot-pull-request-reviewer',
@@ -107,8 +107,8 @@ function normalizeBotLogin(login: string) {
 }
 
 /**
- * A built-in review bot or one in the config's `trustedBotLogins`. GitHub has to say the account is
- * a `Bot` as well as match the login.
+ * A built-in review bot or one in the config's `forges.github.trustedBotLogins`. GitHub has to say
+ * the account is a `Bot` as well as match the login.
  */
 export function isTrustedBot({
     author,

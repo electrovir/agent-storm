@@ -188,6 +188,39 @@ describe(classifyPrCheck.name, () => {
         );
     });
 
+    it('merges past a cancelled check', () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        statusCheckRollup: [
+                            {
+                                name: 'Refresh Review Status',
+                                conclusion: RawCheckResult.Cancelled,
+                                startedAt: '2026-10-01T00:00:00Z',
+                            },
+                        ],
+                    },
+                    threads: [],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    failingChecks: true,
+                    needs: true,
+                    isReadyToMerge: true,
+                },
+            ),
+            {
+                failingChecks: [],
+                needs: [],
+                isReadyToMerge: true,
+            },
+        );
+    });
+
     it('ignores reviews from outside the repo', () => {
         assert.deepEquals(
             selectFrom(

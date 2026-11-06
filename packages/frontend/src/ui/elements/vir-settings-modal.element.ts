@@ -1,16 +1,22 @@
+// cspell:words forgejo, gitea
+
 import {
     checkPathEndpoint,
     configEndpoint,
     configJsonSchema,
     defaultConfig,
+    ForgeType,
     restartDaemonEndpoint,
     type Config,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
+    getObjectTypedEntries,
     getObjectTypedKeys,
+    mapObjectValues,
     omitObjectKeys,
     pickObjectKeys,
+    typedObjectFromEntries,
     type JsonValue,
 } from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
@@ -36,17 +42,15 @@ import {savingIcon} from '../icons/saving-icon.js';
 
 /**
  * Config properties that round-trip through `/config` (so the backend can persist them across
- * restarts) but are hidden from the settings form. Reasons vary: `githubPollingAutoDisable` is
- * entirely backend-managed (the user has no business editing it here), while `repos` and
- * `folderAiIds` are per-folder data managed through the sidebar rather than this JSON form (and too
- * large / noisy to belong here). `aiDefinitions` has its own modal, `defaultAiId` is rendered as
- * the AI picker below, and `tlsCertPath` gets its own input so a path that doesn't exist can report
- * an error directly beneath it — the JSON form has no per-property error slot. Stripped from both
- * the schema we hand to `ViraJsonForm` and from the form's input/output, then preserved on save so
- * hiding them never blows away their runtime state.
+ * restarts) but are hidden from the settings form. Reasons vary: `repos` and `folderAiIds` are
+ * per-folder data managed through the sidebar rather than this JSON form (and too large / noisy to
+ * belong here). `aiDefinitions` has its own modal, `defaultAiId` is rendered as the AI picker
+ * below, and `tlsCertPath` gets its own input so a path that doesn't exist can report an error
+ * directly beneath it — the JSON form has no per-property error slot. Stripped from both the schema
+ * we hand to `ViraJsonForm` and from the form's input/output, then preserved on save so hiding them
+ * never blows away their runtime state.
  */
 const hiddenConfigKeys = [
-    'githubPollingAutoDisable',
     'repos',
     'aiDefinitions',
     'defaultAiId',
@@ -54,9 +58,68 @@ const hiddenConfigKeys = [
     'tlsCertPath',
 ] as const satisfies ReadonlyArray<keyof Config>;
 
+/**
+ * Same as {@link hiddenConfigKeys}, but for the settings inside each forge's section of `forges`.
+ * `githubPollingAutoDisable` is entirely backend-managed, so the user has no business editing it
+ * here.
+ */
+const hiddenForgeConfigKeys = {
+    [ForgeType.Github]: [
+        'githubPollingAutoDisable',
+    ],
+    [ForgeType.Gitea]: [],
+    [ForgeType.Forgejo]: [],
+    [ForgeType.Gitlab]: [],
+} as const satisfies {
+    [Forge in ForgeType]: ReadonlyArray<keyof Config['forges'][Forge]>;
+};
+
+/**
+ * The settings the form shows for each forge. A forge left with nothing to show is dropped entirely
+ * rather than rendered as an empty group.
+ */
+const formForgeProperties = typedObjectFromEntries(
+    getObjectTypedEntries(configJsonSchema.properties.forges.properties)
+        .map(
+            ([
+                forgeType,
+                forgeSchema,
+            ]) => {
+                return [
+                    forgeType,
+                    omitObjectKeys(
+                        forgeSchema.properties as Record<string, ViraJsonSchema>,
+                        hiddenForgeConfigKeys[forgeType],
+                    ),
+                ] as const;
+            },
+        )
+        .filter(
+            ([
+                ,
+                properties,
+            ]) => getObjectTypedKeys(properties).length,
+        ),
+);
+
 const formJsonSchema: ViraJsonSchemaObject = (() => {
+    const forgesSchema = configJsonSchema.properties.forges;
     const properties: Record<string, ViraJsonSchema> = {
         ...(configJsonSchema.properties as Record<string, ViraJsonSchema>),
+        forges: {
+            ...forgesSchema,
+            properties: mapObjectValues(formForgeProperties, (forgeType, forgeProperties) => {
+                const forgeSchema = forgesSchema.properties[forgeType];
+                return {
+                    ...forgeSchema,
+                    properties: forgeProperties,
+                    required: ('required' in forgeSchema ? forgeSchema.required : []).filter(
+                        (key) => key in forgeProperties,
+                    ),
+                };
+            }),
+            required: getObjectTypedKeys(formForgeProperties),
+        },
     };
     hiddenConfigKeys.forEach((key) => {
         delete properties[key];
@@ -100,7 +163,15 @@ function aiOptions(config: Readonly<Config> | undefined): ViraDropdownOption[] {
  * property, so an unsupported key left in here would show up as an editable row.
  */
 function toJsonValue(config: Readonly<Config>): JsonValue {
-    const visible = pickObjectKeys(config as Readonly<Record<string, unknown>>, formConfigKeys);
+    const visible = {
+        ...pickObjectKeys(config as Readonly<Record<string, unknown>>, formConfigKeys),
+        forges: mapObjectValues(formForgeProperties, (forgeType, forgeProperties) => {
+            return pickObjectKeys(
+                config.forges[forgeType] as Readonly<Record<string, unknown>>,
+                getObjectTypedKeys(forgeProperties).filter(check.isString),
+            );
+        }),
+    };
     return JSON.parse(JSON.stringify(visible)) as JsonValue;
 }
 
@@ -111,10 +182,18 @@ function fromJsonValue(value: JsonValue, current: Readonly<Config>): Config {
      * and saving would revert them to defaults — or, for an unsupported key, erase it from the file
      * of whichever build still uses it.
      */
+    const formValue = value as Partial<Config>;
     return {
         ...defaultConfig,
         ...omitObjectKeys(current as Readonly<Record<string, unknown>>, formConfigKeys),
-        ...(value as Partial<Config>),
+        ...formValue,
+        /** Same as above, one level down: the form only holds each forge's visible settings. */
+        forges: mapObjectValues(current.forges, (forgeType, currentForge) => {
+            return {
+                ...currentForge,
+                ...formValue.forges?.[forgeType],
+            };
+        }) satisfies Record<ForgeType, object> as Config['forges'],
     };
 }
 

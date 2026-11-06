@@ -1,6 +1,7 @@
 // cspell:words unresolve
 
 import {
+    ForgeType,
     GitHubReviewState,
     ManualReviewStatus,
     PaneKind,
@@ -333,7 +334,7 @@ function createPrQueue({
                     (pr) => pr.url,
                 ),
                 login: cache.viewerLogin,
-                trustedBotLogins: (await loadConfig()).trustedBotLogins || [],
+                trustedBotLogins: (await loadConfig()).forges[ForgeType.Github].trustedBotLogins,
             });
             cache.pullRequests
                 .filter((pr) => pr.branchName)

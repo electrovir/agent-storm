@@ -5,17 +5,13 @@ import {check} from '@augment-vir/assert';
 import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen, nothing, unsafeHTML} from 'element-vir';
 import {
-    LucideEllipsisIcon,
     LucideRotateCwIcon,
+    PopoverTrigger,
     renderMenuItemEntries,
     tooltip,
-    ViraButton,
-    ViraColorVariant,
-    ViraEmphasis,
     ViraIcon,
     ViraLink,
     ViraMenuTrigger,
-    ViraSize,
     viraThemeByKeys,
 } from 'vira';
 import {type PrQueueKind} from '../../util/frontend-state.js';
@@ -23,6 +19,7 @@ import {sanitizeGitHubHtml} from '../../util/github-markdown.js';
 import {prStatusIcons, renderPaneChip, sidebarTooltipOptions} from '../../util/sidebar-display.js';
 import {defineAppElement} from '../define-app-element.js';
 import {queuePrStatusDisplays} from './review-sidebar-display.js';
+import {sidebarContextMenuOffset} from './sidebar-menu-styles.js';
 import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
 
 /** One pull request in the Review sidebar, with its pane chips, assignees, status, and menu. */
@@ -51,7 +48,15 @@ export const VirReviewSidebarRow = defineAppElement<{
 
         ${spinKeyframesCss}
 
+        /* A menu trigger is inline by default, which would shrink the row to its content. */
+        ${ViraMenuTrigger} {
+            display: flex;
+        }
+
+        /* The menu trigger wraps the row in a button, which centers its text. */
         .row {
+            flex-grow: 1;
+            text-align: start;
             display: flex;
             align-items: center;
             gap: 6px;
@@ -59,7 +64,8 @@ export const VirReviewSidebarRow = defineAppElement<{
             cursor: pointer;
             user-select: none;
 
-            &:hover {
+            &:hover,
+            &[data-menu-open] {
                 background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
                     .value};
             }
@@ -150,16 +156,6 @@ export const VirReviewSidebarRow = defineAppElement<{
             }
         }
 
-        .row .actions {
-            display: inline-flex;
-            opacity: 0.35;
-        }
-
-        .row:hover .actions,
-        .row[data-menu-open] .actions {
-            opacity: 1;
-        }
-
         .row[data-mobile] .name {
             padding: 4px 0;
         }
@@ -175,116 +171,104 @@ export const VirReviewSidebarRow = defineAppElement<{
             ? prStatusIcons[inputs.pr.prStatus]
             : undefined;
 
-        const menuTemplate = html`
-            <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
-                <${ViraMenuTrigger}
-                    ${listen(ViraMenuTrigger.events.openChange, (event) => {
-                        updateState({
-                            isMenuOpen: event.detail,
-                        });
-                    })}
-                >
-                    <${ViraButton.assign({
-                        icon: LucideEllipsisIcon,
-                        buttonSize: ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        color: ViraColorVariant.Neutral,
-                    })}
-                        slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                        ${tooltip('Pull request actions', sidebarTooltipOptions)}
-                    ></${ViraButton}>
-                    ${renderMenuItemEntries(
-                        [
-                            {
-                                content: html`
-                                    <${ViraLink.assign({
-                                        link: {
-                                            url: inputs.pr.url,
-                                            newTab: true,
-                                        },
-                                        disableLinkStyles: true,
-                                    })}>
-                                        Open PR
-                                    </${ViraLink}>
-                                `,
-                            },
-                            /** The viewer's own PRs open on GitHub, so they have no panes. */
-                            inputs.canRestartPanes &&
-                                !inputs.pr.isViewerAuthor && {
-                                    content: 'Restart panes',
-                                    iconOverride: LucideRotateCwIcon,
-                                    onClick() {
-                                        dispatch(
-                                            new events.restartPanesRequested({
-                                                detail: inputs.pr,
-                                            }),
-                                        );
-                                    },
-                                },
-                        ].filter(check.isTruthy),
-                    )}
-                </${ViraMenuTrigger}>
-            </span>
-        `;
-
         return html`
-            <div
-                class="row"
-                ?data-active=${inputs.isActive}
-                ?data-draft=${inputs.pr.isDraft}
-                ?data-menu-open=${state.isMenuOpen}
-                ?data-mobile=${inputs.mobileModal}
-                ${listen('click', () => {
-                    dispatch(
-                        new events.rowClicked({
-                            detail: inputs.pr,
-                        }),
-                    );
+            <${ViraMenuTrigger.assign({
+                trigger: PopoverTrigger.ContextMenu,
+                popoverOffset: sidebarContextMenuOffset,
+            })}
+                ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                    updateState({
+                        isMenuOpen: event.detail,
+                    });
                 })}
             >
-                <span class="chips">
-                    ${renderPaneChip('AI', inputs.pr.panes.ai)}
-                    ${renderPaneChip('Shell', inputs.pr.panes.shell)}
-                </span>
-                ${inputs.pr.chainDepth
-                    ? html`
-                          <span class="chain-connector"></span>
-                      `
-                    : nothing}
-                <span class="avatars">
-                    ${inputs.pr.assignees.map((assignee) => {
-                        return html`
-                            <img
-                                class="avatar"
-                                src=${assignee.avatarUrl}
-                                alt=${assignee.login}
-                                ${tooltip(assignee.login, sidebarTooltipOptions)}
-                            />
-                        `;
+                <div
+                    class="row"
+                    slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                    ?data-active=${inputs.isActive}
+                    ?data-draft=${inputs.pr.isDraft}
+                    ?data-menu-open=${state.isMenuOpen}
+                    ?data-mobile=${inputs.mobileModal}
+                    ${listen('click', () => {
+                        dispatch(
+                            new events.rowClicked({
+                                detail: inputs.pr,
+                            }),
+                        );
                     })}
-                </span>
-                <span class="name">
-                    ${inputs.pr.titleHtml
-                        ? unsafeHTML(sanitizeGitHubHtml(inputs.pr.titleHtml))
-                        : inputs.pr.title}
-                </span>
-                ${statusIcon
-                    ? html`
-                          <span
-                              class="pr-status"
-                              ${tooltip(
-                                  statusDisplay.tooltips[inputs.pr.prStatus],
-                                  sidebarTooltipOptions,
-                              )}
-                          >
-                              <${ViraIcon.assign({
-                                  icon: statusIcon,
-                              })}></${ViraIcon}>
-                          </span>
-                      `
-                    : nothing}
-                ${menuTemplate}
-            </div>
+                >
+                    <span class="chips">
+                        ${renderPaneChip('AI', inputs.pr.panes.ai)}
+                    </span>
+                    ${inputs.pr.chainDepth
+                        ? html`
+                              <span class="chain-connector"></span>
+                          `
+                        : nothing}
+                    <span class="avatars">
+                        ${inputs.pr.assignees.map((assignee) => {
+                            return html`
+                                <img
+                                    class="avatar"
+                                    src=${assignee.avatarUrl}
+                                    alt=${assignee.login}
+                                    ${tooltip(assignee.login, sidebarTooltipOptions)}
+                                />
+                            `;
+                        })}
+                    </span>
+                    <span class="name">
+                        ${inputs.pr.titleHtml
+                            ? unsafeHTML(sanitizeGitHubHtml(inputs.pr.titleHtml))
+                            : inputs.pr.title}
+                    </span>
+                    ${statusIcon
+                        ? html`
+                              <span
+                                  class="pr-status"
+                                  ${tooltip(
+                                      statusDisplay.tooltips[inputs.pr.prStatus],
+                                      sidebarTooltipOptions,
+                                  )}
+                              >
+                                  <${ViraIcon.assign({
+                                      icon: statusIcon,
+                                  })}></${ViraIcon}>
+                              </span>
+                          `
+                        : nothing}
+                </div>
+                ${renderMenuItemEntries(
+                    [
+                        {
+                            content: html`
+                                <${ViraLink.assign({
+                                    link: {
+                                        url: inputs.pr.url,
+                                        newTab: true,
+                                    },
+                                    disableLinkStyles: true,
+                                })}>
+                                    Open PR
+                                </${ViraLink}>
+                            `,
+                        },
+                        /** The viewer's own PRs open on GitHub, so they have no panes. */
+                        inputs.canRestartPanes &&
+                            !inputs.pr.isViewerAuthor && {
+                                content: 'Restart panes',
+                                iconOverride: LucideRotateCwIcon,
+                                onClick() {
+                                    dispatch(
+                                        new events.restartPanesRequested({
+                                            detail: inputs.pr,
+                                        }),
+                                    );
+                                },
+                            },
+                    ].filter(check.isTruthy),
+                )}
+            </${ViraMenuTrigger}>
         `;
     },
 });

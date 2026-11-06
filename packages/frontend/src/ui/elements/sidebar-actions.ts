@@ -294,9 +294,9 @@ export async function confirmDeleteWorktree({
      * this worktree so the right-hand pane unmounts immediately. If the backend rejects the delete
      * the `catch` below re-fetches and the row reappears.
      */
+    pendingWorktreeDeletions.add(worktreePath);
     removeFolderLocally(worktreePath);
     notifyRemoved();
-    pendingWorktreeDeletions.add(worktreePath);
     try {
         await fetchApi(deleteWorktreeEndpoint, HttpMethod.Post, {
             requestData: {

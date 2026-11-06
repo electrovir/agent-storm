@@ -1,11 +1,13 @@
 import {Change, type DiffConfig} from '@codemirror/merge';
+import {Text} from '@codemirror/state';
 import {linesDiffComputers} from 'vscode-diff';
 
 /**
  * Ceiling on the algorithm's own search, after which it returns an approximate result rather than
- * running longer. Matches the value VS Code's editor passes.
+ * running longer. Far below the value VS Code passes, because VS Code diffs in a worker and this
+ * runs on the page's main thread, where every millisecond of it freezes the whole app.
  */
-const maxComputationTimeMs = 5000;
+const maxComputationTimeMs = 1000;
 
 /** One aligned pair of line ranges, 0-based and half-open on both sides. */
 export type LineDiffRange = {
@@ -59,30 +61,33 @@ export function diffLines({
     });
 }
 
-/** Character offset each 1-based line number starts at, including the trailing entry past the end. */
-function toLineStarts(lines: ReadonlyArray<string>): number[] {
-    return lines.reduce<number[]>(
-        (starts, line) => {
-            return [
-                ...starts,
-                (starts.at(-1) ?? 0) + line.length + 1,
-            ];
-        },
-        [0],
-    );
-}
-
+/** A line number past the last line maps to one past the end, as a trailing line start would. */
 function toOffset({
-    lineStarts,
+    text,
     lineNumber,
     column,
 }: Readonly<{
-    lineStarts: ReadonlyArray<number>;
+    text: Text;
     lineNumber: number;
     column: number;
 }>): number {
-    return (lineStarts[lineNumber - 1] ?? 0) + (column - 1);
+    return (lineNumber > text.lines ? text.length + 1 : text.line(lineNumber).from) + (column - 1);
 }
+
+/**
+ * The last pair diffed and its result. Mounting an editor diffs the same two documents twice in a
+ * row, once in `Chunk.build` and again inside the `MergeView` or `unifiedMergeView` it hands the
+ * chunks to, and on a large file each of those can take the full computation ceiling.
+ */
+const lastDiff: {
+    current?:
+        | Readonly<{
+              a: string;
+              b: string;
+              changes: readonly Change[];
+          }>
+        | undefined;
+} = {};
 
 /**
  * VS Code's diff, in the shape CodeMirror's merge package expects.
@@ -101,11 +106,14 @@ function toOffset({
 /* eslint-disable-next-line @virmator/prefer-params-object -- CodeMirror calls this, so the two
    positional strings are its signature to dictate, not ours. */
 function toCodeMirrorChanges(a: string, b: string): readonly Change[] {
+    if (lastDiff.current?.a === a && lastDiff.current.b === b) {
+        return lastDiff.current.changes;
+    }
     const aLines = a.split('\n');
     const bLines = b.split('\n');
-    const aStarts = toLineStarts(aLines);
-    const bStarts = toLineStarts(bLines);
-    return computeChanges({
+    const aText = Text.of(aLines);
+    const bText = Text.of(bLines);
+    const changes = computeChanges({
         aLines,
         bLines,
     }).flatMap((change) => {
@@ -113,22 +121,22 @@ function toCodeMirrorChanges(a: string, b: string): readonly Change[] {
             return change.innerChanges.map((inner) => {
                 return new Change(
                     toOffset({
-                        lineStarts: aStarts,
+                        text: aText,
                         lineNumber: inner.originalRange.startLineNumber,
                         column: inner.originalRange.startColumn,
                     }),
                     toOffset({
-                        lineStarts: aStarts,
+                        text: aText,
                         lineNumber: inner.originalRange.endLineNumber,
                         column: inner.originalRange.endColumn,
                     }),
                     toOffset({
-                        lineStarts: bStarts,
+                        text: bText,
                         lineNumber: inner.modifiedRange.startLineNumber,
                         column: inner.modifiedRange.startColumn,
                     }),
                     toOffset({
-                        lineStarts: bStarts,
+                        text: bText,
                         lineNumber: inner.modifiedRange.endLineNumber,
                         column: inner.modifiedRange.endColumn,
                     }),
@@ -137,13 +145,35 @@ function toCodeMirrorChanges(a: string, b: string): readonly Change[] {
         }
         return [
             new Change(
-                aStarts[change.original.startLineNumber - 1] ?? 0,
-                aStarts[change.original.endLineNumberExclusive - 1] ?? 0,
-                bStarts[change.modified.startLineNumber - 1] ?? 0,
-                bStarts[change.modified.endLineNumberExclusive - 1] ?? 0,
+                toOffset({
+                    text: aText,
+                    lineNumber: change.original.startLineNumber,
+                    column: 1,
+                }),
+                toOffset({
+                    text: aText,
+                    lineNumber: change.original.endLineNumberExclusive,
+                    column: 1,
+                }),
+                toOffset({
+                    text: bText,
+                    lineNumber: change.modified.startLineNumber,
+                    column: 1,
+                }),
+                toOffset({
+                    text: bText,
+                    lineNumber: change.modified.endLineNumberExclusive,
+                    column: 1,
+                }),
             ),
         ];
     });
+    lastDiff.current = {
+        a,
+        b,
+        changes,
+    };
+    return changes;
 }
 
 /** Pass to every `Chunk.build` / `MergeView` / `unifiedMergeView` call so they all agree. */

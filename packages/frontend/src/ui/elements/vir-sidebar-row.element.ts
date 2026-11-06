@@ -4,18 +4,14 @@ import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     createColoredIcon,
     createSizedIcon,
-    LucideEllipsisIcon,
     LucideEyeIcon,
     LucideEyeOffIcon,
+    PopoverTrigger,
     renderMenuItemEntries,
     tooltip,
-    ViraButton,
-    ViraColorVariant,
-    ViraEmphasis,
     ViraIcon,
     type ViraIconSvg,
     ViraMenuTrigger,
-    ViraSize,
     viraThemeByKeys,
     ViraThemeColorName,
 } from 'vira';
@@ -30,7 +26,7 @@ import {
     sidebarTooltipOptions,
 } from '../../util/sidebar-display.js';
 import {defineAppElement} from '../define-app-element.js';
-import {sidebarFolderMenuStyles} from './sidebar-menu-styles.js';
+import {sidebarContextMenuOffset, sidebarFolderMenuStyles} from './sidebar-menu-styles.js';
 import {buildRowMenuEntries, type SidebarFolderAction} from './sidebar-menus.js';
 import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
 
@@ -84,7 +80,15 @@ export const VirSidebarRow = defineAppElement<{
 
             ${sidebarFolderMenuStyles}
 
+            /* A menu trigger is inline by default, which would shrink the row to its content. */
+            ${ViraMenuTrigger} {
+                display: flex;
+            }
+
+            /* The menu trigger wraps the row in a button, which centers its text. */
             .row {
+                flex-grow: 1;
+                text-align: start;
                 display: flex;
                 align-items: center;
                 gap: 4px;
@@ -101,7 +105,8 @@ export const VirSidebarRow = defineAppElement<{
                         .value};
                 }
 
-                &:hover {
+                &:hover,
+                &[data-menu-open] {
                     background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
                         .value};
                 }
@@ -113,15 +118,6 @@ export const VirSidebarRow = defineAppElement<{
 
                 &[data-indented] {
                     padding-left: 17px;
-                }
-
-                & .actions {
-                    opacity: 0.35;
-                }
-
-                &:hover .actions,
-                &[data-menu-open] .actions {
-                    opacity: 1;
                 }
             }
 
@@ -212,112 +208,104 @@ export const VirSidebarRow = defineAppElement<{
         const isPrFinished = finishedPrStatuses.includes(inputs.folder.prStatus);
 
         return html`
-            <div
-                class="row"
-                ?data-active=${inputs.isActive}
-                ?data-indented=${inputs.isIndented}
-                ?data-merged=${inputs.folder.prStatus === PrStatus.Merged}
-                ?data-menu-open=${inputs.isMenuOpen}
-                ${listen('click', () => {
+            <${ViraMenuTrigger.assign({
+                trigger: PopoverTrigger.ContextMenu,
+                popoverOffset: sidebarContextMenuOffset,
+            })}
+                ${listen(ViraMenuTrigger.events.openChange, (event) => {
                     dispatch(
-                        new events.activate({
-                            detail: undefined,
+                        new events.menuOpenChange({
+                            detail: event.detail,
                         }),
                     );
                 })}
             >
-                <span class="chips">
-                    ${renderPaneChip('AI', inputs.folder.panes.ai)}
-                    ${renderPaneChip('Shell', inputs.folder.panes.shell)}
-                </span>
-                <span
-                    class="name"
-                    ?data-pr-open=${hasPr && !isPrFinished}
-                    ?data-pr-merged=${hasPr && isPrFinished}
-                >
-                    ${nameWithMarkers}
-                </span>
-                ${inputs.folder.watchMode.status !== WatchModeStatus.Off ||
-                inputs.folder.watchMode.message
-                    ? html`
-                          <span
-                              class="watch-status"
-                              ${tooltip(
-                                  [
-                                      inputs.folder.watchMode.status === WatchModeStatus.Off
-                                          ? 'Watch mode stopped.'
-                                          : 'Watch mode is on.',
-                                      inputs.folder.watchMode.message,
-                                  ]
-                                      .filter(check.isTruthy)
-                                      .join(' '),
-                                  sidebarTooltipOptions,
-                              )}
-                          >
-                              <${ViraIcon.assign({
-                                  icon: watchModeIcons[inputs.folder.watchMode.status],
-                              })}></${ViraIcon}>
-                          </span>
-                      `
-                    : nothing}
-                <span
-                    class="pr-status"
-                    ${statusTooltip ? tooltip(statusTooltip, sidebarTooltipOptions) : nothing}
+                <div
+                    class="row"
+                    slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                    ?data-active=${inputs.isActive}
+                    ?data-indented=${inputs.isIndented}
+                    ?data-merged=${inputs.folder.prStatus === PrStatus.Merged}
+                    ?data-menu-open=${inputs.isMenuOpen}
                     ${listen('click', () => {
-                        /** The row's own click listener then opens the folder on this tab. */
-                        if (
-                            !showsLocalChanges &&
-                            inputs.folder.prStatus === PrStatus.AwaitingOtherReviews
-                        ) {
-                            localStorageClient.tabByFolder.writeFolder({
-                                folder: inputs.folder.path,
-                                value: FrontendTab.Review,
-                            });
-                        }
+                        dispatch(
+                            new events.activate({
+                                detail: undefined,
+                            }),
+                        );
                     })}
                 >
-                    ${statusIcon
+                    <span class="chips">
+                        ${renderPaneChip('AI', inputs.folder.panes.ai)}
+                    </span>
+                    <span
+                        class="name"
+                        ?data-pr-open=${hasPr && !isPrFinished}
+                        ?data-pr-merged=${hasPr && isPrFinished}
+                    >
+                        ${nameWithMarkers}
+                    </span>
+                    ${inputs.folder.watchMode.status !== WatchModeStatus.Off ||
+                    inputs.folder.watchMode.message
                         ? html`
-                              <${ViraIcon.assign({
-                                  icon: statusIcon,
-                              })}></${ViraIcon}>
+                              <span
+                                  class="watch-status"
+                                  ${tooltip(
+                                      [
+                                          inputs.folder.watchMode.status === WatchModeStatus.Off
+                                              ? 'Watch mode stopped.'
+                                              : 'Watch mode is on.',
+                                          inputs.folder.watchMode.message,
+                                      ]
+                                          .filter(check.isTruthy)
+                                          .join(' '),
+                                      sidebarTooltipOptions,
+                                  )}
+                              >
+                                  <${ViraIcon.assign({
+                                      icon: watchModeIcons[inputs.folder.watchMode.status],
+                                  })}></${ViraIcon}>
+                              </span>
                           `
                         : nothing}
-                </span>
-                <span class="actions" ${listen('click', (event) => event.stopPropagation())}>
-                    <${ViraMenuTrigger}
-                        ${listen(ViraMenuTrigger.events.openChange, (event) => {
-                            dispatch(
-                                new events.menuOpenChange({
-                                    detail: event.detail,
-                                }),
-                            );
+                    <span
+                        class="pr-status"
+                        ${statusTooltip ? tooltip(statusTooltip, sidebarTooltipOptions) : nothing}
+                        ${listen('click', () => {
+                            /** The row's own click listener then opens the folder on this tab. */
+                            if (
+                                !showsLocalChanges &&
+                                inputs.folder.prStatus === PrStatus.AwaitingOtherReviews
+                            ) {
+                                localStorageClient.tabByFolder.writeFolder({
+                                    folder: inputs.folder.path,
+                                    value: FrontendTab.Review,
+                                });
+                            }
                         })}
                     >
-                        <${ViraButton.assign({
-                            icon: LucideEllipsisIcon,
-                            buttonSize: ViraSize.Small,
-                            buttonEmphasis: ViraEmphasis.Subtle,
-                            color: ViraColorVariant.Neutral,
-                        })}
-                            slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                            ${tooltip('Folder actions', sidebarTooltipOptions)}
-                        ></${ViraButton}>
-                        ${renderMenuItemEntries(
-                            buildRowMenuEntries({
-                                folder: inputs.folder,
-                                onSelect(action) {
-                                    dispatch(
-                                        new events.actionSelect({
-                                            detail: action,
-                                        }),
-                                    );
-                                },
-                            }),
-                        )}
-                    </${ViraMenuTrigger}>
-                </span>
-            </div>
+                        ${statusIcon
+                            ? html`
+                                  <${ViraIcon.assign({
+                                      icon: statusIcon,
+                                  })}></${ViraIcon}>
+                              `
+                            : nothing}
+                    </span>
+                </div>
+                ${renderMenuItemEntries(
+                    buildRowMenuEntries({
+                        folder: inputs.folder,
+                        onSelect(action) {
+                            dispatch(
+                                new events.actionSelect({
+                                    detail: action,
+                                }),
+                            );
+                        },
+                    }),
+                )}
+            </${ViraMenuTrigger}>
         `;
     },
 });
