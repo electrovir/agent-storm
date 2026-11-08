@@ -5,7 +5,6 @@ import {
     sessionCloseEndpoint,
     sessionCreateEndpoint,
     sessionListEndpoint,
-    type SessionMeta,
     sessionRenameEndpoint,
     sessionSetAiEndpoint,
 } from '@agent-storm/common';
@@ -13,18 +12,6 @@ import {extractErrorMessage} from '@augment-vir/common';
 import {type EndpointRequestType, HttpMethod} from '@rest-vir/api';
 import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
-
-/**
- * Resolve a 1-based URL index to a live session. An index can outlive the session it referenced
- * (the tab was closed, or the folder's list shrank), so anything out of range falls back to the
- * first session rather than rendering an empty pane.
- */
-export function sessionAtIndex(
-    sessions: ReadonlyArray<Readonly<SessionMeta>>,
-    oneBasedIndex: number,
-): Readonly<SessionMeta> | undefined {
-    return sessions[oneBasedIndex - 1] || sessions[0];
-}
 
 type SessionRequest<Params> = Readonly<Omit<Params, 'folder'>>;
 

@@ -1,6 +1,7 @@
 import {
     gitHubReviewFolderEndpoint,
     ManualReviewStatus,
+    PaneTabKind,
     type ManualReviewState,
     type ReviewQueuePr,
 } from '@agent-storm/common';
@@ -13,10 +14,7 @@ import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, viraThemeByKeys} from 'vira';
 import {fetchApi} from '../../util/api-client.js';
 import {type AppContext} from '../../util/app-context.js';
-import {FrontendTab} from '../../util/frontend-tab.js';
-import {localStorageClient} from '../../util/local-storage-client.js';
 import {type ReviewStart} from '../../util/pane-review.js';
-import {router} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirPaneGroup} from './vir-pane-group.element.js';
@@ -191,42 +189,19 @@ export const VirReviewStage = defineAppElement<{
                     });
                     /**
                      * A PR the viewer already reviewed opens on its Review pane, which shows what
-                     * happened since. Otherwise a started review's first visit opens on its diff
-                     * instead of the AI pane.
+                     * happened since. Otherwise a started review's first visit opens on its diff.
                      */
+                    const uiLayout = host.instanceInputs.context.uiLayout;
                     const openingTab = reviewFolder.pullRequest.hasViewerReviewed
-                        ? host.instanceInputs.context.screenSize === ScreenSize.Mobile
-                            ? FrontendTab.Review
-                            : FrontendTab.Ai
-                        : isStarted && localStorageClient.tabByFolder.readFolder(key) == undefined
-                          ? FrontendTab.Diff
+                        ? PaneTabKind.Review
+                        : isStarted && !uiLayout.value.layout?.tabLayouts[reviewFolder.folder]
+                          ? PaneTabKind.Diff
                           : undefined;
                     if (openingTab) {
-                        localStorageClient.tabByFolder.writeFolder({
-                            folder: key,
-                            value: openingTab,
+                        uiLayout.showPaneTab({
+                            folder: reviewFolder.folder,
+                            kind: openingTab,
                         });
-                        const currentRoute = host.instanceInputs.context.route;
-                        if (
-                            currentRoute.paths.slice(1).join('/') === key &&
-                            (reviewFolder.pullRequest.hasViewerReviewed ||
-                                !currentRoute.search?.tab)
-                        ) {
-                            router.setRoute(
-                                {
-                                    paths: currentRoute.paths,
-                                    search: {
-                                        ...currentRoute.search,
-                                        tab: [
-                                            openingTab,
-                                        ],
-                                    },
-                                },
-                                {
-                                    replace: true,
-                                },
-                            );
-                        }
                     }
                 } catch (error) {
                     /** Selecting the PR again clears the error, which retries. */
@@ -350,7 +325,6 @@ export const VirReviewStage = defineAppElement<{
                                       <${VirPaneGroup.assign({
                                           context: inputs.context,
                                           folder: target.folder,
-                                          memoryKey: target.key,
                                           active: active && inputs.isShown,
                                           reviewPullRequest: target.pullRequest,
                                           reviewStart: target.start,

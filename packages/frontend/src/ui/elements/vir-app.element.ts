@@ -17,6 +17,7 @@ import {createPaneRestarts} from '../../util/pane-restarts.js';
 import {MainTab, router} from '../../util/router.js';
 import {observeScreenSize, ScreenSize} from '../../util/screen-size.js';
 import {applyThemeMode} from '../../util/theme-mode.js';
+import {createUiLayout} from '../../util/ui-layout.js';
 import {trackVisualViewportHeight} from '../../util/visual-viewport.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirAppModals} from './vir-app-modals.element.js';
@@ -38,6 +39,7 @@ export const VirApp = defineAppElement()({
             frontendState: undefined as FrontendStateObservable | undefined,
             folderData,
             paneRestarts: createPaneRestarts(folderData),
+            uiLayout: createUiLayout(folderData),
             /**
              * Corrected in `init`, once there's a host to measure. Avoids a flash of mobile on
              * desktop.
@@ -127,6 +129,7 @@ export const VirApp = defineAppElement()({
     cleanup({state}) {
         state.disposers.forEach((dispose) => dispose());
         state.folderData.destroy();
+        state.uiLayout.destroy();
         state.frontendState?.destroy();
     },
     render({state}) {
@@ -171,6 +174,7 @@ export const VirApp = defineAppElement()({
             themeClient: state.themeClient,
             isDebugTabShown: state.isDebugTabShown,
             paneRestarts: state.paneRestarts,
+            uiLayout: state.uiLayout,
             openModal: state.openModal,
             reviewQueue: state.reviewQueue,
             reviewRetry: state.reviewRetry,

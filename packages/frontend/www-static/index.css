@@ -19,6 +19,9 @@ body {
        directly here so html/body stay in sync. */
     background-color: var(--vira-default-bg, white);
     color: var(--vira-default-fg, black);
+    /* Atkinson Hyperlegible's 500 reads as bold, so Vira's medium text (such as unselected tabs)
+       looked as heavy as its bold text. */
+    --vira-font-weight-medium: 400;
     /* Stop iOS from rubber-banding the whole page when a touch gesture inside the app reaches
        the edge of its container. `overscroll-behavior: none` short-circuits the scroll chain; the
        `overflow: hidden` belt-and-braces blocks the document itself from accepting touch scrolls

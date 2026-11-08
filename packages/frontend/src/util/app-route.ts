@@ -1,15 +1,12 @@
-import {PaneKind, type FolderInfo, type ReviewQueuePr} from '@agent-storm/common';
+import {type FolderInfo, type ReviewQueuePr} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {type FolderDataObservable} from './folder-data.js';
 import {pullRequestRouteKey} from './frontend-state.js';
-import {defaultFrontendTab} from './frontend-tab.js';
 import {
     bareMainTabPaths,
     defaultMainTab,
     MainTab,
     mainTabFromRoute,
-    rememberedSessionIndexForFolder,
-    rememberedTabForFolder,
     router,
     type AppRoute,
     type AppRouteUpdate,
@@ -98,49 +95,17 @@ function pathsForFolder(
     ];
 }
 
-/**
- * Search params restoring the pane tab and session tabs last used under `memoryKey`, rather than
- * carrying the previous selection's params across (landing on another repo's Diff tab, or its AI
- * session 3, is surprising) or resetting everything to the defaults (which loses the pane and
- * session you were deliberately using there). A remembered session that no longer exists is
- * corrected by the pane group once it has the folder's live session list.
- */
-function rememberedPaneSearch(memoryKey: string) {
-    const rememberedTab = rememberedTabForFolder(memoryKey);
-    const aiSession = rememberedSessionIndexForFolder(memoryKey, PaneKind.Ai);
-    const shellSession = rememberedSessionIndexForFolder(memoryKey, PaneKind.Shell);
-    const search = {
-        ...(rememberedTab === defaultFrontendTab
-            ? {}
-            : {
-                  tab: [rememberedTab],
-              }),
-        ...(aiSession > 1
-            ? {
-                  aiSession: [String(aiSession)],
-              }
-            : {}),
-        ...(shellSession > 1
-            ? {
-                  shellSession: [String(shellSession)],
-              }
-            : {}),
-    };
-    return Object.keys(search).length ? search : undefined;
-}
-
-/** The route for selecting `folder`, with the pane tab and session tabs it was last on. */
+/** The route for selecting `folder`. */
 export function routeForFolder(
     folder: Readonly<FolderInfo>,
     folderInfo: ReadonlyMap<string, FolderInfo>,
 ): AppRouteUpdate {
     return {
         paths: pathsForFolder(folder, folderInfo),
-        search: rememberedPaneSearch(folder.path),
     };
 }
 
-/** The route for selecting a pull request, with the pane tab and session tabs it was last on. */
+/** The route for selecting a pull request. */
 export function routeForPullRequest(pullRequest: Readonly<PullRequestRef>): AppRouteUpdate {
     return {
         paths: [
@@ -149,7 +114,6 @@ export function routeForPullRequest(pullRequest: Readonly<PullRequestRef>): AppR
             pullRequest.repoName,
             String(pullRequest.number),
         ],
-        search: rememberedPaneSearch(pullRequestRouteKey(pullRequest)),
     };
 }
 

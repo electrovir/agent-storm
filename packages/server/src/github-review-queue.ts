@@ -72,6 +72,7 @@ import {
     toReviewFolder,
 } from './manual-review-state.js';
 import {getPaneStatusLookup} from './pty.js';
+import {deleteFolderState} from './ui-layout.js';
 
 const githubUserFields = {
     login: '',
@@ -637,6 +638,7 @@ async function deleteClosedReviewFolders(queuedFolders: ReadonlyArray<string>) {
             })
         ).flat();
         await Promise.all(closedFolders.map(deleteReviewFolder));
+        await Promise.all(closedFolders.map(deleteFolderState));
         if (closedFolders.length) {
             log.info(
                 [

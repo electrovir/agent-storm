@@ -112,10 +112,11 @@ export const VirReviewPaneActions = defineAppElement<{
                 return 'Not started';
             } else if (inputs.review.isPending) {
                 return pendingStatusLabels[inputs.review.status];
+            } else {
+                return inputs.review.headSha
+                    ? `${statusLabels[inputs.review.status]} at ${inputs.review.headSha.slice(0, 7)}`
+                    : statusLabels[inputs.review.status];
             }
-            return inputs.review.headSha
-                ? `${statusLabels[inputs.review.status]} at ${inputs.review.headSha.slice(0, 7)}`
-                : statusLabels[inputs.review.status];
         }
 
         return html`

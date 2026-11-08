@@ -1,4 +1,4 @@
-import {css, html, listen, nothing} from 'element-vir';
+import {css, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {ViraButton, ViraColorVariant, ViraSize} from 'vira';
 import {ReviewVerdict, type FrontendStateObservable} from '../../util/frontend-state.js';
 import {DiffView} from '../../util/pane-layout.js';
@@ -23,6 +23,8 @@ export const VirPaneDiff = defineAppElement<{
     isReviewFolder: boolean;
     frontendState: FrontendStateObservable | undefined;
     screenSize: ScreenSize;
+    /** Picks which diff shows. Kept reachable while the manual review is starting. */
+    sourcePicker?: HtmlInterpolation | undefined;
 }>()({
     tagName: 'vir-pane-diff',
     styles: css`
@@ -49,6 +51,9 @@ export const VirPaneDiff = defineAppElement<{
         }
 
         .starting-message {
+            display: flex;
+            align-items: center;
+            gap: 8px;
             padding: 16px;
             font-size: 12px;
         }
@@ -97,6 +102,7 @@ export const VirPaneDiff = defineAppElement<{
                     active: isSourceShown,
                     screenSize: inputs.screenSize,
                     sidebarHeader: inputs.isReviewFolder ? verdictButtons : undefined,
+                    toolbarTrailing: inputs.sourcePicker,
                     enableComments: inputs.isReviewFolder,
                 })}></${VirDiffPane}>
             </div>
@@ -111,6 +117,7 @@ export const VirPaneDiff = defineAppElement<{
                               active: isManualReviewChosen,
                               screenSize: inputs.screenSize,
                               sidebarHeader: verdictButtons,
+                              toolbarTrailing: inputs.sourcePicker,
                               enableComments: true,
                           })}></${VirDiffPane}>
                       </div>
@@ -118,7 +125,10 @@ export const VirPaneDiff = defineAppElement<{
                 : nothing}
             ${isManualReviewChosen && !inputs.isReviewCopyReady
                 ? html`
-                      <div class="starting-message">Starting the manual review…</div>
+                      <div class="starting-message">
+                          ${inputs.sourcePicker}
+                          <span>Starting the manual review…</span>
+                      </div>
                   `
                 : nothing}
         `;

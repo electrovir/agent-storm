@@ -75,6 +75,12 @@ export const VirBuildSidebar = defineAppElement<{
                         router.setRoute(routeForFolder(folder, folderInfo));
                     }
                 })}
+                ${listen(VirSidebar.events.paneTabRequested, (event) => {
+                    inputs.context.uiLayout.showPaneTab({
+                        folder: event.detail.folder,
+                        kind: event.detail.kind,
+                    });
+                })}
                 ${listen(VirSidebar.events.foldersRemoved, async (event) => {
                     /**
                      * Killed panes and hidden repos are still in the folder list, so everything

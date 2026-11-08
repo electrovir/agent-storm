@@ -32,6 +32,7 @@ import {
     gitStageHunkEndpoint,
     hideRepoEndpoint,
     killPanesEndpoint,
+    mainTabOrderSaveEndpoint,
     manualReviewCopyEndpoint,
     manualReviewStateEndpoint,
     paneInputEndpoint,
@@ -48,7 +49,9 @@ import {
     sessionListEndpoint,
     sessionRenameEndpoint,
     sessionSetAiEndpoint,
+    tabLayoutSaveEndpoint,
     touchRepoEndpoint,
+    uiLayoutEndpoint,
     updateCheckEndpoint,
     updateReviewCommentEndpoint,
     uploadEndpoint,
@@ -164,6 +167,14 @@ import {
     setFolderSessionAi,
     startNewConversation,
 } from './sessions.js';
+import {
+    deleteFolderState,
+    loadUiLayout,
+    pruneFolderStates,
+    readUiLayoutRevision,
+    saveMainTabOrder,
+    saveTabLayout,
+} from './ui-layout.js';
 import {getUpdateStatus} from './update-check.js';
 import {saveUpload} from './uploads.js';
 import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
@@ -259,6 +270,7 @@ await migrateReviewFolders({
     ],
 });
 void sweepDeletingReviewFolders();
+void pruneFolderStates();
 
 await ensureDaemon();
 
@@ -338,6 +350,36 @@ const reviewConfigImplementation = implementor.implementEndpoint(reviewConfigEnd
     },
 });
 
+const uiLayoutImplementation = implementor.implementEndpoint(uiLayoutEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await loadUiLayout(),
+            },
+        };
+    },
+});
+
+const tabLayoutSaveImplementation = implementor.implementEndpoint(tabLayoutSaveEndpoint, {
+    async [HttpMethod.Put]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await saveTabLayout(requestData),
+            },
+        };
+    },
+});
+
+const mainTabOrderSaveImplementation = implementor.implementEndpoint(mainTabOrderSaveEndpoint, {
+    async [HttpMethod.Put]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await saveMainTabOrder(requestData.order),
+            },
+        };
+    },
+});
+
 const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
     async [HttpMethod.Get]() {
         return {
@@ -351,6 +393,7 @@ const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
                     }),
                     folderActivation: getFolderActivation(),
                     configRevision: await readConfigRevision(),
+                    uiLayoutRevision: readUiLayoutRevision(),
                 },
             },
         };
@@ -413,6 +456,7 @@ const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktre
          */
         await forgetFolderSessions(requestData.worktreePath);
         forgetFolderActivity(requestData.worktreePath);
+        await deleteFolderState(requestData.worktreePath);
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
@@ -1306,6 +1350,9 @@ const implementation = implementApi<undefined>()(agentStormService, {
     endpoints: [
         configImplementation,
         reviewConfigImplementation,
+        uiLayoutImplementation,
+        tabLayoutSaveImplementation,
+        mainTabOrderSaveImplementation,
         foldersImplementation,
         updateCheckImplementation,
         createWorktreeImplementation,

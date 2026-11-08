@@ -1,6 +1,12 @@
 import {type FolderInfo} from '@agent-storm/common';
 import {css, defineElementEvent, html, listen} from 'element-vir';
-import {PopoverTrigger, renderMenuItemEntries, ViraMenuTrigger, viraThemeByKeys} from 'vira';
+import {
+    PopoverAnchor,
+    PopoverTrigger,
+    renderMenuItemEntries,
+    ViraMenuTrigger,
+    viraThemeByKeys,
+} from 'vira';
 import {defineAppElement} from '../define-app-element.js';
 import {sidebarContextMenuOffset, sidebarFolderMenuStyles} from './sidebar-menu-styles.js';
 import {buildRepoMenuEntries, type SidebarFolderAction} from './sidebar-menus.js';
@@ -64,6 +70,7 @@ export const VirSidebarRepoHeader = defineAppElement<{
         return html`
             <${ViraMenuTrigger.assign({
                 trigger: PopoverTrigger.ContextMenu,
+                popoverAnchor: PopoverAnchor.Mouse,
                 popoverOffset: sidebarContextMenuOffset,
             })}
                 ${listen(ViraMenuTrigger.events.openChange, (event) => {

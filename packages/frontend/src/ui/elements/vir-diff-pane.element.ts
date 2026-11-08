@@ -43,6 +43,8 @@ export const VirDiffPane = defineAppElement<{
     screenSize: ScreenSize;
     /** Shown above the desktop file list. */
     sidebarHeader?: HtmlInterpolation | undefined;
+    /** Shown at the end of the toolbar. */
+    toolbarTrailing?: HtmlInterpolation | undefined;
     /**
      * Show and take review comments. Only a manual review's checkout has a review for them to post
      * with; anywhere else they would be written to a review that never gets submitted.
@@ -222,6 +224,7 @@ export const VirDiffPane = defineAppElement<{
                 hasChunks: state.chunkCount > 0,
                 unified,
                 diffSettings,
+                trailing: inputs.toolbarTrailing,
             })}
                 ${listen(VirDiffToolbar.events.fileStep, async (event) => {
                     await controller.stepFile(event.detail);

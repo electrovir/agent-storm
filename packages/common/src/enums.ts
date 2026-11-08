@@ -14,6 +14,30 @@ export const paneKindRunsAi: Readonly<Record<PaneKind, boolean>> = {
     [PaneKind.Shell]: false,
 };
 
+/** What a tab in a folder's pane layout shows. AI and shell tabs each run one terminal session. */
+export enum PaneTabKind {
+    Ai = 'ai',
+    Shell = 'shell',
+    Diff = 'diff',
+    Review = 'review',
+}
+
+/** How a split in a pane layout lays out its children. */
+export enum SplitDirection {
+    /** Side by side, left to right. */
+    Row = 'row',
+    /** Stacked, top to bottom. */
+    Column = 'column',
+}
+
+/** The edge of a tab group a dragged tab is dropped on, which splits the group on that side. */
+export enum SplitEdge {
+    Left = 'left',
+    Right = 'right',
+    Top = 'top',
+    Bottom = 'bottom',
+}
+
 export enum PaneStatus {
     /** No PTY has ever been started for this pane. */
     None = 'none',

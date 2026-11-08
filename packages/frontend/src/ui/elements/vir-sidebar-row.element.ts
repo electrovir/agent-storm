@@ -1,4 +1,4 @@
-import {type FolderInfo, PrStatus, WatchModeStatus} from '@agent-storm/common';
+import {type FolderInfo, PaneTabKind, PrStatus, WatchModeStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
@@ -6,6 +6,7 @@ import {
     createSizedIcon,
     LucideEyeIcon,
     LucideEyeOffIcon,
+    PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
     tooltip,
@@ -15,8 +16,6 @@ import {
     viraThemeByKeys,
     ViraThemeColorName,
 } from 'vira';
-import {FrontendTab} from '../../util/frontend-tab.js';
-import {localStorageClient} from '../../util/local-storage-client.js';
 import {
     localChangesIcon,
     localChangesTooltip,
@@ -64,6 +63,8 @@ export const VirSidebarRow = defineAppElement<{
     tagName: 'vir-sidebar-row',
     events: {
         activate: defineElementEvent<void>(),
+        /** The folder should show a tab of this kind when it opens. */
+        paneTabRequested: defineElementEvent<PaneTabKind>(),
         menuOpenChange: defineElementEvent<boolean>(),
         actionSelect: defineElementEvent<SidebarFolderAction>(),
     },
@@ -210,6 +211,7 @@ export const VirSidebarRow = defineAppElement<{
         return html`
             <${ViraMenuTrigger.assign({
                 trigger: PopoverTrigger.ContextMenu,
+                popoverAnchor: PopoverAnchor.Mouse,
                 popoverOffset: sidebarContextMenuOffset,
             })}
                 ${listen(ViraMenuTrigger.events.openChange, (event) => {
@@ -275,10 +277,11 @@ export const VirSidebarRow = defineAppElement<{
                                 !showsLocalChanges &&
                                 inputs.folder.prStatus === PrStatus.AwaitingOtherReviews
                             ) {
-                                localStorageClient.tabByFolder.writeFolder({
-                                    folder: inputs.folder.path,
-                                    value: FrontendTab.Review,
-                                });
+                                dispatch(
+                                    new events.paneTabRequested({
+                                        detail: PaneTabKind.Review,
+                                    }),
+                                );
                             }
                         })}
                     >

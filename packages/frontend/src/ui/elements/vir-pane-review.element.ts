@@ -4,10 +4,7 @@ import {type PaneReviewObservable} from '../../util/pane-review.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirReviewPane} from './vir-review-pane.element.js';
 
-/**
- * A pane group's Review pane: the manual review of the folder's PR, or why there's no PR to review.
- * The host is the pane, so the pane group sizes and hides it directly.
- */
+/** A pane group's Review pane: the manual review of the folder's PR, or why there's no PR to review. */
 export const VirPaneReview = defineAppElement<{
     folder: string;
     paneReview: PaneReviewObservable;
@@ -19,6 +16,7 @@ export const VirPaneReview = defineAppElement<{
     tagName: 'vir-pane-review',
     styles: css`
         :host {
+            flex-grow: 1;
             flex-basis: 0;
             min-width: 0;
             min-height: 0;

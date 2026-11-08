@@ -1,4 +1,10 @@
-import {type FolderInfo, PaneStatus, type PrStatus, SidebarSorting} from '@agent-storm/common';
+import {
+    type FolderInfo,
+    PaneStatus,
+    type PaneTabKind,
+    type PrStatus,
+    SidebarSorting,
+} from '@agent-storm/common';
 import {colorCss} from '@electrovir/color';
 import {getNowInUtcTimezone, toTimestamp} from 'date-vir';
 import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
@@ -51,6 +57,13 @@ export const VirSidebar = defineAppElement<{
          * updates accordingly.
          */
         folderActivated: defineElementEvent<string>(),
+        /** Sent before `folderActivated` when the folder should open on a tab of this kind. */
+        paneTabRequested: defineElementEvent<
+            Readonly<{
+                folder: string;
+                kind: PaneTabKind;
+            }>
+        >(),
         /**
          * Emitted just after the user confirms a worktree-delete or repo-remove, before the API
          * trip starts. The detail carries every folder path that is now gone (the removed item
@@ -321,6 +334,16 @@ export const VirSidebar = defineAppElement<{
                     ${listen(VirSidebarRow.events.activate, (event) => {
                         event.stopImmediatePropagation();
                         emitFolderActivated(folder.path);
+                    })}
+                    ${listen(VirSidebarRow.events.paneTabRequested, (event) => {
+                        dispatch(
+                            new events.paneTabRequested({
+                                detail: {
+                                    folder: folder.path,
+                                    kind: event.detail,
+                                },
+                            }),
+                        );
                     })}
                     ${listen(VirSidebarRow.events.menuOpenChange, (event) => {
                         updateState({

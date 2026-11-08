@@ -184,7 +184,6 @@ describe(resolveAppRoute.name, () => {
                         'multi',
                         'feature',
                     ],
-                    search: undefined,
                 },
                 replace: true,
             },

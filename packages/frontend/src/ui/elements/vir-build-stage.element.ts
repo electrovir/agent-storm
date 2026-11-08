@@ -140,7 +140,6 @@ export const VirBuildStage = defineAppElement<{
                             <${VirPaneGroup.assign({
                                 context: inputs.context,
                                 folder,
-                                memoryKey: folder,
                                 active: folder === inputs.activeFolder,
                             })}></${VirPaneGroup}>
                         </div>

@@ -20,7 +20,7 @@ import {
 } from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
 import {convertDuration} from 'date-vir';
-import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {
     checkValidShape,
@@ -104,6 +104,8 @@ const watchEntryShape = defineShape({
      */
     idleStateKey: '',
     failureCount: 0,
+    /** Passes in a row whose Watch tab exited before finishing. */
+    exitedPassCount: 0,
     /** The AI tab passes run in. Empty until the first pass. */
     watchSessionId: '',
     /** Unix milliseconds. */
@@ -636,8 +638,17 @@ async function startPass({
     }
     const orderedTasks = watchTaskOrder.filter((task) => tasks.includes(task));
     const ticketCandidates = findTicketCandidates(prCheck, branch);
-    const passFilePath = join(watchModePassDir, `${createPassFileName(folder)}.md`);
-    await mkdir(watchModePassDir, {
+    /**
+     * A new path every pass. With the same path each time, a long-running Watch tab answered from
+     * the copy it read in an earlier pass instead of reading the file again.
+     */
+    const passDir = join(watchModePassDir, createPassFileName(folder));
+    const passFilePath = join(passDir, `${Date.now()}.md`);
+    await rm(passDir, {
+        recursive: true,
+        force: true,
+    });
+    await mkdir(passDir, {
         recursive: true,
     });
     await writeFile(
@@ -682,7 +693,7 @@ async function startPass({
         folder,
         kind: PaneKind.Ai,
         sessionId,
-        text: `Agent-storm watch mode pass: follow ${watchModeInstructionsPath} for the tasks and PR check in ${passFilePath}.`,
+        text: `Agent-storm watch mode pass for: ${orderedTasks.join(', ')}. Read this pass's new file ${passFilePath} and follow ${watchModeInstructionsPath} for its tasks and PR check.`,
     });
     await updateEntry(folder, {
         status: WatchModeStatus.Working,
@@ -1024,9 +1035,9 @@ async function checkFolder({
         });
         return;
     } else if (prCheck.isAwaitingViewerReview) {
-        await stopWatching({
-            folder,
-            message: 'Only your review is left. The PR is in your Review tab.',
+        await updateEntry(folder, {
+            status: WatchModeStatus.Watching,
+            message: 'Waiting for your review. The PR is in your Review tab.',
         });
         return;
     }
@@ -1148,10 +1159,10 @@ async function runFolder(folder: string) {
         });
         if (entry.pass && !passResult) {
             return;
-        } else if (passResult?.isExited) {
+        } else if (passResult?.isExited && entry.exitedPassCount) {
             await stopWatching({
                 folder,
-                message: 'The Watch tab exited during a pass.',
+                message: 'The Watch tab exited during two passes in a row.',
             });
             return;
         } else if (
@@ -1184,12 +1195,16 @@ async function runFolder(folder: string) {
         } else if (passResult) {
             await updateEntry(folder, {
                 pass: undefined,
+                exitedPassCount: passResult.isExited ? entry.exitedPassCount + 1 : 0,
             });
-            await compactWatchSession({
-                deps,
-                folder,
-                sessionId: entry.watchSessionId,
-            });
+            /** An exited tab has nothing to compact, and the next pass restarts it. */
+            if (!passResult.isExited) {
+                await compactWatchSession({
+                    deps,
+                    folder,
+                    sessionId: entry.watchSessionId,
+                });
+            }
         }
         const checkedEntry = await updateEntry(folder, {
             lastCheckAt: Date.now(),
@@ -1198,7 +1213,8 @@ async function runFolder(folder: string) {
             deps,
             folder,
             entry: checkedEntry,
-            finishedPass: entry.pass,
+            /** An exited pass may not have finished its tasks, so they get sent again. */
+            finishedPass: passResult?.isExited ? undefined : entry.pass,
         });
     } catch (error) {
         const failureCount = (watchState.entries[folder]?.failureCount || 0) + 1;
@@ -1261,8 +1277,8 @@ async function loadEntries() {
 }
 
 /**
- * Turns watch mode back on for folders the removed "passes in a row pushed nothing" limit stopped,
- * since a pass that pushes nothing now just waits for the PR to change.
+ * Turns watch mode back on for folders it used to stop on its own and now keeps watching: after
+ * passes in a row pushed nothing, and when only the user's review was left.
  */
 async function resumeIdleStoppedFolders() {
     await Promise.all(
@@ -1271,7 +1287,15 @@ async function resumeIdleStoppedFolders() {
                 ([
                     ,
                     entry,
-                ]) => !entry.isEnabled && entry.message.includes('passes in a row pushed nothing'),
+                ]) => {
+                    return (
+                        !entry.isEnabled &&
+                        [
+                            'passes in a row pushed nothing',
+                            'Only your review is left',
+                        ].some((message) => entry.message.includes(message))
+                    );
+                },
             )
             .map(async ([folder]) => {
                 const isFolder = await stat(folder)

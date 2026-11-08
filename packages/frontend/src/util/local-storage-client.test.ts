@@ -1,56 +1,37 @@
-import {PaneKind} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {FrontendTab} from './frontend-tab.js';
 import {localStorageClient, scrollbackLimit} from './local-storage-client.js';
+import {DiffView} from './pane-layout.js';
 
 describe('localStorageClient', () => {
     it('writes and removes one folder’s entry without touching the others', () => {
-        localStorageClient.tabByFolder.clear();
-        localStorageClient.tabByFolder.writeFolder({
+        localStorageClient.diffViewByFolder.clear();
+        localStorageClient.diffViewByFolder.writeFolder({
             folder: '/repo-a',
-            value: FrontendTab.Diff,
+            value: DiffView.ManualReview,
         });
-        localStorageClient.tabByFolder.writeFolder({
+        localStorageClient.diffViewByFolder.writeFolder({
             folder: '/repo-b',
-            value: FrontendTab.Shell,
+            value: DiffView.Source,
         });
-        localStorageClient.tabByFolder.writeFolder({
+        localStorageClient.diffViewByFolder.writeFolder({
             folder: '/repo-a',
             value: undefined,
         });
-        assert.deepEquals(localStorageClient.tabByFolder.read(), {
-            '/repo-b': FrontendTab.Shell,
+        assert.deepEquals(localStorageClient.diffViewByFolder.read(), {
+            '/repo-b': DiffView.Source,
         });
-        localStorageClient.tabByFolder.clear();
+        localStorageClient.diffViewByFolder.clear();
     });
     it('discards a stored map that does not match its shape', () => {
         globalThis.localStorage.setItem(
-            localStorageClient.tabByFolder.key,
+            localStorageClient.diffViewByFolder.key,
             JSON.stringify({
-                '/repo': 'not-a-tab',
+                '/repo': 'not-a-view',
             }),
         );
-        globalThis.localStorage.setItem(
-            localStorageClient.sessionIndexByFolder.key,
-            JSON.stringify({
-                '/repo': {
-                    [PaneKind.Ai]: 'two',
-                },
-            }),
-        );
-        assert.deepEquals(
-            [
-                localStorageClient.tabByFolder.read(),
-                localStorageClient.sessionIndexByFolder.read(),
-            ],
-            [
-                {},
-                {},
-            ],
-        );
-        localStorageClient.tabByFolder.clear();
-        localStorageClient.sessionIndexByFolder.clear();
+        assert.deepEquals(localStorageClient.diffViewByFolder.read(), {});
+        localStorageClient.diffViewByFolder.clear();
     });
     it('clamps a stored number into its bounds and rounds integer settings', () => {
         globalThis.localStorage.setItem(localStorageClient.scrollbackLimit.key, '12.6');

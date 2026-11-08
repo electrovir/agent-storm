@@ -1,7 +1,7 @@
 // cspell:words pilcrow
 
 import {DiffLayout, type GitDiffSide, type GitDiffStatus} from '@agent-storm/common';
-import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {
     LucideChevronDownIcon,
     LucideChevronLeftIcon,
@@ -51,6 +51,8 @@ export const VirDiffToolbar = defineAppElement<{
     /** Whether the diff currently shows inline, which `diffSettings.diffLayout` alone can't say. */
     unified: boolean;
     diffSettings: DiffSettings;
+    /** Shown after the other buttons. */
+    trailing?: HtmlInterpolation | undefined;
 }>()({
     tagName: 'vir-diff-toolbar',
     events: {
@@ -100,6 +102,12 @@ export const VirDiffToolbar = defineAppElement<{
                 flex-grow: 0;
                 flex-shrink: 1;
                 flex-basis: 100%;
+            }
+
+            .toolbar-trailing {
+                display: flex;
+                flex-grow: 1;
+                justify-content: flex-end;
             }
 
             .toolbar-actions {
@@ -292,6 +300,11 @@ export const VirDiffToolbar = defineAppElement<{
             <div class="toolbar-actions">
                 ${navigationTemplate} ${settingsTemplate} ${stageTemplate}
             </div>
+            ${inputs.trailing
+                ? html`
+                      <div class="toolbar-trailing">${inputs.trailing}</div>
+                  `
+                : nothing}
         `;
     },
 });

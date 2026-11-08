@@ -1,4 +1,4 @@
-import {configShape, folderInfoShape, GitDiffSide, PaneKind} from '@agent-storm/common';
+import {configShape, folderInfoShape, GitDiffSide, tabSelectionShape} from '@agent-storm/common';
 import {clamp, omitObjectKeys, type PartialWithUndefined} from '@augment-vir/common';
 import {
     checkValidShape,
@@ -9,7 +9,6 @@ import {
     unionShape,
     type ShapeInitType,
 } from 'object-shape-tester';
-import {FrontendTab} from './frontend-tab.js';
 import {DiffView} from './pane-layout.js';
 
 type Listener<T> = (value: T) => void;
@@ -97,12 +96,6 @@ export const diffSidebarWidth = {
     min: 140,
     max: 700,
     default: 260,
-} as const;
-
-export const paneSplit = {
-    min: 0.1,
-    max: 0.9,
-    default: 0.5,
 } as const;
 
 export const scrollbackLimit = {
@@ -225,22 +218,6 @@ export const localStorageClient = {
         key: 'agent-storm:diff-sidebar-width',
         bounds: diffSidebarWidth,
     }),
-    paneSplit: defineNumberSetting({
-        key: 'agent-storm:pane-split',
-        bounds: paneSplit,
-    }),
-    reviewPaneSplit: defineNumberSetting({
-        key: 'agent-storm:review-pane-split',
-        bounds: paneSplit,
-    }),
-    /**
-     * Which tab each folder was last on. Persisted so switching away from a folder and back returns
-     * to the pane you were using there, rather than resetting to AI.
-     */
-    tabByFolder: defineFolderSetting({
-        key: 'agent-storm:tab-by-folder',
-        valueShape: enumShape(FrontendTab),
-    }),
     /**
      * Which file each folder's diff pane was last showing, as that pane's own side-plus-path select
      * value. A value naming a file that no longer has a diff is discarded when the pane next reads
@@ -265,6 +242,14 @@ export const localStorageClient = {
         valueShape: enumShape(DiffView),
     }),
     /**
+     * The tab selection the last window to change one had in each folder, which a newly opened
+     * window starts from.
+     */
+    tabSelectionByFolder: defineFolderSetting({
+        key: 'agent-storm:tab-selection-by-folder',
+        valueShape: tabSelectionShape,
+    }),
+    /**
      * The repos sidebar's last loaded data. A page reload (which the backend watchdog triggers
      * after any backend outage) renders this right away instead of an empty list.
      */
@@ -278,18 +263,6 @@ export const localStorageClient = {
         serialize(value) {
             return value && JSON.stringify(value);
         },
-    }),
-    /**
-     * Which session tab each folder was last on, per pane kind: `{'/path/to/repo': {ai: 2}}`.
-     * 1-based, matching the URL params.
-     */
-    sessionIndexByFolder: defineFolderSetting({
-        key: 'agent-storm:session-index-by-folder',
-        valueShape: recordShape({
-            keys: enumShape(PaneKind),
-            values: 0,
-            partial: true,
-        }),
     }),
     showDebugTab: defineSetting<boolean>({
         key: 'agent-storm:show-debug-tab',

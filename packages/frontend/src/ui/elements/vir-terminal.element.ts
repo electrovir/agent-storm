@@ -74,6 +74,13 @@ export const VirTerminal = defineAppElement<{
     showAccessoryKeys: boolean;
     /** Take keyboard focus as soon as the terminal opens. Read once, when the element mounts. */
     focusOnMount: boolean;
+    /**
+     * Whether this terminal's tab is shown in the pane group the user last focused. Unfocused
+     * terminals dim, so it's clear which one keystrokes go to. Passed in rather than read from
+     * :focus-within because xterm's hidden textarea blurs on window blur and doesn't reliably
+     * refocus on return.
+     */
+    isFocused: boolean;
 }>()({
     tagName: 'vir-terminal',
     state() {
@@ -120,6 +127,9 @@ export const VirTerminal = defineAppElement<{
         'vir-terminal-dark'({state}) {
             return state.useDarkTheme;
         },
+        'vir-terminal-unfocused'({inputs}) {
+            return !inputs.isFocused;
+        },
     },
     styles({hostClasses}) {
         return css`
@@ -130,6 +140,7 @@ export const VirTerminal = defineAppElement<{
                 width: 100%;
                 height: 100%;
                 box-sizing: border-box;
+                transition: filter 120ms ease;
                 /* Matches xterm's own background so the strip left over when the terminal doesn't
                divide evenly into cells doesn't show a different color than the cells above it. */
                 background: ${unsafeCSS(terminalThemes.light.background || 'transparent')};
@@ -137,6 +148,10 @@ export const VirTerminal = defineAppElement<{
 
             ${hostClasses['vir-terminal-dark'].selector} {
                 background: ${unsafeCSS(terminalThemes.dark.background || 'transparent')};
+            }
+
+            ${hostClasses['vir-terminal-unfocused'].selector} {
+                filter: brightness(0.75) saturate(0.9);
             }
 
             .terminal-host {
@@ -165,6 +180,11 @@ export const VirTerminal = defineAppElement<{
         .xterm,
         .xterm * {
                 cursor: text;
+            }
+
+            ${hostClasses['vir-terminal-unfocused'].selector} .xterm,
+            ${hostClasses['vir-terminal-unfocused'].selector} .xterm * {
+                cursor: default;
             }
 
             .upload-error {

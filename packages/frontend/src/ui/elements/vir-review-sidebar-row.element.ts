@@ -6,6 +6,7 @@ import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen, nothing, unsafeHTML} from 'element-vir';
 import {
     LucideRotateCwIcon,
+    PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
     tooltip,
@@ -174,6 +175,7 @@ export const VirReviewSidebarRow = defineAppElement<{
         return html`
             <${ViraMenuTrigger.assign({
                 trigger: PopoverTrigger.ContextMenu,
+                popoverAnchor: PopoverAnchor.Mouse,
                 popoverOffset: sidebarContextMenuOffset,
             })}
                 ${listen(ViraMenuTrigger.events.openChange, (event) => {

@@ -97,8 +97,8 @@ export function startReviewAutoStart(deps: Readonly<ReviewAutoStartDeps>) {
 /**
  * Restarts a finished review only when the viewer's review request is new since the list's previous
  * update, or, on the list's first update, when the verdict is older than
- * {@link postedVerdictListingLag}. Posting a verdict clears the request on GitHub, but the search can
- * keep listing it for an update or two, which would otherwise restart the review that was just
+ * {@link postedVerdictListingLag}. Posting a verdict clears the request on GitHub, but the search
+ * can keep listing it for an update or two, which would otherwise restart the review that was just
  * posted.
  */
 function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
@@ -136,14 +136,17 @@ function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
             ...candidates.map(({pullRequest}) => pullRequest.url),
         ]);
         /** Starting an AI takes a while, and the queue's next update shouldn't wait on it. */
-        void awaitedForEach(candidates, async ({pullRequest, isReRequested, isAwaitingAtStartup}) => {
-            await autoStartReview({
-                pullRequest,
-                isReRequested,
-                isAwaitingAtStartup,
-                deps,
-            });
-        });
+        void awaitedForEach(
+            candidates,
+            async ({pullRequest, isReRequested, isAwaitingAtStartup}) => {
+                await autoStartReview({
+                    pullRequest,
+                    isReRequested,
+                    isAwaitingAtStartup,
+                    deps,
+                });
+            },
+        );
         void awaitedForEach(reviewablePrs, async (pullRequest) => {
             await restartOutdatedReview({
                 pullRequest,

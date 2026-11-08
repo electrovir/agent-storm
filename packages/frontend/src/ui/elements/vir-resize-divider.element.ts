@@ -1,19 +1,30 @@
 // cspell:words grabbable
 
+import {type PartialWithUndefined} from '@augment-vir/common';
 import {css, defineElementEvent, html, listen} from 'element-vir';
 import {tooltip, viraThemeByKeys} from 'vira';
 import {defineAppElement} from '../define-app-element.js';
 
 /**
- * A vertical bar between two side-by-side areas that the user drags to resize them, and
- * double-clicks to reset. The parent does the resizing from the events.
+ * A vertical bar between two side-by-side areas (or with `isHorizontal`, a horizontal bar between
+ * two stacked areas) that the user drags to resize them, and double-clicks to reset. The parent
+ * does the resizing from the events.
  */
-export const VirResizeDivider = defineAppElement()({
+export const VirResizeDivider = defineAppElement<
+    PartialWithUndefined<{
+        isHorizontal: boolean;
+    }>
+>()({
     tagName: 'vir-resize-divider',
     events: {
         dragStarted: defineElementEvent<void>(),
-        /** `deltaX` is measured from where the drag started. */
-        dragged: defineElementEvent<{clientX: number; deltaX: number}>(),
+        /** The deltas are measured from where the drag started. */
+        dragged: defineElementEvent<{
+            clientX: number;
+            deltaX: number;
+            clientY: number;
+            deltaY: number;
+        }>(),
         dragEnded: defineElementEvent<void>(),
         resetRequested: defineElementEvent<void>(),
     },
@@ -25,6 +36,9 @@ export const VirResizeDivider = defineAppElement()({
     hostClasses: {
         'vir-resize-divider-dragging'({state}) {
             return state.isDragging;
+        },
+        'vir-resize-divider-horizontal'({inputs}) {
+            return !!inputs.isHorizontal;
         },
     },
     styles({hostClasses}) {
@@ -56,9 +70,22 @@ export const VirResizeDivider = defineAppElement()({
             ${hostClasses['vir-resize-divider-dragging'].selector} {
                 background: ${viraThemeByKeys.grey.foreground.body.foreground.value};
             }
+
+            ${hostClasses['vir-resize-divider-horizontal'].selector} {
+                width: auto;
+                height: 4px;
+                cursor: row-resize;
+
+                & .hit-area {
+                    top: -5px;
+                    bottom: -5px;
+                    left: 0;
+                    right: 0;
+                }
+            }
         `;
     },
-    render({updateState, dispatch, events}) {
+    render({inputs, updateState, dispatch, events}) {
         function onPointerDown(event: PointerEvent) {
             event.preventDefault();
             /**
@@ -77,7 +104,7 @@ export const VirResizeDivider = defineAppElement()({
             const previousUserSelect = document.body.style.userSelect;
             const previousCursor = document.body.style.cursor;
             document.body.style.userSelect = 'none';
-            document.body.style.cursor = 'col-resize';
+            document.body.style.cursor = inputs.isHorizontal ? 'row-resize' : 'col-resize';
 
             updateState({
                 isDragging: true,
@@ -97,6 +124,8 @@ export const VirResizeDivider = defineAppElement()({
                         detail: {
                             clientX: moveEvent.clientX,
                             deltaX: moveEvent.clientX - event.clientX,
+                            clientY: moveEvent.clientY,
+                            deltaY: moveEvent.clientY - event.clientY,
                         },
                     }),
                 );
@@ -130,7 +159,7 @@ export const VirResizeDivider = defineAppElement()({
             <div
                 class="hit-area"
                 role="separator"
-                aria-orientation="vertical"
+                aria-orientation=${inputs.isHorizontal ? 'horizontal' : 'vertical'}
                 ${tooltip('Drag to resize. Double-click to reset.')}
                 ${listen('pointerdown', onPointerDown)}
                 ${listen('dblclick', () => {

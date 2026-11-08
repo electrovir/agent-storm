@@ -187,6 +187,11 @@ export const agentLaunchScriptPath = resolve(import.meta.dirname, 'launch-sessio
 /** The Review tab's settings, managed from its sidebar menus. */
 export const reviewConfigPath = resolve(userDataDir, 'review-config.json');
 
+/** The main tab order, shared by every window. */
+export const uiLayoutPath = resolve(userDataDir, 'ui-layout.json');
+/** Each folder's UI state, one directory per folder, deleted with the folder. */
+export const folderStatesDir = resolve(userDataDir, 'folders');
+
 /**
  * Where daily snapshots of {@link configPath} are written. Lives alongside the config (not in
  * `.not-committed/`, which is per-checkout) so backups survive a server reinstall as long as the

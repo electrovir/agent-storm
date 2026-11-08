@@ -1,5 +1,13 @@
-import {css, html, listen} from 'element-vir';
-import {noUserSelect, viraThemeByKeys} from 'vira';
+import {check} from '@augment-vir/assert';
+import {css, html, listen, nothing} from 'element-vir';
+import {type FullSpaRoute} from 'spa-router-vir';
+import {
+    ViraTabs,
+    ViraTabsBarDirection,
+    viraThemeByKeys,
+    ViraThemeColorName,
+    type ViraTab,
+} from 'vira';
 import {type AppContext} from '../../util/app-context.js';
 import {getShownPrQueues, PrQueueKind} from '../../util/frontend-state.js';
 import {
@@ -8,146 +16,266 @@ import {
     mainTabLabels,
     orderedMainTabs,
     router,
+    type AppRouteUpdate,
 } from '../../util/router.js';
+import {
+    countElementsBefore,
+    findElementIndexAt,
+    listInlineTabElements,
+    trackPointerDrag,
+} from '../../util/tab-drag.js';
 import {defineAppElement} from '../define-app-element.js';
 
+const dropLineThicknessPx = 2;
+
+/** Every main tab, in the stored order: listed tabs first, then the rest in their default order. */
+function orderMainTabs(storedOrder: ReadonlyArray<string>) {
+    const listed = storedOrder
+        .filter((tab) => check.isEnumValue(tab, MainTab))
+        .filter((tab, index, tabs) => tabs.indexOf(tab) === index);
+    return [
+        ...listed,
+        ...orderedMainTabs.filter((tab) => !listed.includes(tab)),
+    ];
+}
+
 /**
- * The app's outermost navigation. Vertical by default: a narrow strip pinned to the left of the
- * sidebar, with labels rotated to read bottom-to-top so it can stay thin. `isHorizontal` lays the
- * same tabs out as a normal row of upright labels, which is what fits above the sidebar inside the
- * mobile modal.
+ * The app's outermost navigation: a vertical strip pinned to the left of the sidebar, or with
+ * `isHorizontal` a row, which is what fits above the sidebar inside the mobile modal. Tabs drag to
+ * reorder, and the order is shared by every window.
  */
 export const VirMainTabs = defineAppElement<{
     context: AppContext;
     isHorizontal?: boolean | undefined;
 }>()({
     tagName: 'vir-main-tabs',
+    state() {
+        return {
+            /** Where a dragged tab would land, relative to the host. */
+            dropLine: undefined as
+                | Readonly<{
+                      left: number;
+                      top: number;
+                      width: number;
+                      height: number;
+                  }>
+                | undefined,
+        };
+    },
     styles: css`
         :host {
             display: flex;
             flex-shrink: 0;
+            position: relative;
             font-size: 12px;
         }
 
         .tabs {
             display: flex;
-            flex-direction: column;
             flex-grow: 1;
-            border-right: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-
-            &[data-horizontal] {
-                flex-direction: row;
-                border-right: none;
-                border-bottom: 1px solid
-                    ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            }
+            min-width: 0;
         }
 
-        .tab {
-            ${noUserSelect};
-            appearance: none;
-            background: transparent;
-            border: none;
-            border-right: 2px solid transparent;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 14px 8px;
-            cursor: pointer;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            font: inherit;
-            letter-spacing: 0.02em;
-            transition:
-                color 120ms ease,
-                border-color 120ms ease;
-
-            &:hover {
-                color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-            }
-
-            &[data-selected] {
-                color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-                border-right-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-            }
-        }
-
-        /* The selected marker moves to the edge the strip now borders on. */
-        [data-horizontal] .tab {
-            border-right: none;
-            border-bottom: 2px solid transparent;
-            flex-grow: 1;
-            padding: 12px 8px;
-
-            &[data-selected] {
-                border-bottom-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-            }
-        }
-
-        /*
-         * vertical-rl alone lays Latin text out reading top-to-bottom (glyph tops facing right);
-         * the 180deg flip turns it into bottom-to-top with glyph tops facing left, which is the
-         * orientation you read by tilting your head to the left. Using writing-mode rather than a
-         * bare rotate(-90deg) keeps the label's layout box tall-and-narrow, so the strip's width is
-         * driven by the font size instead of the text length.
-         */
-        .label {
-            writing-mode: vertical-rl;
-            transform: rotate(180deg);
-            white-space: nowrap;
-        }
-
-        [data-horizontal] .label {
-            writing-mode: horizontal-tb;
-            transform: none;
+        .drop-line {
+            position: absolute;
+            z-index: 3;
+            background: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+            pointer-events: none;
         }
     `,
-    render({inputs}) {
-        const frontendState = inputs.context.frontendState?.value;
+    render({inputs, state, updateState, host}) {
+        const context = inputs.context;
+        const isVertical = !inputs.isHorizontal;
+        host.toggleAttribute('data-horizontal', !isVertical);
+        const frontendState = context.frontendState?.value;
         /** PRs waiting on review, shown after the Review label once the queue first loads. */
         const reviewCount =
             frontendState &&
             getShownPrQueues(frontendState)[PrQueueKind.Review].queue?.pullRequests.length;
-        const isTabShown: Record<MainTab, boolean> = {
+        const isTabShown: Readonly<Record<MainTab, boolean>> = {
             [MainTab.Dashboard]: true,
             [MainTab.Build]: true,
             [MainTab.Review]: true,
-            [MainTab.Debug]: inputs.context.isDebugTabShown,
+            [MainTab.Debug]: context.isDebugTabShown,
         };
-        const labels: Record<MainTab, string> = {
+        const labels: Readonly<Record<MainTab, string>> = {
             ...mainTabLabels,
             [MainTab.Review]:
                 reviewCount == undefined
                     ? mainTabLabels[MainTab.Review]
                     : `${mainTabLabels[MainTab.Review]} (${reviewCount})`,
         };
+        const order = orderMainTabs(context.uiLayout.value.layout?.mainTabOrder || []);
+        const shownTabs = order.filter((tab) => isTabShown[tab]);
+
+        /** A main tab returns to the folder or PR it was last on. */
+        function toTargetRoute(route: Readonly<Partial<FullSpaRoute>>): AppRouteUpdate {
+            const routeTab = route.paths?.[0];
+            const tab = check.isEnumValue(routeTab, MainTab) ? routeTab : context.resolved.mainTab;
+            return (
+                context.resolved.restoredRouteByMainTab[tab] || {
+                    paths: bareMainTabPaths[tab],
+                }
+            );
+        }
+
+        const mainTabRouter: (typeof ViraTabs.InputsType)['router'] = {
+            createRouteUrl(route) {
+                return router.createRouteUrl(toTargetRoute(route));
+            },
+            setRouteOnDirectNavigation(route, event) {
+                return router.setRouteOnDirectNavigation(toTargetRoute(route), event);
+            },
+        };
+
+        function findInsertIndex({
+            elements,
+            draggedIndex,
+            position,
+        }: Readonly<{
+            elements: ReadonlyArray<Element>;
+            draggedIndex: number;
+            position: number;
+        }>) {
+            return countElementsBefore({
+                elements: elements.filter((element, index) => index !== draggedIndex),
+                position,
+                isVertical,
+            });
+        }
+
+        function onPointerDown(event: PointerEvent) {
+            const elements = listInlineTabElements(host.shadowRoot.querySelector(ViraTabs.tagName));
+            const draggedIndex = findElementIndexAt({
+                elements,
+                clientX: event.clientX,
+                clientY: event.clientY,
+            });
+            const draggedTab = shownTabs[draggedIndex];
+            if (!draggedTab) {
+                return;
+            }
+            trackPointerDrag({
+                event,
+                captureElement: host,
+                onStart() {},
+                onMove(moveEvent) {
+                    const insertIndex = findInsertIndex({
+                        elements,
+                        draggedIndex,
+                        position: isVertical ? moveEvent.clientY : moveEvent.clientX,
+                    });
+                    const others = elements.filter((element, index) => index !== draggedIndex);
+                    const hostRect = host.getBoundingClientRect();
+                    const nextRect = others[insertIndex]?.getBoundingClientRect();
+                    const previousRect = others[insertIndex - 1]?.getBoundingClientRect();
+                    const edge = nextRect
+                        ? isVertical
+                            ? nextRect.top
+                            : nextRect.left
+                        : previousRect
+                          ? isVertical
+                              ? previousRect.bottom
+                              : previousRect.right
+                          : 0;
+                    updateState({
+                        dropLine: isVertical
+                            ? {
+                                  left: 0,
+                                  top: edge - hostRect.top - dropLineThicknessPx / 2,
+                                  width: hostRect.width,
+                                  height: dropLineThicknessPx,
+                              }
+                            : {
+                                  left: edge - hostRect.left - dropLineThicknessPx / 2,
+                                  top: 0,
+                                  width: dropLineThicknessPx,
+                                  height: hostRect.height,
+                              },
+                    });
+                },
+                onEnd(endEvent) {
+                    updateState({
+                        dropLine: undefined,
+                    });
+                    if (!endEvent) {
+                        return;
+                    }
+                    const insertIndex = findInsertIndex({
+                        elements,
+                        draggedIndex,
+                        position: isVertical ? endEvent.clientY : endEvent.clientX,
+                    });
+                    const reorderedShown = shownTabs
+                        .filter((tab) => tab !== draggedTab)
+                        .toSpliced(insertIndex, 0, draggedTab);
+                    context.uiLayout.setMainTabOrder([
+                        ...reorderedShown,
+                        ...order.filter((tab) => !reorderedShown.includes(tab)),
+                    ]);
+                },
+            });
+        }
+
+        const dropLine = state.dropLine;
 
         return html`
-            <div class="tabs" role="tablist" ?data-horizontal=${inputs.isHorizontal}>
-                ${orderedMainTabs
-                    .filter((tab) => isTabShown[tab])
-                    .map((tab) => {
-                        const isActive = tab === inputs.context.resolved.mainTab;
-                        return html`
-                            <button
-                                type="button"
-                                class="tab"
-                                role="tab"
-                                ?data-selected=${isActive}
-                                aria-selected=${isActive}
-                                ${listen('click', () => {
-                                    router.setRoute(
-                                        inputs.context.resolved.restoredRouteByMainTab[tab] ?? {
-                                            paths: bareMainTabPaths[tab],
-                                            search: undefined,
-                                        },
-                                    );
-                                })}
-                            >
-                                <span class="label">${labels[tab]}</span>
-                            </button>
-                        `;
-                    })}
+            <div
+                class="tabs"
+                role="tablist"
+                ${listen('pointerdown', onPointerDown)}
+                ${listen('dragstart', (event) => {
+                    /**
+                     * Each tab is a link, and the browser's own link drag would cancel the pointer
+                     * events the tab drag runs on.
+                     */
+                    event.preventDefault();
+                })}
+            >
+                <${ViraTabs.assign({
+                    tabs: shownTabs.map((tab): ViraTab => {
+                        return {
+                            label: labels[tab],
+                            paths: {
+                                path: tab,
+                                fullPaths: [
+                                    tab,
+                                ],
+                                PathsType: [
+                                    tab,
+                                ],
+                            },
+                        };
+                    }),
+                    router: mainTabRouter,
+                    currentRoute: {
+                        paths: [
+                            context.resolved.mainTab,
+                        ],
+                        search: undefined,
+                        hash: undefined,
+                    },
+                    barDirection: isVertical
+                        ? ViraTabsBarDirection.Right
+                        : ViraTabsBarDirection.Bottom,
+                    color: ViraThemeColorName.blue,
+                    shouldFillWidth: !isVertical,
+                    shouldRotateLabels: isVertical,
+                })}></${ViraTabs}>
             </div>
+            ${dropLine
+                ? html`
+                      <div
+                          class="drop-line"
+                          style=${css`
+                              left: ${dropLine.left}px;
+                              top: ${dropLine.top}px;
+                              width: ${dropLine.width}px;
+                              height: ${dropLine.height}px;
+                          `}
+                      ></div>
+                  `
+                : nothing}
         `;
     },
 });

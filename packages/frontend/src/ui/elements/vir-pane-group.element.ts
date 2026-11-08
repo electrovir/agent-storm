@@ -1,42 +1,125 @@
-import {PaneKind, type ReviewQueuePr} from '@agent-storm/common';
-import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {
+    ManualReviewStatus,
+    PaneKind,
+    PaneStatus,
+    PaneTabKind,
+    restartPaneEndpoint,
+    type Config,
+    type ManualReviewState,
+    type PaneTab,
+    type ReviewQueuePr,
+    type SessionMeta,
+} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {getEnumValues, getObjectTypedValues, typedObjectFromEntries} from '@augment-vir/common';
+import {HttpMethod} from '@rest-vir/api';
+import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
+import {
+    createSizedIcon,
+    LucideBotIcon,
+    LucideFileDiffIcon,
+    LucideScanEyeIcon,
+    LucideSquareTerminalIcon,
+    ViraDropdown,
+    viraThemeByKeys,
+    type ViraIconSvg,
+    type ViraMenuItemEntry,
+} from 'vira';
+import {fetchApi} from '../../util/api-client.js';
 import {type AppContext} from '../../util/app-context.js';
 import {createFolderSessions, type FolderSessionsObservable} from '../../util/folder-sessions.js';
+import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
-import {DiffView, resolveDiffView, resolvePaneLayout} from '../../util/pane-layout.js';
+import {DiffView, resolveDiffView} from '../../util/pane-layout.js';
 import {paneRestartKey} from '../../util/pane-restarts.js';
 import {
     createPaneReview,
     type PaneReviewObservable,
     type ReviewStart,
 } from '../../util/pane-review.js';
-import {selectPaneTab, sessionIndexFromRoute, tabFromRoute} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
+import {
+    addTab,
+    closeTab,
+    createDefaultTabLayout,
+    findTabGroupId,
+    isTabLayoutConsistent,
+    listDisplayedTabIds,
+    sessionPaneKindByTabKind,
+    showTabKind,
+    syncSessionTabs,
+    tabKindByPaneKind,
+    toSessionTabId,
+    type TabLayout,
+} from '../../util/tab-layout.js';
 import {defineAppElement} from '../define-app-element.js';
+import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirPaneDiff} from './vir-pane-diff.element.js';
-import {VirPaneHeader} from './vir-pane-header.element.js';
 import {VirPaneReview} from './vir-pane-review.element.js';
-import {VirPaneSplit} from './vir-pane-split.element.js';
+import {VirPaneTabLabel} from './vir-pane-tab-label.element.js';
 import {VirReviewPane} from './vir-review-pane.element.js';
-import {VirSessionPane} from './vir-session-pane.element.js';
+import {VirTabHost, type TabHostNewTabOption, type TabHostTab} from './vir-tab-host.element.js';
+import {VirTerminal} from './vir-terminal.element.js';
 
-/** A folder's panes: AI and Shell terminals, its diff, and its PR's review. */
+const diffViewLabels: Readonly<Record<DiffView, string>> = {
+    [DiffView.Source]: 'Source',
+    [DiffView.ManualReview]: 'Manual review',
+};
+
+const sessionKindConfigs: Readonly<
+    Record<
+        PaneKind,
+        Readonly<{
+            label: string;
+            canChangeAi: boolean;
+        }>
+    >
+> = {
+    [PaneKind.Ai]: {
+        label: 'AI',
+        canChangeAi: true,
+    },
+    [PaneKind.Shell]: {
+        label: 'Shell',
+        canChangeAi: false,
+    },
+};
+
+const tabKindIcons: Readonly<Record<PaneTabKind, ViraIconSvg>> = {
+    [PaneTabKind.Ai]: createSizedIcon(LucideBotIcon, 14),
+    [PaneTabKind.Shell]: createSizedIcon(LucideSquareTerminalIcon, 14),
+    [PaneTabKind.Diff]: createSizedIcon(LucideFileDiffIcon, 14),
+    [PaneTabKind.Review]: createSizedIcon(LucideScanEyeIcon, 14),
+};
+
+const newTabLabels: Readonly<Record<PaneTabKind, string>> = {
+    [PaneTabKind.Ai]: 'AI session',
+    [PaneTabKind.Shell]: 'Shell',
+    [PaneTabKind.Diff]: 'Diff',
+    [PaneTabKind.Review]: 'Review',
+};
+
+/** Before a review folder's review branch exists, its diff is meaningless or empty. */
+function isReviewFolderDiffAvailable(review: Readonly<ManualReviewState> | undefined) {
+    return (
+        !!review &&
+        review.status !== ManualReviewStatus.Aborted &&
+        !(review.status === ManualReviewStatus.Started && review.isPending)
+    );
+}
+
+/** A folder's tabs: its AI and Shell sessions, its diff, and its PR's review. */
 export const VirPaneGroup = defineAppElement<{
     folder: string;
-    /**
-     * What the pane tab and session tabs are remembered under. A review is keyed by its PR because
-     * its folder isn't known until the server resolves it.
-     */
-    memoryKey: string;
     /** True when this pane-group is the user's currently focused folder. */
     active: boolean;
     context: AppContext;
     /**
-     * Set when the folder is a pull request's review folder. Swaps the shell pane for the review
-     * UI, and holds the Diff tab back until the manual review's startup has finished.
+     * Set when the folder is a pull request's review folder. Holds the Diff tab back until the
+     * manual review's startup has finished.
      */
     reviewPullRequest?: Readonly<ReviewQueuePr> | undefined;
-    /** Typed into the AI pane once its first session loads, unless it's already been sent. */
+    /** Typed into the AI session once the folder's sessions load, unless it's already been sent. */
     reviewStart?: Readonly<ReviewStart> | undefined;
 }>()({
     tagName: 'vir-pane-group',
@@ -50,13 +133,7 @@ export const VirPaneGroup = defineAppElement<{
             folderSessions: undefined as FolderSessionsObservable | undefined,
             paneReview: undefined as PaneReviewObservable | undefined,
             /**
-             * The last pane to receive focus, rather than `:focus-within`, which xterm's hidden
-             * textarea loses on a cmd+tab away and back. Defaults to the AI pane so the initial
-             * render doesn't show both panes dimmed.
-             */
-            focusedKind: PaneKind.Ai as PaneKind,
-            /**
-             * Set the first time the Diff tab opens. The diff costs nothing while hidden (no
+             * Set the first time the Diff tab shows. The diff costs nothing while hidden (no
              * socket, no subprocess), so staying mounted keeps its selected file and scroll
              * position.
              */
@@ -65,6 +142,22 @@ export const VirPaneGroup = defineAppElement<{
             diffView: DiffView.Source as DiffView,
             /** Keeps the Diff tab on the manual review while its copy is still being made. */
             isManualReviewStarting: false,
+            /**
+             * Per-session remount counters. Bumping one remounts its `VirTerminal`, which is how a
+             * restart gets a fresh socket: the terminal connects in `onDomCreated`, which doesn't
+             * re-run for a reused element.
+             */
+            restartKeys: {} as Readonly<Record<string, number | undefined>>,
+            /**
+             * The session just created here, whose terminal grabs focus when it mounts. Cleared by
+             * the next `focusin`, so showing that tab again later doesn't steal focus.
+             */
+            sessionToFocus: undefined as string | undefined,
+            /** The tab in the pane group the user last focused. */
+            focusedTabId: undefined as string | undefined,
+            /** Session the "Change AI" picker is open for. Undefined when closed. */
+            changeAiSessionId: undefined as string | undefined,
+            changeAiSubmitting: false,
         };
     },
     init({inputs, updateState}) {
@@ -73,7 +166,7 @@ export const VirPaneGroup = defineAppElement<{
             folderSessions,
             paneReview: createPaneReview({
                 folder: inputs.folder,
-                memoryKey: inputs.memoryKey,
+                uiLayout: inputs.context.uiLayout,
                 folderSessions,
             }),
             diffView:
@@ -92,14 +185,51 @@ export const VirPaneGroup = defineAppElement<{
             height: 100%;
         }
 
-        .body {
+        /*
+         * Mobile-only strip naming the active folder. It has to fully contain
+         * vir-mobile-sidebar's absolutely-positioned hamburger (6px inset on a 24px button), so
+         * the tab strip below it stays clear of the hamburger. The symmetric horizontal padding
+         * keeps the name centered while clearing the hamburger.
+         */
+        .folder-name-bar {
             display: flex;
-            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+            min-height: 32px;
+            padding: 0 34px;
+            border-bottom: 1px solid
+                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+        }
+
+        .folder-name-label {
+            min-width: 0;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            font-size: 12px;
+            font-weight: 600;
+            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+        }
+
+        .session-error {
+            padding: 2px 6px;
+            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+            font-size: 11px;
+        }
+
+        ${VirTabHost} {
             flex-grow: 1;
-            flex-shrink: 1;
             min-height: 0;
-            width: 100%;
+        }
+
+        .tab-content {
             position: relative;
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            min-height: 0;
+            min-width: 0;
         }
     `,
     render({inputs, state, updateState, dispatch, events}) {
@@ -107,28 +237,145 @@ export const VirPaneGroup = defineAppElement<{
         if (!folderSessions || !paneReview) {
             return '';
         }
+        const uiLayout = inputs.context.uiLayout;
         const info = inputs.context.folderData.value.folderInfo.get(inputs.folder);
         const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
+        const isReviewFolder = !!inputs.reviewPullRequest;
         const hasPr = !!info?.prUrl;
-        const layout = resolvePaneLayout({
-            activeTab: tabFromRoute(inputs.context.route),
-            isMobile,
-            isReviewFolder: !!inputs.reviewPullRequest,
-            hasPr,
-            review: paneReview.value.review,
+        const sessions = folderSessions.value.sessions;
+        const sessionError = folderSessions.value.error;
+        const review = paneReview.value.review;
+
+        folderSessions.sync(info?.sessionStatuses || []);
+
+        const folderNameBar = isMobile
+            ? html`
+                  <div class="folder-name-bar" title=${inputs.folder}>
+                      <span class="folder-name-label">
+                          ${inputs.folder.split('/').findLast(Boolean) || inputs.folder}
+                      </span>
+                  </div>
+              `
+            : nothing;
+        const errorLine = sessionError
+            ? html`
+                  <div class="session-error" role="alert">${sessionError}</div>
+              `
+            : nothing;
+
+        const sharedLayout = uiLayout.value.layout?.tabLayouts[inputs.folder];
+        if (!sessions || !uiLayout.value.layout) {
+            return html`
+                ${folderNameBar} ${errorLine}
+            `;
+        }
+
+        function writeLayout(change: (current: Readonly<TabLayout>) => Readonly<TabLayout>) {
+            uiLayout.updateTabLayout({
+                folder: inputs.folder,
+                update(current) {
+                    return current && change(current);
+                },
+            });
+        }
+
+        function syncAllSessionTabs(layout: Readonly<TabLayout>) {
+            return getEnumValues(PaneKind).reduce((current: Readonly<TabLayout>, kind) => {
+                return syncSessionTabs(current, {
+                    kind,
+                    sessionIds: (sessions?.[kind] || []).map((session) => session.id),
+                });
+            }, layout);
+        }
+
+        /** A stored layout the reducers can't trust is replaced, as if the folder had none. */
+        const baseLayout =
+            sharedLayout && isTabLayoutConsistent(sharedLayout)
+                ? uiLayout.getTabLayout(inputs.folder)
+                : undefined;
+        const initialLayout =
+            baseLayout ||
+            [
+                uiLayout.takeShowRequest(inputs.folder),
+            ].reduce(
+                (layout: Readonly<TabLayout>, kind) => (kind ? showTabKind(layout, kind) : layout),
+                createDefaultTabLayout({
+                    sessions,
+                    isReviewFolder,
+                }),
+            );
+        if (!baseLayout) {
+            uiLayout.updateTabLayout({
+                folder: inputs.folder,
+                update() {
+                    return initialLayout;
+                },
+            });
+        }
+        const layout = syncAllSessionTabs(initialLayout);
+        /**
+         * Only the window the user is in writes session changes back, so a window still holding an
+         * older session list can't close the tab of a session another window just opened.
+         */
+        if (
+            baseLayout &&
+            layout !== baseLayout &&
+            inputs.active &&
+            document.visibilityState === 'visible'
+        ) {
+            writeLayout(syncAllSessionTabs);
+        }
+
+        const sessionTabs = getEnumValues(PaneKind).flatMap((kind) => {
+            return sessions[kind].map((session) => {
+                return {
+                    tabId: toSessionTabId({
+                        kind,
+                        sessionId: session.id,
+                    }),
+                    kind,
+                    tabKind: tabKindByPaneKind[kind],
+                    session,
+                    count: sessions[kind].length,
+                };
+            });
         });
 
-        if (layout.isDiffTab && !state.diffMounted) {
+        const isTabKindAvailable: Readonly<Record<PaneTabKind, boolean>> = {
+            [PaneTabKind.Ai]: true,
+            [PaneTabKind.Shell]: true,
+            [PaneTabKind.Diff]: !isReviewFolder || isReviewFolderDiffAvailable(review),
+            [PaneTabKind.Review]: isReviewFolder || hasPr,
+        };
+
+        function isAvailable(tabId: string) {
+            const tab = layout.tabs[tabId];
+            return (
+                !!tab &&
+                isTabKindAvailable[tab.kind] &&
+                (!sessionPaneKindByTabKind[tab.kind] ||
+                    sessionTabs.some((entry) => entry.tabId === tabId))
+            );
+        }
+
+        const displayedTabIds = listDisplayedTabIds({
+            layout,
+            isAvailable,
+            isMobile,
+        });
+        const isDiffDisplayed = displayedTabIds.includes(PaneTabKind.Diff);
+        const isReviewDisplayed = displayedTabIds.includes(PaneTabKind.Review);
+
+        if (isDiffDisplayed && !state.diffMounted) {
             updateState({
                 diffMounted: true,
             });
         }
-        folderSessions.sync(info?.sessionStatuses || []);
         paneReview.sync({
             active: inputs.active,
             hasPr,
-            isPrNeeded: layout.isDiffTab || layout.isReviewPaneTab,
-            isReviewPaneOpen: layout.isReviewPaneTab && inputs.active,
+            isPrNeeded: isDiffDisplayed || isReviewDisplayed,
+            isReviewPaneOpen: isReviewDisplayed && inputs.active,
             isDiffMounted: state.diffMounted,
             reviewPullRequest: inputs.reviewPullRequest,
             frontendState: inputs.context.frontendState,
@@ -138,7 +385,7 @@ export const VirPaneGroup = defineAppElement<{
             chosen: state.diffView,
             hasChanges: !!info?.git.dirty,
             reviewCopyFolder: paneReview.value.reviewCopyFolder,
-            review: paneReview.value.review,
+            review,
             isManualReviewStarting: state.isManualReviewStarting,
         });
         if (state.isManualReviewStarting && diff.isAvailable[DiffView.ManualReview]) {
@@ -161,128 +408,428 @@ export const VirPaneGroup = defineAppElement<{
             );
         }
 
-        const sessionPaneInputs = {
-            folder: inputs.folder,
-            memoryKey: inputs.memoryKey,
-            folderSessions,
-            active: inputs.active,
-            isMobile,
-            sessionStatuses: info?.sessionStatuses || [],
-        };
+        function resolveFolderAiId(config: Readonly<Config>) {
+            const folderOverrideId = config.folderAiIds.find(
+                (entry) => entry.folder === inputs.folder,
+            )?.aiId;
+            const parentOverrideId = info?.parentRepoPath
+                ? config.folderAiIds.find((entry) => entry.folder === info.parentRepoPath)?.aiId
+                : undefined;
+            return (
+                folderOverrideId ||
+                parentOverrideId ||
+                config.defaultAiId ||
+                config.aiDefinitions[0]?.id ||
+                ''
+            );
+        }
 
-        return html`
-            <${VirPaneHeader.assign({
-                folder: inputs.folder,
-                isMobile,
-                tabButtons: layout.tabButtons,
-                diffViewPicker:
-                    layout.isDiffTab && !inputs.reviewPullRequest
-                        ? {
-                              selected: diff.diffView,
-                              isSelectable: {
-                                  [DiffView.Source]: diff.isAvailable[DiffView.Source],
-                                  [DiffView.ManualReview]: diff.isManualReviewSelectable,
-                              },
-                          }
-                        : undefined,
-            })}
-                ${listen(VirPaneHeader.events.tabRequested, (event) => {
-                    selectPaneTab({
-                        memoryKey: inputs.memoryKey,
-                        tab: event.detail,
-                    });
-                })}
-                ${listen(VirPaneHeader.events.diffViewSelected, (event) => {
-                    localStorageClient.diffViewByFolder.writeFolder({
-                        folder: inputs.folder,
-                        value: event.detail,
+        const config = inputs.context.folderData.value.snapshot?.config;
+        const aiDefinitions = config?.aiDefinitions || [];
+        const folderAiId = config ? resolveFolderAiId(config) : '';
+
+        /** The AI a session runs: its own override, else the folder's. */
+        function findSessionAi(session: Readonly<SessionMeta>) {
+            return (
+                aiDefinitions.find((definition) => definition.id === session.aiId) ||
+                aiDefinitions.find((definition) => definition.id === folderAiId)
+            );
+        }
+
+        async function restartSession({
+            kind,
+            sessionId,
+        }: Readonly<{
+            kind: PaneKind;
+            sessionId: string;
+        }>) {
+            await fetchApi(restartPaneEndpoint, HttpMethod.Post, {
+                requestData: {
+                    folder: inputs.folder,
+                    kind,
+                    sessionId,
+                },
+            });
+            updateState({
+                restartKeys: {
+                    ...state.restartKeys,
+                    [sessionId]: (state.restartKeys[sessionId] || 0) + 1,
+                },
+            });
+        }
+
+        /**
+         * Saves a session's AI, then restarts it: a running session keeps whatever command it was
+         * spawned with.
+         */
+        async function changeSessionAi(aiId: string) {
+            const sessionId = state.changeAiSessionId;
+            if (!sessionId || state.changeAiSubmitting || !folderSessions) {
+                return;
+            }
+            updateState({
+                changeAiSubmitting: true,
+            });
+            const savedSessions = await folderSessions.setAi({
+                kind: PaneKind.Ai,
+                sessionId,
+                aiId,
+            });
+            try {
+                if (savedSessions) {
+                    await restartSession({
+                        kind: PaneKind.Ai,
+                        sessionId,
                     });
                     updateState({
-                        diffView: event.detail,
-                        isManualReviewStarting: false,
+                        changeAiSessionId: undefined,
+                    });
+                }
+            } catch (error) {
+                folderSessions.reportError(error);
+            }
+            updateState({
+                changeAiSubmitting: false,
+            });
+        }
+
+        async function openNewTab({
+            kind,
+            groupId,
+        }: Readonly<{
+            kind: PaneTabKind;
+            groupId: string | undefined;
+        }>) {
+            const paneKind = sessionPaneKindByTabKind[kind];
+            if (!paneKind) {
+                writeLayout((current) => {
+                    return addTab(current, {
+                        tab: {
+                            id: kind,
+                            kind,
+                        },
+                        groupId,
+                    });
+                });
+                return;
+            }
+            const createdSessions = await folderSessions?.create(paneKind);
+            const sessionId = createdSessions?.[paneKind].at(-1)?.id;
+            if (!sessionId) {
+                return;
+            }
+            updateState({
+                sessionToFocus: sessionId,
+            });
+            writeLayout((current) => {
+                return addTab(current, {
+                    tab: {
+                        id: toSessionTabId({
+                            kind: paneKind,
+                            sessionId,
+                        }),
+                        kind,
+                    },
+                    groupId,
+                });
+            });
+        }
+
+        function buildSessionMenu({
+            kind,
+            session,
+            count,
+            label,
+        }: Readonly<{
+            kind: PaneKind;
+            session: Readonly<SessionMeta>;
+            count: number;
+            label: string;
+        }>) {
+            const entries: ReadonlyArray<ViraMenuItemEntry | undefined> = [
+                {
+                    content: 'Rename',
+                    onClick() {
+                        /**
+                         * A native prompt rather than a modal: it's the smallest thing that does
+                         * the job, and `vir-terminal` already uses `window.prompt` for its paste
+                         * fallback.
+                         */
+                        const name = window.prompt('Session name (empty to use its type):', label);
+                        if (name != undefined) {
+                            void folderSessions?.rename({
+                                kind,
+                                sessionId: session.id,
+                                name,
+                            });
+                        }
+                    },
+                },
+                {
+                    content: 'Restart',
+                    onClick() {
+                        void restartSession({
+                            kind,
+                            sessionId: session.id,
+                        }).catch((error: unknown) => folderSessions?.reportError(error));
+                    },
+                },
+                sessionKindConfigs[kind].canChangeAi
+                    ? {
+                          content: 'Change AI',
+                          onClick() {
+                              updateState({
+                                  changeAiSessionId: session.id,
+                                  changeAiSubmitting: false,
+                              });
+                          },
+                      }
+                    : undefined,
+                /** A folder always keeps one session of each kind. */
+                count > 1
+                    ? {
+                          content: 'Close',
+                          onClick() {
+                              void folderSessions?.close({
+                                  kind,
+                                  sessionId: session.id,
+                              });
+                          },
+                      }
+                    : undefined,
+            ];
+            return entries.filter(check.isTruthy);
+        }
+
+        function describeTab(tab: Readonly<PaneTab>): TabHostTab {
+            const sessionTab = sessionTabs.find((entry) => entry.tabId === tab.id);
+            if (sessionTab) {
+                const label = sessionTab.session.name || sessionKindConfigs[sessionTab.kind].label;
+                const status =
+                    info?.sessionStatuses.find((entry) => {
+                        return (
+                            entry.kind === sessionTab.kind &&
+                            entry.sessionId === sessionTab.session.id
+                        );
+                    })?.status ?? PaneStatus.None;
+                return {
+                    label: html`
+                        <${VirPaneTabLabel.assign({
+                            label,
+                            icon: tabKindIcons[tab.kind],
+                            ai:
+                                sessionTab.kind === PaneKind.Ai
+                                    ? findSessionAi(sessionTab.session)
+                                    : undefined,
+                            status,
+                        })}></${VirPaneTabLabel}>
+                    `,
+                    isAvailable: true,
+                    menuEntries: buildSessionMenu({
+                        kind: sessionTab.kind,
+                        session: sessionTab.session,
+                        count: sessionTab.count,
+                        label,
+                    }),
+                };
+            }
+            return {
+                label: html`
+                    <${VirPaneTabLabel.assign({
+                        label: newTabLabels[tab.kind],
+                        icon: tabKindIcons[tab.kind],
+                    })}></${VirPaneTabLabel}>
+                `,
+                isAvailable: isAvailable(tab.id),
+                menuEntries: [
+                    {
+                        content: 'Close',
+                        onClick() {
+                            writeLayout((current) => closeTab(current, tab.id));
+                        },
+                    },
+                ],
+            };
+        }
+
+        const newTabOptions = getEnumValues(PaneTabKind)
+            .filter((kind) => {
+                return (
+                    isTabKindAvailable[kind] &&
+                    (!!sessionPaneKindByTabKind[kind] || !layout.tabs[kind])
+                );
+            })
+            .map((kind): TabHostNewTabOption => {
+                return {
+                    label: html`
+                        <${VirPaneTabLabel.assign({
+                            label: newTabLabels[kind],
+                            icon: tabKindIcons[kind],
+                            ai:
+                                kind === PaneTabKind.Ai
+                                    ? aiDefinitions.find(
+                                          (definition) => definition.id === folderAiId,
+                                      )
+                                    : undefined,
+                        })}></${VirPaneTabLabel}>
+                    `,
+                    kind,
+                };
+            });
+
+        const displayedSessionTabs = sessionTabs
+            .filter((entry) => displayedTabIds.includes(entry.tabId))
+            .map((entry) => {
+                const folderRestartKey =
+                    inputs.context.paneRestarts.value.keys[
+                        paneRestartKey({
+                            folder: inputs.folder,
+                            kind: entry.kind,
+                        })
+                    ] || 0;
+                return {
+                    ...entry,
+                    /**
+                     * Folds in both restart counters so either restart remounts the terminal; see
+                     * `restartKeys`.
+                     */
+                    mountKey: `${entry.tabId}:${(state.restartKeys[entry.session.id] || 0) + folderRestartKey}`,
+                };
+            });
+
+        const isDiffViewSelectable: Readonly<Record<DiffView, boolean>> = {
+            [DiffView.Source]: diff.isAvailable[DiffView.Source],
+            [DiffView.ManualReview]: diff.isManualReviewSelectable,
+        };
+
+        const selectedAiId =
+            sessions[PaneKind.Ai].find((session) => session.id === state.changeAiSessionId)?.aiId ||
+            '';
+
+        return html`
+            ${folderNameBar} ${errorLine}
+            <${VirTabHost.assign({
+                layout,
+                tabs: typedObjectFromEntries(
+                    getObjectTypedValues(layout.tabs).map((tab) => {
+                        return [
+                            tab.id,
+                            describeTab(tab),
+                        ];
+                    }),
+                ),
+                newTabOptions,
+                isMobile,
+            })}
+                ${listen(VirTabHost.events.layoutChanged, (event) => {
+                    uiLayout.updateTabLayout({
+                        folder: inputs.folder,
+                        update() {
+                            return event.detail;
+                        },
                     });
                 })}
-            ></${VirPaneHeader}>
-            <div class="body">
+                ${listen(VirTabHost.events.newTabRequested, async (event) => {
+                    await openNewTab(event.detail);
+                })}
+                ${listen(VirTabHost.events.focusedTabChanged, (event) => {
+                    updateState({
+                        focusedTabId: event.detail,
+                    });
+                })}
+                ${listen('focusin', () => {
+                    if (state.sessionToFocus) {
+                        updateState({
+                            sessionToFocus: undefined,
+                        });
+                    }
+                })}
+            >
+                ${repeat(
+                    displayedSessionTabs,
+                    (entry) => entry.mountKey,
+                    (entry) => {
+                        return html`
+                            <div
+                                class="tab-content"
+                                slot=${`tab-${entry.tabId}`}
+                                ${listen('keydown', async (event) => {
+                                    if (isNewTabShortcut(event)) {
+                                        event.preventDefault();
+                                        await openNewTab({
+                                            kind: entry.tabKind,
+                                            groupId: findTabGroupId(layout, entry.tabId),
+                                        });
+                                    }
+                                })}
+                            >
+                                <${VirTerminal.assign({
+                                    folder: inputs.folder,
+                                    kind: entry.kind,
+                                    sessionId: entry.session.id,
+                                    active: inputs.active,
+                                    showAccessoryKeys: isMobile,
+                                    focusOnMount: state.sessionToFocus === entry.session.id,
+                                    isFocused: state.focusedTabId === entry.tabId,
+                                })}></${VirTerminal}>
+                            </div>
+                        `;
+                    },
+                )}
                 ${state.diffMounted
                     ? html`
-                          <${VirPaneDiff.assign({
-                              folder: inputs.folder,
-                              isShown: layout.isDiffTab && inputs.active,
-                              diffView: diff.diffView,
-                              paneReview,
-                              isReviewCopyReady: diff.isAvailable[DiffView.ManualReview],
-                              isReviewFolder: !!inputs.reviewPullRequest,
-                              frontendState: inputs.context.frontendState,
-                              screenSize: inputs.context.screenSize,
-                          })}></${VirPaneDiff}>
+                          <div class="tab-content" slot=${`tab-${PaneTabKind.Diff}`}>
+                              <${VirPaneDiff.assign({
+                                  folder: inputs.folder,
+                                  isShown: isDiffDisplayed && inputs.active,
+                                  diffView: diff.diffView,
+                                  paneReview,
+                                  isReviewCopyReady: diff.isAvailable[DiffView.ManualReview],
+                                  isReviewFolder,
+                                  frontendState: inputs.context.frontendState,
+                                  screenSize: inputs.context.screenSize,
+                                  sourcePicker: isReviewFolder
+                                      ? undefined
+                                      : html`
+                                            <${ViraDropdown.assign({
+                                                options: getEnumValues(DiffView).map((view) => {
+                                                    return {
+                                                        value: view,
+                                                        label: diffViewLabels[view],
+                                                        disabled: !isDiffViewSelectable[view],
+                                                    };
+                                                }),
+                                                selected: [
+                                                    diff.diffView,
+                                                ],
+                                            })}
+                                                ${listen(
+                                                    ViraDropdown.events.selectedValuesChange,
+                                                    (event) => {
+                                                        const view = event.detail[0];
+                                                        if (check.isEnumValue(view, DiffView)) {
+                                                            localStorageClient.diffViewByFolder.writeFolder(
+                                                                {
+                                                                    folder: inputs.folder,
+                                                                    value: view,
+                                                                },
+                                                            );
+                                                            updateState({
+                                                                diffView: view,
+                                                                isManualReviewStarting: false,
+                                                            });
+                                                        }
+                                                    },
+                                                )}
+                                            ></${ViraDropdown}>
+                                        `,
+                              })}></${VirPaneDiff}>
+                          </div>
                       `
                     : nothing}
-                <${VirPaneSplit.assign({
-                    /**
-                     * Review folders remember their own split, so resizing one leaves the other
-                     * alone.
-                     */
-                    splitSetting: inputs.reviewPullRequest
-                        ? localStorageClient.reviewPaneSplit
-                        : localStorageClient.paneSplit,
-                    isMobile,
-                })}
-                    ?data-hidden=${layout.isDiffTab}
-                >
-                    <${VirSessionPane.assign({
-                        ...sessionPaneInputs,
-                        kind: PaneKind.Ai,
-                        sessionIndex: sessionIndexFromRoute(inputs.context.route, PaneKind.Ai),
-                        mountTerminal: layout.mountAiTerminal,
-                        folderRestartKey:
-                            inputs.context.paneRestarts.value.keys[
-                                paneRestartKey({
-                                    folder: inputs.folder,
-                                    kind: PaneKind.Ai,
-                                })
-                            ] || 0,
-                        showError: true,
-                        ai: {
-                            folderAiId: info?.aiId || '',
-                            parentRepoPath: info?.parentRepoPath || '',
-                            aiConfigRevision: inputs.context.paneRestarts.value.aiConfigRevision,
-                        },
-                    })}
-                        slot=${VirPaneSplit.slotNames['vir-pane-split-start']}
-                        ?data-hidden=${!layout.showAiPane}
-                        data-pane-focused=${state.focusedKind === PaneKind.Ai}
-                        ${listen('focusin', () => {
-                            updateState({
-                                focusedKind: PaneKind.Ai,
-                            });
-                        })}
-                    ></${VirSessionPane}>
-                    <${VirSessionPane.assign({
-                        ...sessionPaneInputs,
-                        kind: PaneKind.Shell,
-                        sessionIndex: sessionIndexFromRoute(inputs.context.route, PaneKind.Shell),
-                        mountTerminal: layout.mountShellTerminal,
-                        folderRestartKey:
-                            inputs.context.paneRestarts.value.keys[
-                                paneRestartKey({
-                                    folder: inputs.folder,
-                                    kind: PaneKind.Shell,
-                                })
-                            ] || 0,
-                        showError: false,
-                    })}
-                        ?data-hidden=${!layout.showShellPane}
-                        ?data-collapsed=${layout.isReviewPaneTab}
-                        data-pane-focused=${state.focusedKind === PaneKind.Shell}
-                        ${listen('focusin', () => {
-                            updateState({
-                                focusedKind: PaneKind.Shell,
-                            });
-                        })}
-                    ></${VirSessionPane}>
-                    ${layout.hasReviewTab
-                        ? html`
+                ${isTabKindAvailable[PaneTabKind.Review] && layout.tabs[PaneTabKind.Review]
+                    ? html`
+                          <div class="tab-content" slot=${`tab-${PaneTabKind.Review}`}>
                               <${VirPaneReview.assign({
                                   folder: inputs.folder,
                                   paneReview,
@@ -290,10 +837,8 @@ export const VirPaneGroup = defineAppElement<{
                                   isMobile,
                                   initialPromptSentAt: inputs.reviewStart?.reviewUpdatedAt,
                               })}
-                                  ?data-hidden=${!layout.isReviewPaneTab}
-                                  ?data-collapsed=${!layout.isReviewPaneTab}
                                   ${listen(VirReviewPane.events.manualReviewStarted, () => {
-                                      if (!inputs.reviewPullRequest) {
+                                      if (!isReviewFolder) {
                                           updateState({
                                               diffView: DiffView.ManualReview,
                                               isManualReviewStarting: true,
@@ -301,10 +846,29 @@ export const VirPaneGroup = defineAppElement<{
                                       }
                                   })}
                               ></${VirPaneReview}>
-                          `
-                        : nothing}
-                </${VirPaneSplit}>
-            </div>
+                          </div>
+                      `
+                    : nothing}
+            </${VirTabHost}>
+            <${VirAiPickerModal.assign({
+                open: !!state.changeAiSessionId,
+                modalTitle: 'Change AI for this tab',
+                aiDefinitions,
+                selectedAiId,
+                inheritedName:
+                    aiDefinitions.find((definition) => definition.id === folderAiId)?.name || '',
+                submitting: state.changeAiSubmitting,
+            })}
+                ${listen(VirAiPickerModal.events.closeRequested, () => {
+                    updateState({
+                        changeAiSessionId: undefined,
+                        changeAiSubmitting: false,
+                    });
+                })}
+                ${listen(VirAiPickerModal.events.aiSaveRequested, async (event) => {
+                    await changeSessionAi(event.detail);
+                })}
+            ></${VirAiPickerModal}>
         `;
     },
 });

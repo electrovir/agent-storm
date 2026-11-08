@@ -5,6 +5,7 @@ import {
     ManualReviewStatus,
     paneInputEndpoint,
     PaneKind,
+    PaneTabKind,
     reviewInitEndpoint,
     type ManualReviewState,
     type ReviewQueuePr,
@@ -15,11 +16,11 @@ import {convertDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {type ReviewPanePr} from '../ui/elements/vir-review-pane.element.js';
 import {fetchApi} from './api-client.js';
-import {sessionAtIndex, type FolderSessionsObservable} from './folder-sessions.js';
+import {type FolderSessionsObservable} from './folder-sessions.js';
 import {reviewPrKey, type FrontendStateObservable, type ReviewVerdict} from './frontend-state.js';
-import {FrontendTab} from './frontend-tab.js';
 import {canPostVerdictByStatus} from './pane-layout.js';
-import {router, selectPaneTab, sessionIndexFromRoute} from './router.js';
+import {findShownSessionId} from './tab-layout.js';
+import {type UiLayoutObservable} from './ui-layout.js';
 
 /** A manual review to start in a review folder's AI pane once its first session loads. */
 export type ReviewStart = {
@@ -100,12 +101,12 @@ export type PaneReviewObservable = ReturnType<typeof createPaneReview>;
  */
 export function createPaneReview({
     folder,
-    memoryKey,
+    uiLayout,
     folderSessions,
 }: Readonly<{
     folder: string;
-    /** The pane group's `memoryKey`, which its pane tab is remembered under. */
-    memoryKey: string;
+    /** Holds the tab layout, to find the AI session the user is on and to show tabs. */
+    uiLayout: UiLayoutObservable;
     /** Supplies the AI session prompts are typed into, and shows this review's errors. */
     folderSessions: FolderSessionsObservable;
 }>) {
@@ -217,18 +218,19 @@ export function createPaneReview({
         prompt: string;
         isMobile: boolean;
     }>) {
-        const session = sessionAtIndex(
-            folderSessions.value.sessions?.ai || [],
-            sessionIndexFromRoute(router.readCurrentRoute(), PaneKind.Ai),
-        );
+        const aiSessions = folderSessions.value.sessions?.ai || [];
+        const tabLayout = uiLayout.getTabLayout(folder);
+        const shownSessionId = tabLayout && findShownSessionId(tabLayout, PaneKind.Ai);
+        const session =
+            aiSessions.find((aiSession) => aiSession.id === shownSessionId) || aiSessions[0];
         if (!session) {
             folderSessions.reportError(new Error('The AI pane has no session to type into yet.'));
             return;
         }
         if (isMobile) {
-            selectPaneTab({
-                memoryKey,
-                tab: FrontendTab.Ai,
+            uiLayout.showPaneTab({
+                folder,
+                kind: PaneTabKind.Ai,
             });
         }
         try {
@@ -343,9 +345,9 @@ export function createPaneReview({
                  */
                 if (active && observable.value.review?.status === ManualReviewStatus.Started) {
                     void Promise.resolve().then(() => {
-                        selectPaneTab({
-                            memoryKey,
-                            tab: FrontendTab.Diff,
+                        uiLayout.showPaneTab({
+                            folder,
+                            kind: PaneTabKind.Diff,
                         });
                     });
                 }

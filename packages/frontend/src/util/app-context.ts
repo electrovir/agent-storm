@@ -6,6 +6,7 @@ import {type FrontendStateObservable, type PrQueueKind} from './frontend-state.j
 import {type PaneRestartsObservable} from './pane-restarts.js';
 import {type AppRoute} from './router.js';
 import {type ScreenSize} from './screen-size.js';
+import {type UiLayoutObservable} from './ui-layout.js';
 
 export enum AppModal {
     Settings = 'settings',
@@ -27,6 +28,8 @@ export type AppContext = Readonly<{
     themeClient: Readonly<ViraThemeClient>;
     isDebugTabShown: boolean;
     paneRestarts: PaneRestartsObservable;
+    /** The server's tab layouts and main tab order, shared by every window. */
+    uiLayout: UiLayoutObservable;
     openModal: Observable<AppModal | undefined>;
     /**
      * The Review tab's list. Undefined until picked this session, so the stored pick can load

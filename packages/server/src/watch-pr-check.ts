@@ -314,12 +314,18 @@ function workflowRunId(statusCheck: Readonly<RawStatusCheck>) {
  * in creation order, so those decide. A re-run attempt keeps its run id, so start time breaks
  * ties.
  */
-function isNewerCheck(statusCheck: Readonly<RawStatusCheck>, than: Readonly<RawStatusCheck>) {
+function isNewerCheck({
+    statusCheck,
+    than,
+}: Readonly<{
+    statusCheck: Readonly<RawStatusCheck>;
+    than: Readonly<RawStatusCheck>;
+}>) {
     const runId = workflowRunId(statusCheck);
     const otherRunId = workflowRunId(than);
-    return runId != undefined && otherRunId != undefined && runId !== otherRunId
-        ? runId > otherRunId
-        : checkStartedAt(statusCheck) > checkStartedAt(than);
+    return runId == undefined || otherRunId == undefined || runId === otherRunId
+        ? checkStartedAt(statusCheck) > checkStartedAt(than)
+        : runId > otherRunId;
 }
 
 /**
@@ -353,7 +359,12 @@ function getLatestByName(rollup: ReadonlyArray<Readonly<RawStatusCheck>>) {
         return rollup
             .filter((statusCheck) => checkName(statusCheck) === name)
             .reduce((latest, statusCheck) => {
-                return isNewerCheck(statusCheck, latest) ? statusCheck : latest;
+                return isNewerCheck({
+                    statusCheck,
+                    than: latest,
+                })
+                    ? statusCheck
+                    : latest;
             });
     });
 }

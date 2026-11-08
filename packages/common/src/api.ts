@@ -6,6 +6,7 @@ import {
     enumShape,
     nullableShape,
     optionalShape,
+    recordShape,
     unionShape,
 } from 'object-shape-tester';
 import {
@@ -28,9 +29,11 @@ import {
     ManualReviewStatus,
     PaneKind,
     PaneStatus,
+    PaneTabKind,
     PrStatus,
     SidebarGrouping,
     SidebarSorting,
+    SplitDirection,
     WatchModeStatus,
 } from './enums.js';
 
@@ -550,6 +553,8 @@ const foldersResponseShape = defineShape({
     configRevision: 0,
     /** Only set for a short while after the request is made. */
     folderActivation: nullableShape(folderActivationShape),
+    /** Changes whenever the stored UI layout does, so a poller only fetches `/ui-layout` then. */
+    uiLayoutRevision: 0,
 });
 
 const folderActionRequestShape = defineShape({
@@ -558,9 +563,8 @@ const folderActionRequestShape = defineShape({
 
 /**
  * One session tab within a folder's pane. `id` is opaque and is the third segment of the daemon's
- * pane key; the display label is `name || String(index + 1)`, so an unnamed session shows its
- * 1-based position. Order within the owning array is the tab order and therefore defines the
- * index.
+ * pane key. An unnamed session's tab shows its kind's label. Order within the owning array is the
+ * tab order.
  */
 export const sessionMetaShape = defineShape({
     id: '',
@@ -1587,6 +1591,133 @@ export const reviewConfigEndpoint = defineEndpoint({
     },
 });
 
+export const paneTabShape = defineShape({
+    /** `${kind}:${sessionId}` for a session tab, else the kind itself. */
+    id: '',
+    kind: enumShape(PaneTabKind),
+});
+
+export type PaneTab = typeof paneTabShape.runtimeType;
+
+/**
+ * A folder's tabs, in groups tiled by splits, as every window shows them. Which tab is selected is
+ * kept apart, in a {@link TabSelection}. Groups and splits are kept in flat maps keyed by node id,
+ * with each split listing its children's ids, so the whole tree validates with a shape. A node id
+ * names a group when it's in `groups` and a split when it's in `splits`.
+ */
+export const sharedTabLayoutShape = defineShape({
+    tabs: recordShape({
+        keys: '',
+        values: paneTabShape,
+    }),
+    groups: recordShape({
+        keys: '',
+        values: {
+            tabIds: [''],
+        },
+    }),
+    splits: recordShape({
+        keys: '',
+        values: {
+            direction: enumShape(SplitDirection),
+            childIds: [''],
+            /** Each child's share of the split, summing to 1. */
+            sizes: [0],
+        },
+    }),
+    rootId: '',
+    /** Counter for new node ids, so creating one never needs randomness. */
+    nextNodeId: 0,
+});
+
+export type SharedTabLayout = typeof sharedTabLayoutShape.runtimeType;
+
+/** Which tab is shown in each group of a {@link SharedTabLayout}, and which group was last used. */
+export const tabSelectionShape = defineShape({
+    /** The group the user last picked a tab in, where new tabs go by default. */
+    activeGroupId: '',
+    activeTabIdByGroup: recordShape({
+        keys: '',
+        values: '',
+    }),
+});
+
+export type TabSelection = typeof tabSelectionShape.runtimeType;
+
+/** UI layout kept on the server so every window shows the same one. */
+export const uiLayoutShape = defineShape({
+    /** Keyed by folder path. */
+    tabLayouts: recordShape({
+        keys: '',
+        values: sharedTabLayoutShape,
+    }),
+    /**
+     * The selection last made in each folder, keyed by folder path. A window uses it wherever it
+     * has no valid selection of its own.
+     */
+    tabSelections: recordShape({
+        keys: '',
+        values: tabSelectionShape,
+    }),
+    /** The main tabs' order. Missing tabs go after the listed ones, unknown ones are ignored. */
+    mainTabOrder: [''],
+});
+
+export type UiLayout = typeof uiLayoutShape.runtimeType;
+
+export const uiLayoutEndpoint = defineEndpoint({
+    path: '/ui-layout',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: uiLayoutShape,
+                },
+            },
+        },
+    },
+});
+
+export const tabLayoutSaveEndpoint = defineEndpoint({
+    path: '/ui-layout/tab-layout',
+    requests: {
+        [HttpMethod.Put]: {
+            requestData: defineShape({
+                folder: '',
+                /** Omitted when only the selection changed. */
+                layout: optionalShape(sharedTabLayoutShape, {
+                    alsoUndefined: true,
+                }),
+                /** Omitted unless the selection changed. */
+                selection: optionalShape(tabSelectionShape, {
+                    alsoUndefined: true,
+                }),
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: uiLayoutShape,
+                },
+            },
+        },
+    },
+});
+
+export const mainTabOrderSaveEndpoint = defineEndpoint({
+    path: '/ui-layout/main-tab-order',
+    requests: {
+        [HttpMethod.Put]: {
+            requestData: defineShape({
+                order: [''],
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: uiLayoutShape,
+                },
+            },
+        },
+    },
+});
+
 export const foldersEndpoint = defineEndpoint({
     path: '/folders',
     requests: {
@@ -2090,6 +2221,9 @@ export const agentStormService = defineApi({
     endpoints: [
         configEndpoint,
         reviewConfigEndpoint,
+        uiLayoutEndpoint,
+        tabLayoutSaveEndpoint,
+        mainTabOrderSaveEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
         createWorktreeEndpoint,

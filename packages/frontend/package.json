@@ -58,11 +58,11 @@
         "element-book": "^27.0.4",
         "element-vir": "^27.0.2",
         "local-db-client": "^2.0.1",
-        "object-shape-tester": "^6.15.2",
-        "spa-router-vir": "^6.10.0",
-        "theme-vir": "^29.0.1",
+        "object-shape-tester": "^6.15.3",
+        "spa-router-vir": "^6.11.0",
+        "theme-vir": "^29.0.3",
         "url-vir": "^2.2.2",
-        "vira": "^33.14.0",
+        "vira": "^33.16.0",
         "vscode-diff": "^3.0.1"
     },
     "devDependencies": {
