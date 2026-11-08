@@ -1,7 +1,7 @@
+import {DiffView} from '@agent-storm/common';
 import {css, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {ViraButton, ViraColorVariant, ViraSize} from 'vira';
 import {ReviewVerdict, type FrontendStateObservable} from '../../util/frontend-state.js';
-import {DiffView} from '../../util/pane-layout.js';
 import {canPostVerdict, type PaneReviewObservable} from '../../util/pane-review.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {defineAppElement} from '../define-app-element.js';

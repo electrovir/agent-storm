@@ -1,7 +1,7 @@
-import {ManualReviewStatus} from '@agent-storm/common';
+import {DiffView, ManualReviewStatus} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {DiffView, resolveDiffView} from './pane-layout.js';
+import {resolveDiffView, resolvePaneState} from './pane-layout.js';
 
 const startedReview = {
     status: ManualReviewStatus.Started,
@@ -39,6 +39,33 @@ describe(resolveDiffView.name, () => {
             [
                 DiffView.ManualReview,
                 DiffView.ManualReview,
+            ],
+        );
+    });
+});
+
+describe(resolvePaneState.name, () => {
+    const shared = {
+        selectedFolder: '/repos/app',
+        diffView: DiffView.Source,
+    };
+
+    it('uses the tab’s own values over the shared ones', () => {
+        assert.deepEquals(
+            [
+                resolvePaneState(shared, undefined),
+                resolvePaneState(shared, {
+                    state: {
+                        diffView: DiffView.ManualReview,
+                    },
+                }),
+            ],
+            [
+                shared,
+                {
+                    selectedFolder: '/repos/app',
+                    diffView: DiffView.ManualReview,
+                },
             ],
         );
     });

@@ -1,6 +1,6 @@
 import {PaneKind} from '@agent-storm/common';
 import {type Terminal} from '@xterm/xterm';
-import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
+import {isNewTabShortcut, isSettingsShortcut} from '../../util/keyboard-shortcuts.js';
 import {
     collectDroppedFiles,
     extractDroppedPaths,
@@ -47,6 +47,9 @@ function attachKeyBindings({terminal, kind, send}: TerminalInputParams) {
     terminal.attachCustomKeyEventHandler((event) => {
         if (event.type !== 'keydown') {
             return true;
+        } else if (isSettingsShortcut(event)) {
+            /** Left for `vir-app`, which opens Settings. Keeps xterm from also sending the key on. */
+            return false;
         } else if (isNewTabShortcut(event)) {
             /**
              * Left for `vir-pane-group` to handle as it bubbles out. Without this xterm also sends

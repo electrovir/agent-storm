@@ -1,6 +1,7 @@
 import {css, html, listen, nothing} from 'element-vir';
 import {
     LucideMenuIcon,
+    LucideSettingsIcon,
     tooltip,
     ViraButton,
     ViraColorVariant,
@@ -8,7 +9,7 @@ import {
     ViraModal,
     ViraSize,
 } from 'vira';
-import {type AppContext} from '../../util/app-context.js';
+import {SettingsSection, type AppContext} from '../../util/app-context.js';
 import {MainTab} from '../../util/router.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirBuildSidebar} from './vir-build-sidebar.element.js';
@@ -26,7 +27,8 @@ const mobileSidebarTitles: Record<MainTab, string> = {
 
 /**
  * Mobile's stand-in for the docked tab strip and sidebar: a hamburger button that opens them in a
- * modal. Picking a folder or pull request, or opening the AI modal, closes it.
+ * modal, beside a gear button that opens Settings. Picking a folder or pull request, or opening
+ * Settings, closes the modal.
  */
 export const VirMobileSidebar = defineAppElement<{
     context: AppContext;
@@ -42,6 +44,7 @@ export const VirMobileSidebar = defineAppElement<{
     styles: css`
         :host {
             display: inline-flex;
+            gap: 4px;
             position: absolute;
             top: 6px;
             left: 6px;
@@ -102,6 +105,19 @@ export const VirMobileSidebar = defineAppElement<{
                     });
                 })}
             ></${ViraButton}>
+            <${ViraButton.assign({
+                icon: LucideSettingsIcon,
+                buttonSize: ViraSize.Small,
+                buttonEmphasis: ViraEmphasis.Subtle,
+                color: ViraColorVariant.Neutral,
+            })}
+                ${tooltip('Open settings')}
+                ${listen('click', () => {
+                    inputs.context.settingsTarget.setValue({
+                        section: SettingsSection.General,
+                    });
+                })}
+            ></${ViraButton}>
             <${ViraModal.assign({
                 open: state.isOpen,
                 modalTitle: mobileSidebarTitles[mainTab],
@@ -113,8 +129,9 @@ export const VirMobileSidebar = defineAppElement<{
                 <div
                     class="content"
                     ${listen(VirSidebar.events.folderActivated, close)}
-                    ${listen(VirSidebar.events.openAiModalRequested, close)}
+                    ${listen(VirSidebar.events.openSettingsRequested, close)}
                     ${listen(VirReviewSidebar.events.pullRequestActivated, close)}
+                    ${listen(VirReviewSidebar.events.settingsRequested, close)}
                 >
                     <${VirMainTabs.assign({
                         context: inputs.context,

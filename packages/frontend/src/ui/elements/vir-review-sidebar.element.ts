@@ -1,28 +1,22 @@
-import {
-    gitHubReviewFolderEndpoint,
-    reviewConfigEndpoint,
-    type ReviewQueuePr,
-} from '@agent-storm/common';
+import {gitHubReviewFolderEndpoint, type ReviewQueuePr} from '@agent-storm/common';
 import {extractErrorMessage} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {HttpMethod} from '@rest-vir/api';
 import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
 import {ViraCollapsibleCard, viraThemeByKeys} from 'vira';
 import {fetchApi} from '../../util/api-client.js';
+import {SettingsSection, type SettingsTarget} from '../../util/app-context.js';
 import {PrQueueKind, pullRequestRouteKey} from '../../util/frontend-state.js';
 import {type PaneRestartedEvent, restartFolderPanes} from '../../util/restart-folder-panes.js';
 import {defineAppElement} from '../define-app-element.js';
 import {
     groupByRepo,
-    type InitCmdSettings,
     openOnGitHub,
     prQueueTabs,
     type ReviewedRepo,
     type ReviewSidebarQueues,
-    toRepoKey,
 } from './review-sidebar-display.js';
 import {VirReviewSidebarHeader} from './vir-review-sidebar-header.element.js';
-import {VirReviewSidebarInitCmd} from './vir-review-sidebar-init-cmd.element.js';
 import {VirReviewSidebarRow} from './vir-review-sidebar-row.element.js';
 import {VirReviewSidebarSettingsMenu} from './vir-review-sidebar-settings-menu.element.js';
 
@@ -50,18 +44,13 @@ export const VirReviewSidebar = defineAppElement<{
         queueSelected: defineElementEvent<PrQueueKind>(),
         /** Emitted after a pane restart succeeds so the mounted terminal can reconnect. */
         paneRestarted: defineElementEvent<PaneRestartedEvent>(),
+        /** The parent owns the Settings modal's open state. */
+        settingsRequested: defineElementEvent<SettingsTarget>(),
     },
     state() {
         return {
             isReviewedExpanded: false,
             actionError: undefined as string | undefined,
-            /**
-             * {@link toRepoKey} of the repo whose settings are loading, or an empty string for the
-             * default, so a slower earlier load can't open over a later pick.
-             */
-            pendingInitCmdSettingsKey: undefined as string | undefined,
-            /** The open init command settings modal. */
-            initCmdSettings: undefined as InitCmdSettings | undefined,
         };
     },
     styles: css`
@@ -181,43 +170,18 @@ export const VirReviewSidebar = defineAppElement<{
 
         const errorMessage = state.actionError || shownQueue?.loadError || shownQueue?.queue?.error;
 
-        async function openInitCmdSettings(repo: Readonly<ReviewedRepo> | undefined) {
-            const settingsKey = repo ? toRepoKey(repo) : '';
-            updateState({
-                actionError: undefined,
-                pendingInitCmdSettingsKey: settingsKey,
-            });
-            try {
-                const reviewConfig = await fetchApi(reviewConfigEndpoint, HttpMethod.Get);
-                if (host.instanceState.pendingInitCmdSettingsKey !== settingsKey) {
-                    return;
-                }
-                updateState({
-                    pendingInitCmdSettingsKey: undefined,
-                    initCmdSettings: {
-                        repo: repo && {
+        function openInitCmdSettings(repo: Readonly<ReviewedRepo> | undefined) {
+            dispatch(
+                new events.settingsRequested({
+                    detail: {
+                        section: SettingsSection.Review,
+                        reviewRepo: repo && {
                             owner: repo.owner,
                             repoName: repo.repoName,
                         },
-                        value: repo
-                            ? reviewConfig.repos.find(
-                                  (entry) => toRepoKey(entry) === toRepoKey(repo),
-                              )?.initCmd || ''
-                            : reviewConfig.defaultInitCmd,
-                        placeholder:
-                            repo && reviewConfig.defaultInitCmd
-                                ? `Default: ${reviewConfig.defaultInitCmd}`
-                                : 'None',
                     },
-                });
-            } catch (error: unknown) {
-                if (host.instanceState.pendingInitCmdSettingsKey === settingsKey) {
-                    updateState({
-                        pendingInitCmdSettingsKey: undefined,
-                        actionError: extractErrorMessage(error),
-                    });
-                }
-            }
+                }),
+            );
         }
 
         async function restartPullRequestPanes(pr: Readonly<ReviewQueuePr>) {
@@ -280,8 +244,8 @@ export const VirReviewSidebar = defineAppElement<{
                             })}
                                 ${listen(
                                     VirReviewSidebarSettingsMenu.events.settingsRequested,
-                                    async (event) => {
-                                        await openInitCmdSettings(event.detail);
+                                    (event) => {
+                                        openInitCmdSettings(event.detail);
                                     },
                                 )}
                             ></${VirReviewSidebarSettingsMenu}>
@@ -389,8 +353,8 @@ export const VirReviewSidebar = defineAppElement<{
                         }),
                     );
                 })}
-                ${listen(VirReviewSidebarSettingsMenu.events.settingsRequested, async (event) => {
-                    await openInitCmdSettings(event.detail);
+                ${listen(VirReviewSidebarSettingsMenu.events.settingsRequested, (event) => {
+                    openInitCmdSettings(event.detail);
                 })}
             ></${VirReviewSidebarHeader}>
             ${errorMessage
@@ -399,15 +363,6 @@ export const VirReviewSidebar = defineAppElement<{
                   `
                 : nothing}
             <div class="list">${listContents}</div>
-            <${VirReviewSidebarInitCmd.assign({
-                settings: state.initCmdSettings,
-            })}
-                ${listen(VirReviewSidebarInitCmd.events.closed, () => {
-                    updateState({
-                        initCmdSettings: undefined,
-                    });
-                })}
-            ></${VirReviewSidebarInitCmd}>
         `;
     },
 });

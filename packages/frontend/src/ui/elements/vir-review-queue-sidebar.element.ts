@@ -59,6 +59,9 @@ export const VirReviewQueueSidebar = defineAppElement<{
                 ${listen(VirReviewSidebar.events.paneRestarted, async (event) => {
                     await inputs.context.paneRestarts.restart(event.detail);
                 })}
+                ${listen(VirReviewSidebar.events.settingsRequested, (event) => {
+                    inputs.context.settingsTarget.setValue(event.detail);
+                })}
                 ${listen(VirReviewSidebar.events.queueSelected, (event) => {
                     return selectQueue(event.detail);
                 })}

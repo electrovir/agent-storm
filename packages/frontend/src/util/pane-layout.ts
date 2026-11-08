@@ -1,4 +1,10 @@
-import {ManualReviewStatus, type ManualReviewState} from '@agent-storm/common';
+import {
+    DiffView,
+    ManualReviewStatus,
+    type ManualReviewState,
+    type PaneState,
+    type PaneTab,
+} from '@agent-storm/common';
 import {getObjectTypedValues} from '@augment-vir/common';
 
 /** A verdict can only be posted while the skill holds a review that hasn't posted yet. */
@@ -11,17 +17,21 @@ export const canPostVerdictByStatus: Readonly<Record<ManualReviewStatus, boolean
     [ManualReviewStatus.Aborted]: false,
 };
 
-/** Which checkout a Build folder's Diff tab shows. */
-export enum DiffView {
-    Source = 'source',
-    /** The copy of the branch that `/manual-review here` reviews in. */
-    ManualReview = 'manualReview',
+/** What a tab's pane reads: the pane group's values, with the tab's own state over them. */
+export function resolvePaneState(
+    shared: Readonly<PaneState>,
+    tab: Readonly<Pick<PaneTab, 'state'>> | undefined,
+): PaneState {
+    return {
+        ...shared,
+        ...tab?.state,
+    };
 }
 
 /**
- * The view a Build folder's Diff tab shows: `chosen` when it has something to show, else whichever
- * view does, else Source. A chosen ManualReview view is kept while `isManualReviewStarting`, so the
- * tab stays on it while the review copy is still being made.
+ * The view a Diff tab shows: `chosen` when it has something to show, else whichever view does, else
+ * Source. A chosen ManualReview view is kept while `isManualReviewStarting`, so the tab stays on it
+ * while the review copy is still being made.
  */
 export function resolveDiffView({
     chosen,

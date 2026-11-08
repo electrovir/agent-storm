@@ -3,7 +3,6 @@ import {check} from '@augment-vir/assert';
 import {clamp, getEnumValues, type PartialWithUndefined} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
 import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
-import {type FullSpaRoute} from 'spa-router-vir';
 import {
     PopoverAnchor,
     PopoverTrigger,
@@ -29,6 +28,7 @@ import {
     listInlineTabElements,
     trackPointerDrag,
 } from '../../util/tab-drag.js';
+import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
 import {
     findDisplayedTabId,
     findMobileDisplayedTabId,
@@ -79,37 +79,6 @@ const splitEdgeShare = 0.25;
 const minSplitShare = 0.1;
 
 const dropLineWidthPx = 2;
-
-/**
- * Every tab strip is a `ViraTabs`, which links each tab to a route. Pane tabs aren't routes, so
- * this router only lets `ViraTabs` render its links; the click itself is handled by `tabSelect`.
- */
-const paneTabRouter: (typeof ViraTabs.InputsType)['router'] = {
-    createRouteUrl(route) {
-        return {
-            url: '#',
-            route: {
-                paths: route.paths || [],
-                search: undefined,
-                hash: undefined,
-            },
-        };
-    },
-    setRouteOnDirectNavigation(route, event) {
-        event.preventDefault();
-        return false;
-    },
-};
-
-function toPaneRoute(tabId: string | undefined): FullSpaRoute {
-    return {
-        paths: [
-            tabId || '',
-        ],
-        search: undefined,
-        hash: undefined,
-    };
-}
 
 function isPointInRect({
     rect,
@@ -632,8 +601,8 @@ export const VirTabHost = defineAppElement<{
                         >
                             <${ViraTabs.assign({
                                 tabs: viraTabs,
-                                router: paneTabRouter,
-                                currentRoute: toPaneRoute(displayedTabId),
+                                router: staticTabRouter,
+                                currentRoute: toStaticTabRoute(displayedTabId),
                                 barDirection: ViraTabsBarDirection.Bottom,
                                 iconLayout: ViraTabsIconLayout.Horizontal,
                                 color: ViraThemeColorName.blue,

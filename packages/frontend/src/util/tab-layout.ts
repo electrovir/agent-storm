@@ -4,6 +4,7 @@ import {
     SplitDirection,
     SplitEdge,
     type FolderSessions,
+    type PaneState,
     type PaneTab,
     type SharedTabLayout,
     type TabSelection,
@@ -484,6 +485,36 @@ export function addTab(
             },
         },
         activeGroupId: isBackground ? layout.activeGroupId : targetGroupId,
+    };
+}
+
+/** Merges `state` into a tab's own state. Does nothing for a tab that isn't in the layout. */
+export function updateTabState(
+    layout: Readonly<TabLayout>,
+    {
+        tabId,
+        state,
+    }: Readonly<{
+        tabId: string;
+        state: Readonly<Partial<PaneState>>;
+    }>,
+): TabLayout {
+    const tab = layout.tabs[tabId];
+    if (!tab) {
+        return layout;
+    }
+    return {
+        ...layout,
+        tabs: {
+            ...layout.tabs,
+            [tabId]: {
+                ...tab,
+                state: {
+                    ...tab.state,
+                    ...state,
+                },
+            },
+        },
     };
 }
 

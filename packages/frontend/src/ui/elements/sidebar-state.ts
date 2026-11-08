@@ -7,7 +7,6 @@ import {
     type UpdateStatus,
 } from '@agent-storm/common';
 import {type FolderData} from '../../util/folder-data.js';
-import {type VirSidebarBuildSettingsModal} from './vir-sidebar-build-settings-modal.element.js';
 import {type VirSidebarChangeAiModal} from './vir-sidebar-change-ai-modal.element.js';
 
 /**
@@ -25,7 +24,6 @@ export type SidebarState = {
     /** The repo the "Add worktree" modal creates under. `undefined` while that modal is closed. */
     addWorktreeRepoPath: string | undefined;
     changeAiTarget: (typeof VirSidebarChangeAiModal)['InputsType']['target'];
-    buildSettingsTarget: (typeof VirSidebarBuildSettingsModal)['InputsType']['target'];
     /**
      * Mirrors `config.aiDefinitions` so the picker and the add-repo / add-worktree modals can list
      * the user's AIs. Kept in lockstep with the folders list via `refresh()`.

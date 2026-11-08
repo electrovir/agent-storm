@@ -10,10 +10,11 @@ import {
     watchModeEndpoint,
     WatchModeStatus,
 } from '@agent-storm/common';
-import {extractErrorMessage} from '@augment-vir/common';
+import {extractErrorMessage, type MaybePromise} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {type ViraDropdownOption} from 'vira';
 import {fetchApi} from '../../util/api-client.js';
+import {SettingsSection, type SettingsTarget} from '../../util/app-context.js';
 import {type PaneRestartedEvent, restartFolderPanes} from '../../util/restart-folder-panes.js';
 
 import {SidebarFolderAction} from './sidebar-menus.js';
@@ -117,27 +118,6 @@ export function aiSelectOptions({
             };
         }),
     ];
-}
-
-/** The repo's own `postWorktreeCmd`, with the global one as what an empty command falls back to. */
-export async function openRepoBuildSettings(
-    repo: Readonly<Pick<FolderInfo, 'path' | 'name'>>,
-    updateState: SidebarUpdate,
-) {
-    try {
-        const config = await fetchApi(configEndpoint, HttpMethod.Get);
-        updateState({
-            buildSettingsTarget: {
-                repoPath: repo.path,
-                repoName: repo.name,
-                value:
-                    config.repos.find((entry) => entry.path === repo.path)?.postWorktreeCmd || '',
-                placeholder: config.postWorktreeCmd ? `Default: ${config.postWorktreeCmd}` : 'None',
-            },
-        });
-    } catch (error: unknown) {
-        showError(updateState, error);
-    }
 }
 
 /**
@@ -322,12 +302,13 @@ export type FolderActionParams = Readonly<{
     removeFolderLocally: (path: string) => void;
     emitFoldersRemoved: (paths: ReadonlyArray<string>) => void;
     emitPaneRestarted: (detail: PaneRestartedEvent) => void;
+    emitSettingsRequested: (target: SettingsTarget) => void;
     refreshFolderData: () => Promise<void>;
 }>;
 
 export const folderActionHandlers: Record<
     SidebarFolderAction,
-    (params: FolderActionParams) => Promise<void>
+    (params: FolderActionParams) => MaybePromise<void>
 > = {
     async [SidebarFolderAction.ToggleWatch]({folder, updateState}) {
         try {
@@ -347,8 +328,11 @@ export const folderActionHandlers: Record<
     async [SidebarFolderAction.ChangeAi]({folder, updateState}) {
         await openChangeAiModal(folder, updateState);
     },
-    async [SidebarFolderAction.OpenSettings]({folder, updateState}) {
-        await openRepoBuildSettings(folder, updateState);
+    [SidebarFolderAction.OpenSettings]({folder, emitSettingsRequested}) {
+        emitSettingsRequested({
+            section: SettingsSection.Folders,
+            folder: folder.path,
+        });
     },
     async [SidebarFolderAction.RestartPanes]({folder, updateState, emitPaneRestarted}) {
         await restartFolderPanes({

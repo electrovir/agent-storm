@@ -12,3 +12,14 @@ export function isNewTabShortcut(event: Readonly<KeyboardEvent>) {
         event.key.toLowerCase() === 't'
     );
 }
+
+/** Cmd+, or Ctrl+, the usual "open settings" shortcut, either modifier on any platform. */
+export function isSettingsShortcut(event: Readonly<KeyboardEvent>) {
+    return (
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        !event.repeat &&
+        event.key === ','
+    );
+}

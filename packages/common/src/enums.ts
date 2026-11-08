@@ -22,6 +22,14 @@ export enum PaneTabKind {
     Review = 'review',
 }
 
+/** Which checkout a Diff tab shows. */
+export enum DiffView {
+    /** The folder's own working tree. */
+    Source = 'source',
+    /** The copy of the branch that `/manual-review here` reviews in. */
+    ManualReview = 'manualReview',
+}
+
 /** How a split in a pane layout lays out its children. */
 export enum SplitDirection {
     /** Side by side, left to right. */

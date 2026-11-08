@@ -167,7 +167,7 @@ export const VirAiPickerModal = defineAppElement<{
                         ? nothing
                         : html`
                               <div class="empty">
-                                  No AI defined yet. Add one from Settings → Define AI.
+                                  No AI defined yet. Add one from Settings → AI.
                               </div>
                           `}
                 </div>

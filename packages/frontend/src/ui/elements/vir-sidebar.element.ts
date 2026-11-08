@@ -9,13 +9,13 @@ import {colorCss} from '@electrovir/color';
 import {getNowInUtcTimezone, toTimestamp} from 'date-vir';
 import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
 import {tooltip, viraThemeByKeys, type ViraThemeClient} from 'vira';
+import {SettingsSection, type SettingsTarget} from '../../util/app-context.js';
 import {type FolderDataObservable} from '../../util/folder-data.js';
 import {type PaneRestartedEvent} from '../../util/restart-folder-panes.js';
 import {sidebarTooltipOptions} from '../../util/sidebar-display.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirSidebarAddRepoModal} from './vir-sidebar-add-repo-modal.element.js';
 import {VirSidebarAddWorktreeModal} from './vir-sidebar-add-worktree-modal.element.js';
-import {VirSidebarBuildSettingsModal} from './vir-sidebar-build-settings-modal.element.js';
 import {VirSidebarChangeAiModal} from './vir-sidebar-change-ai-modal.element.js';
 import {VirSidebarHeader} from './vir-sidebar-header.element.js';
 import {VirSidebarRepoHeader} from './vir-sidebar-repo-header.element.js';
@@ -74,10 +74,8 @@ export const VirSidebar = defineAppElement<{
         foldersRemoved: defineElementEvent<ReadonlyArray<string>>(),
         /** Emitted after a pane restart succeeds so the mounted terminal can reconnect. */
         paneRestarted: defineElementEvent<PaneRestartedEvent>(),
-        /** Emitted when the user clicks the gear button. Parent owns the modal open state. */
-        openSettingsRequested: defineElementEvent<void>(),
-        /** Same deal for the "Define AI" item, which the parent renders as its own modal. */
-        openAiModalRequested: defineElementEvent<void>(),
+        /** The parent owns the Settings modal's open state. */
+        openSettingsRequested: defineElementEvent<SettingsTarget>(),
     },
     state(): SidebarState {
         return {
@@ -88,7 +86,6 @@ export const VirSidebar = defineAppElement<{
             isAddRepoModalOpen: false,
             addWorktreeRepoPath: undefined,
             changeAiTarget: undefined,
-            buildSettingsTarget: undefined,
             aiDefinitions: [],
             defaultAiId: '',
             sidebarGrouping: undefined,
@@ -318,6 +315,13 @@ export const VirSidebar = defineAppElement<{
                 removeFolderLocally,
                 emitFoldersRemoved,
                 emitPaneRestarted,
+                emitSettingsRequested(target) {
+                    dispatch(
+                        new events.openSettingsRequested({
+                            detail: target,
+                        }),
+                    );
+                },
                 refreshFolderData: inputs.folderData.refresh,
             });
         }
@@ -395,19 +399,13 @@ export const VirSidebar = defineAppElement<{
                 ${listen(VirSidebarHeader.events.hideInactiveChange, async (event) => {
                     await toggleHideInactive(event.detail, updateState);
                 })}
-                ${listen(VirSidebarHeader.events.defineAiRequest, (event) => {
-                    event.stopImmediatePropagation();
-                    dispatch(
-                        new events.openAiModalRequested({
-                            detail: undefined,
-                        }),
-                    );
-                })}
                 ${listen(VirSidebarHeader.events.settingsRequest, (event) => {
                     event.stopImmediatePropagation();
                     dispatch(
                         new events.openSettingsRequested({
-                            detail: undefined,
+                            detail: {
+                                section: SettingsSection.General,
+                            },
                         }),
                     );
                 })}
@@ -572,15 +570,6 @@ export const VirSidebar = defineAppElement<{
                     });
                 })}
             ></${VirSidebarChangeAiModal}>
-            <${VirSidebarBuildSettingsModal.assign({
-                target: state.buildSettingsTarget,
-            })}
-                ${listen(VirSidebarBuildSettingsModal.events.close, () => {
-                    updateState({
-                        buildSettingsTarget: undefined,
-                    });
-                })}
-            ></${VirSidebarBuildSettingsModal}>
         `;
     },
 });

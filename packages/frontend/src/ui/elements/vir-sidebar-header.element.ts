@@ -62,7 +62,6 @@ export const VirSidebarHeader = defineAppElement<{
         groupingSelect: defineElementEvent<SidebarGrouping>(),
         sortingSelect: defineElementEvent<SidebarSorting>(),
         hideInactiveChange: defineElementEvent<boolean>(),
-        defineAiRequest: defineElementEvent<void>(),
         settingsRequest: defineElementEvent<void>(),
     },
     state() {
@@ -320,16 +319,6 @@ export const VirSidebarHeader = defineAppElement<{
                         })}></${ViraThemeSwitcher}>
                     </div>
                     ${renderMenuItemEntries([
-                        {
-                            content: 'Define AI',
-                            onClick() {
-                                dispatch(
-                                    new events.defineAiRequest({
-                                        detail: undefined,
-                                    }),
-                                );
-                            },
-                        },
                         {
                             content: 'Settings',
                             onClick() {

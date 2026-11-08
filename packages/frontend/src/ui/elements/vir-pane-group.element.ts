@@ -1,4 +1,5 @@
 import {
+    DiffView,
     ManualReviewStatus,
     PaneKind,
     PaneStatus,
@@ -29,8 +30,7 @@ import {fetchApi} from '../../util/api-client.js';
 import {type AppContext} from '../../util/app-context.js';
 import {createFolderSessions, type FolderSessionsObservable} from '../../util/folder-sessions.js';
 import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
-import {localStorageClient} from '../../util/local-storage-client.js';
-import {DiffView, resolveDiffView} from '../../util/pane-layout.js';
+import {resolveDiffView, resolvePaneState} from '../../util/pane-layout.js';
 import {paneRestartKey} from '../../util/pane-restarts.js';
 import {
     createPaneReview,
@@ -50,6 +50,7 @@ import {
     syncSessionTabs,
     tabKindByPaneKind,
     toSessionTabId,
+    updateTabState,
     type TabLayout,
 } from '../../util/tab-layout.js';
 import {defineAppElement} from '../define-app-element.js';
@@ -138,8 +139,6 @@ export const VirPaneGroup = defineAppElement<{
              * position.
              */
             diffMounted: false,
-            /** Which checkout a Build folder's Diff tab shows. */
-            diffView: DiffView.Source as DiffView,
             /** Keeps the Diff tab on the manual review while its copy is still being made. */
             isManualReviewStarting: false,
             /**
@@ -169,8 +168,6 @@ export const VirPaneGroup = defineAppElement<{
                 uiLayout: inputs.context.uiLayout,
                 folderSessions,
             }),
-            diffView:
-                localStorageClient.diffViewByFolder.readFolder(inputs.folder) ?? DiffView.Source,
         });
     },
     cleanup({state}) {
@@ -187,9 +184,9 @@ export const VirPaneGroup = defineAppElement<{
 
         /*
          * Mobile-only strip naming the active folder. It has to fully contain
-         * vir-mobile-sidebar's absolutely-positioned hamburger (6px inset on a 24px button), so
-         * the tab strip below it stays clear of the hamburger. The symmetric horizontal padding
-         * keeps the name centered while clearing the hamburger.
+         * vir-mobile-sidebar's absolutely-positioned hamburger and gear (6px inset on two 24px buttons
+         * 4px apart), so the tab strip below it stays clear of them. The symmetric horizontal padding
+         * keeps the name centered while clearing them.
          */
         .folder-name-bar {
             display: flex;
@@ -197,7 +194,7 @@ export const VirPaneGroup = defineAppElement<{
             justify-content: center;
             box-sizing: border-box;
             min-height: 32px;
-            padding: 0 34px;
+            padding: 0 62px;
             border-bottom: 1px solid
                 ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
         }
@@ -345,7 +342,7 @@ export const VirPaneGroup = defineAppElement<{
             [PaneTabKind.Ai]: true,
             [PaneTabKind.Shell]: true,
             [PaneTabKind.Diff]: !isReviewFolder || isReviewFolderDiffAvailable(review),
-            [PaneTabKind.Review]: isReviewFolder || hasPr,
+            [PaneTabKind.Review]: true,
         };
 
         function isAvailable(tabId: string) {
@@ -381,8 +378,15 @@ export const VirPaneGroup = defineAppElement<{
             frontendState: inputs.context.frontendState,
         });
 
+        const diffState = resolvePaneState(
+            {
+                selectedFolder: inputs.folder,
+                diffView: DiffView.Source,
+            },
+            layout.tabs[PaneTabKind.Diff],
+        );
         const diff = resolveDiffView({
-            chosen: state.diffView,
+            chosen: diffState.diffView,
             hasChanges: !!info?.git.dirty,
             reviewCopyFolder: paneReview.value.reviewCopyFolder,
             review,
@@ -780,7 +784,7 @@ export const VirPaneGroup = defineAppElement<{
                     ? html`
                           <div class="tab-content" slot=${`tab-${PaneTabKind.Diff}`}>
                               <${VirPaneDiff.assign({
-                                  folder: inputs.folder,
+                                  folder: diffState.selectedFolder,
                                   isShown: isDiffDisplayed && inputs.active,
                                   diffView: diff.diffView,
                                   paneReview,
@@ -788,41 +792,40 @@ export const VirPaneGroup = defineAppElement<{
                                   isReviewFolder,
                                   frontendState: inputs.context.frontendState,
                                   screenSize: inputs.context.screenSize,
-                                  sourcePicker: isReviewFolder
-                                      ? undefined
-                                      : html`
-                                            <${ViraDropdown.assign({
-                                                options: getEnumValues(DiffView).map((view) => {
-                                                    return {
-                                                        value: view,
-                                                        label: diffViewLabels[view],
-                                                        disabled: !isDiffViewSelectable[view],
-                                                    };
-                                                }),
-                                                selected: [
-                                                    diff.diffView,
-                                                ],
-                                            })}
-                                                ${listen(
-                                                    ViraDropdown.events.selectedValuesChange,
-                                                    (event) => {
-                                                        const view = event.detail[0];
-                                                        if (check.isEnumValue(view, DiffView)) {
-                                                            localStorageClient.diffViewByFolder.writeFolder(
-                                                                {
-                                                                    folder: inputs.folder,
-                                                                    value: view,
-                                                                },
-                                                            );
-                                                            updateState({
-                                                                diffView: view,
-                                                                isManualReviewStarting: false,
-                                                            });
-                                                        }
-                                                    },
-                                                )}
-                                            ></${ViraDropdown}>
-                                        `,
+                                  sourcePicker: html`
+                                      <${ViraDropdown.assign({
+                                          options: getEnumValues(DiffView).map((view) => {
+                                              return {
+                                                  value: view,
+                                                  label: diffViewLabels[view],
+                                                  disabled: !isDiffViewSelectable[view],
+                                              };
+                                          }),
+                                          selected: [
+                                              diff.diffView,
+                                          ],
+                                      })}
+                                          ${listen(
+                                              ViraDropdown.events.selectedValuesChange,
+                                              (event) => {
+                                                  const view = event.detail[0];
+                                                  if (check.isEnumValue(view, DiffView)) {
+                                                      writeLayout((current) => {
+                                                          return updateTabState(current, {
+                                                              tabId: PaneTabKind.Diff,
+                                                              state: {
+                                                                  diffView: view,
+                                                              },
+                                                          });
+                                                      });
+                                                      updateState({
+                                                          isManualReviewStarting: false,
+                                                      });
+                                                  }
+                                              },
+                                          )}
+                                      ></${ViraDropdown}>
+                                  `,
                               })}></${VirPaneDiff}>
                           </div>
                       `
@@ -839,8 +842,24 @@ export const VirPaneGroup = defineAppElement<{
                               })}
                                   ${listen(VirReviewPane.events.manualReviewStarted, () => {
                                       if (!isReviewFolder) {
+                                          writeLayout((current) => {
+                                              return updateTabState(
+                                                  addTab(current, {
+                                                      tab: {
+                                                          id: PaneTabKind.Diff,
+                                                          kind: PaneTabKind.Diff,
+                                                      },
+                                                      isBackground: true,
+                                                  }),
+                                                  {
+                                                      tabId: PaneTabKind.Diff,
+                                                      state: {
+                                                          diffView: DiffView.ManualReview,
+                                                      },
+                                                  },
+                                              );
+                                          });
                                           updateState({
-                                              diffView: DiffView.ManualReview,
                                               isManualReviewStarting: true,
                                           });
                                       }

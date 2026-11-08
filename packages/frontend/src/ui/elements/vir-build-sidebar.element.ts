@@ -2,7 +2,7 @@ import {touchRepoEndpoint} from '@agent-storm/common';
 import {HttpMethod} from '@rest-vir/api';
 import {css, html, listen} from 'element-vir';
 import {fetchApi} from '../../util/api-client.js';
-import {AppModal, type AppContext} from '../../util/app-context.js';
+import {type AppContext} from '../../util/app-context.js';
 import {routeForFolder} from '../../util/app-route.js';
 import {getFolderVerdictStatuses} from '../../util/frontend-state.js';
 import {bareMainTabPaths, MainTab, router} from '../../util/router.js';
@@ -100,11 +100,8 @@ export const VirBuildSidebar = defineAppElement<{
                 ${listen(VirSidebar.events.paneRestarted, async (event) => {
                     await inputs.context.paneRestarts.restart(event.detail);
                 })}
-                ${listen(VirSidebar.events.openSettingsRequested, () => {
-                    inputs.context.openModal.setValue(AppModal.Settings);
-                })}
-                ${listen(VirSidebar.events.openAiModalRequested, () => {
-                    inputs.context.openModal.setValue(AppModal.Ai);
+                ${listen(VirSidebar.events.openSettingsRequested, (event) => {
+                    inputs.context.settingsTarget.setValue(event.detail);
                 })}
             ></${VirSidebar}>
         `;

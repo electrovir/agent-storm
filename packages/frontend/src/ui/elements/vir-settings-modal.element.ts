@@ -7,62 +7,52 @@ import {
     defaultConfig,
     ForgeType,
     restartDaemonEndpoint,
+    reviewConfigEndpoint,
     type Config,
+    type ReviewConfig,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
+    extractErrorMessage,
+    getEnumValues,
     getObjectTypedEntries,
-    getObjectTypedKeys,
-    mapObjectValues,
-    omitObjectKeys,
+    mapEnumToObject,
     pickObjectKeys,
-    typedObjectFromEntries,
     type JsonValue,
 } from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
-import {css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
+import {css, html, listen, nothing, onDomCreated, type HtmlInterpolation} from 'element-vir';
 import {
+    LucideSearchIcon,
     ViraButton,
+    ViraCheckbox,
     ViraColorVariant,
-    ViraDropdown,
     ViraEmphasis,
-    ViraForm,
-    ViraFormFieldType,
-    ViraJsonForm,
+    ViraInput,
+    ViraInputType,
     ViraModal,
+    ViraSize,
+    ViraTabs,
+    ViraTabsBarDirection,
     viraThemeByKeys,
-    type ViraDropdownOption,
-    type ViraJsonSchema,
-    type ViraJsonSchemaObject,
+    ViraThemeColorName,
+    ViraThemeSwitcher,
 } from 'vira';
 import {fetchApi} from '../../util/api-client.js';
+import {SettingsSection, type AppContext} from '../../util/app-context.js';
+import {createBatchedWriter, type ValueUpdate} from '../../util/batched-writer.js';
 import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
+import {ScreenSize} from '../../util/screen-size.js';
+import {schemaConfigKeySections, settingsSections} from '../../util/settings-sections.js';
+import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
 import {defineAppElement} from '../define-app-element.js';
-import {savingIcon} from '../icons/saving-icon.js';
+import {VirSettingsAi} from './vir-settings-ai.element.js';
+import {VirSettingsFolders} from './vir-settings-folders.element.js';
+import {VirSettingsReview} from './vir-settings-review.element.js';
+import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
+import {VirSettingsSchemaRow, type SettingSchema} from './vir-settings-schema-row.element.js';
 
-/**
- * Config properties that round-trip through `/config` (so the backend can persist them across
- * restarts) but are hidden from the settings form. Reasons vary: `repos` and `folderAiIds` are
- * per-folder data managed through the sidebar rather than this JSON form (and too large / noisy to
- * belong here). `aiDefinitions` has its own modal, `defaultAiId` is rendered as the AI picker
- * below, and `tlsCertPath` gets its own input so a path that doesn't exist can report an error
- * directly beneath it — the JSON form has no per-property error slot. Stripped from both the schema
- * we hand to `ViraJsonForm` and from the form's input/output, then preserved on save so hiding them
- * never blows away their runtime state.
- */
-const hiddenConfigKeys = [
-    'repos',
-    'aiDefinitions',
-    'defaultAiId',
-    'folderAiIds',
-    'tlsCertPath',
-] as const satisfies ReadonlyArray<keyof Config>;
-
-/**
- * Same as {@link hiddenConfigKeys}, but for the settings inside each forge's section of `forges`.
- * `githubPollingAutoDisable` is entirely backend-managed, so the user has no business editing it
- * here.
- */
+/** `githubPollingAutoDisable` is backend-managed, so the user has no business editing it. */
 const hiddenForgeConfigKeys = {
     [ForgeType.Github]: [
         'githubPollingAutoDisable',
@@ -74,265 +64,420 @@ const hiddenForgeConfigKeys = {
     [Forge in ForgeType]: ReadonlyArray<keyof Config['forges'][Forge]>;
 };
 
-/**
- * The settings the form shows for each forge. A forge left with nothing to show is dropped entirely
- * rather than rendered as an empty group.
- */
-const formForgeProperties = typedObjectFromEntries(
-    getObjectTypedEntries(configJsonSchema.properties.forges.properties)
-        .map(
-            ([
-                forgeType,
-                forgeSchema,
-            ]) => {
-                return [
-                    forgeType,
-                    omitObjectKeys(
-                        forgeSchema.properties as Record<string, ViraJsonSchema>,
-                        hiddenForgeConfigKeys[forgeType],
-                    ),
-                ] as const;
-            },
-        )
+/** Each forge with settings to show. A forge with none gets no card. */
+const forgeCards = getEnumValues(ForgeType)
+    .map((forgeType) => {
+        const forgeSchema = configJsonSchema.properties.forges.properties[forgeType];
+        return {
+            forgeType,
+            title: forgeSchema.title,
+            properties: getObjectTypedEntries(
+                forgeSchema.properties satisfies object as Readonly<
+                    Record<string, SettingSchema & Readonly<{default: unknown}>>
+                >,
+            ).filter(([key]) => {
+                return !(hiddenForgeConfigKeys[forgeType] as ReadonlyArray<string>).includes(key);
+            }),
+        };
+    })
+    .filter((card) => card.properties.length);
+
+function getSchemaKeys(section: SettingsSection) {
+    return getObjectTypedEntries(schemaConfigKeySections)
         .filter(
             ([
                 ,
-                properties,
-            ]) => getObjectTypedKeys(properties).length,
-        ),
-);
+                keySection,
+            ]) => keySection === section,
+        )
+        .map(([key]) => key);
+}
 
-const formJsonSchema: ViraJsonSchemaObject = (() => {
-    const forgesSchema = configJsonSchema.properties.forges;
-    const properties: Record<string, ViraJsonSchema> = {
-        ...(configJsonSchema.properties as Record<string, ViraJsonSchema>),
+function readForgeSetting(config: Readonly<Config>, forgeType: ForgeType, key: string) {
+    return (config.forges[forgeType] satisfies object as Readonly<Record<string, unknown>>)[key];
+}
+
+function setForgeSettings(
+    config: Readonly<Config>,
+    forgeType: ForgeType,
+    settings: Readonly<Record<string, unknown>>,
+): Config {
+    return {
+        ...config,
         forges: {
-            ...forgesSchema,
-            properties: mapObjectValues(formForgeProperties, (forgeType, forgeProperties) => {
-                const forgeSchema = forgesSchema.properties[forgeType];
-                return {
-                    ...forgeSchema,
-                    properties: forgeProperties,
-                    required: ('required' in forgeSchema ? forgeSchema.required : []).filter(
-                        (key) => key in forgeProperties,
-                    ),
-                };
-            }),
-            required: getObjectTypedKeys(formForgeProperties),
+            ...config.forges,
+            [forgeType]: {
+                ...config.forges[forgeType],
+                ...settings,
+            },
+        } satisfies Record<ForgeType, object> as Config['forges'],
+    };
+}
+
+/** One row of settings that search can show outside its section. */
+type SettingsEntry = Readonly<{
+    section: SettingsSection;
+    /** Consecutive entries with the same title share a card, titled when this is set. */
+    cardTitle: string | undefined;
+    /** The row's title and description, which search matches. */
+    searchText: ReadonlyArray<string | undefined>;
+    template: HtmlInterpolation;
+}>;
+
+function isDefault({value, defaultValue}: Readonly<{value: unknown; defaultValue: unknown}>) {
+    return check.jsonEquals((value ?? null) as JsonValue, (defaultValue ?? null) as JsonValue);
+}
+
+/** Puts a section's settings back to their defaults. Undefined for a section with none. */
+const sectionDefaults: Readonly<
+    Record<
+        SettingsSection,
+        | Readonly<{
+              isModified: (config: Readonly<Config>) => boolean;
+              restore: ValueUpdate<Config>;
+          }>
+        | undefined
+    >
+> = {
+    ...mapEnumToObject(SettingsSection, (section) => {
+        const keys = getSchemaKeys(section);
+        return keys.length
+            ? {
+                  isModified(config: Readonly<Config>) {
+                      return keys.some((key) => {
+                          return !isDefault({
+                              value: config[key],
+                              defaultValue: defaultConfig[key],
+                          });
+                      });
+                  },
+                  restore(config: Readonly<Config>): Config {
+                      return {
+                          ...config,
+                          ...pickObjectKeys(defaultConfig, keys),
+                      };
+                  },
+              }
+            : undefined;
+    }),
+    [SettingsSection.Forges]: {
+        isModified(config) {
+            return forgeCards.some((card) => {
+                return card.properties.some(
+                    ([
+                        key,
+                        schema,
+                    ]) => {
+                        return !isDefault({
+                            value: readForgeSetting(config, card.forgeType, key),
+                            defaultValue: schema.default,
+                        });
+                    },
+                );
+            });
         },
-    };
-    hiddenConfigKeys.forEach((key) => {
-        delete properties[key];
-    });
-    return {
-        ...configJsonSchema,
-        properties,
-        /**
-         * `toJsonValue` already keeps unsupported keys out of the form's value, so the form should
-         * never meet one. This is the backstop: `configJsonSchema` has to keep
-         * `additionalProperties: false` for `mapSchemaToShape`, and inheriting that here would lock
-         * the user out of every setting over a single stray key.
-         */
-        additionalProperties: true,
-        required: configJsonSchema.required.filter(
-            (key) => !(hiddenConfigKeys as ReadonlyArray<string>).includes(key),
-        ),
-    };
-})();
-
-/** Exactly the keys the form renders: every schema property that isn't hidden. */
-const formConfigKeys = getObjectTypedKeys(formJsonSchema.properties || {});
-
-/**
- * The AI choices for the default picker. An empty leading option covers a config with no AI defined
- * yet, which is also the state a brand-new install starts in if the seeded definition was deleted.
- */
-function aiOptions(config: Readonly<Config> | undefined): ViraDropdownOption[] {
-    return (config?.aiDefinitions || []).map((definition) => {
-        return {
-            value: definition.id,
-            label: definition.name,
-        };
-    });
-}
+        restore(config) {
+            return forgeCards.reduce((current, card) => {
+                return setForgeSettings(
+                    current,
+                    card.forgeType,
+                    Object.fromEntries(
+                        card.properties.map(
+                            ([
+                                key,
+                                schema,
+                            ]) => {
+                                return [
+                                    key,
+                                    schema.default,
+                                ];
+                            },
+                        ),
+                    ),
+                );
+            }, config);
+        },
+    },
+};
 
 /**
- * Pick the form's keys out of the config, which drops both the hidden ones and any key this build
- * no longer supports (a setting removed in a later version, or one written by a newer build the
- * user ran earlier). The form renders a row per key present in the value it's given, not per schema
- * property, so an unsupported key left in here would show up as an editable row.
+ * The Settings modal: a searchable nav of sections beside the open section's settings. Every change
+ * applies at once: it shows here right away and is written to the server shortly after, or when the
+ * modal closes.
  */
-function toJsonValue(config: Readonly<Config>): JsonValue {
-    const visible = {
-        ...pickObjectKeys(config as Readonly<Record<string, unknown>>, formConfigKeys),
-        forges: mapObjectValues(formForgeProperties, (forgeType, forgeProperties) => {
-            return pickObjectKeys(
-                config.forges[forgeType] as Readonly<Record<string, unknown>>,
-                getObjectTypedKeys(forgeProperties).filter(check.isString),
-            );
-        }),
-    };
-    return JSON.parse(JSON.stringify(visible)) as JsonValue;
-}
-
-function fromJsonValue(value: JsonValue, current: Readonly<Config>): Config {
-    /**
-     * Everything the form didn't see comes back from the current config: the hidden fields, and the
-     * unsupported keys `toJsonValue` stripped. Without this the form's output would lack those keys
-     * and saving would revert them to defaults — or, for an unsupported key, erase it from the file
-     * of whichever build still uses it.
-     */
-    const formValue = value as Partial<Config>;
-    return {
-        ...defaultConfig,
-        ...omitObjectKeys(current as Readonly<Record<string, unknown>>, formConfigKeys),
-        ...formValue,
-        /** Same as above, one level down: the form only holds each forge's visible settings. */
-        forges: mapObjectValues(current.forges, (forgeType, currentForge) => {
-            return {
-                ...currentForge,
-                ...formValue.forges?.[forgeType],
-            };
-        }) satisfies Record<ForgeType, object> as Config['forges'],
-    };
-}
-
 export const VirSettingsModal = defineAppElement<{
-    open: boolean;
+    context: AppContext;
 }>()({
     tagName: 'vir-settings-modal',
-    events: {
-        /**
-         * Emitted when the user dismisses the modal (clicks the underlying scrim, hits Cancel /
-         * Save, etc.). The parent owns the `open` input and is responsible for flipping it false.
-         */
-        closeRequested: defineElementEvent<void>(),
-        /**
-         * Asks the app to open the "Define AI" modal. Raised rather than rendering that modal here
-         * so the two never stack on top of each other.
-         */
-        defineAiRequested: defineElementEvent<void>(),
-    },
     state() {
         return {
-            /**
-             * Client-only terminal scrollback cap, backed by `localStorage` rather than the backend
-             * config (so it's deliberately not part of the `ViraJsonForm` below). Seeded from the
-             * persisted value and written straight back on every change.
-             */
+            config: undefined as Config | undefined,
+            reviewConfig: undefined as ReviewConfig | undefined,
+            writers: undefined as
+                | Readonly<{
+                      config: ReturnType<typeof createBatchedWriter<Config>>;
+                      reviewConfig: ReturnType<typeof createBatchedWriter<ReviewConfig>>;
+                  }>
+                | undefined,
+            search: '',
+            loadError: '',
+            saveError: '',
+            tlsCertPathError: '',
             scrollbackLimit: localStorageClient.scrollbackLimit.read(),
-            /** Client-only like `scrollbackLimit`. */
+            /** The scrollback input's text, which may be out of bounds while the user types. */
+            scrollbackDraft: undefined as string | undefined,
             showDebugTab: localStorageClient.showDebugTab.read(),
-            pending: undefined as JsonValue | undefined,
-            /**
-             * Snapshot of the Config we loaded from the backend. Needed at save() time so we can
-             * preserve the backend-managed fields (stripped from the user-facing form) when merging
-             * the form's output back into a full Config.
-             */
-            loaded: undefined as Config | undefined,
-            /**
-             * Tracked apart from `loaded` because the default AI can also be changed by the "Define
-             * AI" modal while this one sits open; save() re-reads config and applies just this
-             * field on top, so the two can't clobber each other.
-             */
-            defaultAiId: undefined as string | undefined,
-            /**
-             * Same arrangement as `defaultAiId`: rendered outside the JSON form, so save() applies
-             * it on top of the form's output. An empty string is a real value here (the user
-             * clearing the path to go back to http), which is why save() merges it with `??`.
-             */
-            tlsCertPath: undefined as string | undefined,
-            /** Set by save() when the backend reports no file at the saved certificate path. */
-            tlsCertPathError: undefined as string | undefined,
-            /**
-             * The useWebgl value at load time, captured so save() can detect a flip and trigger a
-             * page reload — existing terminals only read the config at construction.
-             */
-            useWebgl: undefined as boolean | undefined,
-            loadError: undefined as string | undefined,
-            saveError: undefined as string | undefined,
-            saving: false,
-            restartingDaemon: false,
-            daemonRestartError: undefined as string | undefined,
+            isRestartingDaemon: false,
+            daemonRestartError: '',
         };
     },
     styles: css`
+        ${settingsCardCss}
+
         .body {
             display: flex;
-            flex-direction: column;
-            gap: 16px;
-            min-width: 540px;
-            max-width: 720px;
+            gap: 24px;
+            width: min(960px, calc(100dvw - 48px));
+            height: min(640px, calc(100dvh - 140px));
         }
 
-        .footer {
+        .body.mobile {
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+            height: auto;
+        }
+
+        .nav {
             display: flex;
-            justify-content: flex-end;
+            flex-direction: column;
+            flex-shrink: 0;
+            gap: 12px;
+            width: 200px;
+            overflow-y: auto;
+
+            & ${ViraInput} {
+                width: 100%;
+            }
+        }
+
+        .mobile .nav {
+            width: 100%;
+        }
+
+        .content {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            gap: 16px;
+            min-width: 0;
+            overflow-y: auto;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
             gap: 8px;
+            min-height: 32px;
+
+            & h2 {
+                margin: 0;
+                font-size: 18px;
+            }
         }
 
         .error {
             padding: 8px 12px;
-            border-radius: 6px;
             border: 1px solid currentColor;
+            border-radius: 6px;
             color: ${viraThemeByKeys.red.foreground.body.foreground.value};
             background: ${viraThemeByKeys.red['behind-bg'].body.background.value};
             white-space: pre-wrap;
         }
 
-        /* Holds the form and its per-field error together so the error reads as attached to the
-           input above it rather than sitting a full body gap away. */
-        .field-column {
+        .result-section {
             display: flex;
             flex-direction: column;
-            gap: 4px;
-        }
-
-        .field-error {
-            font-size: 12px;
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
-        }
-
-        .loading {
-            padding: 24px;
-            text-align: center;
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-        }
-
-        /* Default-AI picker and its escape hatch to the "Define AI" modal, kept on one line so the
-           button reads as an action on the same subject as the select. */
-        .ai-row {
-            display: flex;
-            align-items: flex-end;
             gap: 8px;
         }
 
-        .section-divider {
-            border: none;
-            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            margin: 0;
-            width: 100%;
-        }
-    `,
-    render({inputs, state, updateState, dispatch, events}) {
-        function reset() {
-            updateState({
-                pending: undefined,
-                loaded: undefined,
-                defaultAiId: undefined,
-                tlsCertPath: undefined,
-                tlsCertPathError: undefined,
-                useWebgl: undefined,
-                loadError: undefined,
-                saveError: undefined,
-                saving: false,
-                restartingDaemon: false,
-                daemonRestartError: undefined,
-            });
+        .result-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+
+            & h3 {
+                margin: 0;
+                font-size: 14px;
+            }
         }
 
-        async function restartDaemonAction() {
+        .muted {
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+        }
+    `,
+    render({inputs, state, updateState, host}) {
+        const target = inputs.context.settingsTarget.value;
+
+        function createWriters() {
+            return {
+                config: createBatchedWriter<Config>({
+                    delay: {
+                        milliseconds: 400,
+                    },
+                    read() {
+                        return fetchApi(configEndpoint, HttpMethod.Get);
+                    },
+                    write(requestData) {
+                        return fetchApi(configEndpoint, HttpMethod.Put, {
+                            requestData,
+                        });
+                    },
+                    async onSaved({previous, saved, pending}) {
+                        updateState({
+                            config: pending.reduce((value: Config, update) => update(value), saved),
+                            saveError: '',
+                        });
+                        if (previous.useWebgl !== saved.useWebgl) {
+                            /** Existing terminals only read `useWebgl` when they're created. */
+                            window.location.reload();
+                            return;
+                        }
+                        if (
+                            !isDefault({
+                                value: previous.aiDefinitions,
+                                defaultValue: saved.aiDefinitions,
+                            })
+                        ) {
+                            await inputs.context.paneRestarts.bumpAiConfig();
+                        }
+                        if (previous.tlsCertPath !== saved.tlsCertPath) {
+                            /**
+                             * Checked after the write: the certificate lives on the server's
+                             * filesystem, so only the backend can stat it.
+                             */
+                            const checked = saved.tlsCertPath
+                                ? await fetchApi(checkPathEndpoint, HttpMethod.Post, {
+                                      requestData: {
+                                          path: saved.tlsCertPath,
+                                      },
+                                  })
+                                : undefined;
+                            updateState({
+                                tlsCertPathError:
+                                    checked && !checked.exists
+                                        ? `No file found at ${checked.resolvedPath}`
+                                        : '',
+                            });
+                        }
+                        await inputs.context.folderData.refresh();
+                    },
+                    onError(error) {
+                        updateState({
+                            saveError: extractErrorMessage(error),
+                        });
+                    },
+                }),
+                reviewConfig: createBatchedWriter<ReviewConfig>({
+                    delay: {
+                        milliseconds: 400,
+                    },
+                    read() {
+                        return fetchApi(reviewConfigEndpoint, HttpMethod.Get);
+                    },
+                    write(requestData) {
+                        return fetchApi(reviewConfigEndpoint, HttpMethod.Put, {
+                            requestData,
+                        });
+                    },
+                    onSaved({saved, pending}) {
+                        updateState({
+                            reviewConfig: pending.reduce(
+                                (value: ReviewConfig, update) => update(value),
+                                saved,
+                            ),
+                            saveError: '',
+                        });
+                    },
+                    onError(error) {
+                        updateState({
+                            saveError: extractErrorMessage(error),
+                        });
+                    },
+                }),
+            };
+        }
+
+        async function load() {
+            const writers = host.instanceState.writers || createWriters();
+            updateState({
+                writers,
+                loadError: '',
+            });
+            try {
+                /** Edits from the last time the modal was open land before the fresh read. */
+                await Promise.all([
+                    writers.config.flush(),
+                    writers.reviewConfig.flush(),
+                ]);
+                const [
+                    config,
+                    reviewConfig,
+                ] = await Promise.all([
+                    fetchApi(configEndpoint, HttpMethod.Get),
+                    fetchApi(reviewConfigEndpoint, HttpMethod.Get),
+                ]);
+                updateState({
+                    config,
+                    reviewConfig,
+                });
+            } catch (error: unknown) {
+                updateState({
+                    loadError: extractErrorMessage(error),
+                });
+            }
+        }
+
+        function changeConfig(update: ValueUpdate<Config>) {
+            const config = host.instanceState.config;
+            if (!config || !state.writers) {
+                return;
+            }
+            updateState({
+                config: update(config),
+            });
+            state.writers.config.add(update);
+        }
+
+        function changeReviewConfig(update: ValueUpdate<ReviewConfig>) {
+            const reviewConfig = host.instanceState.reviewConfig;
+            if (!reviewConfig || !state.writers) {
+                return;
+            }
+            updateState({
+                reviewConfig: update(reviewConfig),
+            });
+            state.writers.reviewConfig.add(update);
+        }
+
+        async function close() {
+            inputs.context.settingsTarget.setValue(undefined);
+            updateState({
+                search: '',
+                scrollbackDraft: undefined,
+                daemonRestartError: '',
+            });
+            await Promise.all([
+                state.writers?.config.flush(),
+                state.writers?.reviewConfig.flush(),
+            ]);
+        }
+
+        async function restartDaemon() {
             if (
+                state.isRestartingDaemon ||
                 !window.confirm(
                     'Restart the PTY daemon? All running terminal sessions will be killed.',
                 )
@@ -340,306 +485,543 @@ export const VirSettingsModal = defineAppElement<{
                 return;
             }
             updateState({
-                restartingDaemon: true,
-                daemonRestartError: undefined,
+                isRestartingDaemon: true,
+                daemonRestartError: '',
             });
             try {
                 await fetchApi(restartDaemonEndpoint, HttpMethod.Post);
                 updateState({
-                    restartingDaemon: false,
+                    isRestartingDaemon: false,
                 });
             } catch (error: unknown) {
                 updateState({
-                    restartingDaemon: false,
-                    daemonRestartError: error instanceof Error ? error.message : String(error),
+                    isRestartingDaemon: false,
+                    daemonRestartError: extractErrorMessage(error),
                 });
             }
         }
 
-        async function load() {
-            try {
-                const config = await fetchApi(configEndpoint, HttpMethod.Get);
-                updateState({
-                    pending: toJsonValue(config),
-                    loaded: config,
-                    defaultAiId: config.defaultAiId,
-                    tlsCertPath: config.tlsCertPath || '',
-                    // optionalShape default is true; coerce undefined → true for comparison.
-                    useWebgl: config.useWebgl,
-                    loadError: undefined,
-                });
-            } catch (error: unknown) {
-                updateState({
-                    loadError: error instanceof Error ? error.message : String(error),
-                });
-            }
-        }
-
-        async function save() {
-            if (!state.pending || state.saving) {
-                return;
+        function setScrollbackLimit(text: string) {
+            const value = Number(text);
+            const isValid =
+                !!text &&
+                Number.isFinite(value) &&
+                value >= scrollbackLimit.min &&
+                value <= scrollbackLimit.max;
+            const limit = isValid ? Math.round(value) : state.scrollbackLimit;
+            if (isValid) {
+                localStorageClient.scrollbackLimit.write(limit);
             }
             updateState({
-                saving: true,
-                saveError: undefined,
-                tlsCertPathError: undefined,
+                scrollbackLimit: limit,
+                scrollbackDraft: text,
             });
-            try {
-                /**
-                 * Re-read rather than trusting the load-time snapshot: the sidebar and the "Define
-                 * AI" modal write config too, and the hidden keys this form preserves would
-                 * otherwise be whatever they were when the modal opened.
-                 */
-                const current = await fetchApi(configEndpoint, HttpMethod.Get);
-                const next: Config = {
-                    ...fromJsonValue(state.pending, current),
-                    defaultAiId: state.defaultAiId ?? current.defaultAiId,
-                    tlsCertPath: state.tlsCertPath ?? current.tlsCertPath,
-                };
-                await fetchApi(configEndpoint, HttpMethod.Put, {
-                    requestData: next,
-                });
-                /**
-                 * Checked after the write, not before it: the certificate lives on the server's
-                 * filesystem, so only the backend can stat it, and a typo here shouldn't cost the
-                 * user every other edit in the form. The modal stays open on a miss so the path can
-                 * be corrected in place.
-                 */
-                if (next.tlsCertPath) {
-                    const {resolvedPath, exists} = await fetchApi(
-                        checkPathEndpoint,
-                        HttpMethod.Post,
-                        {
-                            requestData: {
-                                path: next.tlsCertPath,
-                            },
+        }
+
+        function setShowDebugTab(showDebugTab: boolean) {
+            localStorageClient.showDebugTab.write(showDebugTab);
+            updateState({
+                showDebugTab,
+            });
+        }
+
+        function openSection(section: SettingsSection) {
+            updateState({
+                search: '',
+            });
+            inputs.context.settingsTarget.setValue({
+                ...target,
+                section,
+            });
+        }
+
+        /** Every row the modal renders itself, so search can show each one outside its section. */
+        function buildEntries(config: Readonly<Config>): ReadonlyArray<SettingsEntry> {
+            const isScrollbackDraftValid =
+                state.scrollbackDraft == undefined ||
+                Number(state.scrollbackDraft) === state.scrollbackLimit;
+            const scrollbackDescription = `Lines each terminal keeps, from ${scrollbackLimit.min.toLocaleString()} to ${scrollbackLimit.max.toLocaleString()}. Stored in this browser.`;
+            const restartDescription =
+                'Kills every running terminal session and starts the daemon that holds them again.';
+
+            return [
+                {
+                    section: SettingsSection.General,
+                    cardTitle: undefined,
+                    searchText: [
+                        'Theme',
+                        'light dark auto',
+                    ],
+                    template: html`
+                        <${VirSettingsRow.assign({
+                            rowTitle: 'Theme',
+                            description: 'Stored in this browser.',
+                        })}>
+                            <${ViraThemeSwitcher.assign({
+                                themeClient: inputs.context.themeClient,
+                            })}></${ViraThemeSwitcher}>
+                        </${VirSettingsRow}>
+                    `,
+                },
+                {
+                    section: SettingsSection.General,
+                    cardTitle: undefined,
+                    searchText: [
+                        'Terminal scrollback limit',
+                        scrollbackDescription,
+                    ],
+                    template: html`
+                        <${VirSettingsRow.assign({
+                            rowTitle: 'Terminal scrollback limit',
+                            description: scrollbackDescription,
+                            isModified: state.scrollbackLimit !== scrollbackLimit.default,
+                        })}
+                            ${listen(VirSettingsRow.events.reset, () => {
+                                setScrollbackLimit(String(scrollbackLimit.default));
+                            })}
+                        >
+                            <${ViraInput.assign({
+                                value: state.scrollbackDraft ?? String(state.scrollbackLimit),
+                                type: ViraInputType.Number,
+                                hasError: !isScrollbackDraftValid,
+                            })}
+                                ${listen(ViraInput.events.valueChange, (event) => {
+                                    setScrollbackLimit(event.detail);
+                                })}
+                            ></${ViraInput}>
+                        </${VirSettingsRow}>
+                    `,
+                },
+                {
+                    section: SettingsSection.General,
+                    cardTitle: undefined,
+                    searchText: [
+                        'Show Debug tab',
+                        'Stored in this browser.',
+                    ],
+                    template: html`
+                        <${VirSettingsRow.assign({
+                            rowTitle: 'Show Debug tab',
+                            description: 'Stored in this browser.',
+                            isModified: state.showDebugTab,
+                        })}
+                            ${listen(VirSettingsRow.events.reset, () => {
+                                setShowDebugTab(false);
+                            })}
+                        >
+                            <${ViraCheckbox.assign({
+                                value: state.showDebugTab,
+                            })}
+                                ${listen(ViraCheckbox.events.valueChange, (event) => {
+                                    setShowDebugTab(event.detail);
+                                })}
+                            ></${ViraCheckbox}>
+                        </${VirSettingsRow}>
+                    `,
+                },
+                ...getObjectTypedEntries(schemaConfigKeySections).map(
+                    ([
+                        key,
+                        section,
+                    ]): SettingsEntry => {
+                        const schema = configJsonSchema.properties[key];
+                        return {
+                            section,
+                            cardTitle: settingsSections[section].schemaCardTitle,
+                            searchText: [
+                                schema.title,
+                                schema.description,
+                            ],
+                            template: html`
+                                <${VirSettingsSchemaRow.assign({
+                                    schema,
+                                    value: config[key],
+                                    defaultValue: defaultConfig[key],
+                                    errorMessage:
+                                        key === 'tlsCertPath' ? state.tlsCertPathError : undefined,
+                                })}
+                                    ${listen(VirSettingsSchemaRow.events.valueChange, (event) => {
+                                        changeConfig((current) => {
+                                            return {
+                                                ...current,
+                                                [key]: event.detail,
+                                            };
+                                        });
+                                    })}
+                                ></${VirSettingsSchemaRow}>
+                            `,
+                        };
+                    },
+                ),
+                ...forgeCards.flatMap((card) => {
+                    return card.properties.map(
+                        ([
+                            key,
+                            schema,
+                        ]): SettingsEntry => {
+                            return {
+                                section: SettingsSection.Forges,
+                                cardTitle: card.title,
+                                searchText: [
+                                    schema.title,
+                                    schema.description,
+                                ],
+                                template: html`
+                                    <${VirSettingsSchemaRow.assign({
+                                        schema,
+                                        value: readForgeSetting(config, card.forgeType, key),
+                                        defaultValue: schema.default,
+                                    })}
+                                        ${listen(
+                                            VirSettingsSchemaRow.events.valueChange,
+                                            (event) => {
+                                                changeConfig((current) => {
+                                                    return setForgeSettings(
+                                                        current,
+                                                        card.forgeType,
+                                                        {
+                                                            [key]: event.detail,
+                                                        },
+                                                    );
+                                                });
+                                            },
+                                        )}
+                                    ></${VirSettingsSchemaRow}>
+                                `,
+                            };
                         },
                     );
-                    if (!exists) {
-                        updateState({
-                            saving: false,
-                            tlsCertPathError: `No file found at ${resolvedPath}`,
-                        });
-                        return;
-                    }
-                }
-                const nextUseWebgl = next.useWebgl;
-                const webglChanged = state.useWebgl != undefined && state.useWebgl !== nextUseWebgl;
-                reset();
-                dispatch(
-                    new events.closeRequested({
-                        detail: undefined,
-                    }),
-                );
-                if (webglChanged) {
-                    // Existing terminals only read useWebgl at construction; reload so the
-                    // new renderer choice applies everywhere.
-                    window.location.reload();
-                }
-            } catch (error: unknown) {
-                updateState({
-                    saving: false,
-                    saveError: error instanceof Error ? error.message : String(error),
+                }),
+                {
+                    section: SettingsSection.Maintenance,
+                    cardTitle: undefined,
+                    searchText: [
+                        'Restart PTY daemon',
+                        restartDescription,
+                    ],
+                    template: html`
+                        <${VirSettingsRow.assign({
+                            rowTitle: 'Restart PTY daemon',
+                            description: restartDescription,
+                            errorMessage: state.daemonRestartError,
+                        })}>
+                            <${ViraButton.assign({
+                                text: state.isRestartingDaemon ? 'Restarting...' : 'Restart',
+                                color: ViraColorVariant.Danger,
+                                buttonSize: ViraSize.Small,
+                                isDisabled: state.isRestartingDaemon,
+                            })}
+                                ${listen('click', restartDaemon)}
+                            ></${ViraButton}>
+                        </${VirSettingsRow}>
+                    `,
+                },
+            ];
+        }
+
+        /** Puts consecutive entries that share a card title into one card. */
+        function renderEntries(entries: ReadonlyArray<SettingsEntry>) {
+            return entries
+                .reduce<
+                    ReadonlyArray<
+                        Readonly<{title: string | undefined; entries: ReadonlyArray<SettingsEntry>}>
+                    >
+                >((cards, entry) => {
+                    const lastCard = cards.at(-1);
+                    return lastCard && lastCard.title === entry.cardTitle
+                        ? [
+                              ...cards.slice(0, -1),
+                              {
+                                  title: lastCard.title,
+                                  entries: [
+                                      ...lastCard.entries,
+                                      entry,
+                                  ],
+                              },
+                          ]
+                        : [
+                              ...cards,
+                              {
+                                  title: entry.cardTitle,
+                                  entries: [
+                                      entry,
+                                  ],
+                              },
+                          ];
+                }, [])
+                .map((card) => {
+                    return html`
+                        ${card.title
+                            ? html`
+                                  <span class="card-title">${card.title}</span>
+                              `
+                            : nothing}
+                        <div class="card">
+                            ${card.entries.map((entry) => {
+                                return entry.template;
+                            })}
+                        </div>
+                    `;
                 });
+        }
+
+        const sectionContent: Readonly<
+            Record<
+                SettingsSection,
+                (
+                    params: Readonly<{
+                        config: Readonly<Config>;
+                        reviewConfig: Readonly<ReviewConfig>;
+                        entries: ReadonlyArray<SettingsEntry>;
+                    }>,
+                ) => HtmlInterpolation
+            >
+        > = {
+            [SettingsSection.General]({entries}) {
+                return renderEntries(entries);
+            },
+            [SettingsSection.Terminal]({entries}) {
+                return renderEntries(entries);
+            },
+            [SettingsSection.Sidebar]({entries}) {
+                return renderEntries(entries);
+            },
+            [SettingsSection.Diff]({entries}) {
+                return renderEntries(entries);
+            },
+            [SettingsSection.Ai]({config}) {
+                return html`
+                    <${VirSettingsAi.assign({
+                        config,
+                    })}
+                        ${listen(VirSettingsAi.events.configChange, (event) => {
+                            changeConfig(event.detail);
+                        })}
+                    ></${VirSettingsAi}>
+                `;
+            },
+            [SettingsSection.Folders]({config, entries}) {
+                return html`
+                    ${renderEntries(entries)}
+                    <${VirSettingsFolders.assign({
+                        config,
+                        folderInfo: inputs.context.folderData.value.folderInfo,
+                        folder: target?.folder,
+                    })}
+                        ${listen(VirSettingsFolders.events.configChange, (event) => {
+                            changeConfig(event.detail);
+                        })}
+                        ${listen(VirSettingsFolders.events.folderSelect, (event) => {
+                            inputs.context.settingsTarget.setValue({
+                                section: SettingsSection.Folders,
+                                folder: event.detail,
+                            });
+                        })}
+                    ></${VirSettingsFolders}>
+                `;
+            },
+            [SettingsSection.Review]({reviewConfig}) {
+                return html`
+                    <${VirSettingsReview.assign({
+                        reviewConfig,
+                        reviewRepo: target?.reviewRepo,
+                    })}
+                        ${listen(VirSettingsReview.events.reviewConfigChange, (event) => {
+                            changeReviewConfig(event.detail);
+                        })}
+                    ></${VirSettingsReview}>
+                `;
+            },
+            [SettingsSection.Forges]({entries}) {
+                return renderEntries(entries);
+            },
+            [SettingsSection.Maintenance]({entries}) {
+                return renderEntries(entries);
+            },
+        };
+
+        /**
+         * Each section with a matching setting, holding only those settings. A section whose own
+         * name or search terms match shows all of its settings, or just a way to open it when its
+         * settings live in their own element.
+         */
+        function renderSearchResults(entries: ReadonlyArray<SettingsEntry>) {
+            const results = getEnumValues(SettingsSection)
+                .map((section) => {
+                    const isSectionMatch = matchesSearch([
+                        settingsSections[section].label,
+                        ...settingsSections[section].searchTerms,
+                    ]);
+                    const sectionEntries = entries.filter((entry) => entry.section === section);
+                    return {
+                        section,
+                        isSectionMatch,
+                        matches: isSectionMatch
+                            ? sectionEntries
+                            : sectionEntries.filter((entry) => {
+                                  return matchesSearch([
+                                      entry.cardTitle,
+                                      ...entry.searchText,
+                                  ]);
+                              }),
+                    };
+                })
+                .filter(({isSectionMatch, matches}) => isSectionMatch || matches.length);
+
+            if (!results.length) {
+                return html`
+                    <span class="muted">No settings match "${state.search}".</span>
+                `;
             }
+
+            return results.map(({section, matches}) => {
+                return html`
+                    <div class="result-section">
+                        <div class="result-header">
+                            <h3>${settingsSections[section].label}</h3>
+                            <${ViraButton.assign({
+                                text: 'Open',
+                                buttonSize: ViraSize.Small,
+                                buttonEmphasis: ViraEmphasis.Subtle,
+                                color: ViraColorVariant.Neutral,
+                            })}
+                                ${listen('click', () => {
+                                    openSection(section);
+                                })}
+                            ></${ViraButton}>
+                        </div>
+                        ${renderEntries(matches)}
+                    </div>
+                `;
+            });
+        }
+
+        function renderContent(section: SettingsSection) {
+            if (!state.config || !state.reviewConfig) {
+                return state.loadError
+                    ? nothing
+                    : html`
+                          <span class="muted">Loading...</span>
+                      `;
+            }
+            const entries = buildEntries(state.config);
+            return isSearching
+                ? renderSearchResults(entries)
+                : sectionContent[section]({
+                      config: state.config,
+                      reviewConfig: state.reviewConfig,
+                      entries: entries.filter((entry) => entry.section === section),
+                  });
+        }
+
+        function renderBody(section: SettingsSection) {
+            const defaults = isSearching ? undefined : sectionDefaults[section];
+            const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
+
+            return html`
+                <div
+                    class="body ${isMobile ? 'mobile' : ''}"
+                    ${onDomCreated(() => {
+                        void load();
+                    })}
+                >
+                    <div class="nav">
+                        <${ViraInput.assign({
+                            value: state.search,
+                            placeholder: 'Search settings',
+                            icon: LucideSearchIcon,
+                            showClearButton: true,
+                        })}
+                            ${listen(ViraInput.events.valueChange, (event) => {
+                                updateState({
+                                    search: event.detail,
+                                });
+                            })}
+                        ></${ViraInput}>
+                        <${ViraTabs.assign({
+                            tabs: getEnumValues(SettingsSection).map((tabSection) => {
+                                return {
+                                    label: settingsSections[tabSection].label,
+                                    group: settingsSections[tabSection].group,
+                                    paths: {
+                                        path: tabSection,
+                                        fullPaths: [
+                                            tabSection,
+                                        ],
+                                        PathsType: [
+                                            tabSection,
+                                        ],
+                                    },
+                                };
+                            }),
+                            router: staticTabRouter,
+                            currentRoute: toStaticTabRoute(isSearching ? undefined : section),
+                            barDirection: isMobile
+                                ? ViraTabsBarDirection.Bottom
+                                : ViraTabsBarDirection.Right,
+                            shouldFillWidth: !isMobile,
+                            color: ViraThemeColorName.blue,
+                        })}
+                            ${listen(ViraTabs.events.tabSelect, (event) => {
+                                const selected = event.detail.paths.fullPaths[0];
+                                if (check.isEnumValue(selected, SettingsSection)) {
+                                    openSection(selected);
+                                }
+                            })}
+                        ></${ViraTabs}>
+                    </div>
+                    <div class="content">
+                        <div class="header">
+                            <h2>
+                                ${isSearching ? 'Search results' : settingsSections[section].label}
+                            </h2>
+                            ${defaults && state.config && defaults.isModified(state.config)
+                                ? html`
+                                      <${ViraButton.assign({
+                                          text: 'Restore defaults',
+                                          buttonSize: ViraSize.Small,
+                                          buttonEmphasis: ViraEmphasis.Subtle,
+                                          color: ViraColorVariant.Neutral,
+                                      })}
+                                          ${listen('click', () => {
+                                              changeConfig(defaults.restore);
+                                          })}
+                                      ></${ViraButton}>
+                                  `
+                                : nothing}
+                        </div>
+                        ${[
+                            state.loadError,
+                            state.saveError,
+                        ]
+                            .filter(Boolean)
+                            .map((message) => {
+                                return html`
+                                    <div class="error">${message}</div>
+                                `;
+                            })}
+                        ${renderContent(section)}
+                    </div>
+                </div>
+            `;
+        }
+
+        const searchText = state.search.trim().toLowerCase();
+        const isSearching = !!searchText;
+
+        function matchesSearch(texts: ReadonlyArray<string | undefined>) {
+            return texts.join('\n').toLowerCase().includes(searchText);
         }
 
         return html`
             <${ViraModal.assign({
-                open: inputs.open,
+                open: !!target,
                 modalTitle: 'Settings',
+                isMobileSize: inputs.context.screenSize === ScreenSize.Mobile,
             })}
-                ${listen(ViraModal.events.modalClose, () => {
-                    reset();
-                    dispatch(
-                        new events.closeRequested({
-                            detail: undefined,
-                        }),
-                    );
-                })}
+                ${listen(ViraModal.events.modalClose, close)}
             >
-                ${inputs.open
-                    ? html`
-                          <div
-                              class="body"
-                              ${onDomCreated(() => {
-                                  if (!state.pending && !state.loadError) {
-                                      void load();
-                                  }
-                              })}
-                          >
-                              <div class="field-column">
-                                  <${ViraForm.assign({
-                                      fields: {
-                                          scrollbackLimit: {
-                                              type: ViraFormFieldType.Number,
-                                              label: 'Terminal scrollback limit (lines)',
-                                              value: state.scrollbackLimit,
-                                              min: scrollbackLimit.min,
-                                              max: scrollbackLimit.max,
-                                              step: 1000,
-                                          },
-                                          tlsCertPath: {
-                                              type: ViraFormFieldType.Text,
-                                              label: 'HTTPS certificate path',
-                                              value: state.tlsCertPath ?? '',
-                                              placeholder: 'Leave empty to serve over http',
-                                              hasError: !!state.tlsCertPathError,
-                                          },
-                                          showDebugTab: {
-                                              type: ViraFormFieldType.Checkbox,
-                                              label: 'Show Debug tab',
-                                              value: state.showDebugTab,
-                                          },
-                                      },
-                                  })}
-                                      ${listen(ViraForm.events.valueChange, (event) => {
-                                          if (event.detail.key === 'tlsCertPath') {
-                                              updateState({
-                                                  tlsCertPath: check.isString(event.detail.value)
-                                                      ? event.detail.value
-                                                      : '',
-                                                  tlsCertPathError: undefined,
-                                              });
-                                              return;
-                                          } else if (event.detail.key === 'showDebugTab') {
-                                              const showDebugTab = event.detail.value === true;
-                                              updateState({
-                                                  showDebugTab,
-                                              });
-                                              localStorageClient.showDebugTab.write(showDebugTab);
-                                              return;
-                                          }
-                                          const nextValue = event.detail.value;
-                                          if (
-                                              typeof nextValue !== 'number' ||
-                                              !Number.isFinite(nextValue)
-                                          ) {
-                                              return;
-                                          }
-                                          const clamped = Math.min(
-                                              scrollbackLimit.max,
-                                              Math.max(scrollbackLimit.min, Math.round(nextValue)),
-                                          );
-                                          updateState({
-                                              scrollbackLimit: clamped,
-                                          });
-                                          localStorageClient.scrollbackLimit.write(clamped);
-                                      })}
-                                  ></${ViraForm}>
-                                  ${state.tlsCertPathError
-                                      ? html`
-                                            <div class="field-error">${state.tlsCertPathError}</div>
-                                        `
-                                      : nothing}
-                              </div>
-                              <div class="ai-row">
-                                  <${ViraDropdown.assign({
-                                      label: 'Default AI',
-                                      options: aiOptions(state.loaded),
-                                      selected: state.defaultAiId
-                                          ? [
-                                                state.defaultAiId,
-                                            ]
-                                          : [],
-                                      isDisabled: state.saving || !state.loaded,
-                                  })}
-                                      ${listen(
-                                          ViraDropdown.events.selectedValuesChange,
-                                          (event) => {
-                                              return updateState({
-                                                  defaultAiId: event.detail[0],
-                                              });
-                                          },
-                                      )}
-                                  ></${ViraDropdown}>
-                                  <${ViraButton.assign({
-                                      text: 'Define AI',
-                                      buttonEmphasis: ViraEmphasis.Subtle,
-                                      color: ViraColorVariant.Neutral,
-                                      isDisabled: state.saving,
-                                  })}
-                                      ${listen('click', () => {
-                                          return dispatch(
-                                              new events.defineAiRequested({
-                                                  detail: undefined,
-                                              }),
-                                          );
-                                      })}
-                                  ></${ViraButton}>
-                              </div>
-                              <hr class="section-divider" />
-                              ${state.loadError
-                                  ? html`
-                                        <div class="error">${state.loadError}</div>
-                                    `
-                                  : nothing}
-                              ${state.saveError
-                                  ? html`
-                                        <div class="error">${state.saveError}</div>
-                                    `
-                                  : nothing}
-                              ${state.daemonRestartError
-                                  ? html`
-                                        <div class="error">${state.daemonRestartError}</div>
-                                    `
-                                  : nothing}
-                              ${state.pending
-                                  ? html`
-                                        <${ViraJsonForm.assign({
-                                            value: state.pending,
-                                            schema: formJsonSchema,
-                                            isDisabled: state.saving,
-                                        })}
-                                            ${listen(ViraJsonForm.events.valueChange, (event) => {
-                                                updateState({
-                                                    pending: event.detail,
-                                                });
-                                            })}
-                                        ></${ViraJsonForm}>
-                                    `
-                                  : state.loadError
-                                    ? nothing
-                                    : html`
-                                          <div class="loading">Loading config...</div>
-                                      `}
-                              <div class="footer">
-                                  <${ViraButton.assign({
-                                      text: state.restartingDaemon
-                                          ? 'Restarting daemon...'
-                                          : 'Restart PTY daemon',
-                                      color: ViraColorVariant.Danger,
-                                      isDisabled: state.restartingDaemon || state.saving,
-                                  })}
-                                      ${listen('click', () => void restartDaemonAction())}
-                                  ></${ViraButton}>
-                                  <span style="flex-grow: 1;"></span>
-                                  <${ViraButton.assign({
-                                      text: 'Cancel',
-                                      color: ViraColorVariant.Neutral,
-                                      isDisabled: state.saving,
-                                  })}
-                                      ${listen('click', () => {
-                                          reset();
-                                          dispatch(
-                                              new events.closeRequested({
-                                                  detail: undefined,
-                                              }),
-                                          );
-                                      })}
-                                  ></${ViraButton}>
-                                  <${ViraButton.assign({
-                                      text: 'Save',
-                                      icon: state.saving ? savingIcon : undefined,
-                                      color: ViraColorVariant.Brand,
-                                      isDisabled: state.saving || !state.pending,
-                                  })}
-                                      ${listen('click', () => void save())}
-                                  ></${ViraButton}>
-                              </div>
-                          </div>
-                      `
-                    : nothing}
+                ${target ? renderBody(target.section) : nothing}
             </${ViraModal}>
         `;
     },

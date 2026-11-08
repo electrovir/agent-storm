@@ -1,37 +1,36 @@
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {localStorageClient, scrollbackLimit} from './local-storage-client.js';
-import {DiffView} from './pane-layout.js';
 
 describe('localStorageClient', () => {
     it('writes and removes one folder’s entry without touching the others', () => {
-        localStorageClient.diffViewByFolder.clear();
-        localStorageClient.diffViewByFolder.writeFolder({
+        localStorageClient.diffFileByFolder.clear();
+        localStorageClient.diffFileByFolder.writeFolder({
             folder: '/repo-a',
-            value: DiffView.ManualReview,
+            value: 'a.ts',
         });
-        localStorageClient.diffViewByFolder.writeFolder({
+        localStorageClient.diffFileByFolder.writeFolder({
             folder: '/repo-b',
-            value: DiffView.Source,
+            value: 'b.ts',
         });
-        localStorageClient.diffViewByFolder.writeFolder({
+        localStorageClient.diffFileByFolder.writeFolder({
             folder: '/repo-a',
             value: undefined,
         });
-        assert.deepEquals(localStorageClient.diffViewByFolder.read(), {
-            '/repo-b': DiffView.Source,
+        assert.deepEquals(localStorageClient.diffFileByFolder.read(), {
+            '/repo-b': 'b.ts',
         });
-        localStorageClient.diffViewByFolder.clear();
+        localStorageClient.diffFileByFolder.clear();
     });
     it('discards a stored map that does not match its shape', () => {
         globalThis.localStorage.setItem(
-            localStorageClient.diffViewByFolder.key,
+            localStorageClient.diffFileByFolder.key,
             JSON.stringify({
-                '/repo': 'not-a-view',
+                '/repo': 5,
             }),
         );
-        assert.deepEquals(localStorageClient.diffViewByFolder.read(), {});
-        localStorageClient.diffViewByFolder.clear();
+        assert.deepEquals(localStorageClient.diffFileByFolder.read(), {});
+        localStorageClient.diffFileByFolder.clear();
     });
     it('clamps a stored number into its bounds and rounds integer settings', () => {
         globalThis.localStorage.setItem(localStorageClient.scrollbackLimit.key, '12.6');

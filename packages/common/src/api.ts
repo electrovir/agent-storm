@@ -6,6 +6,7 @@ import {
     enumShape,
     nullableShape,
     optionalShape,
+    partialShape,
     recordShape,
     unionShape,
 } from 'object-shape-tester';
@@ -17,6 +18,7 @@ import {
 } from 'schema-vir';
 import {
     DiffLayout,
+    DiffView,
     ForgeType,
     GitDiffSide,
     GitFileChange,
@@ -162,8 +164,8 @@ const forgeSettingsJsonSchemas = {
  *
  * 1. The runtime shape (`configShape`) and the TypeScript `Config` type are derived from it via
  *    `schema-vir` instead of being hand-written separately and drifting.
- * 2. The settings modal can import this same schema directly into `ViraJsonForm` — no parallel
- *    definition in the frontend.
+ * 2. The Settings modal builds its rows from this same schema — no parallel definition in the
+ *    frontend.
  *
  * Schema-vir's `mapSchemaToShape` interprets union-type orderings (`['string', 'null']` vs
  * `['null', 'string']`) for default selection — the first arm's default wins. We keep `null` last
@@ -172,8 +174,7 @@ const forgeSettingsJsonSchemas = {
  * where the absence of an auto-disable is the natural default.
  *
  * `additionalProperties` must stay `false` here: `mapSchemaToShape` throws outright on a schema
- * that defines both `properties` and a permissive `additionalProperties`. The settings form relaxes
- * it on its own copy instead — see `formJsonSchema` in `vir-settings-modal.element.ts`.
+ * that defines both `properties` and a permissive `additionalProperties`.
  */
 export const configJsonSchema = {
     type: 'object',
@@ -182,8 +183,8 @@ export const configJsonSchema = {
     properties: {
         /**
          * Every AI the user has defined: a display name, the command that resumes its last
-         * conversation, the command that starts a fresh one, and an optional avatar. Managed
-         * entirely through the "Define AI" modal, so it's hidden from the settings JSON form.
+         * conversation, the command that starts a fresh one, and an optional avatar. Managed by the
+         * Settings modal's AI section.
          */
         aiDefinitions: {
             type: 'array',
@@ -244,8 +245,7 @@ export const configJsonSchema = {
             type: 'string',
             default: '',
             title: 'Default AI',
-            description:
-                'Id of the AI used by folders with no override. Set from the Settings modal.',
+            description: 'Id of the AI used by folders with no override.',
         },
         postWorktreeCmd: {
             type: [
@@ -349,7 +349,7 @@ export const configJsonSchema = {
             default: true,
             title: 'Use WebGL terminal renderer',
             description:
-                "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page on save when changed so existing terminals pick up the new renderer.",
+                "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page when changed so existing terminals pick up the new renderer.",
         },
         terminalClickableLinks: {
             type: 'boolean',
@@ -451,9 +451,7 @@ export const configJsonSchema = {
          * with it, pairing it with the key file of the same name — see `readTlsOptions` in
          * `packages/frontend/configs/vite.config.ts`. Empty (the default) stays on http.
          *
-         * Rendered by the settings modal as its own field rather than through the JSON form, so a
-         * path that doesn't exist can report an error under the input. Intentionally absent from
-         * `required` so configs written by older builds still load.
+         * Intentionally absent from `required` so configs written by older builds still load.
          */
         tlsCertPath: {
             type: 'string',
@@ -1591,10 +1589,27 @@ export const reviewConfigEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Every value a pane reads. The pane group supplies them all, and a tab's own `state` overrides any
+ * of them for that tab alone.
+ */
+export const paneStateShape = defineShape({
+    /** The folder the pane shows. */
+    selectedFolder: '',
+    /** Which checkout a Diff tab shows. */
+    diffView: enumShape(DiffView),
+});
+
+export type PaneState = typeof paneStateShape.runtimeType;
+
 export const paneTabShape = defineShape({
     /** `${kind}:${sessionId}` for a session tab, else the kind itself. */
     id: '',
     kind: enumShape(PaneTabKind),
+    /** Set by whoever opens or changes the tab. */
+    state: optionalShape(partialShape(paneStateShape), {
+        alsoUndefined: true,
+    }),
 });
 
 export type PaneTab = typeof paneTabShape.runtimeType;
@@ -2151,9 +2166,9 @@ export const uploadEndpoint = defineEndpoint({
 });
 
 /**
- * Stores an avatar image dropped onto the "Define AI" modal and hands back the filename to record
- * in the definition. Separate from {@link uploadEndpoint} because those uploads are throwaway files
- * pasted into a terminal, while these have to outlive a reboot alongside the config.
+ * Stores an avatar image dropped onto the Settings modal's AI editor and hands back the filename to
+ * record in the definition. Separate from {@link uploadEndpoint} because those uploads are throwaway
+ * files pasted into a terminal, while these have to outlive a reboot alongside the config.
  */
 export const aiAvatarUploadEndpoint = defineEndpoint({
     path: '/ai/avatar/upload',

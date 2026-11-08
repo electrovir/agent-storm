@@ -2,7 +2,7 @@ import {colorCss} from '@electrovir/color';
 import {css, html, nothing, Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, ViraThemeClient} from 'vira';
-import {type AppContext, type AppModal} from '../../util/app-context.js';
+import {SettingsSection, type AppContext, type SettingsTarget} from '../../util/app-context.js';
 import {followFolderActivations, resolveAppRoute} from '../../util/app-route.js';
 import {installClientErrorLog} from '../../util/client-error-log.js';
 import {createFolderData} from '../../util/folder-data.js';
@@ -12,6 +12,7 @@ import {
     type FrontendStateObservable,
     type PrQueueKind,
 } from '../../util/frontend-state.js';
+import {isSettingsShortcut} from '../../util/keyboard-shortcuts.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
 import {createPaneRestarts} from '../../util/pane-restarts.js';
 import {MainTab, router} from '../../util/router.js';
@@ -50,7 +51,7 @@ export const VirApp = defineAppElement()({
                 applyTheme: applyThemeMode,
             }),
             isDebugTabShown: localStorageClient.showDebugTab.read(),
-            openModal: new Observable<AppModal | undefined>({
+            settingsTarget: new Observable<SettingsTarget | undefined>({
                 defaultValue: undefined,
             }),
             reviewQueue: new Observable<PrQueueKind | undefined>({
@@ -91,6 +92,22 @@ export const VirApp = defineAppElement()({
         }
     `,
     init({state, updateState, host}) {
+        /**
+         * Capture phase, so the shortcut still opens Settings while a terminal or input has focus
+         * and a handler there would otherwise consume the key first.
+         */
+        function openSettingsOnShortcut(event: KeyboardEvent) {
+            if (!isSettingsShortcut(event)) {
+                return;
+            }
+            event.preventDefault();
+            if (!state.settingsTarget.value) {
+                state.settingsTarget.setValue({
+                    section: SettingsSection.General,
+                });
+            }
+        }
+        globalThis.addEventListener('keydown', openSettingsOnShortcut, true);
         void createFrontendState().then((frontendState) => {
             updateState({
                 frontendState,
@@ -117,6 +134,9 @@ export const VirApp = defineAppElement()({
                     });
                 }),
                 trackVisualViewportHeight(host),
+                () => {
+                    globalThis.removeEventListener('keydown', openSettingsOnShortcut, true);
+                },
                 followFolderActivations(state.folderData),
                 localStorageClient.showDebugTab.subscribe((isDebugTabShown) => {
                     updateState({
@@ -175,7 +195,7 @@ export const VirApp = defineAppElement()({
             isDebugTabShown: state.isDebugTabShown,
             paneRestarts: state.paneRestarts,
             uiLayout: state.uiLayout,
-            openModal: state.openModal,
+            settingsTarget: state.settingsTarget,
             reviewQueue: state.reviewQueue,
             reviewRetry: state.reviewRetry,
         };

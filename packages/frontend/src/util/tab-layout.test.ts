@@ -1,4 +1,4 @@
-import {PaneKind, PaneTabKind, SplitDirection, SplitEdge} from '@agent-storm/common';
+import {DiffView, PaneKind, PaneTabKind, SplitDirection, SplitEdge} from '@agent-storm/common';
 import {assert, assertWrap} from '@augment-vir/assert';
 import {
     getObjectTypedKeys,
@@ -27,6 +27,7 @@ import {
     splitTab,
     splitTabLayout,
     syncSessionTabs,
+    updateTabState,
     type TabLayout,
 } from './tab-layout.js';
 
@@ -543,6 +544,44 @@ describe(joinTabLayout.name, () => {
                 ]),
             ),
             'b',
+        );
+    });
+});
+
+describe(updateTabState.name, () => {
+    it('merges into a tab’s own state and skips a missing tab', () => {
+        const start = createTwoGroups();
+        const updated = updateTabState(
+            updateTabState(start, {
+                tabId: 'a',
+                state: {
+                    selectedFolder: '/repos/copy',
+                },
+            }),
+            {
+                tabId: 'a',
+                state: {
+                    diffView: DiffView.ManualReview,
+                },
+            },
+        );
+        assert.deepEquals(
+            {
+                state: updated.tabs.a?.state,
+                missing: updateTabState(start, {
+                    tabId: 'missing',
+                    state: {
+                        diffView: DiffView.Source,
+                    },
+                }),
+            },
+            {
+                state: {
+                    selectedFolder: '/repos/copy',
+                    diffView: DiffView.ManualReview,
+                },
+                missing: start,
+            },
         );
     });
 });

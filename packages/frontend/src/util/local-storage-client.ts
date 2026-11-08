@@ -9,7 +9,6 @@ import {
     unionShape,
     type ShapeInitType,
 } from 'object-shape-tester';
-import {DiffView} from './pane-layout.js';
 
 type Listener<T> = (value: T) => void;
 
@@ -235,11 +234,6 @@ export const localStorageClient = {
     diffReviewSideByFolder: defineFolderSetting({
         key: 'agent-storm:diff-review-side-by-folder',
         valueShape: unionShape(enumShape(GitDiffSide), exactShape(false)),
-    }),
-    /** Which checkout each Build folder's Diff tab was last set to show. */
-    diffViewByFolder: defineFolderSetting({
-        key: 'agent-storm:diff-view-by-folder',
-        valueShape: enumShape(DiffView),
     }),
     /**
      * The tab selection the last window to change one had in each folder, which a newly opened

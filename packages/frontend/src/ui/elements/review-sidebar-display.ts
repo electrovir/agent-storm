@@ -18,15 +18,6 @@ export type ReviewSidebarQueues = Readonly<
 
 export type ReviewedRepo = Pick<ReviewQueuePr, 'owner' | 'repoName'>;
 
-/** The loaded init command settings that the open settings modal edits. */
-export type InitCmdSettings = {
-    /** Undefined edits the default every repo without its own command uses. */
-    repo: ReviewedRepo | undefined;
-    /** The saved command, which seeds the modal's edit. */
-    value: string;
-    placeholder: string;
-};
-
 export function toRepoKey({owner, repoName}: Readonly<ReviewedRepo>) {
     return `${owner}/${repoName}`;
 }
