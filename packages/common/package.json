@@ -34,7 +34,7 @@
         "@augment-vir/assert": "^32.7.0",
         "@rest-vir/api": "^2.4.1",
         "object-shape-tester": "^6.15.3",
-        "schema-vir": "^0.8.2"
+        "schema-vir": "^0.9.0"
     },
     "devDependencies": {
         "@augment-vir/test": "^32.7.0",

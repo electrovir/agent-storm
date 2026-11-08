@@ -2,7 +2,7 @@ import {folderInfoShape, type FolderInfo} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {resolveAppRoute} from './app-route.js';
-import {MainTab, type AppRoute} from './router.js';
+import {ActivityId, type AppRoute} from './router.js';
 
 function createFolder(overrides: Readonly<Partial<FolderInfo>>): FolderInfo {
     return {
@@ -70,13 +70,13 @@ describe(resolveAppRoute.name, () => {
             [
                 resolve({
                     paths: [
-                        MainTab.Build,
+                        ActivityId.Build,
                         'solo',
                     ],
                 }),
                 resolve({
                     paths: [
-                        MainTab.Build,
+                        ActivityId.Build,
                         'multi',
                         'feature',
                     ],
@@ -103,7 +103,7 @@ describe(resolveAppRoute.name, () => {
     it('sends an unresolvable Build path back to the bare Build route, but not before folders load', () => {
         const route = {
             paths: [
-                MainTab.Build,
+                ActivityId.Build,
                 'multi',
             ],
         } as const;
@@ -117,7 +117,7 @@ describe(resolveAppRoute.name, () => {
             [
                 {
                     route: {
-                        paths: [MainTab.Build],
+                        paths: [ActivityId.Build],
                     },
                     replace: false,
                 },
@@ -131,7 +131,7 @@ describe(resolveAppRoute.name, () => {
             [
                 resolve({
                     paths: [
-                        MainTab.Review,
+                        ActivityId.Review,
                         'acme',
                         'widgets',
                         '7',
@@ -139,7 +139,7 @@ describe(resolveAppRoute.name, () => {
                 }).activePullRequest,
                 resolve({
                     paths: [
-                        MainTab.Review,
+                        ActivityId.Review,
                         'acme',
                         'widgets',
                         '8',
@@ -148,7 +148,7 @@ describe(resolveAppRoute.name, () => {
                 resolve(
                     {
                         paths: [
-                            MainTab.Review,
+                            ActivityId.Review,
                             'acme',
                             'widgets',
                             '7',
@@ -171,7 +171,7 @@ describe(resolveAppRoute.name, () => {
         assert.deepEquals(
             resolve(
                 {
-                    paths: [MainTab.Build],
+                    paths: [ActivityId.Build],
                 },
                 {
                     rememberedFolderPath: worktree.path,
@@ -180,7 +180,7 @@ describe(resolveAppRoute.name, () => {
             {
                 route: {
                     paths: [
-                        MainTab.Build,
+                        ActivityId.Build,
                         'multi',
                         'feature',
                     ],
@@ -194,11 +194,11 @@ describe(resolveAppRoute.name, () => {
         assert.deepEquals(
             [
                 resolve({
-                    paths: [MainTab.Debug],
+                    paths: [ActivityId.Debug],
                 }).redirect,
                 resolve(
                     {
-                        paths: [MainTab.Debug],
+                        paths: [ActivityId.Debug],
                     },
                     {
                         isDebugTabShown: true,
@@ -208,7 +208,7 @@ describe(resolveAppRoute.name, () => {
             [
                 {
                     route: {
-                        paths: [MainTab.Dashboard],
+                        paths: [ActivityId.Dashboard],
                     },
                     replace: true,
                 },

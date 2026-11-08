@@ -9,12 +9,10 @@ import {
     type ViraTab,
 } from 'vira';
 import {type AppContext} from '../../util/app-context.js';
-import {getShownPrQueues, PrQueueKind} from '../../util/frontend-state.js';
 import {
-    bareMainTabPaths,
-    MainTab,
-    mainTabLabels,
-    orderedMainTabs,
+    ActivityId,
+    bareActivityPaths,
+    orderedActivityIds,
     router,
     type AppRouteUpdate,
 } from '../../util/router.js';
@@ -25,17 +23,18 @@ import {
     trackPointerDrag,
 } from '../../util/tab-drag.js';
 import {defineAppElement} from '../define-app-element.js';
+import {activityDefinitions} from './activity-definitions.js';
 
 const dropLineThicknessPx = 2;
 
 /** Every main tab, in the stored order: listed tabs first, then the rest in their default order. */
 function orderMainTabs(storedOrder: ReadonlyArray<string>) {
     const listed = storedOrder
-        .filter((tab) => check.isEnumValue(tab, MainTab))
+        .filter((tab) => check.isEnumValue(tab, ActivityId))
         .filter((tab, index, tabs) => tabs.indexOf(tab) === index);
     return [
         ...listed,
-        ...orderedMainTabs.filter((tab) => !listed.includes(tab)),
+        ...orderedActivityIds.filter((tab) => !listed.includes(tab)),
     ];
 }
 
@@ -87,34 +86,18 @@ export const VirMainTabs = defineAppElement<{
         const context = inputs.context;
         const isVertical = !inputs.isHorizontal;
         host.toggleAttribute('data-horizontal', !isVertical);
-        const frontendState = context.frontendState?.value;
-        /** PRs waiting on review, shown after the Review label once the queue first loads. */
-        const reviewCount =
-            frontendState &&
-            getShownPrQueues(frontendState)[PrQueueKind.Review].queue?.pullRequests.length;
-        const isTabShown: Readonly<Record<MainTab, boolean>> = {
-            [MainTab.Dashboard]: true,
-            [MainTab.Build]: true,
-            [MainTab.Review]: true,
-            [MainTab.Debug]: context.isDebugTabShown,
-        };
-        const labels: Readonly<Record<MainTab, string>> = {
-            ...mainTabLabels,
-            [MainTab.Review]:
-                reviewCount == undefined
-                    ? mainTabLabels[MainTab.Review]
-                    : `${mainTabLabels[MainTab.Review]} (${reviewCount})`,
-        };
         const order = orderMainTabs(context.uiLayout.value.layout?.mainTabOrder || []);
-        const shownTabs = order.filter((tab) => isTabShown[tab]);
+        const shownTabs = order.filter((tab) => activityDefinitions[tab].isShown(context));
 
         /** A main tab returns to the folder or PR it was last on. */
         function toTargetRoute(route: Readonly<Partial<FullSpaRoute>>): AppRouteUpdate {
             const routeTab = route.paths?.[0];
-            const tab = check.isEnumValue(routeTab, MainTab) ? routeTab : context.resolved.mainTab;
+            const tab = check.isEnumValue(routeTab, ActivityId)
+                ? routeTab
+                : context.resolved.activityId;
             return (
-                context.resolved.restoredRouteByMainTab[tab] || {
-                    paths: bareMainTabPaths[tab],
+                context.resolved.restoredRouteByActivity[tab] || {
+                    paths: bareActivityPaths[tab],
                 }
             );
         }
@@ -234,8 +217,10 @@ export const VirMainTabs = defineAppElement<{
             >
                 <${ViraTabs.assign({
                     tabs: shownTabs.map((tab): ViraTab => {
+                        const label = activityDefinitions[tab].label;
+                        const count = activityDefinitions[tab].findCount(context);
                         return {
-                            label: labels[tab],
+                            label: count == undefined ? label : `${label} (${count})`,
                             paths: {
                                 path: tab,
                                 fullPaths: [
@@ -250,7 +235,7 @@ export const VirMainTabs = defineAppElement<{
                     router: mainTabRouter,
                     currentRoute: {
                         paths: [
-                            context.resolved.mainTab,
+                            context.resolved.activityId,
                         ],
                         search: undefined,
                         hash: undefined,

@@ -15,6 +15,7 @@ import {
     getObjectTypedValues,
     mapObjectValues,
     omitObjectKeys,
+    randomString,
     typedObjectFromEntries,
     type PartialWithUndefined,
 } from '@augment-vir/common';
@@ -79,6 +80,11 @@ export function toSessionTabId({
     sessionId: string;
 }>) {
     return `${tabKindByPaneKind[kind]}:${sessionId}`;
+}
+
+/** An id for a new tab that isn't a terminal session, unique among any number of its kind. */
+export function createTabId(kind: PaneTabKind) {
+    return `${kind}:${randomString(8)}`;
 }
 
 /** Undefined for a tab that isn't a terminal session. */
@@ -488,6 +494,33 @@ export function addTab(
     };
 }
 
+/** An empty `name` removes the tab's name. Does nothing for a tab that isn't in the layout. */
+export function renameTab(
+    layout: Readonly<TabLayout>,
+    {
+        tabId,
+        name,
+    }: Readonly<{
+        tabId: string;
+        name: string;
+    }>,
+): TabLayout {
+    const tab = layout.tabs[tabId];
+    if (!tab) {
+        return layout;
+    }
+    return {
+        ...layout,
+        tabs: {
+            ...layout.tabs,
+            [tabId]: {
+                ...tab,
+                name: name || undefined,
+            },
+        },
+    };
+}
+
 /** Merges `state` into a tab's own state. Does nothing for a tab that isn't in the layout. */
 export function updateTabState(
     layout: Readonly<TabLayout>,
@@ -708,6 +741,20 @@ export function syncSessionTabs(
     }, pruned);
 }
 
+/** Whether any of `tabIds` is a tab of `kind`. */
+export function hasTabOfKind(
+    layout: Readonly<TabLayout>,
+    {
+        tabIds,
+        kind,
+    }: Readonly<{
+        tabIds: ReadonlyArray<string>;
+        kind: PaneTabKind;
+    }>,
+) {
+    return tabIds.some((tabId) => layout.tabs[tabId]?.kind === kind);
+}
+
 /**
  * The tab of `kind` the user is looking at: the active group's, else any group's showing one, else
  * the first of that kind.
@@ -730,20 +777,23 @@ export function findShownSessionId(layout: Readonly<TabLayout>, kind: PaneKind) 
 }
 
 /**
- * Shows a tab of `kind`: the session tab the user is looking at, or the Diff or Review tab, which
- * is added to the active group when it isn't in the layout.
+ * Shows the tab of `kind` the user is looking at (see {@link findShownTabIdOfKind}). With none, a
+ * new tab joins the active group, unless the kind is a terminal session, which only a new session
+ * can open.
  */
 export function showTabKind(layout: Readonly<TabLayout>, kind: PaneTabKind): TabLayout {
-    if (sessionPaneKindByTabKind[kind]) {
-        const tabId = findShownTabIdOfKind(layout, kind);
-        return tabId ? selectTab(layout, tabId) : layout;
+    const tabId = findShownTabIdOfKind(layout, kind);
+    if (tabId) {
+        return selectTab(layout, tabId);
     }
-    return addTab(layout, {
-        tab: {
-            id: kind,
-            kind,
-        },
-    });
+    return sessionPaneKindByTabKind[kind]
+        ? layout
+        : addTab(layout, {
+              tab: {
+                  id: createTabId(kind),
+                  kind,
+              },
+          });
 }
 
 /** The tab a group shows: its active tab, else its first available one. */

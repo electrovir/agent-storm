@@ -21,6 +21,7 @@ import {
     listGroupIds,
     listTabIds,
     moveTab,
+    renameTab,
     resizeSplit,
     selectTab,
     showTabKind,
@@ -419,17 +420,22 @@ describe(showTabKind.name, () => {
         const start = closeTab(selectTab(createFolderLayout(), 'ai:ai2'), PaneTabKind.Diff);
         const shownShell = showTabKind(start, PaneTabKind.Shell);
         const shownDiff = showTabKind(shownShell, PaneTabKind.Diff);
+        const diffTabId = assertWrap.isDefined(findActiveTabId(shownDiff));
         assert.deepEquals(
             {
                 shownAi: findShownSessionId(shownShell, PaneKind.Ai),
                 shellActive: findActiveTabId(shownShell),
-                diffActive: findActiveTabId(shownDiff),
+                diffKind: shownDiff.tabs[diffTabId]?.kind,
                 diffGroupTabs: listGroupTabs(shownDiff),
+                diffAfterReturning: findActiveTabId(
+                    showTabKind(showTabKind(shownDiff, PaneTabKind.Shell), PaneTabKind.Diff),
+                ),
             },
             {
                 shownAi: 'ai2',
                 shellActive: 'shell:sh1',
-                diffActive: PaneTabKind.Diff,
+                diffKind: PaneTabKind.Diff,
+                diffAfterReturning: diffTabId,
                 diffGroupTabs: [
                     [
                         'ai:ai1',
@@ -438,7 +444,7 @@ describe(showTabKind.name, () => {
                     [
                         'shell:sh1',
                         PaneTabKind.Review,
-                        PaneTabKind.Diff,
+                        diffTabId,
                     ],
                 ],
             },
@@ -580,6 +586,34 @@ describe(updateTabState.name, () => {
                     selectedFolder: '/repos/copy',
                     diffView: DiffView.ManualReview,
                 },
+                missing: start,
+            },
+        );
+    });
+});
+
+describe(renameTab.name, () => {
+    it('names a tab, clears the name when empty, and skips a missing tab', () => {
+        const start = createTwoGroups();
+        const named = renameTab(start, {
+            tabId: 'a',
+            name: 'Before refactor',
+        });
+        assert.deepEquals(
+            {
+                name: named.tabs.a?.name,
+                cleared: renameTab(named, {
+                    tabId: 'a',
+                    name: '',
+                }).tabs.a?.name,
+                missing: renameTab(start, {
+                    tabId: 'missing',
+                    name: 'Unused',
+                }),
+            },
+            {
+                name: 'Before refactor',
+                cleared: undefined,
                 missing: start,
             },
         );

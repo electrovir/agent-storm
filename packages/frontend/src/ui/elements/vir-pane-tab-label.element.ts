@@ -53,6 +53,12 @@ export const VirPaneTabLabel = defineAppElement<{
             display: inline-flex;
             align-items: center;
             gap: 6px;
+            /*
+             * ViraTabs turns off pointer events on the selected tab's link, which would keep the
+             * selected tab's tooltip from ever opening. Clicking the selected tab still does
+             * nothing: staticTabRouter cancels the link and ViraTabs skips selecting it again.
+             */
+            pointer-events: auto;
         }
 
         .activity {

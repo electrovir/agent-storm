@@ -1,6 +1,6 @@
 import {BookMainRoute, ElementBookApp} from 'element-book';
 import {css, html, listen} from 'element-vir';
-import {router, type MainTab} from '../../util/router.js';
+import {router, type ActivityId} from '../../util/router.js';
 import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
 import {defineAppElement} from '../define-app-element.js';
 import {prStatusRingPage} from './pr-status-ring.book.js';
@@ -13,7 +13,7 @@ const elementBookDarkModeStyleId = 'element-book-dark-mode';
 
 export const VirBook = defineAppElement<{
     /** First path segment of the app route the book lives under. */
-    routeBase: 'book' | MainTab.Debug;
+    routeBase: 'book' | ActivityId.Debug;
     subPaths: ReadonlyArray<string>;
 }>()({
     tagName: 'vir-book',
@@ -73,7 +73,7 @@ export const VirBook = defineAppElement<{
                             inputs.routeBase,
                             ...newPaths.slice(1),
                         ] satisfies ReadonlyArray<string> as [
-                            'book' | MainTab.Debug,
+                            'book' | ActivityId.Debug,
                             ...string[],
                         ],
                     });

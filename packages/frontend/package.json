@@ -62,7 +62,7 @@
         "spa-router-vir": "^6.11.0",
         "theme-vir": "^29.0.3",
         "url-vir": "^2.2.2",
-        "vira": "^33.16.0",
+        "vira": "^33.17.0",
         "vscode-diff": "^3.0.1"
     },
     "devDependencies": {

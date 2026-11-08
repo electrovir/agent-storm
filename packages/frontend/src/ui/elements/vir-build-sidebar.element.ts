@@ -5,7 +5,7 @@ import {fetchApi} from '../../util/api-client.js';
 import {type AppContext} from '../../util/app-context.js';
 import {routeForFolder} from '../../util/app-route.js';
 import {getFolderVerdictStatuses} from '../../util/frontend-state.js';
-import {bareMainTabPaths, MainTab, router} from '../../util/router.js';
+import {ActivityId, bareActivityPaths, router} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
@@ -92,7 +92,7 @@ export const VirBuildSidebar = defineAppElement<{
                     const activeFolder = inputs.context.resolved.activeFolder;
                     if (activeFolder && event.detail.includes(activeFolder.path)) {
                         router.setRoute({
-                            paths: bareMainTabPaths[MainTab.Build],
+                            paths: bareActivityPaths[ActivityId.Build],
                         });
                         await frontendState?.localDbClient.set.build({});
                     }

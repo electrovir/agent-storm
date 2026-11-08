@@ -1,3 +1,4 @@
+import {getEnumValues} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {css, html, nothing, Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
@@ -15,19 +16,18 @@ import {
 import {isSettingsShortcut} from '../../util/keyboard-shortcuts.js';
 import {localStorageClient} from '../../util/local-storage-client.js';
 import {createPaneRestarts} from '../../util/pane-restarts.js';
-import {MainTab, router} from '../../util/router.js';
+import {ActivityId, router} from '../../util/router.js';
 import {observeScreenSize, ScreenSize} from '../../util/screen-size.js';
 import {applyThemeMode} from '../../util/theme-mode.js';
 import {createUiLayout} from '../../util/ui-layout.js';
 import {trackVisualViewportHeight} from '../../util/visual-viewport.js';
 import {defineAppElement} from '../define-app-element.js';
+import {activityDefinitions} from './activity-definitions.js';
+import {VirActivityPanel} from './vir-activity-panel.element.js';
 import {VirAppModals} from './vir-app-modals.element.js';
 import {VirBook} from './vir-book.element.js';
-import {VirBuildPanel} from './vir-build-panel.element.js';
-import {VirDashboard} from './vir-dashboard.element.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirMobileSidebar} from './vir-mobile-sidebar.element.js';
-import {VirReviewPanel} from './vir-review-panel.element.js';
 
 installClientErrorLog();
 
@@ -209,28 +209,15 @@ export const VirApp = defineAppElement()({
                           context,
                       })}></${VirMainTabs}>
                   `}
-            ${resolved.mainTab === MainTab.Dashboard
-                ? html`
-                      <${VirDashboard.assign({
-                          context,
-                      })}></${VirDashboard}>
-                  `
-                : nothing}
-            ${resolved.mainTab === MainTab.Debug
-                ? html`
-                      <${VirBook.assign({
-                          routeBase: MainTab.Debug,
-                          subPaths: state.route.paths.slice(1),
-                      })}></${VirBook}>
-                  `
-                : nothing}
-            <${VirBuildPanel.assign({
-                context,
-            })}></${VirBuildPanel}>
-            <${VirReviewPanel.assign({
-                context,
-            })}></${VirReviewPanel}>
-            ${isMobile && resolved.mainTab !== MainTab.Dashboard
+            ${getEnumValues(ActivityId).map((activityId) => {
+                return html`
+                    <${VirActivityPanel.assign({
+                        context,
+                        activityId,
+                    })}></${VirActivityPanel}>
+                `;
+            })}
+            ${isMobile && activityDefinitions[resolved.activityId].mobileMenuTitle != undefined
                 ? html`
                       <${VirMobileSidebar.assign({
                           context,

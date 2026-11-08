@@ -2,16 +2,16 @@ import {getObjectTypedValues} from '@augment-vir/common';
 import {css, html, nothing} from 'element-vir';
 import {type AppContext} from '../../util/app-context.js';
 import {PrQueueKind, getShownPrQueues} from '../../util/frontend-state.js';
-import {MainTab, mainTabLabels} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirBuildSidebar} from './vir-build-sidebar.element.js';
-import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirReviewQueueSidebar} from './vir-review-queue-sidebar.element.js';
 
 /** The Dashboard tab: the Build list and each review list side by side, or stacked on mobile. */
 export const VirDashboard = defineAppElement<{
     context: AppContext;
+    /** Heads the folder list, naming the activity it opens. */
+    buildListHeading: string;
 }>()({
     tagName: 'vir-dashboard',
     hostClasses: {
@@ -34,7 +34,7 @@ export const VirDashboard = defineAppElement<{
                 min-width: 0;
             }
 
-            /* Stacks the lists under the horizontal tab strip that replaces the docked one on mobile. */
+            /* Stacks the lists on mobile. */
             ${hostClasses['vir-dashboard-mobile'].selector} {
                 flex-direction: column;
 
@@ -51,19 +51,11 @@ export const VirDashboard = defineAppElement<{
         const queues = frontendState && getShownPrQueues(frontendState);
 
         return html`
-            ${inputs.context.screenSize === ScreenSize.Mobile
-                ? html`
-                      <${VirMainTabs.assign({
-                          context: inputs.context,
-                          isHorizontal: true,
-                      })}></${VirMainTabs}>
-                  `
-                : nothing}
             ${inputs.context.folderData.value.folderInfo.size
                 ? html`
                       <${VirBuildSidebar.assign({
                           context: inputs.context,
-                          heading: mainTabLabels[MainTab.Build],
+                          heading: inputs.buildListHeading,
                       })}></${VirBuildSidebar}>
                   `
                 : nothing}

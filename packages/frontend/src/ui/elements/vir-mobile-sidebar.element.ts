@@ -1,3 +1,4 @@
+import {getEnumValues} from '@augment-vir/common';
 import {css, html, listen, nothing} from 'element-vir';
 import {
     LucideMenuIcon,
@@ -10,20 +11,12 @@ import {
     ViraSize,
 } from 'vira';
 import {SettingsSection, type AppContext} from '../../util/app-context.js';
-import {MainTab} from '../../util/router.js';
+import {ActivityId} from '../../util/router.js';
 import {defineAppElement} from '../define-app-element.js';
-import {VirBuildSidebar} from './vir-build-sidebar.element.js';
+import {activityDefinitions} from './activity-definitions.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
-import {VirReviewQueueSidebar} from './vir-review-queue-sidebar.element.js';
 import {VirReviewSidebar} from './vir-review-sidebar.element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
-
-const mobileSidebarTitles: Record<MainTab, string> = {
-    [MainTab.Dashboard]: 'Dashboard',
-    [MainTab.Build]: 'Repos',
-    [MainTab.Review]: 'Review requests',
-    [MainTab.Debug]: 'Debug',
-};
 
 /**
  * Mobile's stand-in for the docked tab strip and sidebar: a hamburger button that opens them in a
@@ -37,8 +30,8 @@ export const VirMobileSidebar = defineAppElement<{
     state() {
         return {
             isOpen: false,
-            /** Set once the Review tab shows, so the review lists only load once they're needed. */
-            hasShownReview: false,
+            /** Activities shown so far, so each sidebar only loads once it's needed. */
+            shownActivityIds: [] as ReadonlyArray<ActivityId>,
         };
     },
     styles: css`
@@ -64,12 +57,17 @@ export const VirMobileSidebar = defineAppElement<{
             flex-direction: column;
         }
 
-        ${VirBuildSidebar}, ${VirReviewQueueSidebar} {
-            width: 100%;
+        .sidebar {
+            display: flex;
+            flex-direction: column;
             flex-grow: 1;
-            flex-shrink: 1;
-            min-width: 0;
             min-height: 0;
+
+            & > * {
+                flex-grow: 1;
+                min-width: 0;
+                min-height: 0;
+            }
         }
 
         /* Hidden rather than unmounted, so switching tabs keeps each list's scroll position. */
@@ -78,12 +76,16 @@ export const VirMobileSidebar = defineAppElement<{
         }
     `,
     render({inputs, state, updateState}) {
-        const mainTab = inputs.context.resolved.mainTab;
-        if (mainTab === MainTab.Review && !state.hasShownReview) {
+        const activityId = inputs.context.resolved.activityId;
+        if (!state.shownActivityIds.includes(activityId)) {
             updateState({
-                hasShownReview: true,
+                shownActivityIds: [
+                    ...state.shownActivityIds,
+                    activityId,
+                ],
             });
         }
+        const title = activityDefinitions[activityId].mobileMenuTitle || '';
 
         function close() {
             updateState({
@@ -98,7 +100,7 @@ export const VirMobileSidebar = defineAppElement<{
                 buttonEmphasis: ViraEmphasis.Subtle,
                 color: ViraColorVariant.Neutral,
             })}
-                ${tooltip(`Open ${mobileSidebarTitles[mainTab].toLowerCase()}`)}
+                ${tooltip(`Open ${title.toLowerCase()}`)}
                 ${listen('click', () => {
                     updateState({
                         isOpen: true,
@@ -120,7 +122,7 @@ export const VirMobileSidebar = defineAppElement<{
             ></${ViraButton}>
             <${ViraModal.assign({
                 open: state.isOpen,
-                modalTitle: mobileSidebarTitles[mainTab],
+                modalTitle: title,
                 isMobileSize: true,
                 noContentPadding: true,
             })}
@@ -137,20 +139,23 @@ export const VirMobileSidebar = defineAppElement<{
                         context: inputs.context,
                         isHorizontal: true,
                     })}></${VirMainTabs}>
-                    ${mainTab === MainTab.Review || state.hasShownReview
-                        ? html`
-                              <${VirReviewQueueSidebar.assign({
-                                  context: inputs.context,
-                              })}
-                                  ?data-hidden=${mainTab !== MainTab.Review}
-                              ></${VirReviewQueueSidebar}>
-                          `
-                        : nothing}
-                    <${VirBuildSidebar.assign({
-                        context: inputs.context,
+                    ${getEnumValues(ActivityId).map((sidebarActivityId) => {
+                        const sidebar = activityDefinitions[sidebarActivityId].sidebar;
+                        if (
+                            !sidebar ||
+                            !(
+                                sidebarActivityId === activityId ||
+                                state.shownActivityIds.includes(sidebarActivityId)
+                            )
+                        ) {
+                            return nothing;
+                        }
+                        return html`
+                            <div class="sidebar" ?data-hidden=${sidebarActivityId !== activityId}>
+                                ${sidebar.render(inputs.context)}
+                            </div>
+                        `;
                     })}
-                        ?data-hidden=${mainTab !== MainTab.Build}
-                    ></${VirBuildSidebar}>
                 </div>
             </${ViraModal}>
         `;

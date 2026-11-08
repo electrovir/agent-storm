@@ -1603,9 +1603,13 @@ export const paneStateShape = defineShape({
 export type PaneState = typeof paneStateShape.runtimeType;
 
 export const paneTabShape = defineShape({
-    /** `${kind}:${sessionId}` for a session tab, else the kind itself. */
+    /** `${kind}:${sessionId}` for a session tab. Any other tab's id only has to be unique. */
     id: '',
     kind: enumShape(PaneTabKind),
+    /** Shown instead of the kind's label. A session tab's name lives on its session instead. */
+    name: optionalShape('', {
+        alsoUndefined: true,
+    }),
     /** Set by whoever opens or changes the tab. */
     state: optionalShape(partialShape(paneStateShape), {
         alsoUndefined: true,

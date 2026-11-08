@@ -3,10 +3,10 @@ import {check} from '@augment-vir/assert';
 import {type FolderDataObservable} from './folder-data.js';
 import {pullRequestRouteKey} from './frontend-state.js';
 import {
-    bareMainTabPaths,
-    defaultMainTab,
-    MainTab,
-    mainTabFromRoute,
+    ActivityId,
+    activityIdFromRoute,
+    bareActivityPaths,
+    defaultActivityId,
     router,
     type AppRoute,
     type AppRouteUpdate,
@@ -84,13 +84,13 @@ function pathsForFolder(
         const parent = folderInfo.get(folder.parentRepoPath);
         const parentName = parent?.name || folder.parentRepoPath.split('/').findLast(Boolean);
         return [
-            MainTab.Build,
+            ActivityId.Build,
             parentName || folder.parentRepoPath,
             folder.name,
         ];
     }
     return [
-        MainTab.Build,
+        ActivityId.Build,
         folder.name,
     ];
 }
@@ -109,7 +109,7 @@ export function routeForFolder(
 export function routeForPullRequest(pullRequest: Readonly<PullRequestRef>): AppRouteUpdate {
     return {
         paths: [
-            MainTab.Review,
+            ActivityId.Review,
             pullRequest.owner,
             pullRequest.repoName,
             String(pullRequest.number),
@@ -168,9 +168,9 @@ export function resolveAppRoute({
     rememberedFolderPath: string | undefined;
     rememberedPullRequestKey: string | undefined;
 }>) {
-    const mainTab = mainTabFromRoute(route);
+    const activityId = activityIdFromRoute(route);
     const buildFolder =
-        mainTab === MainTab.Build
+        activityId === ActivityId.Build
             ? resolveBuildFolder(route.paths.slice(1), folderInfo)
             : {
                   folder: undefined,
@@ -178,7 +178,7 @@ export function resolveAppRoute({
               };
     const reviewQueueKeys = reviewablePrs?.map((pr) => pullRequestRouteKey(pr));
     const routedPullRequest =
-        mainTab === MainTab.Review && check.isLengthExactly(route.paths, 4)
+        activityId === ActivityId.Review && check.isLengthExactly(route.paths, 4)
             ? route.paths.slice(1).join('/')
             : undefined;
     /**
@@ -193,26 +193,27 @@ export function resolveAppRoute({
     const rememberedPullRequest = reviewablePrs?.find((pr) => {
         return pullRequestRouteKey(pr) === rememberedPullRequestKey;
     });
-    const restoredRouteByMainTab: Readonly<Record<MainTab, AppRouteUpdate | undefined>> = {
-        [MainTab.Dashboard]: undefined,
-        [MainTab.Build]: rememberedFolder && routeForFolder(rememberedFolder, folderInfo),
-        [MainTab.Review]: rememberedPullRequest && routeForPullRequest(rememberedPullRequest),
-        [MainTab.Debug]: undefined,
+    const restoredRouteByActivity: Readonly<Record<ActivityId, AppRouteUpdate | undefined>> = {
+        [ActivityId.Dashboard]: undefined,
+        [ActivityId.Build]: rememberedFolder && routeForFolder(rememberedFolder, folderInfo),
+        [ActivityId.Review]: rememberedPullRequest && routeForPullRequest(rememberedPullRequest),
+        [ActivityId.Debug]: undefined,
     };
-    const restoredRoute = route.paths.length === 1 ? restoredRouteByMainTab[mainTab] : undefined;
+    const restoredRoute =
+        route.paths.length === 1 ? restoredRouteByActivity[activityId] : undefined;
 
     const redirect =
-        mainTab === MainTab.Debug && !isDebugTabShown
+        activityId === ActivityId.Debug && !isDebugTabShown
             ? {
                   route: {
-                      paths: bareMainTabPaths[defaultMainTab],
+                      paths: bareActivityPaths[defaultActivityId],
                   },
                   replace: true,
               }
             : buildFolder.isInvalid
               ? {
                     route: {
-                        paths: bareMainTabPaths[MainTab.Build],
+                        paths: bareActivityPaths[ActivityId.Build],
                     },
                     replace: false,
                 }
@@ -222,11 +223,11 @@ export function resolveAppRoute({
                 };
 
     return {
-        mainTab,
+        activityId,
         activeFolder: buildFolder.folder,
         activePullRequest,
         reviewQueueKeys,
-        restoredRouteByMainTab,
+        restoredRouteByActivity,
         redirect,
     };
 }

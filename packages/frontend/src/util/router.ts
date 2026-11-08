@@ -3,10 +3,11 @@ import {getEnumValues} from '@augment-vir/common';
 import {PathTree, SpaRouter, type FullSpaRoute} from 'spa-router-vir';
 
 /**
- * Top-level app tab, rendered as the vertical tab strip left of the sidebar and carried as the
- * first path segment so a tab selection survives a reload or a shared link.
+ * One activity: a vertical tab in the strip left of the sidebar. Carried as the first path segment
+ * so a selection survives a reload or a shared link. Each activity's behavior lives in
+ * `activityDefinitions`.
  */
-export enum MainTab {
+export enum ActivityId {
     Dashboard = 'dashboard',
     Build = 'build',
     Review = 'review',
@@ -14,17 +15,10 @@ export enum MainTab {
     Debug = 'debug',
 }
 
-export const defaultMainTab = MainTab.Dashboard;
+export const defaultActivityId = ActivityId.Dashboard;
 
-/** Tab order in the strip, top to bottom, which is the enum's declaration order. */
-export const orderedMainTabs = getEnumValues(MainTab);
-
-export const mainTabLabels: Record<MainTab, string> = {
-    [MainTab.Dashboard]: 'Dashboard',
-    [MainTab.Build]: 'Build',
-    [MainTab.Review]: 'Review',
-    [MainTab.Debug]: 'Debug',
-};
+/** Default strip order, top to bottom, which is the enum's declaration order. */
+export const orderedActivityIds = getEnumValues(ActivityId);
 
 /**
  * The valid shape of the in-app URL.
@@ -54,8 +48,8 @@ export const frontendPathTree = new PathTree({
      */
     allowBare: false,
     children: {
-        [MainTab.Dashboard]: {},
-        [MainTab.Build]: {
+        [ActivityId.Dashboard]: {},
+        [ActivityId.Build]: {
             allowBare: true,
             children: {
                 ':repo-name': {
@@ -66,7 +60,7 @@ export const frontendPathTree = new PathTree({
                 },
             },
         },
-        [MainTab.Review]: {
+        [ActivityId.Review]: {
             allowBare: true,
             children: {
                 ':owner': {
@@ -82,7 +76,7 @@ export const frontendPathTree = new PathTree({
                 },
             },
         },
-        [MainTab.Debug]: {
+        [ActivityId.Debug]: {
             anyChildren: true,
         },
         book: {
@@ -100,17 +94,17 @@ export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, undefined, undefined
  * default, so `/book/...` (outside the strip entirely) doesn't leave the strip with nothing
  * marked.
  */
-export function mainTabFromRoute(route: AppRoute): MainTab {
-    return check.isEnumValue(route.paths[0], MainTab) ? route.paths[0] : defaultMainTab;
+export function activityIdFromRoute(route: AppRoute): ActivityId {
+    return check.isEnumValue(route.paths[0], ActivityId) ? route.paths[0] : defaultActivityId;
 }
 
 /** Bare route for one tab, used when switching tabs with nothing to restore. */
-export const bareMainTabPaths = {
-    [MainTab.Dashboard]: [MainTab.Dashboard],
-    [MainTab.Build]: [MainTab.Build],
-    [MainTab.Review]: [MainTab.Review],
-    [MainTab.Debug]: [MainTab.Debug],
-} as const satisfies Record<MainTab, FrontendPaths>;
+export const bareActivityPaths = {
+    [ActivityId.Dashboard]: [ActivityId.Dashboard],
+    [ActivityId.Build]: [ActivityId.Build],
+    [ActivityId.Review]: [ActivityId.Review],
+    [ActivityId.Debug]: [ActivityId.Debug],
+} as const satisfies Record<ActivityId, FrontendPaths>;
 
 export const router = new SpaRouter<FrontendPaths, undefined, undefined>({
     sanitizeRoute(rawRoute) {

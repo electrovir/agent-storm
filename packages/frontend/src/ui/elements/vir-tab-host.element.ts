@@ -4,8 +4,6 @@ import {clamp, getEnumValues, type PartialWithUndefined} from '@augment-vir/comm
 import {extractEventTarget} from '@augment-vir/web';
 import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {
-    PopoverAnchor,
-    PopoverTrigger,
     renderMenuItemEntries,
     ViraButton,
     ViraColorVariant,
@@ -22,13 +20,13 @@ import {
     type ViraMenuItemEntry,
     type ViraTab,
 } from 'vira';
+import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
 import {
     countElementsBefore,
     findElementIndexAt,
     listInlineTabElements,
     trackPointerDrag,
 } from '../../util/tab-drag.js';
-import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
 import {
     findDisplayedTabId,
     findMobileDisplayedTabId,
@@ -182,8 +180,6 @@ export const VirTabHost = defineAppElement<{
             focusedGroupId: undefined as string | undefined,
             /** The last tab sent in a focusedTabChanged event. */
             focusedTabId: undefined as string | undefined,
-            /** The tab whose menu the strip's context menu shows. */
-            menuTabId: undefined as string | undefined,
             dropTarget: undefined as DropTarget | undefined,
             /** A divider drag in progress, whose sizes show until the drag ends and stores them. */
             resizing: undefined as
@@ -504,15 +500,7 @@ export const VirTabHost = defineAppElement<{
                 clientY: event.clientY,
             });
             const tabId = stripTabIds[tabIndex];
-            if (!tabId) {
-                return;
-            }
-            if (state.menuTabId !== tabId) {
-                updateState({
-                    menuTabId: tabId,
-                });
-            }
-            if (!isDraggable) {
+            if (!tabId || !isDraggable) {
                 return;
             }
             trackPointerDrag({
@@ -562,63 +550,50 @@ export const VirTabHost = defineAppElement<{
                     label: tab?.label,
                     icon: tab?.icon,
                     isHidden: !tab?.isAvailable,
+                    contextMenuEntries: tab?.menuEntries,
                     paths: {
                         path: tabId,
-                        fullPaths: [
-                            tabId,
-                        ],
-                        PathsType: [
-                            tabId,
-                        ],
+                        fullPaths: [tabId],
+                        PathsType: [tabId],
                     },
                 };
             });
             return html`
                 <div class="strip">
-                    <${ViraMenuTrigger.assign({
-                        trigger: PopoverTrigger.ContextMenu,
-                        popoverAnchor: PopoverAnchor.Mouse,
-                        popoverOffset: sidebarContextMenuOffset,
-                    })}
+                    <div
                         class="strip-tabs"
+                        ${listen('pointerdown', (event) => {
+                            onStripPointerDown({
+                                event,
+                                stripTabIds,
+                                isDraggable: !inputs.isMobile,
+                            });
+                        })}
+                        ${listen('dragstart', (event) => {
+                            /**
+                             * Each tab is a link, and the browser's own link drag would cancel the
+                             * pointer events the tab drag runs on.
+                             */
+                            event.preventDefault();
+                        })}
                     >
-                        <div
-                            slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                            ${listen('pointerdown', (event) => {
-                                onStripPointerDown({
-                                    event,
-                                    stripTabIds,
-                                    isDraggable: !inputs.isMobile,
-                                });
+                        <${ViraTabs.assign({
+                            tabs: viraTabs,
+                            router: staticTabRouter,
+                            currentRoute: toStaticTabRoute(displayedTabId),
+                            barDirection: ViraTabsBarDirection.Bottom,
+                            iconLayout: ViraTabsIconLayout.Horizontal,
+                            color: ViraThemeColorName.blue,
+                            contextMenuPopoverOffset: sidebarContextMenuOffset,
+                        })}
+                            ${listen(ViraTabs.events.tabSelect, (event) => {
+                                const tabId = event.detail.paths.fullPaths[0];
+                                if (tabId) {
+                                    changeLayout((current) => selectTab(current, tabId));
+                                }
                             })}
-                            ${listen('dragstart', (event) => {
-                                /**
-                                 * Each tab is a link, and the browser's own link drag would cancel
-                                 * the pointer events the tab drag runs on.
-                                 */
-                                event.preventDefault();
-                            })}
-                        >
-                            <${ViraTabs.assign({
-                                tabs: viraTabs,
-                                router: staticTabRouter,
-                                currentRoute: toStaticTabRoute(displayedTabId),
-                                barDirection: ViraTabsBarDirection.Bottom,
-                                iconLayout: ViraTabsIconLayout.Horizontal,
-                                color: ViraThemeColorName.blue,
-                            })}
-                                ${listen(ViraTabs.events.tabSelect, (event) => {
-                                    const tabId = event.detail.paths.fullPaths[0];
-                                    if (tabId) {
-                                        changeLayout((current) => selectTab(current, tabId));
-                                    }
-                                })}
-                            ></${ViraTabs}>
-                        </div>
-                        ${renderMenuItemEntries(
-                            inputs.tabs[state.menuTabId || '']?.menuEntries || [],
-                        )}
-                    </${ViraMenuTrigger}>
+                        ></${ViraTabs}>
+                    </div>
                     <div class="strip-actions">
                         <${ViraMenuTrigger.assign({})}>
                             <${ViraButton.assign({
