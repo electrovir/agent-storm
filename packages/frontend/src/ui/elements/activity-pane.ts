@@ -1,6 +1,5 @@
 import {activityTabStateShape, type ActivityTabState} from '@agent-storm/common';
 import {
-    isActivityEnabled,
     PaneMounting,
     updateTabState,
     type PaneDefinition,
@@ -36,19 +35,8 @@ export const activityPane: PaneDefinition<typeof activityTabStateShape> = {
             context.activities.find((activity) => activity.id === activityId)?.label || 'Activity'
         );
     },
-    newTabEntries(view) {
-        return view.context.activities
-            .filter((activity) => isActivityEnabled(view.context, activity))
-            .map((activity) => {
-                return {
-                    label: activity.label,
-                    state: {
-                        activityPaths: [
-                            activity.id,
-                        ],
-                    },
-                };
-            });
+    newTabEntries() {
+        return [];
     },
     icon: createSizedIcon(LucideAppWindowIcon, 14),
     hasAi: false,

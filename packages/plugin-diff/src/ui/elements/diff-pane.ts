@@ -1,11 +1,4 @@
-import {
-    diffPaneId,
-    diffTabStateShape,
-    DiffView,
-    ManualReviewStatus,
-    type DiffTabState,
-    type ManualReviewState,
-} from '@agent-storm/common';
+import {diffPaneId, diffTabStateShape, DiffView, type DiffTabState} from '@agent-storm/common';
 import {
     findExtensionRun,
     PaneMounting,
@@ -22,15 +15,6 @@ import {createSizedIcon, LucideFileDiffIcon, ViraDropdown} from 'vira';
 import {findDiffPlacement} from '../../util/diff-placement.js';
 import {resolveDiffView} from '../../util/diff-view.js';
 import {VirPaneDiff} from './vir-pane-diff.element.js';
-
-/** Before a review folder's review branch exists, its diff is meaningless or empty. */
-function isReviewFolderDiffAvailable(review: Readonly<ManualReviewState> | undefined) {
-    return (
-        !!review &&
-        review.status !== ManualReviewStatus.Aborted &&
-        !(review.status === ManualReviewStatus.Started && review.isPending)
-    );
-}
 
 const diffViewLabels: Readonly<Record<DiffView, string>> = {
     [DiffView.Source]: 'Source',
@@ -138,11 +122,8 @@ export const diffPane: PaneDefinition<typeof diffTabStateShape> = {
     hasAi: false,
     /** The diff costs nothing while hidden (no socket, no subprocess). */
     mounting: PaneMounting.OnceDisplayed,
-    isAvailable(view) {
-        return (
-            !isReviewFolder(view) ||
-            isReviewFolderDiffAvailable(findExtensionRun(view, reviewExtension).value.review)
-        );
+    isAvailable() {
+        return true;
     },
     defaultPlacement: findDiffPlacement,
     render: renderDiff,
