@@ -6,7 +6,6 @@ import {
     type PrQueueKind,
     pullRequestRouteKey,
 } from '../../util/frontend-state.js';
-import {router} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirReviewSidebar} from './vir-review-sidebar.element.js';
@@ -60,7 +59,7 @@ export const VirReviewQueueSidebar = defineAppElement<{
                     await inputs.context.paneRestarts.restart(event.detail);
                 })}
                 ${listen(VirReviewSidebar.events.settingsRequested, (event) => {
-                    inputs.context.settingsTarget.setValue(event.detail);
+                    inputs.context.openSettings(event.detail);
                 })}
                 ${listen(VirReviewSidebar.events.queueSelected, (event) => {
                     return selectQueue(event.detail);
@@ -69,7 +68,7 @@ export const VirReviewQueueSidebar = defineAppElement<{
                     await frontendState?.forceRefreshPrQueue(event.detail);
                 })}
                 ${listen(VirReviewSidebar.events.pullRequestActivated, async (event) => {
-                    router.setRoute(routeForPullRequest(event.detail));
+                    inputs.context.navigate(routeForPullRequest(event.detail));
                     inputs.context.reviewRetry.setValue({
                         key: pullRequestRouteKey(event.detail),
                     });

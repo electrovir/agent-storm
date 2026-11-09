@@ -119,6 +119,7 @@ export const VirReviewStage = defineAppElement<{
         const localDbClient = inputs.context.frontendState?.value.localDbClient;
         if (
             localDbClient &&
+            !inputs.context.isInActivityTab &&
             inputs.activePullRequest &&
             inputs.activePullRequest !== localDbClient.value.review?.selectedPullRequest
         ) {

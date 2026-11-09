@@ -1,12 +1,12 @@
 import {type PartialWithUndefined} from '@augment-vir/common';
-import {type Observable} from 'element-vir';
+import {type HtmlInterpolation, type Observable} from 'element-vir';
 import {type ViraThemeClient} from 'vira';
 import {type ReviewedRepo} from '../ui/elements/review-sidebar-display.js';
 import {type resolveAppRoute} from './app-route.js';
 import {type FolderDataObservable} from './folder-data.js';
 import {type FrontendStateObservable, type PrQueueKind} from './frontend-state.js';
 import {type PaneRestartsObservable} from './pane-restarts.js';
-import {type AppRoute} from './router.js';
+import {type AppRoute, type AppRouteUpdate} from './router.js';
 import {type ScreenSize} from './screen-size.js';
 import {type UiLayoutObservable} from './ui-layout.js';
 
@@ -16,6 +16,7 @@ export enum SettingsSection {
     Terminal = 'terminal',
     Sidebar = 'sidebar',
     Diff = 'diff',
+    Activities = 'activities',
     Ai = 'ai',
     Folders = 'folders',
     Review = 'review',
@@ -46,12 +47,28 @@ export type AppContext = Readonly<{
     /** Undefined until IndexedDB opens. */
     frontendState: FrontendStateObservable | undefined;
     themeClient: Readonly<ViraThemeClient>;
-    isDebugTabShown: boolean;
+    /** Selects a route in whatever shows this context: the window's URL, or an Activity tab's own. */
+    navigate(route: AppRouteUpdate): void;
+    /** Set inside an Activity tab, which can't hold another and doesn't touch remembered selections. */
+    isInActivityTab: boolean;
+    /**
+     * Renders an Activity tab's activity. `vir-app` supplies it because the activities' elements
+     * import the pane groups that hold Activity tabs.
+     */
+    renderActivityTab(
+        params: Readonly<{
+            paths: ReadonlyArray<string>;
+            navigate(route: AppRouteUpdate): void;
+        }>,
+    ): HtmlInterpolation;
     paneRestarts: PaneRestartsObservable;
-    /** The server's tab layouts and main tab order, shared by every window. */
+    /** The server's tab layouts and vertical tab bar, shared by every window. */
     uiLayout: UiLayoutObservable;
-    /** Undefined while the Settings modal is closed. */
-    settingsTarget: Observable<SettingsTarget | undefined>;
+    /** Where the Settings modal is, or was last left in this window. */
+    settingsTarget: Observable<SettingsTarget>;
+    isSettingsOpen: Observable<boolean>;
+    /** Opens Settings at `target`, or where this window last left it when `target` is undefined. */
+    openSettings(target: SettingsTarget | undefined): void;
     /**
      * The Review tab's list. Undefined until picked this session, so the stored pick can load
      * later.

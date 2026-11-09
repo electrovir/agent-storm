@@ -12,6 +12,7 @@ import {getEnumValues} from '@augment-vir/common';
 import {html, listen, type HtmlInterpolation} from 'element-vir';
 import {
     createSizedIcon,
+    LucideAppWindowIcon,
     LucideBotIcon,
     LucideFileDiffIcon,
     LucideScanEyeIcon,
@@ -19,10 +20,12 @@ import {
     ViraDropdown,
     type ViraIconSvg,
 } from 'vira';
+import {activityInfo, isActivityEnabled} from '../../util/activity-info.js';
 import {type AppContext} from '../../util/app-context.js';
 import {isNewTabShortcut} from '../../util/keyboard-shortcuts.js';
 import {resolveDiffView} from '../../util/pane-layout.js';
 import {type PaneReviewObservable, type ReviewStart} from '../../util/pane-review.js';
+import {activityIdFromRoute, bareActivityPaths, orderedActivityIds} from '../../util/router.js';
 import {
     addTab,
     createTabId,
@@ -74,6 +77,7 @@ export type PaneGroupView = Readonly<{
         params: Readonly<{
             kind: PaneTabKind;
             groupId: string | undefined;
+            state?: Readonly<Partial<PaneState>> | undefined;
         }>,
     ): Promise<void>;
     /** The session whose terminal grabs focus when it mounts. */
@@ -93,12 +97,19 @@ export type PaneRenderParams = PaneGroupView &
         sessionTab: SessionTab | undefined;
     }>;
 
+/** One entry in the new-tab menu. */
+export type NewTabEntry = Readonly<{
+    label: string;
+    /** The new tab's own state. */
+    state: Readonly<Partial<PaneState>> | undefined;
+}>;
+
 /** One kind of pane a pane group's tab can hold. */
 export type PaneDefinition = Readonly<{
     /** Names a tab with no name of its own. */
-    label: string;
-    /** Names the kind in the new-tab menu. */
-    newTabLabel: string;
+    label(tabState: Readonly<Partial<PaneState>> | undefined): string;
+    /** The kind's entries in the new-tab menu. */
+    newTabEntries(view: PaneGroupView): ReadonlyArray<NewTabEntry>;
     icon: ViraIconSvg;
     /** Whether the pane runs an AI, which its tab shows and its menu can change. */
     hasAi: boolean;
@@ -171,6 +182,7 @@ function renderDiff(params: PaneRenderParams) {
             folder: params.paneState.selectedFolder,
             isShown: params.isDisplayed && params.isActive,
             diffView: diff.diffView,
+            diffSelections: params.paneState.diffSelections,
             paneReview: params.paneReview,
             isReviewCopyReady: diff.isAvailable[DiffView.ManualReview],
             isReviewFolder: params.isReviewFolder,
@@ -205,7 +217,25 @@ function renderDiff(params: PaneRenderParams) {
                     })}
                 ></${ViraDropdown}>
             `,
-        })}></${VirPaneDiff}>
+        })}
+            ${listen(VirPaneDiff.events.diffSelectionChange, (event) => {
+                params.writeLayout((current) => {
+                    const diffSelections = current.tabs[params.tabId]?.state?.diffSelections;
+                    return updateTabState(current, {
+                        tabId: params.tabId,
+                        state: {
+                            diffSelections: {
+                                ...diffSelections,
+                                [event.detail.diffView]: {
+                                    ...diffSelections?.[event.detail.diffView],
+                                    ...event.detail.selection,
+                                },
+                            },
+                        },
+                    });
+                });
+            })}
+        ></${VirPaneDiff}>
     `;
 }
 
@@ -248,11 +278,42 @@ function renderReview(params: PaneRenderParams) {
     `;
 }
 
+function renderActivity(params: PaneRenderParams) {
+    return params.context.renderActivityTab({
+        paths: params.paneState.activityPaths,
+        navigate(route) {
+            const paths = route.paths;
+            if (!paths) {
+                return;
+            }
+            params.writeLayout((current) => {
+                return updateTabState(current, {
+                    tabId: params.tabId,
+                    state: {
+                        activityPaths: [
+                            ...paths,
+                        ],
+                    },
+                });
+            });
+        },
+    });
+}
+
 /** Every pane a pane group's tab can hold. */
 export const paneDefinitions: Readonly<Record<PaneTabKind, PaneDefinition>> = {
     [PaneTabKind.Ai]: {
-        label: 'AI',
-        newTabLabel: 'AI session',
+        label() {
+            return 'AI';
+        },
+        newTabEntries() {
+            return [
+                {
+                    label: 'AI session',
+                    state: undefined,
+                },
+            ];
+        },
         icon: createSizedIcon(LucideBotIcon, 14),
         hasAi: true,
         mounting: PaneMounting.WhileDisplayed,
@@ -262,8 +323,17 @@ export const paneDefinitions: Readonly<Record<PaneTabKind, PaneDefinition>> = {
         render: renderTerminal,
     },
     [PaneTabKind.Shell]: {
-        label: 'Shell',
-        newTabLabel: 'Shell',
+        label() {
+            return 'Shell';
+        },
+        newTabEntries() {
+            return [
+                {
+                    label: 'Shell',
+                    state: undefined,
+                },
+            ];
+        },
         icon: createSizedIcon(LucideSquareTerminalIcon, 14),
         hasAi: false,
         mounting: PaneMounting.WhileDisplayed,
@@ -273,8 +343,17 @@ export const paneDefinitions: Readonly<Record<PaneTabKind, PaneDefinition>> = {
         render: renderTerminal,
     },
     [PaneTabKind.Diff]: {
-        label: 'Diff',
-        newTabLabel: 'Diff',
+        label() {
+            return 'Diff';
+        },
+        newTabEntries() {
+            return [
+                {
+                    label: 'Diff',
+                    state: undefined,
+                },
+            ];
+        },
         icon: createSizedIcon(LucideFileDiffIcon, 14),
         hasAi: false,
         /** The diff costs nothing while hidden (no socket, no subprocess). */
@@ -285,8 +364,17 @@ export const paneDefinitions: Readonly<Record<PaneTabKind, PaneDefinition>> = {
         render: renderDiff,
     },
     [PaneTabKind.Review]: {
-        label: 'Review',
-        newTabLabel: 'Review',
+        label() {
+            return 'Review';
+        },
+        newTabEntries() {
+            return [
+                {
+                    label: 'Review',
+                    state: undefined,
+                },
+            ];
+        },
         icon: createSizedIcon(LucideScanEyeIcon, 14),
         hasAi: false,
         mounting: PaneMounting.Always,
@@ -294,5 +382,36 @@ export const paneDefinitions: Readonly<Record<PaneTabKind, PaneDefinition>> = {
             return true;
         },
         render: renderReview,
+    },
+    [PaneTabKind.Activity]: {
+        label(tabState) {
+            return activityInfo[
+                activityIdFromRoute({
+                    paths: tabState?.activityPaths || [],
+                })
+            ].label;
+        },
+        newTabEntries(view) {
+            return orderedActivityIds
+                .filter((activityId) => isActivityEnabled(view.context, activityId))
+                .map((activityId) => {
+                    return {
+                        label: activityInfo[activityId].label,
+                        state: {
+                            activityPaths: [
+                                ...bareActivityPaths[activityId],
+                            ],
+                        },
+                    };
+                });
+        },
+        icon: createSizedIcon(LucideAppWindowIcon, 14),
+        hasAi: false,
+        /** The Build activity holds live terminals, which unmounting would tear down. */
+        mounting: PaneMounting.OnceDisplayed,
+        isAvailable(view) {
+            return !view.context.isInActivityTab;
+        },
+        render: renderActivity,
     },
 };

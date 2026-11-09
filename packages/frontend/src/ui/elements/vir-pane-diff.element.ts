@@ -1,5 +1,5 @@
-import {DiffView} from '@agent-storm/common';
-import {css, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
+import {DiffView, type DiffSelection, type PaneState} from '@agent-storm/common';
+import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {ViraButton, ViraColorVariant, ViraSize} from 'vira';
 import {ReviewVerdict, type FrontendStateObservable} from '../../util/frontend-state.js';
 import {canPostVerdict, type PaneReviewObservable} from '../../util/pane-review.js';
@@ -16,6 +16,7 @@ export const VirPaneDiff = defineAppElement<{
     /** Whether the pane group is active and on its Diff tab. */
     isShown: boolean;
     diffView: DiffView;
+    diffSelections: Readonly<PaneState['diffSelections']>;
     /** Its review copy is mounted once the skill has made one, even while it can't be shown. */
     paneReview: PaneReviewObservable;
     isReviewCopyReady: boolean;
@@ -27,6 +28,13 @@ export const VirPaneDiff = defineAppElement<{
     sourcePicker?: HtmlInterpolation | undefined;
 }>()({
     tagName: 'vir-pane-diff',
+    events: {
+        /** One checkout's list changed what it has open, with only the changed value set. */
+        diffSelectionChange: defineElementEvent<{
+            diffView: DiffView;
+            selection: DiffSelection;
+        }>(),
+    },
     styles: css`
         :host {
             display: contents;
@@ -58,7 +66,7 @@ export const VirPaneDiff = defineAppElement<{
             font-size: 12px;
         }
     `,
-    render({inputs}) {
+    render({inputs, dispatch, events}) {
         const isVerdictAllowed = canPostVerdict(inputs.paneReview.value);
         const reviewCopyFolder = inputs.paneReview.value.reviewCopyFolder;
         const isSourceShown = inputs.isShown && inputs.diffView === DiffView.Source;
@@ -104,7 +112,19 @@ export const VirPaneDiff = defineAppElement<{
                     sidebarHeader: inputs.isReviewFolder ? verdictButtons : undefined,
                     toolbarTrailing: inputs.sourcePicker,
                     enableComments: inputs.isReviewFolder,
-                })}></${VirDiffPane}>
+                    savedSelection: inputs.diffSelections[DiffView.Source],
+                })}
+                    ${listen(VirDiffPane.events.selectionChange, (event) => {
+                        dispatch(
+                            new events.diffSelectionChange({
+                                detail: {
+                                    diffView: DiffView.Source,
+                                    selection: event.detail,
+                                },
+                            }),
+                        );
+                    })}
+                ></${VirDiffPane}>
             </div>
             ${reviewCopyFolder
                 ? html`
@@ -119,7 +139,19 @@ export const VirPaneDiff = defineAppElement<{
                               sidebarHeader: verdictButtons,
                               toolbarTrailing: inputs.sourcePicker,
                               enableComments: true,
-                          })}></${VirDiffPane}>
+                              savedSelection: inputs.diffSelections[DiffView.ManualReview],
+                          })}
+                              ${listen(VirDiffPane.events.selectionChange, (event) => {
+                                  dispatch(
+                                      new events.diffSelectionChange({
+                                          detail: {
+                                              diffView: DiffView.ManualReview,
+                                              selection: event.detail,
+                                          },
+                                      }),
+                                  );
+                              })}
+                          ></${VirDiffPane}>
                       </div>
                   `
                 : nothing}

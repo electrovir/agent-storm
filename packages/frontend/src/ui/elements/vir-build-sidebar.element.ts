@@ -5,7 +5,7 @@ import {fetchApi} from '../../util/api-client.js';
 import {type AppContext} from '../../util/app-context.js';
 import {routeForFolder} from '../../util/app-route.js';
 import {getFolderVerdictStatuses} from '../../util/frontend-state.js';
-import {ActivityId, bareActivityPaths, router} from '../../util/router.js';
+import {ActivityId, bareActivityPaths} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {defineAppElement} from '../define-app-element.js';
 import {VirSidebar} from './vir-sidebar.element.js';
@@ -72,7 +72,7 @@ export const VirBuildSidebar = defineAppElement<{
                     const folderInfo = inputs.context.folderData.value.folderInfo;
                     const folder = folderInfo.get(event.detail);
                     if (folder) {
-                        router.setRoute(routeForFolder(folder, folderInfo));
+                        inputs.context.navigate(routeForFolder(folder, folderInfo));
                     }
                 })}
                 ${listen(VirSidebar.events.paneTabRequested, (event) => {
@@ -91,17 +91,19 @@ export const VirBuildSidebar = defineAppElement<{
                     inputs.context.folderData.removeFolders(event.detail);
                     const activeFolder = inputs.context.resolved.activeFolder;
                     if (activeFolder && event.detail.includes(activeFolder.path)) {
-                        router.setRoute({
+                        inputs.context.navigate({
                             paths: bareActivityPaths[ActivityId.Build],
                         });
-                        await frontendState?.localDbClient.set.build({});
+                        if (!inputs.context.isInActivityTab) {
+                            await frontendState?.localDbClient.set.build({});
+                        }
                     }
                 })}
                 ${listen(VirSidebar.events.paneRestarted, async (event) => {
                     await inputs.context.paneRestarts.restart(event.detail);
                 })}
                 ${listen(VirSidebar.events.openSettingsRequested, (event) => {
-                    inputs.context.settingsTarget.setValue(event.detail);
+                    inputs.context.openSettings(event.detail);
                 })}
             ></${VirSidebar}>
         `;

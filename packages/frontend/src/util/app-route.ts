@@ -6,7 +6,6 @@ import {
     ActivityId,
     activityIdFromRoute,
     bareActivityPaths,
-    defaultActivityId,
     router,
     type AppRoute,
     type AppRouteUpdate,
@@ -156,14 +155,18 @@ export function followFolderActivations(
 export function resolveAppRoute({
     route,
     folderInfo,
-    isDebugTabShown,
+    enabledActivityIds,
     reviewablePrs,
     rememberedFolderPath,
     rememberedPullRequestKey,
 }: Readonly<{
     route: AppRoute;
     folderInfo: ReadonlyMap<string, FolderInfo>;
-    isDebugTabShown: boolean;
+    /**
+     * In strip order. Undefined until the UI layout loads, and while it is no activity redirects
+     * for being off.
+     */
+    enabledActivityIds: ReadonlyArray<ActivityId> | undefined;
     reviewablePrs: ReadonlyArray<Readonly<PullRequestRef>> | undefined;
     rememberedFolderPath: string | undefined;
     rememberedPullRequestKey: string | undefined;
@@ -202,25 +205,29 @@ export function resolveAppRoute({
     const restoredRoute =
         route.paths.length === 1 ? restoredRouteByActivity[activityId] : undefined;
 
-    const redirect =
-        activityId === ActivityId.Debug && !isDebugTabShown
-            ? {
-                  route: {
-                      paths: bareActivityPaths[defaultActivityId],
-                  },
-                  replace: true,
-              }
-            : buildFolder.isInvalid
-              ? {
-                    route: {
-                        paths: bareActivityPaths[ActivityId.Build],
-                    },
-                    replace: false,
-                }
-              : restoredRoute && {
-                    route: restoredRoute,
-                    replace: true,
-                };
+    const enabledFallback =
+        enabledActivityIds && !enabledActivityIds.includes(activityId)
+            ? enabledActivityIds[0]
+            : undefined;
+
+    const redirect = enabledFallback
+        ? {
+              route: {
+                  paths: bareActivityPaths[enabledFallback],
+              },
+              replace: true,
+          }
+        : buildFolder.isInvalid
+          ? {
+                route: {
+                    paths: bareActivityPaths[ActivityId.Build],
+                },
+                replace: false,
+            }
+          : restoredRoute && {
+                route: restoredRoute,
+                replace: true,
+            };
 
     return {
         activityId,

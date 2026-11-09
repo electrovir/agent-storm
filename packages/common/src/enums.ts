@@ -20,6 +20,8 @@ export enum PaneTabKind {
     Shell = 'shell',
     Diff = 'diff',
     Review = 'review',
+    /** A whole activity, with its own selection apart from its vertical tab's. */
+    Activity = 'activity',
 }
 
 /** Which checkout a Diff tab shows. */

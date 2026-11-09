@@ -1,4 +1,5 @@
-import {html, type HtmlInterpolation} from 'element-vir';
+import {html, listen, type HtmlInterpolation} from 'element-vir';
+import {activityInfo} from '../../util/activity-info.js';
 import {type AppContext} from '../../util/app-context.js';
 import {getShownPrQueues, PrQueueKind} from '../../util/frontend-state.js';
 import {localStorageClient, type Setting} from '../../util/local-storage-client.js';
@@ -17,12 +18,10 @@ export type ActivitySidebar = Readonly<{
     render(context: AppContext): HtmlInterpolation;
 }>;
 
-/** One vertical tab and everything it shows. */
+/** Everything one activity shows. Its label and default visibility are in `activityInfo`. */
 export type ActivityDefinition = Readonly<{
-    label: string;
     /** Shown after the label once known, like the number of PRs waiting on review. */
     findCount(context: AppContext): number | undefined;
-    isShown(context: AppContext): boolean;
     /**
      * Titles the mobile modal that holds the activity strip and the sidebar. Undefined for an
      * activity that shows the strip inline on mobile instead.
@@ -45,12 +44,8 @@ export type ActivityDefinition = Readonly<{
 
 export const activityDefinitions: Readonly<Record<ActivityId, ActivityDefinition>> = {
     [ActivityId.Dashboard]: {
-        label: 'Dashboard',
         findCount() {
             return undefined;
-        },
-        isShown() {
-            return true;
         },
         mobileMenuTitle: undefined,
         sidebar: undefined,
@@ -59,18 +54,14 @@ export const activityDefinitions: Readonly<Record<ActivityId, ActivityDefinition
             return html`
                 <${VirDashboard.assign({
                     context,
-                    buildListHeading: activityDefinitions[ActivityId.Build].label,
+                    buildListHeading: activityInfo[ActivityId.Build].label,
                 })}></${VirDashboard}>
             `;
         },
     },
     [ActivityId.Build]: {
-        label: 'Build',
         findCount() {
             return undefined;
-        },
-        isShown() {
-            return true;
         },
         mobileMenuTitle: 'Repos',
         sidebar: {
@@ -94,16 +85,12 @@ export const activityDefinitions: Readonly<Record<ActivityId, ActivityDefinition
         },
     },
     [ActivityId.Review]: {
-        label: 'Review',
         findCount(context) {
             const frontendState = context.frontendState?.value;
             return (
                 frontendState &&
                 getShownPrQueues(frontendState)[PrQueueKind.Review].queue?.pullRequests.length
             );
-        },
-        isShown() {
-            return true;
         },
         mobileMenuTitle: 'Review requests',
         sidebar: {
@@ -130,12 +117,8 @@ export const activityDefinitions: Readonly<Record<ActivityId, ActivityDefinition
         },
     },
     [ActivityId.Debug]: {
-        label: 'Debug',
         findCount() {
             return undefined;
-        },
-        isShown(context) {
-            return context.isDebugTabShown;
         },
         mobileMenuTitle: 'Debug',
         sidebar: undefined,
@@ -145,7 +128,11 @@ export const activityDefinitions: Readonly<Record<ActivityId, ActivityDefinition
                 <${VirBook.assign({
                     routeBase: ActivityId.Debug,
                     subPaths: context.route.paths.slice(1),
-                })}></${VirBook}>
+                })}
+                    ${listen(VirBook.events.routeChange, (event) => {
+                        context.navigate(event.detail);
+                    })}
+                ></${VirBook}>
             `;
         },
     },

@@ -65,6 +65,7 @@ export const sessionPaneKindByTabKind: Readonly<Record<PaneTabKind, PaneKind | u
     [PaneTabKind.Shell]: PaneKind.Shell,
     [PaneTabKind.Diff]: undefined,
     [PaneTabKind.Review]: undefined,
+    [PaneTabKind.Activity]: undefined,
 };
 
 export const tabKindByPaneKind: Readonly<Record<PaneKind, PaneTabKind>> = {

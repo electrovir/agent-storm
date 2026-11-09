@@ -1,6 +1,6 @@
 import {BookMainRoute, ElementBookApp} from 'element-book';
-import {css, html, listen} from 'element-vir';
-import {router, type ActivityId} from '../../util/router.js';
+import {css, defineElementEvent, html, listen} from 'element-vir';
+import {type ActivityId, type AppRouteUpdate} from '../../util/router.js';
 import {isDarkMode, listenToDarkMode} from '../../util/theme-mode.js';
 import {defineAppElement} from '../define-app-element.js';
 import {prStatusRingPage} from './pr-status-ring.book.js';
@@ -17,6 +17,10 @@ export const VirBook = defineAppElement<{
     subPaths: ReadonlyArray<string>;
 }>()({
     tagName: 'vir-book',
+    events: {
+        /** The route the book navigated to, under `routeBase`. */
+        routeChange: defineElementEvent<AppRouteUpdate>(),
+    },
     styles: css`
         :host {
             display: block;
@@ -53,7 +57,7 @@ export const VirBook = defineAppElement<{
         /** Left behind, it would keep the app dark after a later switch to light. */
         globalThis.document.getElementById(elementBookDarkModeStyleId)?.remove();
     },
-    render({inputs, state}) {
+    render({inputs, state, dispatch, events}) {
         return html`
             <${ElementBookApp.assign({
                 pages: [
@@ -68,15 +72,19 @@ export const VirBook = defineAppElement<{
             })}
                 ${listen(ElementBookApp.events.pathUpdate, (event) => {
                     const newPaths = event.detail;
-                    router.setRoute({
-                        paths: [
-                            inputs.routeBase,
-                            ...newPaths.slice(1),
-                        ] satisfies ReadonlyArray<string> as [
-                            'book' | ActivityId.Debug,
-                            ...string[],
-                        ],
-                    });
+                    dispatch(
+                        new events.routeChange({
+                            detail: {
+                                paths: [
+                                    inputs.routeBase,
+                                    ...newPaths.slice(1),
+                                ] satisfies ReadonlyArray<string> as [
+                                    'book' | ActivityId.Debug,
+                                    ...string[],
+                                ],
+                            },
+                        }),
+                    );
                 })}
             ></${ElementBookApp}>
         `;

@@ -4,7 +4,7 @@ import {defineAppElement} from '../define-app-element.js';
 import {VirAuthModal} from './vir-auth-modal.element.js';
 import {VirSettingsModal} from './vir-settings-modal.element.js';
 
-/** The app-wide modals. Settings opens through `context.settingsTarget`; auth opens itself. */
+/** The app-wide modals. Settings opens through `context.openSettings`; auth opens itself. */
 export const VirAppModals = defineAppElement<{
     context: AppContext;
 }>()({

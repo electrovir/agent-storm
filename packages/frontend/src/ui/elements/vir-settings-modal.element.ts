@@ -11,7 +11,7 @@ import {
     type Config,
     type ReviewConfig,
 } from '@agent-storm/common';
-import {check} from '@augment-vir/assert';
+import {assertWrap, check} from '@augment-vir/assert';
 import {
     extractErrorMessage,
     getEnumValues,
@@ -20,6 +20,7 @@ import {
     pickObjectKeys,
     type JsonValue,
 } from '@augment-vir/common';
+import {extractEventTarget} from '@augment-vir/web';
 import {HttpMethod} from '@rest-vir/api';
 import {css, html, listen, nothing, onDomCreated, type HtmlInterpolation} from 'element-vir';
 import {
@@ -38,10 +39,12 @@ import {
     ViraThemeColorName,
     ViraThemeSwitcher,
 } from 'vira';
+import {activityInfo, isActivityEnabled} from '../../util/activity-info.js';
 import {fetchApi} from '../../util/api-client.js';
-import {SettingsSection, type AppContext} from '../../util/app-context.js';
+import {SettingsSection, type AppContext, type SettingsTarget} from '../../util/app-context.js';
 import {createBatchedWriter, type ValueUpdate} from '../../util/batched-writer.js';
 import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
+import {orderedActivityIds, type ActivityId} from '../../util/router.js';
 import {ScreenSize} from '../../util/screen-size.js';
 import {schemaConfigKeySections, settingsSections} from '../../util/settings-sections.js';
 import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
@@ -220,13 +223,18 @@ export const VirSettingsModal = defineAppElement<{
                   }>
                 | undefined,
             search: '',
+            /** Undefined until the modal first closes. Reopening at the same target resumes it. */
+            closedTarget: undefined as SettingsTarget | undefined,
+            wasOpen: false,
+            contentElement: undefined as HTMLElement | undefined,
+            /** Captured while scrolling, since a closed `dialog` resets its contents' scroll. */
+            contentScrollTop: 0,
             loadError: '',
             saveError: '',
             tlsCertPathError: '',
             scrollbackLimit: localStorageClient.scrollbackLimit.read(),
             /** The scrollback input's text, which may be out of bounds while the user types. */
             scrollbackDraft: undefined as string | undefined,
-            showDebugTab: localStorageClient.showDebugTab.read(),
             isRestartingDaemon: false,
             daemonRestartError: '',
         };
@@ -320,6 +328,27 @@ export const VirSettingsModal = defineAppElement<{
     `,
     render({inputs, state, updateState, host}) {
         const target = inputs.context.settingsTarget.value;
+        const isOpen = inputs.context.isSettingsOpen.value;
+        if (isOpen !== state.wasOpen) {
+            updateState({
+                wasOpen: isOpen,
+            });
+            if (isOpen) {
+                void load();
+                if (target === state.closedTarget) {
+                    requestAnimationFrame(() => {
+                        if (host.instanceState.contentElement) {
+                            host.instanceState.contentElement.scrollTop =
+                                host.instanceState.contentScrollTop;
+                        }
+                    });
+                } else {
+                    updateState({
+                        search: '',
+                    });
+                }
+            }
+        }
 
         function createWriters() {
             return {
@@ -463,9 +492,9 @@ export const VirSettingsModal = defineAppElement<{
         }
 
         async function close() {
-            inputs.context.settingsTarget.setValue(undefined);
+            inputs.context.isSettingsOpen.setValue(false);
             updateState({
-                search: '',
+                closedTarget: target,
                 scrollbackDraft: undefined,
                 daemonRestartError: '',
             });
@@ -518,14 +547,34 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        function setShowDebugTab(showDebugTab: boolean) {
-            localStorageClient.showDebugTab.write(showDebugTab);
+        function setActivityEnabled(activityId: ActivityId, isEnabled: boolean) {
+            inputs.context.uiLayout.setActivityBar({
+                enabledActivities: {
+                    ...inputs.context.uiLayout.value.layout?.enabledActivities,
+                    [activityId]: isEnabled,
+                },
+            });
+        }
+
+        const enabledActivityIds = orderedActivityIds.filter((activityId) => {
+            return isActivityEnabled(inputs.context, activityId);
+        });
+
+        /**
+         * WebKit clamps the scroll of a view that got shorter without firing `scrollend`, which
+         * would leave a stale position to restore on the next open.
+         */
+        function scrollToTop() {
+            if (state.contentElement) {
+                state.contentElement.scrollTop = 0;
+            }
             updateState({
-                showDebugTab,
+                contentScrollTop: 0,
             });
         }
 
         function openSection(section: SettingsSection) {
+            scrollToTop();
             updateState({
                 search: '',
             });
@@ -592,33 +641,43 @@ export const VirSettingsModal = defineAppElement<{
                         </${VirSettingsRow}>
                     `,
                 },
-                {
-                    section: SettingsSection.General,
-                    cardTitle: undefined,
-                    searchText: [
-                        'Show Debug tab',
-                        'Stored in this browser.',
-                    ],
-                    template: html`
-                        <${VirSettingsRow.assign({
-                            rowTitle: 'Show Debug tab',
-                            description: 'Stored in this browser.',
-                            isModified: state.showDebugTab,
-                        })}
-                            ${listen(VirSettingsRow.events.reset, () => {
-                                setShowDebugTab(false);
+                ...orderedActivityIds.map((activityId): SettingsEntry => {
+                    const rowTitle = activityInfo[activityId].label;
+                    const isEnabled = enabledActivityIds.includes(activityId);
+                    /** With every activity off, the app would have nothing to show. */
+                    const isLastEnabled = isEnabled && enabledActivityIds.length === 1;
+                    return {
+                        section: SettingsSection.Activities,
+                        cardTitle: undefined,
+                        searchText: [
+                            rowTitle,
+                        ],
+                        template: html`
+                            <${VirSettingsRow.assign({
+                                rowTitle,
+                                description: '',
+                                isModified:
+                                    isEnabled !== activityInfo[activityId].isEnabledByDefault,
                             })}
-                        >
-                            <${ViraCheckbox.assign({
-                                value: state.showDebugTab,
-                            })}
-                                ${listen(ViraCheckbox.events.valueChange, (event) => {
-                                    setShowDebugTab(event.detail);
+                                ${listen(VirSettingsRow.events.reset, () => {
+                                    setActivityEnabled(
+                                        activityId,
+                                        activityInfo[activityId].isEnabledByDefault,
+                                    );
                                 })}
-                            ></${ViraCheckbox}>
-                        </${VirSettingsRow}>
-                    `,
-                },
+                            >
+                                <${ViraCheckbox.assign({
+                                    value: isEnabled,
+                                    isDisabled: isLastEnabled,
+                                })}
+                                    ${listen(ViraCheckbox.events.valueChange, (event) => {
+                                        setActivityEnabled(activityId, event.detail);
+                                    })}
+                                ></${ViraCheckbox}>
+                            </${VirSettingsRow}>
+                        `,
+                    };
+                }),
                 ...getObjectTypedEntries(schemaConfigKeySections).map(
                     ([
                         key,
@@ -789,6 +848,9 @@ export const VirSettingsModal = defineAppElement<{
             [SettingsSection.Diff]({entries}) {
                 return renderEntries(entries);
             },
+            [SettingsSection.Activities]({entries}) {
+                return renderEntries(entries);
+            },
             [SettingsSection.Ai]({config}) {
                 return html`
                     <${VirSettingsAi.assign({
@@ -806,7 +868,7 @@ export const VirSettingsModal = defineAppElement<{
                     <${VirSettingsFolders.assign({
                         config,
                         folderInfo: inputs.context.folderData.value.folderInfo,
-                        folder: target?.folder,
+                        folder: target.folder,
                     })}
                         ${listen(VirSettingsFolders.events.configChange, (event) => {
                             changeConfig(event.detail);
@@ -824,7 +886,7 @@ export const VirSettingsModal = defineAppElement<{
                 return html`
                     <${VirSettingsReview.assign({
                         reviewConfig,
-                        reviewRepo: target?.reviewRepo,
+                        reviewRepo: target.reviewRepo,
                     })}
                         ${listen(VirSettingsReview.events.reviewConfigChange, (event) => {
                             changeReviewConfig(event.detail);
@@ -919,12 +981,7 @@ export const VirSettingsModal = defineAppElement<{
             const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
 
             return html`
-                <div
-                    class="body ${isMobile ? 'mobile' : ''}"
-                    ${onDomCreated(() => {
-                        void load();
-                    })}
-                >
+                <div class="body ${isMobile ? 'mobile' : ''}">
                     <div class="nav">
                         <${ViraInput.assign({
                             value: state.search,
@@ -933,6 +990,7 @@ export const VirSettingsModal = defineAppElement<{
                             showClearButton: true,
                         })}
                             ${listen(ViraInput.events.valueChange, (event) => {
+                                scrollToTop();
                                 updateState({
                                     search: event.detail,
                                 });
@@ -970,7 +1028,19 @@ export const VirSettingsModal = defineAppElement<{
                             })}
                         ></${ViraTabs}>
                     </div>
-                    <div class="content">
+                    <div
+                        class="content"
+                        ${onDomCreated((element) => {
+                            updateState({
+                                contentElement: assertWrap.instanceOf(element, HTMLElement),
+                            });
+                        })}
+                        ${listen('scrollend', (event) => {
+                            updateState({
+                                contentScrollTop: extractEventTarget(event, HTMLElement).scrollTop,
+                            });
+                        })}
+                    >
                         <div class="header">
                             <h2>
                                 ${isSearching ? 'Search results' : settingsSections[section].label}
@@ -1015,13 +1085,13 @@ export const VirSettingsModal = defineAppElement<{
 
         return html`
             <${ViraModal.assign({
-                open: !!target,
+                open: isOpen,
                 modalTitle: 'Settings',
                 isMobileSize: inputs.context.screenSize === ScreenSize.Mobile,
             })}
                 ${listen(ViraModal.events.modalClose, close)}
             >
-                ${target ? renderBody(target.section) : nothing}
+                ${isOpen || state.closedTarget ? renderBody(target.section) : nothing}
             </${ViraModal}>
         `;
     },

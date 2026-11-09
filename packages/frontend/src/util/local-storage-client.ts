@@ -258,16 +258,6 @@ export const localStorageClient = {
             return value && JSON.stringify(value);
         },
     }),
-    showDebugTab: defineSetting<boolean>({
-        key: 'agent-storm:show-debug-tab',
-        defaultValue: false,
-        parse(raw) {
-            return raw === 'true';
-        },
-        serialize(value) {
-            return value ? 'true' : undefined;
-        },
-    }),
     scrollbackLimit: defineNumberSetting({
         key: 'agent-storm:scrollback-limit',
         bounds: scrollbackLimit,

@@ -8,6 +8,7 @@ import {
     ViraThemeColorName,
     type ViraTab,
 } from 'vira';
+import {activityInfo, isActivityEnabled} from '../../util/activity-info.js';
 import {type AppContext} from '../../util/app-context.js';
 import {
     ActivityId,
@@ -87,7 +88,7 @@ export const VirMainTabs = defineAppElement<{
         const isVertical = !inputs.isHorizontal;
         host.toggleAttribute('data-horizontal', !isVertical);
         const order = orderMainTabs(context.uiLayout.value.layout?.mainTabOrder || []);
-        const shownTabs = order.filter((tab) => activityDefinitions[tab].isShown(context));
+        const shownTabs = order.filter((tab) => isActivityEnabled(context, tab));
 
         /** A main tab returns to the folder or PR it was last on. */
         function toTargetRoute(route: Readonly<Partial<FullSpaRoute>>): AppRouteUpdate {
@@ -192,10 +193,12 @@ export const VirMainTabs = defineAppElement<{
                     const reorderedShown = shownTabs
                         .filter((tab) => tab !== draggedTab)
                         .toSpliced(insertIndex, 0, draggedTab);
-                    context.uiLayout.setMainTabOrder([
-                        ...reorderedShown,
-                        ...order.filter((tab) => !reorderedShown.includes(tab)),
-                    ]);
+                    context.uiLayout.setActivityBar({
+                        order: [
+                            ...reorderedShown,
+                            ...order.filter((tab) => !reorderedShown.includes(tab)),
+                        ],
+                    });
                 },
             });
         }
@@ -217,7 +220,7 @@ export const VirMainTabs = defineAppElement<{
             >
                 <${ViraTabs.assign({
                     tabs: shownTabs.map((tab): ViraTab => {
-                        const label = activityDefinitions[tab].label;
+                        const label = activityInfo[tab].label;
                         const count = activityDefinitions[tab].findCount(context);
                         return {
                             label: count == undefined ? label : `${label} (${count})`,

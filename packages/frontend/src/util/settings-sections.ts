@@ -47,7 +47,6 @@ export const settingsSections: Readonly<
         group: 'App',
         searchTerms: [
             'scrollback',
-            'debug',
             'https',
         ],
     },
@@ -65,6 +64,16 @@ export const settingsSections: Readonly<
         label: 'Diff',
         group: 'App',
         searchTerms: [],
+    },
+    [SettingsSection.Activities]: {
+        label: 'Activities',
+        group: 'App',
+        searchTerms: [
+            'plugin',
+            'vertical tab',
+            'dashboard',
+            'debug',
+        ],
     },
     [SettingsSection.Ai]: {
         label: 'AI',

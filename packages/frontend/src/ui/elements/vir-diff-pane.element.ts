@@ -1,9 +1,17 @@
 // cspell:words meslo menlo
 
-import {DiffLayout, configEndpoint} from '@agent-storm/common';
+import {DiffLayout, configEndpoint, type DiffSelection} from '@agent-storm/common';
 import {extractErrorMessage} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
-import {asyncProp, css, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
+import {
+    asyncProp,
+    css,
+    defineElementEvent,
+    html,
+    listen,
+    nothing,
+    type HtmlInterpolation,
+} from 'element-vir';
 import {LucideLoaderIcon, ViraIcon, createSizedIcon, viraThemeByKeys} from 'vira';
 import {fetchApi} from '../../util/api-client.js';
 import {
@@ -50,8 +58,14 @@ export const VirDiffPane = defineAppElement<{
      * with; anywhere else they would be written to a review that never gets submitted.
      */
     enableComments?: boolean | undefined;
+    /** What this list's tab last had open, which wins over the folder's last value. */
+    savedSelection?: Readonly<DiffSelection> | undefined;
 }>()({
     tagName: 'vir-diff-pane',
+    events: {
+        /** The open file or the stacked review side changed, with only the changed value set. */
+        selectionChange: defineElementEvent<DiffSelection>(),
+    },
     state() {
         return {
             ...createDiffPaneState(),
@@ -161,7 +175,7 @@ export const VirDiffPane = defineAppElement<{
             clearInterval(state.refreshTimer);
         }
     },
-    render({inputs, state, updateState}) {
+    render({inputs, state, updateState, dispatch, events}) {
         const isMobile = inputs.screenSize === ScreenSize.Mobile;
         state.diffSettings.update();
         /** Until the config read lands, and if it fails, the toolbar shows these. */
@@ -203,6 +217,13 @@ export const VirDiffPane = defineAppElement<{
             inputs,
             state,
             updateState,
+            saveSelection(selection) {
+                dispatch(
+                    new events.selectionChange({
+                        detail: selection,
+                    }),
+                );
+            },
         });
         controller.syncRefreshTimer();
         const comments = createDiffPaneComments({

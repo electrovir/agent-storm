@@ -10,7 +10,7 @@ import {
     ViraModal,
     ViraSize,
 } from 'vira';
-import {SettingsSection, type AppContext} from '../../util/app-context.js';
+import {type AppContext} from '../../util/app-context.js';
 import {ActivityId} from '../../util/router.js';
 import {defineAppElement} from '../define-app-element.js';
 import {activityDefinitions} from './activity-definitions.js';
@@ -115,9 +115,7 @@ export const VirMobileSidebar = defineAppElement<{
             })}
                 ${tooltip('Open settings')}
                 ${listen('click', () => {
-                    inputs.context.settingsTarget.setValue({
-                        section: SettingsSection.General,
-                    });
+                    inputs.context.openSettings(undefined);
                 })}
             ></${ViraButton}>
             <${ViraModal.assign({

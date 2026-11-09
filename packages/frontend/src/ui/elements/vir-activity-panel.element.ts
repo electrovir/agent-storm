@@ -69,7 +69,9 @@ export const VirActivityPanel = defineAppElement<{
         if (!isShown && !(definition.isKeptMounted && state.hasShown)) {
             return '';
         }
-        const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
+        /** An Activity tab has no room for the mobile menu, so it lays out as on desktop. */
+        const isMobile =
+            inputs.context.screenSize === ScreenSize.Mobile && !inputs.context.isInActivityTab;
         const content = definition.render({
             context: inputs.context,
             isShown,

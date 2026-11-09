@@ -5,6 +5,7 @@ import {
     PaneTabKind,
     restartPaneEndpoint,
     type Config,
+    type PaneState,
     type PaneTab,
     type ReviewQueuePr,
     type SessionMeta,
@@ -464,9 +465,11 @@ export const VirPaneGroup = defineAppElement<{
         async function openNewTab({
             kind,
             groupId,
+            state: tabState,
         }: Readonly<{
             kind: PaneTabKind;
             groupId: string | undefined;
+            state?: Readonly<Partial<PaneState>> | undefined;
         }>) {
             const paneKind = sessionPaneKindByTabKind[kind];
             if (!paneKind) {
@@ -475,6 +478,9 @@ export const VirPaneGroup = defineAppElement<{
                         tab: {
                             id: createTabId(kind),
                             kind,
+                            state: tabState && {
+                                ...tabState,
+                            },
                         },
                         groupId,
                     });
@@ -574,7 +580,7 @@ export const VirPaneGroup = defineAppElement<{
             const definition = paneDefinitions[tab.kind];
             const sessionTab = sessionTabs.find((entry) => entry.tabId === tab.id);
             if (sessionTab) {
-                const label = sessionTab.session.name || definition.label;
+                const label = sessionTab.session.name || definition.label(tab.state);
                 const status =
                     info?.sessionStatuses.find((entry) => {
                         return (
@@ -592,7 +598,7 @@ export const VirPaneGroup = defineAppElement<{
                         })}
                             ${renderKindTooltip({
                                 name: sessionTab.session.name,
-                                kindLabel: definition.label,
+                                kindLabel: definition.label(tab.state),
                             })}
                         ></${VirPaneTabLabel}>
                     `,
@@ -604,7 +610,7 @@ export const VirPaneGroup = defineAppElement<{
                     }),
                 };
             }
-            const label = tab.name || definition.label;
+            const label = tab.name || definition.label(tab.state);
             return {
                 label: html`
                     <${VirPaneTabLabel.assign({
@@ -613,7 +619,7 @@ export const VirPaneGroup = defineAppElement<{
                     })}
                         ${renderKindTooltip({
                             name: tab.name,
-                            kindLabel: definition.label,
+                            kindLabel: definition.label(tab.state),
                         })}
                     ></${VirPaneTabLabel}>
                 `,
@@ -645,19 +651,26 @@ export const VirPaneGroup = defineAppElement<{
 
         const newTabOptions = getEnumValues(PaneTabKind)
             .filter((kind) => paneDefinitions[kind].isAvailable(view))
-            .map((kind): TabHostNewTabOption => {
-                return {
-                    label: html`
-                        <${VirPaneTabLabel.assign({
-                            label: paneDefinitions[kind].newTabLabel,
-                            icon: paneDefinitions[kind].icon,
-                            ai: paneDefinitions[kind].hasAi
-                                ? aiDefinitions.find((definition) => definition.id === folderAiId)
-                                : undefined,
-                        })}></${VirPaneTabLabel}>
-                    `,
-                    kind,
-                };
+            .flatMap((kind) => {
+                return paneDefinitions[kind]
+                    .newTabEntries(view)
+                    .map((entry): TabHostNewTabOption => {
+                        return {
+                            label: html`
+                                <${VirPaneTabLabel.assign({
+                                    label: entry.label,
+                                    icon: paneDefinitions[kind].icon,
+                                    ai: paneDefinitions[kind].hasAi
+                                        ? aiDefinitions.find(
+                                              (definition) => definition.id === folderAiId,
+                                          )
+                                        : undefined,
+                                })}></${VirPaneTabLabel}>
+                            `,
+                            kind,
+                            state: entry.state,
+                        };
+                    });
             });
 
         const mountedTabs = getObjectTypedValues(layout.tabs)
@@ -749,6 +762,8 @@ export const VirPaneGroup = defineAppElement<{
                                         {
                                             selectedFolder: inputs.folder,
                                             diffView: DiffView.Source,
+                                            diffSelections: {},
+                                            activityPaths: [],
                                         },
                                         entry.tab,
                                     ),

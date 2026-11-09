@@ -1,5 +1,5 @@
 import {
-    mainTabOrderSaveEndpoint,
+    activityBarSaveEndpoint,
     tabLayoutSaveEndpoint,
     uiLayoutEndpoint,
     type PaneTabKind,
@@ -7,7 +7,7 @@ import {
     type UiLayout,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {omitObjectKeys, PromiseQueue} from '@augment-vir/common';
+import {omitObjectKeys, PromiseQueue, type PartialWithUndefined} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
@@ -97,6 +97,7 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
                     tabLayouts: {},
                     tabSelections: {},
                     mainTabOrder: [],
+                    enabledActivities: {},
                 });
             }
         }
@@ -206,28 +207,49 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
     return Object.assign(observable, {
         getTabLayout,
         updateTabLayout,
-        setMainTabOrder(order: ReadonlyArray<string>) {
+        /** Saves whichever of the vertical tab bar's order and the enabled activities is given. */
+        setActivityBar({
+            order,
+            enabledActivities,
+        }: Readonly<
+            PartialWithUndefined<{
+                order: ReadonlyArray<string>;
+                enabledActivities: Readonly<Record<string, boolean>>;
+            }>
+        >) {
             const current = observable.value.layout;
+            if (!current) {
+                return;
+            }
+            const next = {
+                ...current,
+                mainTabOrder: [
+                    ...(order || current.mainTabOrder),
+                ],
+                enabledActivities: {
+                    ...(enabledActivities || current.enabledActivities),
+                },
+            };
             if (
-                !current ||
-                check.deepEquals(current.mainTabOrder, [
-                    ...order,
-                ])
+                check.deepEquals(next.mainTabOrder, current.mainTabOrder) &&
+                check.deepEquals(next.enabledActivities, current.enabledActivities)
             ) {
                 return;
             }
-            setLayout({
-                ...current,
-                mainTabOrder: [
-                    ...order,
-                ],
-            });
+            setLayout(next);
             void save(() => {
-                return fetchApi(mainTabOrderSaveEndpoint, HttpMethod.Put, {
+                return fetchApi(activityBarSaveEndpoint, HttpMethod.Put, {
                     requestData: {
-                        order: [
-                            ...order,
-                        ],
+                        order: order
+                            ? [
+                                  ...order,
+                              ]
+                            : undefined,
+                        enabledActivities: enabledActivities
+                            ? {
+                                  ...enabledActivities,
+                              }
+                            : undefined,
                     },
                 });
             });

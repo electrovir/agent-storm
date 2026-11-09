@@ -1,8 +1,9 @@
 import {getEnumValues} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
-import {css, html, nothing, Observable} from 'element-vir';
+import {css, html, listen, nothing, Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, ViraThemeClient} from 'vira';
+import {isActivityEnabled} from '../../util/activity-info.js';
 import {SettingsSection, type AppContext, type SettingsTarget} from '../../util/app-context.js';
 import {followFolderActivations, resolveAppRoute} from '../../util/app-route.js';
 import {installClientErrorLog} from '../../util/client-error-log.js';
@@ -14,9 +15,14 @@ import {
     type PrQueueKind,
 } from '../../util/frontend-state.js';
 import {isSettingsShortcut} from '../../util/keyboard-shortcuts.js';
-import {localStorageClient} from '../../util/local-storage-client.js';
 import {createPaneRestarts} from '../../util/pane-restarts.js';
-import {ActivityId, router} from '../../util/router.js';
+import {
+    ActivityId,
+    frontendPathTree,
+    orderedActivityIds,
+    router,
+    type AppRoute,
+} from '../../util/router.js';
 import {observeScreenSize, ScreenSize} from '../../util/screen-size.js';
 import {applyThemeMode} from '../../util/theme-mode.js';
 import {createUiLayout} from '../../util/ui-layout.js';
@@ -50,9 +56,13 @@ export const VirApp = defineAppElement()({
             themeClient: new ViraThemeClient({
                 applyTheme: applyThemeMode,
             }),
-            isDebugTabShown: localStorageClient.showDebugTab.read(),
-            settingsTarget: new Observable<SettingsTarget | undefined>({
-                defaultValue: undefined,
+            settingsTarget: new Observable<SettingsTarget>({
+                defaultValue: {
+                    section: SettingsSection.General,
+                },
+            }),
+            isSettingsOpen: new Observable<boolean>({
+                defaultValue: false,
             }),
             reviewQueue: new Observable<PrQueueKind | undefined>({
                 defaultValue: undefined,
@@ -101,11 +111,7 @@ export const VirApp = defineAppElement()({
                 return;
             }
             event.preventDefault();
-            if (!state.settingsTarget.value) {
-                state.settingsTarget.setValue({
-                    section: SettingsSection.General,
-                });
-            }
+            state.isSettingsOpen.setValue(true);
         }
         globalThis.addEventListener('keydown', openSettingsOnShortcut, true);
         void createFrontendState().then((frontendState) => {
@@ -138,11 +144,6 @@ export const VirApp = defineAppElement()({
                     globalThis.removeEventListener('keydown', openSettingsOnShortcut, true);
                 },
                 followFolderActivations(state.folderData),
-                localStorageClient.showDebugTab.subscribe((isDebugTabShown) => {
-                    updateState({
-                        isDebugTabShown,
-                    });
-                }),
             ],
         });
     },
@@ -158,21 +159,32 @@ export const VirApp = defineAppElement()({
                 <${VirBook.assign({
                     routeBase: 'book',
                     subPaths: state.route.paths.slice(1),
-                })}></${VirBook}>
+                })}
+                    ${listen(VirBook.events.routeChange, (event) => {
+                        router.setRoute(event.detail);
+                    })}
+                ></${VirBook}>
             `;
         }
 
         const frontendState = state.frontendState?.value;
-        const resolved = resolveAppRoute({
-            route: state.route,
-            folderInfo: state.folderData.value.folderInfo,
-            isDebugTabShown: state.isDebugTabShown,
-            reviewablePrs: frontendState && getReviewablePrs(frontendState),
-            rememberedFolderPath:
-                frontendState?.localDbClient.value.build?.selectedFolder || undefined,
-            rememberedPullRequestKey:
-                frontendState?.localDbClient.value.review?.selectedPullRequest || undefined,
-        });
+        function resolve(route: AppRoute) {
+            return resolveAppRoute({
+                route,
+                folderInfo: state.folderData.value.folderInfo,
+                enabledActivityIds: state.uiLayout.value.layout
+                    ? orderedActivityIds.filter((activityId) => {
+                          return isActivityEnabled(state, activityId);
+                      })
+                    : undefined,
+                reviewablePrs: frontendState && getReviewablePrs(frontendState),
+                rememberedFolderPath:
+                    frontendState?.localDbClient.value.build?.selectedFolder || undefined,
+                rememberedPullRequestKey:
+                    frontendState?.localDbClient.value.review?.selectedPullRequest || undefined,
+            });
+        }
+        const resolved = resolve(state.route);
         const redirect = resolved.redirect;
         if (redirect) {
             void Promise.resolve().then(() => {
@@ -192,10 +204,46 @@ export const VirApp = defineAppElement()({
             folderData: state.folderData,
             frontendState: state.frontendState,
             themeClient: state.themeClient,
-            isDebugTabShown: state.isDebugTabShown,
+            navigate(route) {
+                router.setRoute(route);
+            },
+            isInActivityTab: false,
+            renderActivityTab({paths, navigate}) {
+                const tabRoute: AppRoute = {
+                    paths: frontendPathTree.sanitizePaths(paths),
+                    search: undefined,
+                    hash: undefined,
+                };
+                const tabResolved = resolve(tabRoute);
+                const tabRedirect = tabResolved.redirect;
+                if (tabRedirect) {
+                    void Promise.resolve().then(() => {
+                        navigate(tabRedirect.route);
+                    });
+                }
+                return html`
+                    <${VirActivityPanel.assign({
+                        context: {
+                            ...context,
+                            route: tabRoute,
+                            resolved: tabResolved,
+                            navigate,
+                            isInActivityTab: true,
+                        },
+                        activityId: tabResolved.activityId,
+                    })}></${VirActivityPanel}>
+                `;
+            },
             paneRestarts: state.paneRestarts,
             uiLayout: state.uiLayout,
             settingsTarget: state.settingsTarget,
+            isSettingsOpen: state.isSettingsOpen,
+            openSettings(target) {
+                if (target) {
+                    state.settingsTarget.setValue(target);
+                }
+                state.isSettingsOpen.setValue(true);
+            },
             reviewQueue: state.reviewQueue,
             reviewRetry: state.reviewRetry,
         };

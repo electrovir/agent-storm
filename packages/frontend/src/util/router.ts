@@ -11,7 +11,7 @@ export enum ActivityId {
     Dashboard = 'dashboard',
     Build = 'build',
     Review = 'review',
-    /** Element-book pages for checking UI states. Only in the strip when enabled in settings. */
+    /** Element-book pages for checking UI states. */
     Debug = 'debug',
 }
 
@@ -31,8 +31,7 @@ export const orderedActivityIds = getEnumValues(ActivityId);
  * - `/build/<repoName>/<worktreeName>` — a worktree under a worktree-root repo selected.
  * - `/review` — the Review tab, nothing selected.
  * - `/review/<owner>/<repoName>/<prNumber>` — one pull request in the review queue selected.
- * - `/debug/<...>` — the Debug tab, which shows the element-book inside the app chrome. Redirected to
- *   the default tab while the Debug tab is disabled in settings.
+ * - `/debug/<...>` — the Debug tab, which shows the element-book inside the app chrome.
  * - `/book/<...>` — the element-book route, deliberately left outside the tab strip: it replaces the
  *   whole app chrome, so nesting it under a tab would be a lie (and would break existing deep
  *   links).
@@ -94,7 +93,7 @@ export type AppRoute = Readonly<FullSpaRoute<FrontendPaths, undefined, undefined
  * default, so `/book/...` (outside the strip entirely) doesn't leave the strip with nothing
  * marked.
  */
-export function activityIdFromRoute(route: AppRoute): ActivityId {
+export function activityIdFromRoute(route: Readonly<{paths: ReadonlyArray<string>}>): ActivityId {
     return check.isEnumValue(route.paths[0], ActivityId) ? route.paths[0] : defaultActivityId;
 }
 

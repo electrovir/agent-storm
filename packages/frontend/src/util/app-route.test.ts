@@ -2,7 +2,7 @@ import {folderInfoShape, type FolderInfo} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {resolveAppRoute} from './app-route.js';
-import {ActivityId, type AppRoute} from './router.js';
+import {ActivityId, orderedActivityIds, type AppRoute} from './router.js';
 
 function createFolder(overrides: Readonly<Partial<FolderInfo>>): FolderInfo {
     return {
@@ -54,7 +54,7 @@ function resolve(
             hash: undefined,
         },
         folderInfo,
-        isDebugTabShown: false,
+        enabledActivityIds: orderedActivityIds,
         reviewablePrs: [
             pullRequest,
         ],
@@ -190,25 +190,33 @@ describe(resolveAppRoute.name, () => {
         );
     });
 
-    it('leaves the Debug tab when it is turned off', () => {
+    it('leaves an activity that is turned off, once the layout has loaded', () => {
         assert.deepEquals(
             [
-                resolve({
-                    paths: [ActivityId.Debug],
-                }).redirect,
                 resolve(
                     {
                         paths: [ActivityId.Debug],
                     },
                     {
-                        isDebugTabShown: true,
+                        enabledActivityIds: [
+                            ActivityId.Build,
+                            ActivityId.Review,
+                        ],
+                    },
+                ).redirect,
+                resolve(
+                    {
+                        paths: [ActivityId.Debug],
+                    },
+                    {
+                        enabledActivityIds: undefined,
                     },
                 ).redirect,
             ],
             [
                 {
                     route: {
-                        paths: [ActivityId.Dashboard],
+                        paths: [ActivityId.Build],
                     },
                     replace: true,
                 },

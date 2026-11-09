@@ -4,6 +4,7 @@ import {defineApi, defineEndpoint, defineWebSocket, HttpMethod, HttpStatus} from
 import {
     defineShape,
     enumShape,
+    exactShape,
     nullableShape,
     optionalShape,
     partialShape,
@@ -1589,6 +1590,20 @@ export const reviewConfigEndpoint = defineEndpoint({
     },
 });
 
+/** What one of a Diff tab's diff lists has open. */
+export const diffSelectionShape = defineShape({
+    /** The open file, as the list's side-plus-path select value. */
+    file: optionalShape('', {
+        alsoUndefined: true,
+    }),
+    /** The side read as one stacked review, or `false` for a single-file diff. */
+    reviewSide: optionalShape(unionShape(enumShape(GitDiffSide), exactShape(false)), {
+        alsoUndefined: true,
+    }),
+});
+
+export type DiffSelection = typeof diffSelectionShape.runtimeType;
+
 /**
  * Every value a pane reads. The pane group supplies them all, and a tab's own `state` overrides any
  * of them for that tab alone.
@@ -1598,6 +1613,17 @@ export const paneStateShape = defineShape({
     selectedFolder: '',
     /** Which checkout a Diff tab shows. */
     diffView: enumShape(DiffView),
+    /**
+     * What a Diff tab's list for each checkout has open. A missing value falls back to whatever any
+     * Diff tab last opened in that checkout.
+     */
+    diffSelections: recordShape({
+        keys: enumShape(DiffView),
+        values: diffSelectionShape,
+        partial: true,
+    }),
+    /** An Activity tab's own app route: its activity's id, then what that activity selects. */
+    activityPaths: [''],
 });
 
 export type PaneState = typeof paneStateShape.runtimeType;
@@ -1680,6 +1706,15 @@ export const uiLayoutShape = defineShape({
     }),
     /** The main tabs' order. Missing tabs go after the listed ones, unknown ones are ignored. */
     mainTabOrder: [''],
+    /**
+     * Whether each activity is turned on, keyed by activity id. An activity with no entry uses its
+     * own default. A turned-off activity has no vertical tab, no new-tab entry, and its URL
+     * redirects.
+     */
+    enabledActivities: recordShape({
+        keys: '',
+        values: false,
+    }),
 });
 
 export type UiLayout = typeof uiLayoutShape.runtimeType;
@@ -1721,12 +1756,24 @@ export const tabLayoutSaveEndpoint = defineEndpoint({
     },
 });
 
-export const mainTabOrderSaveEndpoint = defineEndpoint({
-    path: '/ui-layout/main-tab-order',
+/** Saves whichever of the vertical tab bar's order and the enabled activities is given. */
+export const activityBarSaveEndpoint = defineEndpoint({
+    path: '/ui-layout/activity-bar',
     requests: {
         [HttpMethod.Put]: {
             requestData: defineShape({
-                order: [''],
+                order: optionalShape([''], {
+                    alsoUndefined: true,
+                }),
+                enabledActivities: optionalShape(
+                    recordShape({
+                        keys: '',
+                        values: false,
+                    }),
+                    {
+                        alsoUndefined: true,
+                    },
+                ),
             }),
             responses: {
                 [HttpStatus.Ok]: {
@@ -2242,7 +2289,7 @@ export const agentStormService = defineApi({
         reviewConfigEndpoint,
         uiLayoutEndpoint,
         tabLayoutSaveEndpoint,
-        mainTabOrderSaveEndpoint,
+        activityBarSaveEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
         createWorktreeEndpoint,

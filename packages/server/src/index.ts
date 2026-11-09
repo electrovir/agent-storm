@@ -1,6 +1,7 @@
 // cspell:words mkdirs
 
 import {
+    activityBarSaveEndpoint,
     addReviewCommentEndpoint,
     agentStormService,
     aiAvatarEndpoint,
@@ -32,7 +33,6 @@ import {
     gitStageHunkEndpoint,
     hideRepoEndpoint,
     killPanesEndpoint,
-    mainTabOrderSaveEndpoint,
     manualReviewCopyEndpoint,
     manualReviewStateEndpoint,
     paneInputEndpoint,
@@ -172,7 +172,7 @@ import {
     loadUiLayout,
     pruneFolderStates,
     readUiLayoutRevision,
-    saveMainTabOrder,
+    saveActivityBar,
     saveTabLayout,
 } from './ui-layout.js';
 import {getUpdateStatus} from './update-check.js';
@@ -370,11 +370,11 @@ const tabLayoutSaveImplementation = implementor.implementEndpoint(tabLayoutSaveE
     },
 });
 
-const mainTabOrderSaveImplementation = implementor.implementEndpoint(mainTabOrderSaveEndpoint, {
+const activityBarSaveImplementation = implementor.implementEndpoint(activityBarSaveEndpoint, {
     async [HttpMethod.Put]({requestData}) {
         return {
             [HttpStatus.Ok]: {
-                responseData: await saveMainTabOrder(requestData.order),
+                responseData: await saveActivityBar(requestData),
             },
         };
     },
@@ -1352,7 +1352,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         reviewConfigImplementation,
         uiLayoutImplementation,
         tabLayoutSaveImplementation,
-        mainTabOrderSaveImplementation,
+        activityBarSaveImplementation,
         foldersImplementation,
         updateCheckImplementation,
         createWorktreeImplementation,

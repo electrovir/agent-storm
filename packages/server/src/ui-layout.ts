@@ -15,12 +15,21 @@ import {readFileIfExists} from '@augment-vir/node';
 import {createHash} from 'node:crypto';
 import {readdir, rm, stat} from 'node:fs/promises';
 import {basename, join} from 'node:path';
-import {defineShape, optionalShape, parseJsonWithShape} from 'object-shape-tester';
+import {defineShape, optionalShape, parseJsonWithShape, recordShape} from 'object-shape-tester';
 import {folderStatesDir, uiLayoutPath} from './file-paths.js';
 import {writeFileAtomically} from './write-file-atomically.js';
 
 const appLayoutShape = defineShape({
     mainTabOrder: [''],
+    enabledActivities: optionalShape(
+        recordShape({
+            keys: '',
+            values: false,
+        }),
+        {
+            alsoUndefined: true,
+        },
+    ),
 });
 
 const folderStateShape = defineShape({
@@ -75,7 +84,7 @@ async function readFolderStates() {
     return states.filter((state) => state != undefined);
 }
 
-/** A missing main tab order file is the default order. A malformed one throws. */
+/** A missing app layout file is the default layout. A malformed one throws. */
 export async function loadUiLayout(): Promise<UiLayout> {
     const [
         appContents,
@@ -84,6 +93,8 @@ export async function loadUiLayout(): Promise<UiLayout> {
         readFileIfExists(uiLayoutPath),
         readFolderStates(),
     ]);
+    const appLayout =
+        appContents == undefined ? undefined : parseJsonWithShape(appContents, appLayoutShape);
     return {
         tabLayouts: typedObjectFromEntries(
             folderStates.map((state) => {
@@ -105,10 +116,8 @@ export async function loadUiLayout(): Promise<UiLayout> {
                     : [];
             }),
         ),
-        mainTabOrder:
-            appContents == undefined
-                ? []
-                : parseJsonWithShape(appContents, appLayoutShape).mainTabOrder,
+        mainTabOrder: appLayout?.mainTabOrder || [],
+        enabledActivities: appLayout?.enabledActivities || {},
     };
 }
 
@@ -163,15 +172,28 @@ export async function saveTabLayout({
     return await loadUiLayout();
 }
 
-export async function saveMainTabOrder(order: ReadonlyArray<string>) {
+/** Saves whichever of `order` and `enabledActivities` is given, keeping the other as stored. */
+export async function saveActivityBar({
+    order,
+    enabledActivities,
+}: Readonly<
+    PartialWithUndefined<{
+        order: ReadonlyArray<string>;
+        enabledActivities: Readonly<Record<string, boolean>>;
+    }>
+>) {
     await changeUiLayout(async () => {
+        const existing = await loadUiLayout();
         await writeFileAtomically({
             path: uiLayoutPath,
             contents: JSON.stringify(
                 {
                     mainTabOrder: [
-                        ...order,
+                        ...(order || existing.mainTabOrder),
                     ],
+                    enabledActivities: {
+                        ...(enabledActivities || existing.enabledActivities),
+                    },
                 } satisfies typeof appLayoutShape.runtimeType,
                 undefined,
                 4,

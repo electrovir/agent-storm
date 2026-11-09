@@ -2,6 +2,7 @@
 
 import {
     GitDiffSide,
+    type DiffSelection,
     type GitDiffFileContents,
     type GitDiffStatus,
     type ReviewComment,
@@ -142,6 +143,8 @@ export type DiffPaneContext = Readonly<{
         folder: string;
         active: boolean;
         enableComments?: boolean | undefined;
+        /** What this list's tab last had open, which wins over the folder's last value. */
+        savedSelection?: Readonly<DiffSelection> | undefined;
     }>;
     state: Readonly<DiffPaneState>;
     updateState: (newState: Partial<DiffPaneState>) => void;
@@ -151,7 +154,16 @@ export type DiffPaneContext = Readonly<{
  * The diff pane's reads, index writes, and navigation, in the same shape as the element's render
  * closures so async work still sees the live `state` and `inputs` after every await.
  */
-export function createDiffPaneController({inputs, state, updateState}: DiffPaneContext) {
+export function createDiffPaneController({
+    inputs,
+    state,
+    updateState,
+    saveSelection,
+}: DiffPaneContext &
+    Readonly<{
+        /** Stores a selection change in the list's tab. */
+        saveSelection(selection: Readonly<DiffSelection>): void;
+    }>) {
     /**
      * Show a status, carrying the selection and marks over to it.
      *
@@ -179,6 +191,11 @@ export function createDiffPaneController({inputs, state, updateState}: DiffPaneC
             localStorageClient.diffFileByFolder.writeFolder({
                 folder,
                 value: selectedValue,
+            });
+        }
+        if (selectedValue !== inputs.savedSelection?.file) {
+            saveSelection({
+                file: selectedValue,
             });
         }
         return selectedValue;
@@ -284,9 +301,12 @@ export function createDiffPaneController({inputs, state, updateState}: DiffPaneC
                  * The refresh below resolves this against the folder's real file list, so a
                  * remembered file that is gone falls back to the first one there.
                  */
-                selectedValue: localStorageClient.diffFileByFolder.readFolder(inputs.folder),
+                selectedValue:
+                    inputs.savedSelection?.file ||
+                    localStorageClient.diffFileByFolder.readFolder(inputs.folder),
                 reviewSide:
-                    (localStorageClient.diffReviewSideByFolder.readFolder(inputs.folder) ??
+                    (inputs.savedSelection?.reviewSide ??
+                        localStorageClient.diffReviewSideByFolder.readFolder(inputs.folder) ??
                         GitDiffSide.Unstaged) ||
                     undefined,
                 /** A different folder's file list and diff must not linger through the reload. */
@@ -614,6 +634,9 @@ export function createDiffPaneController({inputs, state, updateState}: DiffPaneC
         localStorageClient.diffReviewSideByFolder.writeFolder({
             folder: inputs.folder,
             value: side ?? false,
+        });
+        saveSelection({
+            reviewSide: side ?? false,
         });
     }
 

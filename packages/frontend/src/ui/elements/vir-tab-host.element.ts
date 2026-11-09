@@ -1,4 +1,4 @@
-import {SplitDirection, SplitEdge, type PaneTabKind} from '@agent-storm/common';
+import {SplitDirection, SplitEdge, type PaneState, type PaneTabKind} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {clamp, getEnumValues, type PartialWithUndefined} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
@@ -55,6 +55,8 @@ export type TabHostTab = {
 export type TabHostNewTabOption = {
     label: HtmlInterpolation;
     kind: PaneTabKind;
+    /** The new tab's own state. */
+    state: Readonly<Partial<PaneState>> | undefined;
 };
 
 type PixelRect = Readonly<{
@@ -168,6 +170,7 @@ export const VirTabHost = defineAppElement<{
                 kind: PaneTabKind;
                 /** Undefined on mobile, which has no groups of its own. */
                 groupId: string | undefined;
+                state: Readonly<Partial<PaneState>> | undefined;
             }>
         >(),
     },
@@ -615,6 +618,7 @@ export const VirTabHost = defineAppElement<{
                                                     detail: {
                                                         kind: option.kind,
                                                         groupId,
+                                                        state: option.state,
                                                     },
                                                 }),
                                             );

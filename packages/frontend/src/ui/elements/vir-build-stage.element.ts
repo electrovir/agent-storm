@@ -94,6 +94,7 @@ export const VirBuildStage = defineAppElement<{
         const localDbClient = inputs.context.frontendState?.value.localDbClient;
         if (
             localDbClient &&
+            !inputs.context.isInActivityTab &&
             inputs.activeFolder &&
             inputs.activeFolder !== localDbClient.value.build?.selectedFolder
         ) {

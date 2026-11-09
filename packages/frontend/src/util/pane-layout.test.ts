@@ -48,6 +48,8 @@ describe(resolvePaneState.name, () => {
     const shared = {
         selectedFolder: '/repos/app',
         diffView: DiffView.Source,
+        diffSelections: {},
+        activityPaths: [],
     };
 
     it('uses the tab’s own values over the shared ones', () => {
@@ -63,7 +65,7 @@ describe(resolvePaneState.name, () => {
             [
                 shared,
                 {
-                    selectedFolder: '/repos/app',
+                    ...shared,
                     diffView: DiffView.ManualReview,
                 },
             ],
