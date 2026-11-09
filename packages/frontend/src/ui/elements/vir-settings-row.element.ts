@@ -1,3 +1,4 @@
+import {defineAppElement} from '@agent-storm/core/frontend';
 import {type PartialWithUndefined} from '@augment-vir/common';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
@@ -8,7 +9,6 @@ import {
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
-import {defineAppElement} from '../define-app-element.js';
 
 /**
  * The rounded, bordered box that groups settings rows. Shared as CSS because each settings section

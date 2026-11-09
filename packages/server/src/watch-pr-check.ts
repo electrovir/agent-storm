@@ -12,7 +12,7 @@ import {
     partialShape,
     unionShape,
 } from 'object-shape-tester';
-import {loadConfig} from './config.js';
+import {loadFolderSettings} from './folder-settings.js';
 import {runGraphql} from './github-pr.js';
 import {
     collaboratorAssociations,
@@ -31,6 +31,7 @@ import {
     runningCheckStatuses,
 } from './github-raw-enums.js';
 import {runCommand} from './run-command.js';
+import {loadSettings} from './settings.js';
 
 /** Gating jobs that only go green once everything else does, so they never count as failing work. */
 const gatingCheckNames: ReadonlyArray<string> = [
@@ -671,6 +672,11 @@ export async function fetchPrCheck({
         threads: threadsResponse.repository?.pullRequest?.reviewThreads.nodes || [],
         viewerLogin,
         checkedAt,
-        trustedBotLogins: (await loadConfig()).forges[ForgeType.Github].trustedBotLogins,
+        trustedBotLogins: [
+            ...(await loadSettings()).forges[ForgeType.Github].trustedBotLogins,
+            ...(await loadFolderSettings(folder)).flatMap((folderSettings) => {
+                return folderSettings.forges?.[ForgeType.Github]?.trustedBotLogins || [];
+            }),
+        ],
     });
 }

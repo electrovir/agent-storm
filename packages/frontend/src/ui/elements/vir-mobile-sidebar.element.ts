@@ -1,4 +1,4 @@
-import {getEnumValues} from '@augment-vir/common';
+import {type AppContext, defineAppElement} from '@agent-storm/core/frontend';
 import {css, html, listen, nothing} from 'element-vir';
 import {
     LucideMenuIcon,
@@ -10,13 +10,7 @@ import {
     ViraModal,
     ViraSize,
 } from 'vira';
-import {type AppContext} from '../../util/app-context.js';
-import {ActivityId} from '../../util/router.js';
-import {defineAppElement} from '../define-app-element.js';
-import {activityDefinitions} from './activity-definitions.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
-import {VirReviewSidebar} from './vir-review-sidebar.element.js';
-import {VirSidebar} from './vir-sidebar.element.js';
 
 /**
  * Mobile's stand-in for the docked tab strip and sidebar: a hamburger button that opens them in a
@@ -25,19 +19,23 @@ import {VirSidebar} from './vir-sidebar.element.js';
  */
 export const VirMobileSidebar = defineAppElement<{
     context: AppContext;
+    /** The activity the route selects. */
+    activityId: string;
+    /** The route's segments after `activityId`. */
+    subPaths: ReadonlyArray<string>;
 }>()({
     tagName: 'vir-mobile-sidebar',
     state() {
         return {
             isOpen: false,
             /** Activities shown so far, so each sidebar only loads once it's needed. */
-            shownActivityIds: [] as ReadonlyArray<ActivityId>,
+            shownActivityIds: [] as ReadonlyArray<string>,
         };
     },
     styles: css`
         :host {
             display: inline-flex;
-            gap: 4px;
+            gap: 16px;
             position: absolute;
             top: 6px;
             left: 6px;
@@ -76,7 +74,7 @@ export const VirMobileSidebar = defineAppElement<{
         }
     `,
     render({inputs, state, updateState}) {
-        const activityId = inputs.context.resolved.activityId;
+        const activityId = inputs.activityId;
         if (!state.shownActivityIds.includes(activityId)) {
             updateState({
                 shownActivityIds: [
@@ -85,13 +83,28 @@ export const VirMobileSidebar = defineAppElement<{
                 ],
             });
         }
-        const title = activityDefinitions[activityId].mobileMenuTitle || '';
+        const title =
+            inputs.context.activities.find((activity) => activity.id === activityId)
+                ?.mobileMenuTitle || '';
 
         function close() {
             updateState({
                 isOpen: false,
             });
         }
+
+        /** Selecting anything in the modal, or opening Settings from it, closes it. */
+        const context: AppContext = {
+            ...inputs.context,
+            navigate(paths) {
+                close();
+                inputs.context.navigate(paths);
+            },
+            openSettings(target) {
+                close();
+                inputs.context.openSettings(target);
+            },
+        };
 
         return html`
             <${ViraButton.assign({
@@ -126,31 +139,35 @@ export const VirMobileSidebar = defineAppElement<{
             })}
                 ${listen(ViraModal.events.modalClose, close)}
             >
-                <div
-                    class="content"
-                    ${listen(VirSidebar.events.folderActivated, close)}
-                    ${listen(VirSidebar.events.openSettingsRequested, close)}
-                    ${listen(VirReviewSidebar.events.pullRequestActivated, close)}
-                    ${listen(VirReviewSidebar.events.settingsRequested, close)}
-                >
+                <div class="content">
                     <${VirMainTabs.assign({
-                        context: inputs.context,
+                        context,
+                        activityId,
                         isHorizontal: true,
                     })}></${VirMainTabs}>
-                    ${getEnumValues(ActivityId).map((sidebarActivityId) => {
-                        const sidebar = activityDefinitions[sidebarActivityId].sidebar;
+                    ${context.activities.map((activity) => {
+                        const isCurrent = activity.id === activityId;
                         if (
-                            !sidebar ||
-                            !(
-                                sidebarActivityId === activityId ||
-                                state.shownActivityIds.includes(sidebarActivityId)
-                            )
+                            !activity.sidebar ||
+                            !(isCurrent || state.shownActivityIds.includes(activity.id))
                         ) {
                             return nothing;
                         }
                         return html`
-                            <div class="sidebar" ?data-hidden=${sidebarActivityId !== activityId}>
-                                ${sidebar.render(inputs.context)}
+                            <div class="sidebar" ?data-hidden=${!isCurrent}>
+                                ${activity.sidebar.render({
+                                    context,
+                                    state: context.activityStates[activity.id],
+                                    route: {
+                                        subPaths: isCurrent ? inputs.subPaths : [],
+                                        navigate(subPaths) {
+                                            context.navigate([
+                                                activity.id,
+                                                ...subPaths,
+                                            ]);
+                                        },
+                                    },
+                                })}
                             </div>
                         `;
                     })}

@@ -1,20 +1,19 @@
-import {type ReviewConfig} from '@agent-storm/common';
+import {type Settings} from '@agent-storm/common';
+import {defineAppElement, type ReviewedRepo, toRepoKey} from '@agent-storm/core/frontend';
 import {css, defineElementEvent, html, listen} from 'element-vir';
 import {ViraInput} from 'vira';
 import {type ValueUpdate} from '../../util/batched-writer.js';
-import {defineAppElement} from '../define-app-element.js';
-import {type ReviewedRepo, toRepoKey} from './review-sidebar-display.js';
 import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 
 /** The Settings modal's Review section: the init command run in each new review checkout. */
 export const VirSettingsReview = defineAppElement<{
-    reviewConfig: Readonly<ReviewConfig>;
+    settings: Readonly<Settings>;
     /** Listed first, even before it has a command of its own. */
     reviewRepo: Readonly<ReviewedRepo> | undefined;
 }>()({
     tagName: 'vir-settings-review',
     events: {
-        reviewConfigChange: defineElementEvent<ValueUpdate<ReviewConfig>>(),
+        settingsChange: defineElementEvent<ValueUpdate<Settings>>(),
     },
     styles: css`
         ${settingsCardCss}
@@ -26,16 +25,23 @@ export const VirSettingsReview = defineAppElement<{
         }
     `,
     render({inputs, dispatch, events}) {
-        function changeReviewConfig(update: ValueUpdate<ReviewConfig>) {
+        function changeReview(update: ValueUpdate<Settings['review']>) {
             dispatch(
-                new events.reviewConfigChange({
-                    detail: update,
+                new events.settingsChange({
+                    detail(current) {
+                        return {
+                            ...current,
+                            review: update(current.review),
+                        };
+                    },
                 }),
             );
         }
 
+        const review = inputs.settings.review;
+
         function setRepoCommand(repo: Readonly<ReviewedRepo>, initCmd: string | undefined) {
-            changeReviewConfig((current) => {
+            changeReview((current) => {
                 const others = current.repos.filter(
                     (entry) => toRepoKey(entry) !== toRepoKey(repo),
                 );
@@ -59,7 +65,7 @@ export const VirSettingsReview = defineAppElement<{
         const targetRepo = inputs.reviewRepo;
         const repos = [
             ...(targetRepo &&
-            !inputs.reviewConfig.repos.some((entry) => toRepoKey(entry) === toRepoKey(targetRepo))
+            !review.repos.some((entry) => toRepoKey(entry) === toRepoKey(targetRepo))
                 ? [
                       {
                           ...targetRepo,
@@ -67,11 +73,9 @@ export const VirSettingsReview = defineAppElement<{
                       },
                   ]
                 : []),
-            ...inputs.reviewConfig.repos,
+            ...review.repos,
         ];
-        const placeholder = inputs.reviewConfig.defaultInitCmd
-            ? `Default: ${inputs.reviewConfig.defaultInitCmd}`
-            : 'None';
+        const placeholder = review.initCmd ? `Default: ${review.initCmd}` : 'None';
 
         return html`
             <div class="card">
@@ -79,28 +83,28 @@ export const VirSettingsReview = defineAppElement<{
                     rowTitle: 'Default init command',
                     description:
                         'Runs in each new review checkout of a repo without a command of its own.',
-                    isModified: !!inputs.reviewConfig.defaultInitCmd,
+                    isModified: !!review.initCmd,
                 })}
                     ${listen(VirSettingsRow.events.reset, () => {
-                        changeReviewConfig((current) => {
+                        changeReview((current) => {
                             return {
                                 ...current,
-                                defaultInitCmd: '',
+                                initCmd: '',
                             };
                         });
                     })}
                 >
                     <${ViraInput.assign({
-                        value: inputs.reviewConfig.defaultInitCmd,
+                        value: review.initCmd,
                         placeholder: 'None',
                         showClearButton: true,
                         disableBrowserHelps: true,
                     })}
                         ${listen(ViraInput.events.valueChange, (event) => {
-                            changeReviewConfig((current) => {
+                            changeReview((current) => {
                                 return {
                                     ...current,
-                                    defaultInitCmd: event.detail,
+                                    initCmd: event.detail,
                                 };
                             });
                         })}
@@ -114,7 +118,7 @@ export const VirSettingsReview = defineAppElement<{
                           return html`
                               <${VirSettingsRow.assign({
                                   rowTitle: toRepoKey(repo),
-                                  isModified: inputs.reviewConfig.repos.some(
+                                  isModified: review.repos.some(
                                       (entry) => toRepoKey(entry) === toRepoKey(repo),
                                   ),
                               })}

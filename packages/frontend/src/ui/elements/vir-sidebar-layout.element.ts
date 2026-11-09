@@ -1,8 +1,11 @@
+import {
+    defineAppElement,
+    sidebarWidth,
+    VirResizeDivider,
+    type Setting,
+} from '@agent-storm/core/frontend';
 import {clamp} from '@augment-vir/common';
 import {css, html, listen, nothing} from 'element-vir';
-import {sidebarWidth, type Setting} from '../../util/local-storage-client.js';
-import {defineAppElement} from '../define-app-element.js';
-import {VirResizeDivider} from './vir-resize-divider.element.js';
 
 /**
  * A resizable sidebar slot beside a stage that takes the default slot, positioned so its children

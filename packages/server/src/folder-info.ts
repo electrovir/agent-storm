@@ -1,4 +1,5 @@
 import {
+    aiDefinitionShape,
     folderInfoShape,
     ForgeType,
     GitHubPollingDisableReason,
@@ -6,9 +7,9 @@ import {
     PaneStatus,
     PrStatus,
     WatchModeStatus,
-    type Config,
     type FolderInfo,
-    type RepoConfig,
+    type SavedRepo,
+    type Settings,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
@@ -32,10 +33,11 @@ import {
     tupleShape,
     unknownShape,
 } from 'object-shape-tester';
+import {loadAppState, updateAppState, type AppState} from './app-state.js';
 import {repoCacheKey, repoPrCache} from './branch-prs.js';
-import {getFolderAiDefinition, loadConfig, updateConfig} from './config.js';
 import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
+import {loadFolderSettings} from './folder-settings.js';
 import {
     fetchRepoPrs,
     forgetGitInfo,
@@ -52,6 +54,7 @@ import {
 import {applyManualReviewStatus} from './github-review-queue.js';
 import {normalizePath} from './paths.js';
 import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
+import {loadSettings, resolveFolderAi} from './settings.js';
 import {writeFileAtomically} from './write-file-atomically.js';
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
@@ -147,10 +150,10 @@ const autoDisableDurationByReason: Readonly<Record<GitHubPollingDisableReason, A
 
 /**
  * Auto-disable state for GitHub polling. Set when a GraphQL call surfaces rate-limit or auth
- * failure; GitHub calls are skipped until `disabledUntilMs` elapses. Persisted to the config so
+ * failure; GitHub calls are skipped until `disabledUntilMs` elapses. Persisted to the app state so
  * `tsx --watch` restarts during dev don't immediately re-poll GitHub and hit the same rate limit
- * again. The user's explicit `forges.github.disabledGitHubPolling: true` config takes precedence
- * either way; this only flips an implicit off-switch.
+ * again. The user's explicit `forges.github.disabledGitHubPolling` setting takes precedence either
+ * way; this only flips an implicit off-switch.
  */
 const githubPollingState: {
     autoDisable:
@@ -170,33 +173,27 @@ function isAutoDisabled(): boolean {
     );
 }
 
-/** Forgets an auto-disable whose backoff has run out, so the config stops carrying it. */
+/** Forgets an auto-disable whose backoff has run out, so the app state stops carrying it. */
 async function clearExpiredAutoDisable(): Promise<void> {
     if (githubPollingState.autoDisable && !isAutoDisabled()) {
         githubPollingState.autoDisable = undefined;
-        await persistAutoDisableToConfig();
+        await persistAutoDisable();
     }
 }
 
-async function persistAutoDisableToConfig(): Promise<void> {
-    await updateConfig((config) => {
+async function persistAutoDisable(): Promise<void> {
+    await updateAppState((state) => {
         return {
-            ...config,
-            forges: {
-                ...config.forges,
-                [ForgeType.Github]: {
-                    ...config.forges[ForgeType.Github],
-                    githubPollingAutoDisable: githubPollingState.autoDisable || null,
-                },
-            },
+            ...state,
+            githubPollingAutoDisable: githubPollingState.autoDisable || null,
         };
     }).catch((error: unknown) => {
         log.warning(`Failed to save GitHub polling auto-disable: ${extractErrorMessage(error)}`);
     });
 }
 
-function loadAutoDisableFromConfig(config: Readonly<Config>): void {
-    const saved = config.forges[ForgeType.Github].githubPollingAutoDisable;
+function loadSavedAutoDisable(state: Readonly<AppState>): void {
+    const saved = state.githubPollingAutoDisable;
     if (!saved || Date.now() >= saved.disabledUntilMs) {
         return;
     }
@@ -260,11 +257,11 @@ function markAutoDisabled({
             `GitHub polling auto-disabled (${reason}); backing off ${minutes} min. ${message}`,
         );
     }
-    void persistAutoDisableToConfig();
+    void persistAutoDisable();
 }
 
-function isGitHubPollingDisabled(config: Readonly<Config>): boolean {
-    return config.forges[ForgeType.Github].disabledGitHubPolling || isAutoDisabled();
+function isGitHubPollingDisabled(settings: Readonly<Settings>): boolean {
+    return settings.forges[ForgeType.Github].disabledGitHubPolling || isAutoDisabled();
 }
 
 /**
@@ -350,9 +347,11 @@ const refreshTargetShape = defineShape({
     parentRepoPath: nullableShape(''),
     createdAtMs: 0,
     isWorktreeRoot: false,
-    /** Resolved AI for this folder, or empty when the user has defined no AI at all. */
+    /** Resolved AI for this folder, or empty when no AI is defined at all. */
     aiId: '',
-    /** The repo's config `lastInteractedAtMs`. Only set on top-level repo targets. */
+    inheritedAiId: '',
+    folderAiDefinitions: [aiDefinitionShape],
+    /** The saved repo's `lastInteractedAtMs`. Only set on top-level repo targets. */
     lastInteractedAtMs: optionalShape(0, {
         alsoUndefined: true,
     }),
@@ -375,41 +374,60 @@ async function getCreatedAtMs(folder: string): Promise<number> {
     }
 }
 
-async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget[]> {
+/** The AI fields of a folder's {@link RefreshTarget}. */
+async function resolveTargetAi({
+    settings,
+    folder,
+    fallbackFolders,
+}: Readonly<{
+    settings: Readonly<Settings>;
+    folder: string;
+    fallbackFolders?: ReadonlyArray<string> | undefined;
+}>) {
+    const resolved = resolveFolderAi({
+        settings,
+        folderLayers: await loadFolderSettings(folder),
+        folder,
+        fallbackFolders,
+    });
+    return {
+        aiId: resolved.ai?.id || '',
+        inheritedAiId: resolved.inheritedAi?.id || '',
+        folderAiDefinitions: resolved.aiDefinitions.filter((definition) => {
+            return !settings.aiDefinitions.some((own) => own.id === definition.id);
+        }),
+    };
+}
+
+async function enumerateTargets({
+    settings,
+    repos,
+}: Readonly<{
+    settings: Readonly<Settings>;
+    repos: ReadonlyArray<SavedRepo>;
+}>): Promise<RefreshTarget[]> {
     const perRepo = await Promise.all(
-        config.repos.map(async (repo): Promise<RefreshTarget[]> => {
+        repos.map(async (repo): Promise<RefreshTarget[]> => {
             const isRoot = await isWorktreeRoot(repo.path);
-            const createdAtMs = await getCreatedAtMs(repo.path);
+            const rootTarget: RefreshTarget = {
+                folder: repo.path,
+                parentRepoPath: null,
+                createdAtMs: await getCreatedAtMs(repo.path),
+                isWorktreeRoot: isRoot,
+                lastInteractedAtMs: repo.lastInteractedAtMs,
+                ...(await resolveTargetAi({
+                    settings,
+                    folder: repo.path,
+                })),
+            };
             if (!isRoot) {
                 return [
-                    {
-                        folder: repo.path,
-                        parentRepoPath: null,
-                        createdAtMs,
-                        isWorktreeRoot: false,
-                        lastInteractedAtMs: repo.lastInteractedAtMs,
-                        aiId:
-                            getFolderAiDefinition({
-                                config,
-                                folder: repo.path,
-                            })?.id || '',
-                    },
+                    rootTarget,
                 ];
             }
             const children = await listWorktreeChildren(repo.path);
             return [
-                {
-                    folder: repo.path,
-                    parentRepoPath: null,
-                    createdAtMs,
-                    isWorktreeRoot: true,
-                    lastInteractedAtMs: repo.lastInteractedAtMs,
-                    aiId:
-                        getFolderAiDefinition({
-                            config,
-                            folder: repo.path,
-                        })?.id || '',
-                },
+                rootTarget,
                 ...(await Promise.all(
                     children.map(async (child): Promise<RefreshTarget> => {
                         return {
@@ -417,12 +435,11 @@ async function enumerateTargets(config: Readonly<Config>): Promise<RefreshTarget
                             parentRepoPath: repo.path,
                             createdAtMs: await getCreatedAtMs(child),
                             isWorktreeRoot: false,
-                            aiId:
-                                getFolderAiDefinition({
-                                    config,
-                                    folder: child,
-                                    fallbackFolders: [repo.path],
-                                })?.id || '',
+                            ...(await resolveTargetAi({
+                                settings,
+                                folder: child,
+                                fallbackFolders: [repo.path],
+                            })),
                         };
                     }),
                 )),
@@ -465,14 +482,14 @@ async function buildFolderInfo({
  * Last-known FolderInfo per folder path. The `/folders` endpoint returns a snapshot of this map;
  * the background loop below is the only thing that writes to it. Frontend polling NEVER triggers a
  * refresh — it just reads whatever is here. Order is preserved in insertion-time order, which is
- * the iteration order of the current config's repos + their worktree children, so consumers can
- * render without re-sorting.
+ * the iteration order of the saved repos + their worktree children, so consumers can render without
+ * re-sorting.
  */
 const cache = new Map<string, FolderInfo>();
 /**
  * Mutable module-level state for the refresh loop. Kept on a single object so we can avoid `let`
  * for each field. `targets` is the most recent enumeration result; the endpoint walks it to emit
- * folders in config order, falling back to a git-less placeholder for any target the background
+ * folders in saved-repo order, falling back to a git-less placeholder for any target the background
  * sweep hasn't refreshed yet. `loopStarted` guards `startFolderInfoRefreshLoop` against being
  * called twice.
  */
@@ -506,6 +523,8 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         createdAtMs: target.createdAtMs,
         isWorktreeRoot: target.isWorktreeRoot,
         aiId: target.aiId,
+        inheritedAiId: target.inheritedAiId,
+        folderAiDefinitions: target.folderAiDefinitions,
         branch: null,
         git: {
             dirty: false,
@@ -529,6 +548,18 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
  * about one poll interval of the pane going busy, instead of waiting for the next sweep to bake the
  * new status into the cache.
  */
+/**
+ * The repo `folder` is a worktree of, per the last sweep. Undefined for a repo or an unknown
+ * folder.
+ */
+export function findParentRepoPath(folder: string) {
+    const normalizedFolder = normalizePath(folder);
+    return (
+        refreshState.targets.find((target) => target.folder === normalizedFolder)?.parentRepoPath ||
+        undefined
+    );
+}
+
 export async function getCachedFolders(): Promise<FolderInfo[]> {
     const statusLookup = await getPaneStatusLookup();
     const sessionStatusLookup = await getPaneSessionStatusLookup();
@@ -748,7 +779,7 @@ export function isFolderRefreshDue({
 }: Readonly<{
     target: RefreshTarget;
     statusLookup: PaneStatusLookup;
-    repos: ReadonlyArray<RepoConfig>;
+    repos: ReadonlyArray<SavedRepo>;
     folderActivityAtMs: number;
     lastRefreshedAtMs: number | undefined;
     nowMs: number;
@@ -908,7 +939,7 @@ export function computeRepoPrRefreshTtlByRepo({
 }: Readonly<{
     targets: ReadonlyArray<RefreshTarget>;
     statusLookup: PaneStatusLookup;
-    repos: ReadonlyArray<RepoConfig>;
+    repos: ReadonlyArray<SavedRepo>;
     onlyShowRecent: boolean;
     everHadPrPaths: ReadonlySet<string>;
     nowMs: number;
@@ -956,13 +987,31 @@ export function computeRepoPrRefreshTtlByRepo({
     );
 }
 
+/** The settings and repo list a sweep needs, or undefined when either can't be read. */
+async function loadSweepInputs() {
+    const [
+        settings,
+        appState,
+    ] = await Promise.all([
+        loadSettings().catch(() => undefined),
+        loadAppState().catch(() => undefined),
+    ]);
+    return (
+        settings &&
+        appState && {
+            settings,
+            repos: appState.repos,
+        }
+    );
+}
+
 async function runSweep(): Promise<void> {
-    const config = await loadConfig().catch(() => undefined);
-    if (!config) {
+    const sweepInputs = await loadSweepInputs();
+    if (!sweepInputs) {
         return;
     }
     await clearExpiredAutoDisable();
-    const targets = await enumerateTargets(config);
+    const targets = await enumerateTargets(sweepInputs);
     const haveTargetsChanged = !check.deepEquals(refreshState.targets, targets);
     /**
      * Publish the target list before the slow per-folder loop runs so `/folders` can return
@@ -973,7 +1022,7 @@ async function runSweep(): Promise<void> {
         persistCache();
     }
     const statusLookup = await getPaneStatusLookup();
-    const disabledGitHubPolling = isGitHubPollingDisabled(config);
+    const disabledGitHubPolling = isGitHubPollingDisabled(sweepInputs.settings);
     /**
      * Snapshot each repo's PR refresh interval at sweep start. Whatever is already cached is served
      * regardless; this only decides which repos spend a GraphQL call this time around.
@@ -981,8 +1030,8 @@ async function runSweep(): Promise<void> {
     const prRefreshTtlByRepo = computeRepoPrRefreshTtlByRepo({
         targets,
         statusLookup,
-        repos: config.repos,
-        onlyShowRecent: !!config.onlyShowRecent,
+        repos: sweepInputs.repos,
+        onlyShowRecent: !!sweepInputs.settings.onlyShowRecent,
         everHadPrPaths: everHadPrRepoPaths,
         nowMs: Date.now(),
     });
@@ -996,7 +1045,7 @@ async function runSweep(): Promise<void> {
             !isFolderRefreshDue({
                 target,
                 statusLookup,
-                repos: config.repos,
+                repos: sweepInputs.repos,
                 folderActivityAtMs: getFolderActivityAtMs(target.folder),
                 lastRefreshedAtMs: lastRefreshedAtMsByFolder.get(target.folder),
                 nowMs: Date.now(),
@@ -1039,11 +1088,11 @@ async function runSweep(): Promise<void> {
  * full sweep cycle.
  */
 export async function refreshFolderInfoNow(): Promise<void> {
-    const config = await loadConfig().catch(() => undefined);
-    if (!config) {
+    const sweepInputs = await loadSweepInputs();
+    if (!sweepInputs) {
         return;
     }
-    refreshState.targets = await enumerateTargets(config);
+    refreshState.targets = await enumerateTargets(sweepInputs);
     persistCache();
     void runSweep().catch(logSweepFailure);
 }
@@ -1082,9 +1131,9 @@ export async function startFolderInfoRefreshLoop(): Promise<void> {
     refreshState.loopStarted = true;
     await loadPersistedCache();
     await loadPersistedGithubCache();
-    const initialConfig = await loadConfig().catch(() => undefined);
-    if (initialConfig) {
-        loadAutoDisableFromConfig(initialConfig);
+    const initialState = await loadAppState().catch(() => undefined);
+    if (initialState) {
+        loadSavedAutoDisable(initialState);
     }
     listenToGitInfoChanges(async ({folder}) => {
         await applyGitInfoChange(folder);

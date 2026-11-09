@@ -2,9 +2,9 @@
 
 import {type UpdateStatus} from '@agent-storm/common';
 import {type AnyDuration, convertDuration} from 'date-vir';
-import {loadConfig} from './config.js';
 import {monorepoRoot} from './file-paths.js';
 import {runCommand} from './run-command.js';
+import {loadSettings} from './settings.js';
 
 /**
  * Branch the local checkout is compared against. Hardcoded to `dev` per project convention — that
@@ -147,8 +147,8 @@ const unknownUpdateStatus: UpdateStatus = {
 };
 
 export async function getUpdateStatus(): Promise<UpdateStatus> {
-    const config = await loadConfig().catch(() => undefined);
-    if (config?.disableUpdateCheck) {
+    const settings = await loadSettings().catch(() => undefined);
+    if (settings?.disableUpdateCheck) {
         return unknownUpdateStatus;
     }
     const [

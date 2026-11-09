@@ -1,8 +1,8 @@
+import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {type PartialWithUndefined} from '@augment-vir/common';
 import {css, defineElementEvent, html, listen} from 'element-vir';
 import {ViraCheckbox, ViraDropdown, ViraInput, ViraInputType} from 'vira';
-import {defineAppElement} from '../define-app-element.js';
 import {VirSettingsRow} from './vir-settings-row.element.js';
 
 /** The parts of a config property's JSON Schema that pick and label its row's control. */

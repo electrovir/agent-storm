@@ -2,15 +2,26 @@
 
 import {
     checkPathEndpoint,
-    configEndpoint,
-    configJsonSchema,
-    defaultConfig,
+    defaultSettings,
     ForgeType,
     restartDaemonEndpoint,
-    reviewConfigEndpoint,
-    type Config,
-    type ReviewConfig,
+    settingsEndpoint,
+    settingsJsonSchema,
+    type Settings,
 } from '@agent-storm/common';
+import {
+    defineAppElement,
+    fetchApi,
+    isActivityEnabled,
+    localStorageClient,
+    ScreenSize,
+    scrollbackLimit,
+    SettingsSection,
+    staticTabRouter,
+    toStaticTabRoute,
+    type AppContext,
+    type SettingsTarget,
+} from '@agent-storm/core/frontend';
 import {assertWrap, check} from '@augment-vir/assert';
 import {
     extractErrorMessage,
@@ -22,7 +33,15 @@ import {
 } from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
 import {HttpMethod} from '@rest-vir/api';
-import {css, html, listen, nothing, onDomCreated, type HtmlInterpolation} from 'element-vir';
+import {
+    css,
+    html,
+    listen,
+    nothing,
+    onDomCreated,
+    type HtmlInterpolation,
+    type Observable,
+} from 'element-vir';
 import {
     LucideSearchIcon,
     ViraButton,
@@ -39,38 +58,18 @@ import {
     ViraThemeColorName,
     ViraThemeSwitcher,
 } from 'vira';
-import {activityInfo, isActivityEnabled} from '../../util/activity-info.js';
-import {fetchApi} from '../../util/api-client.js';
-import {SettingsSection, type AppContext, type SettingsTarget} from '../../util/app-context.js';
 import {createBatchedWriter, type ValueUpdate} from '../../util/batched-writer.js';
-import {localStorageClient, scrollbackLimit} from '../../util/local-storage-client.js';
-import {orderedActivityIds, type ActivityId} from '../../util/router.js';
-import {ScreenSize} from '../../util/screen-size.js';
-import {schemaConfigKeySections, settingsSections} from '../../util/settings-sections.js';
-import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
-import {defineAppElement} from '../define-app-element.js';
+import {schemaSettingKeySections, settingsSections} from '../../util/settings-sections.js';
 import {VirSettingsAi} from './vir-settings-ai.element.js';
 import {VirSettingsFolders} from './vir-settings-folders.element.js';
 import {VirSettingsReview} from './vir-settings-review.element.js';
 import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 import {VirSettingsSchemaRow, type SettingSchema} from './vir-settings-schema-row.element.js';
 
-/** `githubPollingAutoDisable` is backend-managed, so the user has no business editing it. */
-const hiddenForgeConfigKeys = {
-    [ForgeType.Github]: [
-        'githubPollingAutoDisable',
-    ],
-    [ForgeType.Gitea]: [],
-    [ForgeType.Forgejo]: [],
-    [ForgeType.Gitlab]: [],
-} as const satisfies {
-    [Forge in ForgeType]: ReadonlyArray<keyof Config['forges'][Forge]>;
-};
-
 /** Each forge with settings to show. A forge with none gets no card. */
 const forgeCards = getEnumValues(ForgeType)
     .map((forgeType) => {
-        const forgeSchema = configJsonSchema.properties.forges.properties[forgeType];
+        const forgeSchema = settingsJsonSchema.properties.forges.properties[forgeType];
         return {
             forgeType,
             title: forgeSchema.title,
@@ -78,15 +77,13 @@ const forgeCards = getEnumValues(ForgeType)
                 forgeSchema.properties satisfies object as Readonly<
                     Record<string, SettingSchema & Readonly<{default: unknown}>>
                 >,
-            ).filter(([key]) => {
-                return !(hiddenForgeConfigKeys[forgeType] as ReadonlyArray<string>).includes(key);
-            }),
+            ),
         };
     })
     .filter((card) => card.properties.length);
 
 function getSchemaKeys(section: SettingsSection) {
-    return getObjectTypedEntries(schemaConfigKeySections)
+    return getObjectTypedEntries(schemaSettingKeySections)
         .filter(
             ([
                 ,
@@ -96,24 +93,24 @@ function getSchemaKeys(section: SettingsSection) {
         .map(([key]) => key);
 }
 
-function readForgeSetting(config: Readonly<Config>, forgeType: ForgeType, key: string) {
-    return (config.forges[forgeType] satisfies object as Readonly<Record<string, unknown>>)[key];
+function readForgeSetting(settings: Readonly<Settings>, forgeType: ForgeType, key: string) {
+    return (settings.forges[forgeType] satisfies object as Readonly<Record<string, unknown>>)[key];
 }
 
 function setForgeSettings(
-    config: Readonly<Config>,
+    settings: Readonly<Settings>,
     forgeType: ForgeType,
-    settings: Readonly<Record<string, unknown>>,
-): Config {
+    forgeSettings: Readonly<Record<string, unknown>>,
+): Settings {
     return {
-        ...config,
+        ...settings,
         forges: {
-            ...config.forges,
+            ...settings.forges,
             [forgeType]: {
-                ...config.forges[forgeType],
-                ...settings,
+                ...settings.forges[forgeType],
+                ...forgeSettings,
             },
-        } satisfies Record<ForgeType, object> as Config['forges'],
+        } satisfies Record<ForgeType, object> as Settings['forges'],
     };
 }
 
@@ -136,8 +133,8 @@ const sectionDefaults: Readonly<
     Record<
         SettingsSection,
         | Readonly<{
-              isModified: (config: Readonly<Config>) => boolean;
-              restore: ValueUpdate<Config>;
+              isModified: (settings: Readonly<Settings>) => boolean;
+              restore: ValueUpdate<Settings>;
           }>
         | undefined
     >
@@ -146,25 +143,25 @@ const sectionDefaults: Readonly<
         const keys = getSchemaKeys(section);
         return keys.length
             ? {
-                  isModified(config: Readonly<Config>) {
+                  isModified(settings: Readonly<Settings>) {
                       return keys.some((key) => {
                           return !isDefault({
-                              value: config[key],
-                              defaultValue: defaultConfig[key],
+                              value: settings[key],
+                              defaultValue: defaultSettings[key],
                           });
                       });
                   },
-                  restore(config: Readonly<Config>): Config {
+                  restore(settings: Readonly<Settings>): Settings {
                       return {
-                          ...config,
-                          ...pickObjectKeys(defaultConfig, keys),
+                          ...settings,
+                          ...pickObjectKeys(defaultSettings, keys),
                       };
                   },
               }
             : undefined;
     }),
     [SettingsSection.Forges]: {
-        isModified(config) {
+        isModified(settings) {
             return forgeCards.some((card) => {
                 return card.properties.some(
                     ([
@@ -172,14 +169,14 @@ const sectionDefaults: Readonly<
                         schema,
                     ]) => {
                         return !isDefault({
-                            value: readForgeSetting(config, card.forgeType, key),
+                            value: readForgeSetting(settings, card.forgeType, key),
                             defaultValue: schema.default,
                         });
                     },
                 );
             });
         },
-        restore(config) {
+        restore(settings) {
             return forgeCards.reduce((current, card) => {
                 return setForgeSettings(
                     current,
@@ -198,7 +195,7 @@ const sectionDefaults: Readonly<
                         ),
                     ),
                 );
-            }, config);
+            }, settings);
         },
     },
 };
@@ -210,16 +207,17 @@ const sectionDefaults: Readonly<
  */
 export const VirSettingsModal = defineAppElement<{
     context: AppContext;
+    /** Where the Settings modal is, or was last left in this window. */
+    settingsTarget: Observable<SettingsTarget>;
+    isSettingsOpen: Observable<boolean>;
 }>()({
     tagName: 'vir-settings-modal',
     state() {
         return {
-            config: undefined as Config | undefined,
-            reviewConfig: undefined as ReviewConfig | undefined,
+            settings: undefined as Settings | undefined,
             writers: undefined as
                 | Readonly<{
-                      config: ReturnType<typeof createBatchedWriter<Config>>;
-                      reviewConfig: ReturnType<typeof createBatchedWriter<ReviewConfig>>;
+                      settings: ReturnType<typeof createBatchedWriter<Settings>>;
                   }>
                 | undefined,
             search: '',
@@ -327,8 +325,8 @@ export const VirSettingsModal = defineAppElement<{
         }
     `,
     render({inputs, state, updateState, host}) {
-        const target = inputs.context.settingsTarget.value;
-        const isOpen = inputs.context.isSettingsOpen.value;
+        const target = inputs.settingsTarget.value;
+        const isOpen = inputs.isSettingsOpen.value;
         if (isOpen !== state.wasOpen) {
             updateState({
                 wasOpen: isOpen,
@@ -352,21 +350,24 @@ export const VirSettingsModal = defineAppElement<{
 
         function createWriters() {
             return {
-                config: createBatchedWriter<Config>({
+                settings: createBatchedWriter<Settings>({
                     delay: {
                         milliseconds: 400,
                     },
                     read() {
-                        return fetchApi(configEndpoint, HttpMethod.Get);
+                        return fetchApi(settingsEndpoint, HttpMethod.Get);
                     },
                     write(requestData) {
-                        return fetchApi(configEndpoint, HttpMethod.Put, {
+                        return fetchApi(settingsEndpoint, HttpMethod.Put, {
                             requestData,
                         });
                     },
                     async onSaved({previous, saved, pending}) {
                         updateState({
-                            config: pending.reduce((value: Config, update) => update(value), saved),
+                            settings: pending.reduce(
+                                (value: Settings, update) => update(value),
+                                saved,
+                            ),
                             saveError: '',
                         });
                         if (previous.useWebgl !== saved.useWebgl) {
@@ -409,33 +410,6 @@ export const VirSettingsModal = defineAppElement<{
                         });
                     },
                 }),
-                reviewConfig: createBatchedWriter<ReviewConfig>({
-                    delay: {
-                        milliseconds: 400,
-                    },
-                    read() {
-                        return fetchApi(reviewConfigEndpoint, HttpMethod.Get);
-                    },
-                    write(requestData) {
-                        return fetchApi(reviewConfigEndpoint, HttpMethod.Put, {
-                            requestData,
-                        });
-                    },
-                    onSaved({saved, pending}) {
-                        updateState({
-                            reviewConfig: pending.reduce(
-                                (value: ReviewConfig, update) => update(value),
-                                saved,
-                            ),
-                            saveError: '',
-                        });
-                    },
-                    onError(error) {
-                        updateState({
-                            saveError: extractErrorMessage(error),
-                        });
-                    },
-                }),
             };
         }
 
@@ -447,20 +421,9 @@ export const VirSettingsModal = defineAppElement<{
             });
             try {
                 /** Edits from the last time the modal was open land before the fresh read. */
-                await Promise.all([
-                    writers.config.flush(),
-                    writers.reviewConfig.flush(),
-                ]);
-                const [
-                    config,
-                    reviewConfig,
-                ] = await Promise.all([
-                    fetchApi(configEndpoint, HttpMethod.Get),
-                    fetchApi(reviewConfigEndpoint, HttpMethod.Get),
-                ]);
+                await writers.settings.flush();
                 updateState({
-                    config,
-                    reviewConfig,
+                    settings: await fetchApi(settingsEndpoint, HttpMethod.Get),
                 });
             } catch (error: unknown) {
                 updateState({
@@ -469,39 +432,25 @@ export const VirSettingsModal = defineAppElement<{
             }
         }
 
-        function changeConfig(update: ValueUpdate<Config>) {
-            const config = host.instanceState.config;
-            if (!config || !state.writers) {
+        function changeSettings(update: ValueUpdate<Settings>) {
+            const settings = host.instanceState.settings;
+            if (!settings || !state.writers) {
                 return;
             }
             updateState({
-                config: update(config),
+                settings: update(settings),
             });
-            state.writers.config.add(update);
-        }
-
-        function changeReviewConfig(update: ValueUpdate<ReviewConfig>) {
-            const reviewConfig = host.instanceState.reviewConfig;
-            if (!reviewConfig || !state.writers) {
-                return;
-            }
-            updateState({
-                reviewConfig: update(reviewConfig),
-            });
-            state.writers.reviewConfig.add(update);
+            state.writers.settings.add(update);
         }
 
         async function close() {
-            inputs.context.isSettingsOpen.setValue(false);
+            inputs.isSettingsOpen.setValue(false);
             updateState({
                 closedTarget: target,
                 scrollbackDraft: undefined,
                 daemonRestartError: '',
             });
-            await Promise.all([
-                state.writers?.config.flush(),
-                state.writers?.reviewConfig.flush(),
-            ]);
+            await state.writers?.settings.flush();
         }
 
         async function restartDaemon() {
@@ -547,7 +496,7 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        function setActivityEnabled(activityId: ActivityId, isEnabled: boolean) {
+        function setActivityEnabled(activityId: string, isEnabled: boolean) {
             inputs.context.uiLayout.setActivityBar({
                 enabledActivities: {
                     ...inputs.context.uiLayout.value.layout?.enabledActivities,
@@ -556,9 +505,9 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        const enabledActivityIds = orderedActivityIds.filter((activityId) => {
-            return isActivityEnabled(inputs.context, activityId);
-        });
+        const enabledActivityCount = inputs.context.activities.filter((activity) => {
+            return isActivityEnabled(inputs.context, activity);
+        }).length;
 
         /**
          * WebKit clamps the scroll of a view that got shorter without firing `scrollend`, which
@@ -578,14 +527,14 @@ export const VirSettingsModal = defineAppElement<{
             updateState({
                 search: '',
             });
-            inputs.context.settingsTarget.setValue({
+            inputs.settingsTarget.setValue({
                 ...target,
                 section,
             });
         }
 
         /** Every row the modal renders itself, so search can show each one outside its section. */
-        function buildEntries(config: Readonly<Config>): ReadonlyArray<SettingsEntry> {
+        function buildEntries(settings: Readonly<Settings>): ReadonlyArray<SettingsEntry> {
             const isScrollbackDraftValid =
                 state.scrollbackDraft == undefined ||
                 Number(state.scrollbackDraft) === state.scrollbackLimit;
@@ -641,11 +590,11 @@ export const VirSettingsModal = defineAppElement<{
                         </${VirSettingsRow}>
                     `,
                 },
-                ...orderedActivityIds.map((activityId): SettingsEntry => {
-                    const rowTitle = activityInfo[activityId].label;
-                    const isEnabled = enabledActivityIds.includes(activityId);
+                ...inputs.context.activities.map((activity): SettingsEntry => {
+                    const rowTitle = activity.label;
+                    const isEnabled = isActivityEnabled(inputs.context, activity);
                     /** With every activity off, the app would have nothing to show. */
-                    const isLastEnabled = isEnabled && enabledActivityIds.length === 1;
+                    const isLastEnabled = isEnabled && enabledActivityCount === 1;
                     return {
                         section: SettingsSection.Activities,
                         cardTitle: undefined,
@@ -656,14 +605,10 @@ export const VirSettingsModal = defineAppElement<{
                             <${VirSettingsRow.assign({
                                 rowTitle,
                                 description: '',
-                                isModified:
-                                    isEnabled !== activityInfo[activityId].isEnabledByDefault,
+                                isModified: isEnabled !== activity.isEnabledByDefault,
                             })}
                                 ${listen(VirSettingsRow.events.reset, () => {
-                                    setActivityEnabled(
-                                        activityId,
-                                        activityInfo[activityId].isEnabledByDefault,
-                                    );
+                                    setActivityEnabled(activity.id, activity.isEnabledByDefault);
                                 })}
                             >
                                 <${ViraCheckbox.assign({
@@ -671,19 +616,19 @@ export const VirSettingsModal = defineAppElement<{
                                     isDisabled: isLastEnabled,
                                 })}
                                     ${listen(ViraCheckbox.events.valueChange, (event) => {
-                                        setActivityEnabled(activityId, event.detail);
+                                        setActivityEnabled(activity.id, event.detail);
                                     })}
                                 ></${ViraCheckbox}>
                             </${VirSettingsRow}>
                         `,
                     };
                 }),
-                ...getObjectTypedEntries(schemaConfigKeySections).map(
+                ...getObjectTypedEntries(schemaSettingKeySections).map(
                     ([
                         key,
                         section,
                     ]): SettingsEntry => {
-                        const schema = configJsonSchema.properties[key];
+                        const schema = settingsJsonSchema.properties[key];
                         return {
                             section,
                             cardTitle: settingsSections[section].schemaCardTitle,
@@ -694,13 +639,13 @@ export const VirSettingsModal = defineAppElement<{
                             template: html`
                                 <${VirSettingsSchemaRow.assign({
                                     schema,
-                                    value: config[key],
-                                    defaultValue: defaultConfig[key],
+                                    value: settings[key],
+                                    defaultValue: defaultSettings[key],
                                     errorMessage:
                                         key === 'tlsCertPath' ? state.tlsCertPathError : undefined,
                                 })}
                                     ${listen(VirSettingsSchemaRow.events.valueChange, (event) => {
-                                        changeConfig((current) => {
+                                        changeSettings((current) => {
                                             return {
                                                 ...current,
                                                 [key]: event.detail,
@@ -728,13 +673,13 @@ export const VirSettingsModal = defineAppElement<{
                                 template: html`
                                     <${VirSettingsSchemaRow.assign({
                                         schema,
-                                        value: readForgeSetting(config, card.forgeType, key),
+                                        value: readForgeSetting(settings, card.forgeType, key),
                                         defaultValue: schema.default,
                                     })}
                                         ${listen(
                                             VirSettingsSchemaRow.events.valueChange,
                                             (event) => {
-                                                changeConfig((current) => {
+                                                changeSettings((current) => {
                                                     return setForgeSettings(
                                                         current,
                                                         card.forgeType,
@@ -829,8 +774,7 @@ export const VirSettingsModal = defineAppElement<{
                 SettingsSection,
                 (
                     params: Readonly<{
-                        config: Readonly<Config>;
-                        reviewConfig: Readonly<ReviewConfig>;
+                        settings: Readonly<Settings>;
                         entries: ReadonlyArray<SettingsEntry>;
                     }>,
                 ) => HtmlInterpolation
@@ -851,30 +795,30 @@ export const VirSettingsModal = defineAppElement<{
             [SettingsSection.Activities]({entries}) {
                 return renderEntries(entries);
             },
-            [SettingsSection.Ai]({config}) {
+            [SettingsSection.Ai]({settings}) {
                 return html`
                     <${VirSettingsAi.assign({
-                        config,
+                        settings,
                     })}
-                        ${listen(VirSettingsAi.events.configChange, (event) => {
-                            changeConfig(event.detail);
+                        ${listen(VirSettingsAi.events.settingsChange, (event) => {
+                            changeSettings(event.detail);
                         })}
                     ></${VirSettingsAi}>
                 `;
             },
-            [SettingsSection.Folders]({config, entries}) {
+            [SettingsSection.Folders]({settings, entries}) {
                 return html`
                     ${renderEntries(entries)}
                     <${VirSettingsFolders.assign({
-                        config,
+                        settings,
                         folderInfo: inputs.context.folderData.value.folderInfo,
                         folder: target.folder,
                     })}
-                        ${listen(VirSettingsFolders.events.configChange, (event) => {
-                            changeConfig(event.detail);
+                        ${listen(VirSettingsFolders.events.settingsChange, (event) => {
+                            changeSettings(event.detail);
                         })}
                         ${listen(VirSettingsFolders.events.folderSelect, (event) => {
-                            inputs.context.settingsTarget.setValue({
+                            inputs.settingsTarget.setValue({
                                 section: SettingsSection.Folders,
                                 folder: event.detail,
                             });
@@ -882,14 +826,14 @@ export const VirSettingsModal = defineAppElement<{
                     ></${VirSettingsFolders}>
                 `;
             },
-            [SettingsSection.Review]({reviewConfig}) {
+            [SettingsSection.Review]({settings}) {
                 return html`
                     <${VirSettingsReview.assign({
-                        reviewConfig,
+                        settings,
                         reviewRepo: target.reviewRepo,
                     })}
-                        ${listen(VirSettingsReview.events.reviewConfigChange, (event) => {
-                            changeReviewConfig(event.detail);
+                        ${listen(VirSettingsReview.events.settingsChange, (event) => {
+                            changeSettings(event.detail);
                         })}
                     ></${VirSettingsReview}>
                 `;
@@ -959,19 +903,18 @@ export const VirSettingsModal = defineAppElement<{
         }
 
         function renderContent(section: SettingsSection) {
-            if (!state.config || !state.reviewConfig) {
+            if (!state.settings) {
                 return state.loadError
                     ? nothing
                     : html`
                           <span class="muted">Loading...</span>
                       `;
             }
-            const entries = buildEntries(state.config);
+            const entries = buildEntries(state.settings);
             return isSearching
                 ? renderSearchResults(entries)
                 : sectionContent[section]({
-                      config: state.config,
-                      reviewConfig: state.reviewConfig,
+                      settings: state.settings,
                       entries: entries.filter((entry) => entry.section === section),
                   });
         }
@@ -1045,7 +988,7 @@ export const VirSettingsModal = defineAppElement<{
                             <h2>
                                 ${isSearching ? 'Search results' : settingsSections[section].label}
                             </h2>
-                            ${defaults && state.config && defaults.isModified(state.config)
+                            ${defaults && state.settings && defaults.isModified(state.settings)
                                 ? html`
                                       <${ViraButton.assign({
                                           text: 'Restore defaults',
@@ -1054,7 +997,7 @@ export const VirSettingsModal = defineAppElement<{
                                           color: ViraColorVariant.Neutral,
                                       })}
                                           ${listen('click', () => {
-                                              changeConfig(defaults.restore);
+                                              changeSettings(defaults.restore);
                                           })}
                                       ></${ViraButton}>
                                   `

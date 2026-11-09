@@ -17,6 +17,27 @@
     "references": [
         {
             "path": "../common"
+        },
+        {
+            "path": "../core"
+        },
+        {
+            "path": "../terminal"
+        },
+        {
+            "path": "../diff"
+        },
+        {
+            "path": "../review"
+        },
+        {
+            "path": "../build"
+        },
+        {
+            "path": "../dashboard"
+        },
+        {
+            "path": "../debug"
         }
     ]
 }

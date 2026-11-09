@@ -1,0 +1,315 @@
+import {type FolderInfo, PrStatus, WatchModeStatus} from '@agent-storm/common';
+import {
+    defineAppElement,
+    localChangesIcon,
+    localChangesTooltip,
+    prStatusIcons,
+    prStatusTooltips,
+    renderPaneChip,
+    reviewPaneId,
+    sidebarContextMenuOffset,
+    sidebarFolderMenuStyles,
+    sidebarTooltipOptions,
+    spinAnimationCss,
+    spinKeyframesCss,
+} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
+import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {
+    createColoredIcon,
+    createSizedIcon,
+    LucideEyeIcon,
+    LucideEyeOffIcon,
+    PopoverAnchor,
+    PopoverTrigger,
+    renderMenuItemEntries,
+    tooltip,
+    ViraIcon,
+    type ViraIconSvg,
+    ViraMenuTrigger,
+    viraThemeByKeys,
+    ViraThemeColorName,
+} from 'vira';
+import {buildRowMenuEntries, type SidebarFolderAction} from './sidebar-menus.js';
+
+function createWatchModeIcon(icon: Readonly<ViraIconSvg>, color: ViraThemeColorName) {
+    return createColoredIcon(createSizedIcon(icon, 14), {
+        'vira-icon-stroke-color': viraThemeByKeys[color].foreground.header.foreground.value,
+    });
+}
+
+const watchModeIcons: Record<WatchModeStatus, ViraIconSvg> = {
+    /** Only shown when watch mode stopped on its own, so its message says why. */
+    [WatchModeStatus.Off]: createWatchModeIcon(LucideEyeOffIcon, ViraThemeColorName.grey),
+    [WatchModeStatus.Watching]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.grey),
+    [WatchModeStatus.Working]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.blue),
+    [WatchModeStatus.Paused]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.yellow),
+};
+
+const finishedPrStatuses: ReadonlyArray<PrStatus> = [
+    PrStatus.Merged,
+    PrStatus.Closed,
+];
+
+/**
+ * One folder in the sidebar list. It holds no state, since reordering the list moves (and so
+ * resets) rows; the sidebar runs every menu action, so an action that removes this row still
+ * finishes.
+ */
+export const VirSidebarRow = defineAppElement<{
+    folder: FolderInfo;
+    isActive: boolean;
+    isIndented: boolean;
+    isMenuOpen: boolean;
+    mobileModal: boolean | undefined;
+}>()({
+    tagName: 'vir-sidebar-row',
+    events: {
+        activate: defineElementEvent<void>(),
+        /** The folder should show a tab of this kind when it opens. */
+        paneTabRequested: defineElementEvent<string>(),
+        menuOpenChange: defineElementEvent<boolean>(),
+        actionSelect: defineElementEvent<SidebarFolderAction>(),
+    },
+    hostClasses: {
+        'vir-sidebar-row-mobile'({inputs}) {
+            return !!inputs.mobileModal;
+        },
+    },
+    styles({hostClasses}) {
+        return css`
+            :host {
+                display: block;
+            }
+
+            ${sidebarFolderMenuStyles}
+
+            /* A menu trigger is inline by default, which would shrink the row to its content. */
+            ${ViraMenuTrigger} {
+                display: flex;
+            }
+
+            /* The menu trigger wraps the row in a button, which centers its text. */
+            .row {
+                flex-grow: 1;
+                text-align: start;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 0 5px;
+                cursor: pointer;
+                user-select: none;
+
+                & .chips + .name {
+                    margin-left: -2px;
+                }
+
+                &[data-merged] {
+                    background-color: ${viraThemeByKeys.green['behind-fg']['small-body'].background
+                        .value};
+                }
+
+                &:hover,
+                &[data-menu-open] {
+                    background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
+                        .value};
+                }
+
+                &[data-active] {
+                    background-color: ${viraThemeByKeys.blue['behind-fg']['small-body'].background
+                        .value};
+                }
+
+                &[data-indented] {
+                    padding-left: 17px;
+                }
+            }
+
+            .chips {
+                display: inline-flex;
+                gap: 0;
+            }
+
+            .chip {
+                width: 12px;
+                height: 12px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+
+            .chip[data-busy] ${ViraIcon} {
+                ${spinAnimationCss}
+            }
+
+            ${spinKeyframesCss}
+
+            .name {
+                flex-grow: 1;
+                min-width: 0;
+                overflow-wrap: anywhere;
+                padding: 2px 0;
+            }
+
+            .name[data-pr-open] {
+                text-decoration: underline;
+                text-decoration-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+            }
+
+            .name[data-pr-merged] {
+                text-decoration: underline;
+                text-decoration-color: ${viraThemeByKeys.purple.foreground.body.foreground.value};
+            }
+
+            .pr-status,
+            .watch-status {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+                flex-shrink: 0;
+            }
+
+            ${hostClasses['vir-sidebar-row-mobile'].selector} {
+                & .row {
+                    gap: 6px;
+                    min-height: 34px;
+                    padding: 4px 16px;
+                }
+
+                & .row[data-indented] {
+                    padding-left: 30px;
+                }
+
+                & .name {
+                    padding: 4px 0;
+                }
+
+                & .chip {
+                    width: 16px;
+                    height: 16px;
+                }
+            }
+        `;
+    },
+    render({inputs, dispatch, events}) {
+        const nameWithMarkers = [
+            inputs.folder.name,
+            inputs.folder.git.dirty ? '*' : '',
+            inputs.folder.git.notPushed ? '+' : '',
+        ].join('');
+        const showsLocalChanges =
+            !prStatusIcons[inputs.folder.prStatus] &&
+            (inputs.folder.git.dirty || inputs.folder.git.notPushed);
+        const statusIcon = showsLocalChanges
+            ? localChangesIcon
+            : prStatusIcons[inputs.folder.prStatus];
+        const statusTooltip = showsLocalChanges
+            ? localChangesTooltip
+            : prStatusTooltips[inputs.folder.prStatus];
+        const hasPr = !!inputs.folder.prUrl;
+        const isPrFinished = finishedPrStatuses.includes(inputs.folder.prStatus);
+
+        return html`
+            <${ViraMenuTrigger.assign({
+                trigger: PopoverTrigger.ContextMenu,
+                popoverAnchor: PopoverAnchor.Mouse,
+                popoverOffset: sidebarContextMenuOffset,
+            })}
+                ${listen(ViraMenuTrigger.events.openChange, (event) => {
+                    dispatch(
+                        new events.menuOpenChange({
+                            detail: event.detail,
+                        }),
+                    );
+                })}
+            >
+                <div
+                    class="row"
+                    slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                    ?data-active=${inputs.isActive}
+                    ?data-indented=${inputs.isIndented}
+                    ?data-merged=${inputs.folder.prStatus === PrStatus.Merged}
+                    ?data-menu-open=${inputs.isMenuOpen}
+                    ${listen('click', () => {
+                        dispatch(
+                            new events.activate({
+                                detail: undefined,
+                            }),
+                        );
+                    })}
+                >
+                    <span class="chips">${renderPaneChip('AI', inputs.folder.panes.ai)}</span>
+                    <span
+                        class="name"
+                        ?data-pr-open=${hasPr && !isPrFinished}
+                        ?data-pr-merged=${hasPr && isPrFinished}
+                    >
+                        ${nameWithMarkers}
+                    </span>
+                    ${inputs.folder.watchMode.status !== WatchModeStatus.Off ||
+                    inputs.folder.watchMode.message
+                        ? html`
+                              <span
+                                  class="watch-status"
+                                  ${tooltip(
+                                      [
+                                          inputs.folder.watchMode.status === WatchModeStatus.Off
+                                              ? 'Watch mode stopped.'
+                                              : 'Watch mode is on.',
+                                          inputs.folder.watchMode.message,
+                                      ]
+                                          .filter(check.isTruthy)
+                                          .join(' '),
+                                      sidebarTooltipOptions,
+                                  )}
+                              >
+                                  <${ViraIcon.assign({
+                                      icon: watchModeIcons[inputs.folder.watchMode.status],
+                                  })}></${ViraIcon}>
+                              </span>
+                          `
+                        : nothing}
+                    <span
+                        class="pr-status"
+                        ${statusTooltip ? tooltip(statusTooltip, sidebarTooltipOptions) : nothing}
+                        ${listen('click', () => {
+                            /** The row's own click listener then opens the folder on this tab. */
+                            if (
+                                !showsLocalChanges &&
+                                inputs.folder.prStatus === PrStatus.AwaitingOtherReviews
+                            ) {
+                                dispatch(
+                                    new events.paneTabRequested({
+                                        detail: reviewPaneId,
+                                    }),
+                                );
+                            }
+                        })}
+                    >
+                        ${statusIcon
+                            ? html`
+                                  <${ViraIcon.assign({
+                                      icon: statusIcon,
+                                  })}></${ViraIcon}>
+                              `
+                            : nothing}
+                    </span>
+                </div>
+                ${renderMenuItemEntries(
+                    buildRowMenuEntries({
+                        folder: inputs.folder,
+                        onSelect(action) {
+                            dispatch(
+                                new events.actionSelect({
+                                    detail: action,
+                                }),
+                            );
+                        },
+                    }),
+                )}
+            </${ViraMenuTrigger}>
+        `;
+    },
+});

@@ -1,19 +1,28 @@
 // cspell:words forgejo, gitea
 
-import {type configJsonSchema} from '@agent-storm/common';
+import {type settingsJsonSchema} from '@agent-storm/common';
+import {SettingsSection} from '@agent-storm/core/frontend';
 import {type PartialWithUndefined} from '@augment-vir/common';
-import {SettingsSection} from './app-context.js';
 
-/** Config keys that a section's own element renders instead of a generic row. */
-type CustomConfigKey = 'aiDefinitions' | 'defaultAiId' | 'repos' | 'folderAiIds' | 'forges';
+/** Setting keys that a section's own element renders instead of a generic row. */
+type CustomSettingKey =
+    | 'aiDefinitions'
+    | 'defaultAiId'
+    | 'folderPostWorktreeCmds'
+    | 'review'
+    | 'folderAiIds'
+    | 'forges';
 
-export type SchemaConfigKey = Exclude<keyof typeof configJsonSchema.properties, CustomConfigKey>;
+export type SchemaSettingKey = Exclude<
+    keyof typeof settingsJsonSchema.properties,
+    CustomSettingKey
+>;
 
 /**
- * The section each remaining config key shows in, as a row built from its schema. Rows list in this
- * order.
+ * The section each remaining setting key shows in, as a row built from its schema. Rows list in
+ * this order.
  */
-export const schemaConfigKeySections: Readonly<Record<SchemaConfigKey, SettingsSection>> = {
+export const schemaSettingKeySections: Readonly<Record<SchemaSettingKey, SettingsSection>> = {
     disableUpdateCheck: SettingsSection.General,
     tlsCertPath: SettingsSection.General,
     useWebgl: SettingsSection.Terminal,

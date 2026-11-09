@@ -2,6 +2,7 @@
 
 import {
     activityBarSaveEndpoint,
+    addRepoEndpoint,
     addReviewCommentEndpoint,
     agentStormService,
     aiAvatarEndpoint,
@@ -9,12 +10,12 @@ import {
     checkPathEndpoint,
     clientErrorEndpoint,
     closeEditorWindowEndpoint,
-    configEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
     deleteReviewCommentEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
+    folderSettingsEndpoint,
     gitDiffFileEndpoint,
     gitDiffStatusEndpoint,
     gitDiscardFileEndpoint,
@@ -40,15 +41,16 @@ import {
     paneKindRunsAi,
     ptyWebSocket,
     readReviewCommentsEndpoint,
+    removeRepoEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
-    reviewConfigEndpoint,
     reviewInitEndpoint,
     sessionCloseEndpoint,
     sessionCreateEndpoint,
     sessionListEndpoint,
     sessionRenameEndpoint,
     sessionSetAiEndpoint,
+    settingsEndpoint,
     tabLayoutSaveEndpoint,
     touchRepoEndpoint,
     uiLayoutEndpoint,
@@ -56,7 +58,7 @@ import {
     updateReviewCommentEndpoint,
     uploadEndpoint,
     watchModeEndpoint,
-    type RepoConfig,
+    type SavedRepo,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
@@ -78,10 +80,10 @@ import {appendFile, mkdir, readFile, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {getFolderActivation, startLaunchRequestWatch, type LaunchRequest} from './agent-launch.js';
 import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
+import {loadAppState, updateAppState} from './app-state.js';
 import {extractBearerToken, initAuth, verifyAuthToken} from './auth.js';
 import {recordClaudeInterrupt} from './claude-activity.js';
 import {startConfigBackupLoop} from './config-backup.js';
-import {loadConfig, readConfigRevision, saveConfig, setFolderAiId, updateConfig} from './config.js';
 import {
     attachPane,
     killFolderPanes,
@@ -104,6 +106,7 @@ import {
 } from './file-paths.js';
 import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
+import {loadFolderSettings, readFolderSettingsFiles} from './folder-settings.js';
 import {
     discardFileChanges,
     discardHunkChanges,
@@ -153,7 +156,6 @@ import {
     readReviewComments,
     updateReviewComment,
 } from './review-comments.js';
-import {loadReviewConfig, saveReviewConfig} from './review-config.js';
 import {
     createFolderSession,
     forgetFolderSessions,
@@ -167,6 +169,15 @@ import {
     setFolderSessionAi,
     startNewConversation,
 } from './sessions.js';
+import {migrateLegacyConfigFiles} from './settings-migration.js';
+import {
+    combineAiDefinitions,
+    loadSettings,
+    readSettingsRevision,
+    saveSettings,
+    setFolderAiId,
+    updateSettings,
+} from './settings.js';
 import {
     deleteFolderState,
     loadUiLayout,
@@ -254,6 +265,7 @@ const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
  * before it's moved.
  */
 await installClaudeHooks();
+await migrateLegacyConfigFiles();
 
 await migrateReviewFolders({
     reviewsDir: manualReviewSkillDir,
@@ -302,49 +314,115 @@ await initAuth();
 
 const implementor = createApiImplementor<undefined>()(agentStormService);
 
-const configImplementation = implementor.implementEndpoint(configEndpoint, {
+const settingsImplementation = implementor.implementEndpoint(settingsEndpoint, {
     async [HttpMethod.Get]() {
-        const config = await loadConfig();
         return {
             [HttpStatus.Ok]: {
-                responseData: config,
+                responseData: await loadSettings(),
             },
         };
     },
     async [HttpMethod.Put]({requestData}) {
-        await saveConfig(requestData);
+        await saveSettings(requestData);
+        const settings = await loadSettings();
         await pruneSessionAiIds({
-            validAiIds: requestData.aiDefinitions.map((definition) => definition.id),
+            async findValidAiIds(folder) {
+                return combineAiDefinitions({
+                    settings,
+                    folderLayers: await loadFolderSettings(folder),
+                }).map((definition) => definition.id);
+            },
         });
-        /**
-         * Re-enumerate folder targets now so a freshly-added repo (or removed one) shows up in
-         * `/folders` immediately instead of waiting for the next background sweep cycle.
-         * `refreshFolderInfoNow` returns once `refreshState.targets` reflects the new layout, so by
-         * the time the frontend's follow-up `/folders` poll lands the new entry is already present
-         * (git/PR fields fill in over the next sweep).
-         */
+        /** A changed AI or default has to reach `/folders` before the frontend's next poll. */
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
-                responseData: await loadConfig(),
+                responseData: settings,
             },
         };
     },
 });
 
-const reviewConfigImplementation = implementor.implementEndpoint(reviewConfigEndpoint, {
-    async [HttpMethod.Get]() {
+const folderSettingsImplementation = implementor.implementEndpoint(folderSettingsEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const files = await readFolderSettingsFiles(normalizePath(requestData.folder));
         return {
             [HttpStatus.Ok]: {
-                responseData: await loadReviewConfig(),
+                responseData: {
+                    files: files.map((file) => {
+                        return {
+                            path: file.path,
+                            contents: file.folderSettings
+                                ? JSON.stringify(file.folderSettings, undefined, 4)
+                                : '',
+                            problem: file.problem,
+                        };
+                    }),
+                },
             },
         };
     },
-    async [HttpMethod.Put]({requestData}) {
-        await saveReviewConfig(requestData);
+});
+
+const addRepoImplementation = implementor.implementEndpoint(addRepoEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const path = normalizePath(requestData.path);
+        const isNew = !(await loadAppState()).repos.some((repo) => repo.path === path);
+        /** Re-adding a saved repo stamps it as used, so the hide-inactive filter shows it again. */
+        await updateAppState((state) => {
+            return {
+                ...state,
+                repos: [
+                    ...state.repos.filter((repo) => repo.path !== path),
+                    {
+                        path,
+                        lastInteractedAtMs: Date.now(),
+                    },
+                ],
+            };
+        });
+        const aiId = requestData.aiId.trim();
+        if (isNew && aiId) {
+            await updateSettings((settings) => {
+                return setFolderAiId({
+                    settings,
+                    folder: path,
+                    aiId,
+                });
+            });
+        }
+        /**
+         * Re-enumerate folder targets now so the new repo shows up in `/folders` immediately
+         * instead of waiting for the next background sweep (git/PR fields fill in over the next
+         * sweep).
+         */
+        await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
-                responseData: await loadReviewConfig(),
+                responseData: {
+                    repos: (await loadAppState()).repos,
+                    isNew,
+                },
+            },
+        };
+    },
+});
+
+const removeRepoImplementation = implementor.implementEndpoint(removeRepoEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const path = normalizePath(requestData.path);
+        await updateAppState((state) => {
+            return {
+                ...state,
+                repos: state.repos.filter((repo) => repo.path !== path),
+            };
+        });
+        await refreshFolderInfoNow();
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
             },
         };
     },
@@ -392,7 +470,8 @@ const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
                         };
                     }),
                     folderActivation: getFolderActivation(),
-                    configRevision: await readConfigRevision(),
+                    settingsRevision: await readSettingsRevision(),
+                    repos: (await loadAppState()).repos,
                     uiLayoutRevision: readUiLayoutRevision(),
                 },
             },
@@ -415,9 +494,9 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
         const {worktreePath} = await addWorktree(requestData);
         const aiId = requestData.aiId?.trim();
         if (aiId) {
-            await updateConfig((config) => {
+            await updateSettings((settings) => {
                 return setFolderAiId({
-                    config,
+                    settings,
                     folder: worktreePath,
                     aiId,
                 });
@@ -655,7 +734,10 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
             aiCmd: launch.aiCmd,
             conversationId: launch.conversationId,
         });
-        await launch.markStarted(true);
+        await launch.markStarted({
+            isRunning: true,
+            isNew: true,
+        });
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -776,35 +858,35 @@ const restartDaemonImplementation = implementor.implementEndpoint(restartDaemonE
 });
 
 /**
- * Updates the config entry of the repo that owns `folder`: the folder's parent repo when it's a
+ * Updates the saved entry of the repo that owns `folder`: the folder's parent repo when it's a
  * worktree, else the folder itself. Unknown folders (stale paths, freshly deleted worktrees, a race
- * against the folder-info refresh) and unreadable configs are no-ops, since callers only record
+ * against the folder-info refresh) and an unreadable state are no-ops, since callers only record
  * best-effort metadata.
  */
-async function updateOwningRepoConfig({
+async function updateOwningRepo({
     folder,
     update,
 }: Readonly<{
     folder: string;
-    update: (repo: Readonly<RepoConfig>) => RepoConfig;
+    update: (repo: Readonly<SavedRepo>) => SavedRepo;
 }>) {
     const target = normalizePath(folder);
     const cached = (await getCachedFolders()).find((entry) => entry.path === target);
     const repoPath = cached?.parentRepoPath ?? cached?.path ?? target;
-    await updateConfig((config) => {
-        if (!config.repos.some((repo) => repo.path === repoPath)) {
+    await updateAppState((state) => {
+        if (!state.repos.some((repo) => repo.path === repoPath)) {
             return undefined;
         }
         return {
-            ...config,
-            repos: config.repos.map((repo) => (repo.path === repoPath ? update(repo) : repo)),
+            ...state,
+            repos: state.repos.map((repo) => (repo.path === repoPath ? update(repo) : repo)),
         };
     });
 }
 
 const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        await updateOwningRepoConfig({
+        await updateOwningRepo({
             folder: requestData.folder,
             update(repo) {
                 return {
@@ -895,7 +977,7 @@ const deleteReviewCommentImplementation = implementor.implementEndpoint(
 const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         /** The sidebar's recency filter treats a repo with no timestamp as hidden. */
-        await updateOwningRepoConfig({
+        await updateOwningRepo({
             folder: requestData.folder,
             update(repo) {
                 return omitObjectKeys(repo, ['lastInteractedAtMs']);
@@ -1281,7 +1363,7 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 }
             },
         });
-        await launch.markStarted(attachment.isRunning);
+        await launch.markStarted(attachment);
         attachmentsByWebSocket.set(webSocket, {
             attachment,
             folder,
@@ -1348,8 +1430,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         };
     },
     endpoints: [
-        configImplementation,
-        reviewConfigImplementation,
+        settingsImplementation,
+        folderSettingsImplementation,
+        addRepoImplementation,
+        removeRepoImplementation,
         uiLayoutImplementation,
         tabLayoutSaveImplementation,
         activityBarSaveImplementation,
@@ -1406,14 +1490,14 @@ const implementation = implementApi<undefined>()(agentStormService, {
 /**
  * This server has to match whatever scheme the frontend is served over, because the browser builds
  * its URL from `location.protocol` (see `getBackendBaseUrl` in
- * `packages/frontend/src/util/service-origin.ts`). An http backend behind an https page fails every
- * request at the TLS handshake. `tlsCertPath` is the single switch for both, and the key is the
- * file of the same name beside the certificate — same convention as
+ * `packages/core/src/frontend/util/service-origin.ts`). An http backend behind an https page fails
+ * every request at the TLS handshake. `tlsCertPath` is the single switch for both, and the key is
+ * the file of the same name beside the certificate — same convention as
  * `packages/frontend/configs/vite.config.ts`.
  */
 async function readTlsOptions() {
-    const certPath = await loadConfig()
-        .then((config) => config.tlsCertPath || '')
+    const certPath = await loadSettings()
+        .then((settings) => settings.tlsCertPath || '')
         .catch(() => '');
     if (!certPath) {
         return undefined;

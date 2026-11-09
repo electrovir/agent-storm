@@ -1,4 +1,10 @@
-import {aiAvatarUploadEndpoint, type AiDefinition, type Config} from '@agent-storm/common';
+import {aiAvatarUploadEndpoint, type AiDefinition, type Settings} from '@agent-storm/common';
+import {
+    defineAppElement,
+    fetchApi,
+    resizeImageForAvatar,
+    VirAiAvatar,
+} from '@agent-storm/core/frontend';
 import {createCuid2, extractErrorMessage} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
 import {HttpMethod} from '@rest-vir/api';
@@ -13,11 +19,7 @@ import {
     viraThemeByKeys,
     type ViraDropdownOption,
 } from 'vira';
-import {resizeImageForAvatar} from '../../util/ai-avatar.js';
-import {fetchApi} from '../../util/api-client.js';
 import {type ValueUpdate} from '../../util/batched-writer.js';
-import {defineAppElement} from '../define-app-element.js';
-import {VirAiAvatar} from './vir-ai-avatar.element.js';
 import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 
 /** The editor's working copy of one AI. `id` is empty while adding, and assigned on save. */
@@ -52,11 +54,11 @@ function emptyDraft(): AiDraft {
  * an optional avatar. An AI being edited is a draft that only applies on Save.
  */
 export const VirSettingsAi = defineAppElement<{
-    config: Readonly<Config>;
+    settings: Readonly<Settings>;
 }>()({
     tagName: 'vir-settings-ai',
     events: {
-        configChange: defineElementEvent<ValueUpdate<Config>>(),
+        settingsChange: defineElementEvent<ValueUpdate<Settings>>(),
     },
     state() {
         return {
@@ -146,9 +148,9 @@ export const VirSettingsAi = defineAppElement<{
         }
     `,
     render({inputs, state, updateState, dispatch, events}) {
-        function changeConfig(update: ValueUpdate<Config>) {
+        function changeSettings(update: ValueUpdate<Settings>) {
             dispatch(
-                new events.configChange({
+                new events.settingsChange({
                     detail: update,
                 }),
             );
@@ -157,7 +159,7 @@ export const VirSettingsAi = defineAppElement<{
         function changeDefinitions(
             update: (definitions: ReadonlyArray<Readonly<AiDefinition>>) => AiDefinition[],
         ) {
-            changeConfig((current) => {
+            changeSettings((current) => {
                 const aiDefinitions = update(current.aiDefinitions);
                 return {
                     ...current,
@@ -251,7 +253,7 @@ export const VirSettingsAi = defineAppElement<{
              * Other AIs whose avatar this draft can borrow, so a second `claude` variant doesn't
              * need the user to find the same image file again.
              */
-            const avatarSourceOptions: ViraDropdownOption[] = inputs.config.aiDefinitions
+            const avatarSourceOptions: ViraDropdownOption[] = inputs.settings.aiDefinitions
                 .filter((definition) => {
                     return (
                         definition.avatarFile &&
@@ -378,7 +380,7 @@ export const VirSettingsAi = defineAppElement<{
                                       ${listen(
                                           ViraDropdown.events.selectedValuesChange,
                                           (event) => {
-                                              const source = inputs.config.aiDefinitions.find(
+                                              const source = inputs.settings.aiDefinitions.find(
                                                   (definition) => definition.id === event.detail[0],
                                               );
                                               if (source?.avatarFile) {
@@ -431,23 +433,23 @@ export const VirSettingsAi = defineAppElement<{
                         description: 'Used by every folder that has no AI of its own.',
                     })}>
                         <${ViraDropdown.assign({
-                            options: inputs.config.aiDefinitions.map((definition) => {
+                            options: inputs.settings.aiDefinitions.map((definition) => {
                                 return {
                                     value: definition.id,
                                     label: definition.name,
                                 };
                             }),
-                            selected: inputs.config.defaultAiId
+                            selected: inputs.settings.defaultAiId
                                 ? [
-                                      inputs.config.defaultAiId,
+                                      inputs.settings.defaultAiId,
                                   ]
                                 : [],
-                            isDisabled: !inputs.config.aiDefinitions.length,
+                            isDisabled: !inputs.settings.aiDefinitions.length,
                         })}
                             ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
                                 const defaultAiId = event.detail[0];
                                 if (defaultAiId) {
-                                    changeConfig((current) => {
+                                    changeSettings((current) => {
                                         return {
                                             ...current,
                                             defaultAiId,
@@ -461,7 +463,7 @@ export const VirSettingsAi = defineAppElement<{
                 <span class="card-title">Defined AIs</span>
                 <div class="card">
                     ${repeat(
-                        inputs.config.aiDefinitions,
+                        inputs.settings.aiDefinitions,
                         (definition) => definition.id,
                         (definition) => {
                             return html`
@@ -506,7 +508,7 @@ export const VirSettingsAi = defineAppElement<{
                             `;
                         },
                     )}
-                    ${inputs.config.aiDefinitions.length
+                    ${inputs.settings.aiDefinitions.length
                         ? nothing
                         : html`
                               <div class="card-hint">No AI defined yet.</div>

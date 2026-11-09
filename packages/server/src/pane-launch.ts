@@ -1,24 +1,24 @@
 import {PaneKind, paneKindRunsAi, type AiDefinition} from '@agent-storm/common';
-import {check, waitUntil} from '@augment-vir/assert';
+import {waitUntil} from '@augment-vir/assert';
 import {log, wait} from '@augment-vir/common';
 import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
-import {findAiDefinition, getFolderAiDefinition, loadConfig} from './config.js';
 import {attachPane, fetchPaneStatuses} from './daemon/daemon-client.js';
 import {defaultSessionId} from './daemon/protocol.js';
-import {listWorktreeChildren} from './git.js';
+import {findParentRepoPath} from './folder-info.js';
+import {findNearestFolderSetting, loadFolderSettings} from './folder-settings.js';
 import {resolveReviewFolder} from './github-review-queue.js';
 import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
-import {loadReviewConfig} from './review-config.js';
-import {findFolderSession, getFolderSessions, markConversationStarted} from './sessions.js';
+import {findFolderSession, getFolderSessions, markPaneStarted} from './sessions.js';
+import {findAiDefinition, loadSettings, resolveFolderAi} from './settings.js';
 
 /**
- * Which AI one tab runs: its own override wins, then its folder's override, then the worktree
- * root's, then the global default. Config is re-read on every call so a spawn always reflects the
- * user's current choice rather than whatever was set when the pane first opened.
+ * Which AI one tab runs: its own override wins, then whatever its folder resolves to. Settings are
+ * re-read on every call so a spawn always reflects the user's current choice rather than whatever
+ * was set when the pane first opened.
  *
- * Undefined when the user has defined no AI at all, or when config can't be read; the daemon falls
- * back to its built-in default in that case.
+ * Undefined when no AI is defined at all, or when the settings can't be read; the daemon falls back
+ * to its built-in default in that case.
  */
 export async function resolveAiForSession({
     folder,
@@ -27,36 +27,35 @@ export async function resolveAiForSession({
     folder: string;
     sessionId?: string | undefined;
 }>): Promise<AiDefinition | undefined> {
-    const config = await loadConfig().catch(() => undefined);
-    if (!config) {
+    const settings = await loadSettings().catch(() => undefined);
+    if (!settings) {
         return undefined;
     }
-    const sessions = await getFolderSessions(folder);
-    const sessionAi = findAiDefinition({
-        config,
-        aiId: sessions[PaneKind.Ai].find((session) => session.id === sessionId)?.aiId,
-    });
-    if (sessionAi) {
-        return sessionAi;
-    }
-    const parentRepoMatches = await Promise.all(
-        config.repos.map(async (repo) => {
-            const children = await listWorktreeChildren(repo.path);
-            return children.includes(folder) ? repo.path : undefined;
-        }),
-    );
-    return getFolderAiDefinition({
-        config,
+    const parentRepoPath = findParentRepoPath(folder);
+    const resolved = resolveFolderAi({
+        settings,
+        folderLayers: await loadFolderSettings(folder),
         folder,
-        fallbackFolders: parentRepoMatches.filter(check.isTruthy),
+        fallbackFolders: parentRepoPath
+            ? [
+                  parentRepoPath,
+              ]
+            : [],
     });
+    const sessions = await getFolderSessions(folder);
+    return (
+        findAiDefinition({
+            aiDefinitions: resolved.aiDefinitions,
+            aiId: sessions[PaneKind.Ai].find((session) => session.id === sessionId)?.aiId,
+        }) || resolved.ai
+    );
 }
 
 /**
  * The command and conversation id a tab's process starts with. A tab whose conversation hasn't
  * started yet gets the AI's new-session command, since resuming would drop it into whichever
  * conversation another tab of the folder is showing. Call `markStarted` once the spawn is done,
- * with whether it left a live process.
+ * with whether it left a live process and whether that process is a new one.
  */
 export async function resolvePaneLaunch({
     folder,
@@ -88,12 +87,13 @@ export async function resolvePaneLaunch({
                 ? aiDefinition.newSessionCommand
                 : aiDefinition?.resumeSessionCommand,
         conversationId: session?.conversationId,
-        async markStarted(isRunning: boolean) {
-            if (isNewConversation && isRunning) {
-                await markConversationStarted({
+        async markStarted({isRunning, isNew}: Readonly<{isRunning: boolean; isNew: boolean}>) {
+            if (paneKindRunsAi[kind] && isRunning && (isNew || isNewConversation)) {
+                await markPaneStarted({
                     folder,
                     kind,
                     sessionId,
+                    launchedAiId: aiDefinition?.id || '',
                 });
             }
         },
@@ -124,7 +124,7 @@ export async function spawnPane({
         onData() {},
         onExit() {},
     });
-    await launch.markStarted(attachment.isRunning);
+    await launch.markStarted(attachment);
     attachment.close();
 }
 
@@ -254,7 +254,10 @@ async function runInShellPane({folder, command}: Readonly<{folder: string; comma
     attachment.close();
 }
 
-/** Runs the repo's post-worktree command, or the global one, in a freshly created worktree. */
+/**
+ * Runs the first post-worktree command found in a freshly created worktree: the user's command for
+ * the repo, then the nearest folder settings file's, then the user's global one.
+ */
 export async function runPostWorktreeCmd({
     repoPath,
     worktreePath,
@@ -262,14 +265,20 @@ export async function runPostWorktreeCmd({
     repoPath: string;
     worktreePath: string;
 }>) {
-    /** The command is optional, so an unreadable config skips it instead of failing the create. */
-    const config = await loadConfig().catch(() => undefined);
-    if (!config) {
+    /** The command is optional, so unreadable settings skip it instead of failing the create. */
+    const settings = await loadSettings().catch(() => undefined);
+    if (!settings) {
         return;
     }
+    const normalizedRepoPath = normalizePath(repoPath);
     const command =
-        config.repos.find((repo) => repo.path === repoPath)?.postWorktreeCmd ||
-        config.postWorktreeCmd;
+        settings.folderPostWorktreeCmds.find((entry) => entry.folder === normalizedRepoPath)
+            ?.postWorktreeCmd ||
+        findNearestFolderSetting(
+            await loadFolderSettings(worktreePath),
+            (folderSettings) => folderSettings.postWorktreeCmd,
+        ) ||
+        settings.postWorktreeCmd;
     if (command) {
         await runInShellPane({
             folder: worktreePath,
@@ -278,7 +287,10 @@ export async function runPostWorktreeCmd({
     }
 }
 
-/** Runs the review config's init command for a PR's repo in the PR's review folder. */
+/**
+ * Runs the first review init command found in a PR's review folder: the user's command for the PR's
+ * repo, then the nearest folder settings file's, then the user's global one.
+ */
 export async function runReviewInitCmd({
     owner,
     repoName,
@@ -286,7 +298,7 @@ export async function runReviewInitCmd({
 }: Readonly<{owner: string; repoName: string; number: number}>) {
     const [
         reviewFolder,
-        reviewConfig,
+        settings,
     ] = await Promise.all([
         resolveReviewFolder({
             owner,
@@ -294,12 +306,20 @@ export async function runReviewInitCmd({
             number,
             createFolder: false,
         }),
-        loadReviewConfig(),
+        loadSettings().catch(() => undefined),
     ]);
+    if (!settings) {
+        return;
+    }
     const command =
-        reviewConfig.repos.find((repo) => {
+        settings.review.repos.find((repo) => {
             return repo.owner === owner && repo.repoName === repoName;
-        })?.initCmd || reviewConfig.defaultInitCmd;
+        })?.initCmd ||
+        findNearestFolderSetting(
+            await loadFolderSettings(reviewFolder.folder),
+            (folderSettings) => folderSettings.review?.initCmd,
+        ) ||
+        settings.review.initCmd;
     if (!command) {
         return;
     }

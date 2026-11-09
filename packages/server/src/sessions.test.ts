@@ -9,7 +9,7 @@ import {
     createFolderSession,
     forgetFolderSessions,
     getFolderSessions,
-    markConversationStarted,
+    markPaneStarted,
     parseSessionStore,
     pruneSessionAiIds,
     reconcileFolderSessions,
@@ -143,7 +143,7 @@ describe(createFolderSession.name, () => {
     });
 });
 
-describe(markConversationStarted.name, () => {
+describe(markPaneStarted.name, () => {
     it('makes the next spawn resume instead of starting over', async () => {
         await withTempFolder(async (folder) => {
             const created = await createFolderSession({
@@ -152,16 +152,18 @@ describe(markConversationStarted.name, () => {
             });
             const newSession = assertWrap.isDefined(created.ai[1]);
 
-            await markConversationStarted({
+            await markPaneStarted({
                 folder,
                 kind: PaneKind.Ai,
                 sessionId: newSession.id,
+                launchedAiId: 'codex',
             });
             const sessions = await getFolderSessions(folder);
 
             assert.deepEquals(sessions.ai[1], {
                 ...newSession,
                 isNewConversation: false,
+                launchedAiId: 'codex',
             });
         });
     });
@@ -274,7 +276,11 @@ describe(pruneSessionAiIds.name, () => {
             });
 
             await pruneSessionAiIds({
-                validAiIds: ['kept-ai'],
+                findValidAiIds() {
+                    return [
+                        'kept-ai',
+                    ];
+                },
             });
 
             const sessions = await getFolderSessions(folder);

@@ -1,4 +1,4 @@
-import {log, wait} from '@augment-vir/common';
+import {extractExtension, log, wait} from '@augment-vir/common';
 import {
     type AnyDuration,
     calculateRelativeDate,
@@ -9,7 +9,8 @@ import {
 } from 'date-vir';
 import {copyFile, mkdir, readdir, stat, unlink} from 'node:fs/promises';
 import {join} from 'node:path';
-import {configBackupDir, configPath} from './file-paths.js';
+import {configBackupDir} from './file-paths.js';
+import {findSettingsPath} from './settings.js';
 
 /**
  * How often the loop wakes up to consider whether a new backup is needed. Hourly is plenty: the
@@ -29,10 +30,11 @@ const retentionWindow: AnyDuration = {
     days: -30,
 };
 
-function backupPathForToday(): string {
+/** Keeps the settings file's own extension, since it may not be JSON. */
+function backupPathForToday(settingsPath: string): string {
     return join(
         configBackupDir,
-        `agent-storm-${toSimpleDatePartString(getNowInUserTimezone())}.json`,
+        `settings-${toSimpleDatePartString(getNowInUserTimezone())}${extractExtension(settingsPath).extension}`,
     );
 }
 
@@ -40,27 +42,25 @@ function backupPathForToday(): string {
  * Filename format we'll trust as one of our own backups when pruning. Anything else in the backup
  * dir (manual user copies, partial writes, junk) is left alone.
  */
-const backupFileNamePattern = /^agent-storm-(\d{4}-\d{2}-\d{2})\.json$/;
+const backupFileNamePattern = /^(?:agent-storm|settings)-(\d{4}-\d{2}-\d{2})\.\w+$/;
 
 async function ensureTodaysBackup(): Promise<void> {
-    const destPath = backupPathForToday();
+    const settingsPath = await findSettingsPath();
+    if (!settingsPath) {
+        return;
+    }
+    const destPath = backupPathForToday(settingsPath);
     const alreadyExists = await stat(destPath)
         .then(() => true)
         .catch(() => false);
     if (alreadyExists) {
         return;
     }
-    const sourceExists = await stat(configPath)
-        .then(() => true)
-        .catch(() => false);
-    if (!sourceExists) {
-        return;
-    }
     await mkdir(configBackupDir, {
         recursive: true,
     });
-    await copyFile(configPath, destPath);
-    log.info(`Wrote config backup to ${destPath}.`);
+    await copyFile(settingsPath, destPath);
+    log.info(`Wrote settings backup to ${destPath}.`);
 }
 
 async function pruneOldBackups(): Promise<void> {

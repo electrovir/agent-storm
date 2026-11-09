@@ -1,11 +1,12 @@
-import {type Config} from '@agent-storm/common';
+import {type Settings} from '@agent-storm/common';
+import {type InjectedGlobalData} from '@agent-storm/core/frontend';
 import {log, replaceExtension} from '@augment-vir/common';
 import {defineConfig} from '@virmator/frontend/configs/vite.config.base.js';
-import {existsSync, mkdirSync, readFileSync, watch} from 'node:fs';
+import {findConfigFile, parseConfigContents} from 'config-vir';
+import {mkdirSync, readFileSync, watch} from 'node:fs';
 import {homedir} from 'node:os';
-import {basename, dirname, resolve} from 'node:path';
+import {resolve} from 'node:path';
 import {type Plugin} from 'vite';
-import {type InjectedGlobalData} from '../src/util/global-data.js';
 
 function envPort(name: string): number | undefined {
     const raw = process.env[name];
@@ -17,38 +18,34 @@ function envPort(name: string): number | undefined {
 }
 
 /**
- * The same file the settings modal writes through `PUT /config`. Re-derived here rather than
- * imported from `packages/server/src/file-paths.ts`: this package doesn't depend on the server
- * package, and the constant can't move to `@agent-storm/common` without dragging `node:os` into the
- * browser bundle. `start.script.ts` exports the instance's data dir as `AGENT_STORM_DATA_DIR`.
+ * Where the user's settings file lives, the folder the server's `findSettingsPath` searches.
+ * Re-derived here rather than imported from `packages/server/src/file-paths.ts`: this package
+ * doesn't depend on the server package, and the constant can't move to `@agent-storm/common`
+ * without dragging `node:os` into the browser bundle. `start.script.ts` exports the instance's data
+ * dir as `AGENT_STORM_DATA_DIR`.
  */
-const configPath = resolve(
-    process.env.AGENT_STORM_DATA_DIR || resolve(homedir(), '.agent-storm'),
-    'config.json',
-);
+const userDataDir = process.env.AGENT_STORM_DATA_DIR || resolve(homedir(), '.agent-storm');
 
 /**
  * `--force` empties vite's deps cache on startup, which would pull the optimized deps out from
  * under another instance's dev server running from this checkout.
  */
 const instanceName = process.env.AGENT_STORM_INSTANCE;
-/**
- * Where {@link configPath} used to live. The server moves it on startup, which can land after vite
- * has already read the config.
- */
-const legacyConfigPath = resolve(homedir(), '.config', 'agent-storm.json');
-
-function readCertPath(): string {
+async function readCertPath() {
     try {
-        return (
-            (
-                JSON.parse(
-                    readFileSync(existsSync(configPath) ? configPath : legacyConfigPath, 'utf-8'),
-                ) as Partial<Config>
-            ).tlsCertPath || ''
-        );
+        const settingsPath = await findConfigFile({
+            directory: userDataDir,
+            baseName: 'settings',
+        });
+        if (!settingsPath) {
+            return '';
+        }
+        const settings: Partial<Settings> = await parseConfigContents({
+            configPath: settingsPath,
+        });
+        return settings.tlsCertPath || '';
     } catch {
-        /** No config file yet (fresh install) or mid-write; http is the right answer either way. */
+        /** Invalid, mid-write, or more than one settings file; http is the right answer for all. */
         return '';
     }
 }
@@ -57,41 +54,42 @@ function readCertPath(): string {
  * Restarts the dev server when `tlsCertPath` changes, so flipping the setting in the app moves
  * between http and https without a manual restart.
  *
- * Watches the whole config file but compares only that one value: agent-storm rewrites this file
- * during routine work (touching a repo, auto-disabling GitHub polling), and restarting on every
- * write would tear down the page constantly.
+ * Watches the whole settings file but compares only that one value: restarting on every settings
+ * change would tear down the page constantly.
  */
 function tlsRestartPlugin(certPathAtStartup: string): Plugin {
     return {
         name: 'agent-storm-tls-restart',
         configureServer(server) {
             /**
-             * A private watch rather than `server.watcher.add(configPath)`: anything on vite's own
-             * watcher counts as a project file, and a write to it makes vite reload the page no
-             * matter what this plugin decides. agent-storm rewrites the config on nearly every
-             * action (selecting a folder, adding a worktree), so that reloaded the app constantly.
+             * A private watch rather than `server.watcher.add(...)`: anything on vite's own watcher
+             * counts as a project file, and a write to it makes vite reload the page no matter what
+             * this plugin decides.
              *
-             * Watches the directory instead of the file because `saveConfig` renames a temp file
-             * over the target, swapping out the inode a file-level watch is holding. The directory
-             * is created first because `watch` throws on a missing one, and the server may not have
-             * moved the config there yet.
+             * Watches the directory instead of the file because settings are saved by renaming a
+             * temp file over the target, swapping out the inode a file-level watch is holding, and
+             * because the file may change format. The directory is created first because `watch`
+             * throws on a missing one.
              */
-            mkdirSync(dirname(configPath), {
+            mkdirSync(userDataDir, {
                 recursive: true,
             });
-            const configWatcher = watch(dirname(configPath), (_event, fileName) => {
-                if (fileName !== basename(configPath) || readCertPath() === certPathAtStartup) {
+            const settingsWatcher = watch(userDataDir, async (_event, fileName) => {
+                if (
+                    !fileName?.startsWith('settings.') ||
+                    (await readCertPath()) === certPathAtStartup
+                ) {
                     return;
                 }
-                void server.restart();
+                await server.restart();
             });
-            server.httpServer?.once('close', () => configWatcher.close());
+            server.httpServer?.once('close', () => settingsWatcher.close());
         },
     };
 }
 
 /**
- * TLS material for the dev server, or undefined to stay on http. The config only asks for the
+ * TLS material for the dev server, or undefined to stay on http. The settings only ask for the
  * certificate, so the key is taken to be the file of the same name beside it.
  */
 function readTlsOptions(certPath: string) {
@@ -121,9 +119,9 @@ export default defineConfig(
         forGitHubPages: true,
         packageDirPath: resolve(import.meta.dirname, '..'),
     },
-    (baseConfig) => {
+    async (baseConfig) => {
         const backendPort = envPort('BACKEND_PORT');
-        const certPath = readCertPath();
+        const certPath = await readCertPath();
 
         return {
             ...baseConfig,
@@ -137,6 +135,16 @@ export default defineConfig(
                       ),
                   }
                 : {}),
+            optimizeDeps: {
+                ...baseConfig.optimizeDeps,
+                /**
+                 * Virmator re-bundles every dependency on each start, which gives them new URLs, so
+                 * a phone downloads all of them again after every restart instead of using its
+                 * cache. Vite still re-bundles on its own when the lockfile or this config
+                 * changes.
+                 */
+                force: false,
+            },
             plugins: [
                 ...(baseConfig.plugins || []),
                 tlsRestartPlugin(certPath),
@@ -169,7 +177,7 @@ export default defineConfig(
             /**
              * Inline the orchestrator-picked backend port (and anything else the frontend needs at
              * boot) into the bundle as a single `VITE_INJECTED_DATA` global. Read at runtime via
-             * `readInjectedGlobalData()` in `packages/frontend/src/util/global-data.ts`.
+             * `readInjectedGlobalData()` in `packages/core/src/frontend/util/global-data.ts`.
              */
             define: {
                 ...baseConfig.define,

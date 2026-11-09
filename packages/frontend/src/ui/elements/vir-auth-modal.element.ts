@@ -1,3 +1,9 @@
+import {
+    defineAppElement,
+    getStoredSecret,
+    setStoredSecret,
+    subscribeSecret,
+} from '@agent-storm/core/frontend';
 import {css, html, listen} from 'element-vir';
 import {
     ViraButton,
@@ -7,8 +13,6 @@ import {
     ViraModal,
     viraThemeByKeys,
 } from 'vira';
-import {getStoredSecret, setStoredSecret, subscribeSecret} from '../../util/auth.js';
-import {defineAppElement} from '../define-app-element.js';
 
 type AuthModalState = {
     open: boolean;

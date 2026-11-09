@@ -9,7 +9,7 @@ module.exports = {
          * `generate-file-icons.script.ts`: hundreds of third-party tool names as map keys, and svg
          * path data. Nothing here is hand-written, so a misspelling is not actionable.
          */
-        'packages/frontend/src/util/file-icon-map.generated.ts',
+        'packages/diff/src/util/file-icon-map.generated.ts',
         'packages/frontend/www-static/file-icons/**',
     ],
     words: [

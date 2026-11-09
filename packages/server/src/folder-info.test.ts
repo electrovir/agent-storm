@@ -1,4 +1,4 @@
-import {PaneKind, PaneStatus, type RepoConfig} from '@agent-storm/common';
+import {PaneKind, PaneStatus, type SavedRepo} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {
@@ -30,6 +30,8 @@ function soloRepoTarget() {
         createdAtMs: 0,
         isWorktreeRoot: false,
         aiId: '',
+        inheritedAiId: '',
+        folderAiDefinitions: [],
     };
 }
 
@@ -41,6 +43,8 @@ function worktreeTargets() {
             createdAtMs: 0,
             isWorktreeRoot: true,
             aiId: '',
+            inheritedAiId: '',
+            folderAiDefinitions: [],
         },
         {
             folder: worktreePath,
@@ -48,14 +52,15 @@ function worktreeTargets() {
             createdAtMs: 0,
             isWorktreeRoot: false,
             aiId: '',
+            inheritedAiId: '',
+            folderAiDefinitions: [],
         },
     ];
 }
 
-function repoConfig(lastInteractedAtMs: number): RepoConfig {
+function repoConfig(lastInteractedAtMs: number): SavedRepo {
     return {
         path: repoPath,
-        postWorktreeCmd: null,
         lastInteractedAtMs,
     };
 }

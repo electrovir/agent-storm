@@ -1,0 +1,61 @@
+{
+    "name": "@agent-storm/core",
+    "private": true,
+    "description": "",
+    "keywords": [],
+    "homepage": "https://github.com/electrovir/agent-storm",
+    "bugs": {
+        "url": "https://github.com/electrovir/agent-storm/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/electrovir/agent-storm.git"
+    },
+    "license": "(MIT or CC0 1.0)",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "sideEffects": false,
+    "type": "module",
+    "exports": {
+        "./frontend": "./src/frontend/index.ts"
+    },
+    "scripts": {
+        "compile": "virmator compile",
+        "docs": "virmator docs",
+        "test": "virmator test web",
+        "test:docs": "virmator docs check",
+        "test:update": "npm test update"
+    },
+    "dependencies": {
+        "@agent-storm/common": "*",
+        "@augment-vir/assert": "^32.7.0",
+        "@augment-vir/common": "^32.7.0",
+        "@augment-vir/web": "^32.7.0",
+        "@rest-vir/api": "^2.4.1",
+        "date-vir": "^9.4.1",
+        "element-book": "^27.0.4",
+        "object-shape-tester": "^6.15.3",
+        "spa-router-vir": "^6.11.0"
+    },
+    "devDependencies": {
+        "@augment-vir/test": "^32.7.0",
+        "@web/dev-server-esbuild": "^2.0.0",
+        "@web/test-runner": "^1.0.0",
+        "@web/test-runner-playwright": "^1.0.0",
+        "element-vir": "^27.0.2",
+        "istanbul-smart-text-reporter": "^1.1.5",
+        "vira": "^33.17.1"
+    },
+    "peerDependencies": {
+        "element-vir": "^27.0.2",
+        "vira": "^33.17.1"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
+}

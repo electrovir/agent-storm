@@ -35,7 +35,6 @@ import {
 } from 'object-shape-tester';
 import {isSafeBranchName} from './branch-name.js';
 import {readBranchPrStatus, recordBranchPr} from './branch-prs.js';
-import {loadConfig} from './config.js';
 import {fetchPaneStatuses, killFolderPanes} from './daemon/daemon-client.js';
 import {closeEditorWindow} from './editor-window.js';
 import {manualReviewSkillDir} from './file-paths.js';
@@ -72,6 +71,7 @@ import {
     toReviewFolder,
 } from './manual-review-state.js';
 import {getPaneStatusLookup} from './pty.js';
+import {loadSettings} from './settings.js';
 import {deleteFolderState} from './ui-layout.js';
 
 const githubUserFields = {
@@ -352,7 +352,7 @@ function createPrQueue({
                     (pr) => pr.url,
                 ),
                 login: cache.viewerLogin,
-                trustedBotLogins: (await loadConfig()).forges[ForgeType.Github].trustedBotLogins,
+                trustedBotLogins: (await loadSettings()).forges[ForgeType.Github].trustedBotLogins,
             });
             cache.pullRequests
                 .filter((pr) => pr.branchName)

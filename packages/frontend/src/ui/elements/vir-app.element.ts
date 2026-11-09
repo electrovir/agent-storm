@@ -1,37 +1,33 @@
-import {getEnumValues} from '@augment-vir/common';
+import {
+    applyThemeMode,
+    createFolderData,
+    createPaneRestarts,
+    createPrReviews,
+    createUiLayout,
+    defineAppElement,
+    installClientErrorLog,
+    isSettingsShortcut,
+    observeScreenSize,
+    ScreenSize,
+    SettingsSection,
+    VirBook,
+    type AppContext,
+    type AppServices,
+    type SettingsTarget,
+} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
+import {arrayToObject, getObjectTypedValues} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
-import {css, html, listen, nothing, Observable} from 'element-vir';
+import {css, html, isObservableBase, listen, nothing, Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, ViraThemeClient} from 'vira';
-import {isActivityEnabled} from '../../util/activity-info.js';
-import {SettingsSection, type AppContext, type SettingsTarget} from '../../util/app-context.js';
-import {followFolderActivations, resolveAppRoute} from '../../util/app-route.js';
-import {installClientErrorLog} from '../../util/client-error-log.js';
-import {createFolderData} from '../../util/folder-data.js';
-import {
-    createFrontendState,
-    getReviewablePrs,
-    type FrontendStateObservable,
-    type PrQueueKind,
-} from '../../util/frontend-state.js';
-import {isSettingsShortcut} from '../../util/keyboard-shortcuts.js';
-import {createPaneRestarts} from '../../util/pane-restarts.js';
-import {
-    ActivityId,
-    frontendPathTree,
-    orderedActivityIds,
-    router,
-    type AppRoute,
-} from '../../util/router.js';
-import {observeScreenSize, ScreenSize} from '../../util/screen-size.js';
-import {applyThemeMode} from '../../util/theme-mode.js';
-import {createUiLayout} from '../../util/ui-layout.js';
+import {resolveActivityRoute} from '../../util/activity-route.js';
+import {bookRouteBase, router, sanitizeActivityPaths} from '../../util/router.js';
 import {trackVisualViewportHeight} from '../../util/visual-viewport.js';
-import {defineAppElement} from '../define-app-element.js';
-import {activityDefinitions} from './activity-definitions.js';
+import {activities} from './activity-definitions.js';
+import {panes} from './pane-definitions.js';
 import {VirActivityPanel} from './vir-activity-panel.element.js';
 import {VirAppModals} from './vir-app-modals.element.js';
-import {VirBook} from './vir-book.element.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirMobileSidebar} from './vir-mobile-sidebar.element.js';
 
@@ -43,7 +39,7 @@ export const VirApp = defineAppElement()({
         const folderData = createFolderData();
         return {
             route: router.readCurrentRoute(),
-            frontendState: undefined as FrontendStateObservable | undefined,
+            prReviews: createPrReviews(),
             folderData,
             paneRestarts: createPaneRestarts(folderData),
             uiLayout: createUiLayout(folderData),
@@ -64,13 +60,11 @@ export const VirApp = defineAppElement()({
             isSettingsOpen: new Observable<boolean>({
                 defaultValue: false,
             }),
-            reviewQueue: new Observable<PrQueueKind | undefined>({
-                defaultValue: undefined,
-            }),
-            /** Notifies on every set, since each new object is a new retry. */
-            reviewRetry: new Observable<Readonly<{key: string}> | undefined>({
-                equalityCheck: undefined,
-                defaultValue: undefined,
+            activityStates: arrayToObject(activities, (activity) => {
+                return {
+                    key: activity.id,
+                    value: activity.createState?.(),
+                };
             }),
             disposers: [] as ReadonlyArray<() => void>,
         };
@@ -114,11 +108,13 @@ export const VirApp = defineAppElement()({
             state.isSettingsOpen.setValue(true);
         }
         globalThis.addEventListener('keydown', openSettingsOnShortcut, true);
-        void createFrontendState().then((frontendState) => {
-            updateState({
-                frontendState,
-            });
-        });
+        const services: AppServices = {
+            folderData: state.folderData,
+            paneRestarts: state.paneRestarts,
+            uiLayout: state.uiLayout,
+            themeClient: state.themeClient,
+            prReviews: state.prReviews,
+        };
         /**
          * `/` (and any unrecognized URL) sanitizes to the Dashboard tab on read, but the window's
          * URL bar only gets corrected when a location change fires. Write it back once on startup
@@ -143,7 +139,33 @@ export const VirApp = defineAppElement()({
                 () => {
                     globalThis.removeEventListener('keydown', openSettingsOnShortcut, true);
                 },
-                followFolderActivations(state.folderData),
+                ...getObjectTypedValues(state.activityStates).flatMap((activityState) => {
+                    return check.isObject(activityState)
+                        ? getObjectTypedValues(activityState)
+                              .filter(isObservableBase)
+                              .map((observable) => {
+                                  return observable.listen(false, () => {
+                                      host.requestUpdate();
+                                  });
+                              })
+                        : [];
+                }),
+                ...activities.flatMap((activity) => {
+                    return (
+                        activity.startWithApp?.({
+                            services,
+                            state: state.activityStates[activity.id],
+                            navigate(subPaths) {
+                                router.setRoute({
+                                    paths: [
+                                        activity.id,
+                                        ...subPaths,
+                                    ],
+                                });
+                            },
+                        }) || []
+                    );
+                }),
             ],
         });
     },
@@ -151,102 +173,106 @@ export const VirApp = defineAppElement()({
         state.disposers.forEach((dispose) => dispose());
         state.folderData.destroy();
         state.uiLayout.destroy();
-        state.frontendState?.destroy();
+        state.prReviews.destroy();
     },
     render({state}) {
-        if (state.route.paths[0] === 'book') {
+        if (state.route.paths[0] === bookRouteBase) {
             return html`
                 <${VirBook.assign({
-                    routeBase: 'book',
                     subPaths: state.route.paths.slice(1),
                 })}
                     ${listen(VirBook.events.routeChange, (event) => {
-                        router.setRoute(event.detail);
+                        router.setRoute({
+                            paths: [
+                                bookRouteBase,
+                                ...event.detail,
+                            ],
+                        });
                     })}
                 ></${VirBook}>
             `;
         }
 
-        const frontendState = state.frontendState?.value;
-        function resolve(route: AppRoute) {
-            return resolveAppRoute({
-                route,
-                folderInfo: state.folderData.value.folderInfo,
-                enabledActivityIds: state.uiLayout.value.layout
-                    ? orderedActivityIds.filter((activityId) => {
-                          return isActivityEnabled(state, activityId);
-                      })
-                    : undefined,
-                reviewablePrs: frontendState && getReviewablePrs(frontendState),
-                rememberedFolderPath:
-                    frontendState?.localDbClient.value.build?.selectedFolder || undefined,
-                rememberedPullRequestKey:
-                    frontendState?.localDbClient.value.review?.selectedPullRequest || undefined,
-            });
-        }
-        const resolved = resolve(state.route);
-        const redirect = resolved.redirect;
-        if (redirect) {
-            void Promise.resolve().then(() => {
-                router.setRoute(redirect.route, {
-                    replace: redirect.replace,
-                });
-            });
-        }
-        document.title = resolved.activeFolder
-            ? `agent-storm • ${resolved.activeFolder.name}`
-            : 'agent-storm';
-
         const context: AppContext = {
-            route: state.route,
-            resolved,
             screenSize: state.screenSize,
             folderData: state.folderData,
-            frontendState: state.frontendState,
+            prReviews: state.prReviews,
             themeClient: state.themeClient,
-            navigate(route) {
-                router.setRoute(route);
+            navigate(paths) {
+                router.setRoute({
+                    paths,
+                });
             },
+            activities,
+            activityStates: state.activityStates,
+            panes,
             isInActivityTab: false,
             renderActivityTab({paths, navigate}) {
-                const tabRoute: AppRoute = {
-                    paths: frontendPathTree.sanitizePaths(paths),
-                    search: undefined,
-                    hash: undefined,
+                const tabContext: AppContext = {
+                    ...context,
+                    navigate,
+                    isInActivityTab: true,
                 };
-                const tabResolved = resolve(tabRoute);
+                const tabResolved = resolveActivityRoute({
+                    paths: sanitizeActivityPaths(paths),
+                    context: tabContext,
+                });
                 const tabRedirect = tabResolved.redirect;
                 if (tabRedirect) {
                     void Promise.resolve().then(() => {
-                        navigate(tabRedirect.route);
+                        navigate(tabRedirect.paths);
                     });
                 }
                 return html`
                     <${VirActivityPanel.assign({
-                        context: {
-                            ...context,
-                            route: tabRoute,
-                            resolved: tabResolved,
-                            navigate,
-                            isInActivityTab: true,
+                        context: tabContext,
+                        activity: tabResolved.activity,
+                        route: {
+                            subPaths: tabResolved.subPaths,
+                            navigate(subPaths) {
+                                navigate([
+                                    tabResolved.activity.id,
+                                    ...subPaths,
+                                ]);
+                            },
                         },
-                        activityId: tabResolved.activityId,
+                        isShown: true,
                     })}></${VirActivityPanel}>
                 `;
             },
             paneRestarts: state.paneRestarts,
             uiLayout: state.uiLayout,
-            settingsTarget: state.settingsTarget,
-            isSettingsOpen: state.isSettingsOpen,
             openSettings(target) {
                 if (target) {
                     state.settingsTarget.setValue(target);
                 }
                 state.isSettingsOpen.setValue(true);
             },
-            reviewQueue: state.reviewQueue,
-            reviewRetry: state.reviewRetry,
         };
+
+        const resolved = resolveActivityRoute({
+            paths: state.route.paths,
+            context,
+        });
+        const redirect = resolved.redirect;
+        if (redirect) {
+            void Promise.resolve().then(() => {
+                router.setRoute(
+                    {
+                        paths: redirect.paths,
+                    },
+                    {
+                        replace: redirect.replace,
+                    },
+                );
+            });
+        }
+        const title = resolved.activity.findTitle?.({
+            context,
+            state: resolved.state,
+            subPaths: resolved.subPaths,
+        });
+        document.title = title ? `agent-storm • ${title}` : 'agent-storm';
         const isMobile = state.screenSize === ScreenSize.Mobile;
 
         return html`
@@ -255,25 +281,41 @@ export const VirApp = defineAppElement()({
                 : html`
                       <${VirMainTabs.assign({
                           context,
+                          activityId: resolved.activity.id,
                       })}></${VirMainTabs}>
                   `}
-            ${getEnumValues(ActivityId).map((activityId) => {
+            ${activities.map((activity) => {
+                const isShown = activity.id === resolved.activity.id;
                 return html`
                     <${VirActivityPanel.assign({
                         context,
-                        activityId,
+                        activity,
+                        route: {
+                            subPaths: isShown ? resolved.subPaths : [],
+                            navigate(subPaths) {
+                                context.navigate([
+                                    activity.id,
+                                    ...subPaths,
+                                ]);
+                            },
+                        },
+                        isShown,
                     })}></${VirActivityPanel}>
                 `;
             })}
-            ${isMobile && activityDefinitions[resolved.activityId].mobileMenuTitle != undefined
+            ${isMobile && resolved.activity.mobileMenuTitle != undefined
                 ? html`
                       <${VirMobileSidebar.assign({
                           context,
+                          activityId: resolved.activity.id,
+                          subPaths: resolved.subPaths,
                       })}></${VirMobileSidebar}>
                   `
                 : nothing}
             <${VirAppModals.assign({
                 context,
+                settingsTarget: state.settingsTarget,
+                isSettingsOpen: state.isSettingsOpen,
             })}></${VirAppModals}>
         `;
     },

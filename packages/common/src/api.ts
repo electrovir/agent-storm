@@ -25,14 +25,12 @@ import {
     GitFileChange,
     GitHubCheckState,
     GitHubCommentTarget,
-    GitHubPollingDisableReason,
     GitHubPrState,
     GitHubReaction,
     GitHubReviewState,
     ManualReviewStatus,
     PaneKind,
     PaneStatus,
-    PaneTabKind,
     PrStatus,
     SidebarGrouping,
     SidebarSorting,
@@ -68,13 +66,13 @@ const ptyClientMessageShape = defineShape(
 );
 
 /**
- * The settings for each git forge, nested under `forges` in {@link configJsonSchema}. A complete
+ * The settings for each git forge, nested under `forges` in {@link settingsJsonSchema}. A complete
  * `Record` so a new {@link ForgeType} doesn't compile until someone decides its settings.
  *
  * Keys, and the matching `required` entries, are template literals so their types are plain
  * strings. Emitted declarations turn enum-keyed properties into string keys while an enum member in
  * `required` stays an enum type. json-schema-to-ts then no longer matches them, which makes every
- * forge optional in `Config` for the packages that read this one's declarations.
+ * forge optional in `Settings` for the packages that read this one's declarations.
  */
 /* eslint-disable @typescript-eslint/no-unnecessary-template-expression -- the template literals change each key's type from the enum member to a plain string, which is their whole point. */
 const forgeSettingsJsonSchemas = {
@@ -89,32 +87,6 @@ const forgeSettingsJsonSchemas = {
                 title: 'Disable GitHub polling',
                 description:
                     'When on, the sidebar skips `gh pr view` for every folder on each refresh sweep. Turn this on when GitHub is rate-limiting the account — the calls just 403 and the PR badges go stale anyway until the limit resets.',
-            },
-            githubPollingAutoDisable: {
-                type: [
-                    'null',
-                    'object',
-                ],
-                default: null,
-                title: 'GitHub polling auto-disable',
-                description:
-                    "Runtime-set auto-disable state for GitHub polling, persisted across server restarts. Backend-managed; users shouldn't need to edit this.",
-                properties: {
-                    reason: {
-                        type: 'string',
-                        enum: [
-                            GitHubPollingDisableReason.RateLimited,
-                            GitHubPollingDisableReason.Unauthenticated,
-                        ],
-                    },
-                    disabledUntilMs: {
-                        type: 'number',
-                    },
-                },
-                required: [
-                    'reason',
-                    'disabledUntilMs',
-                ],
             },
             /**
              * Extra bot logins, beside the built-in review bots in `github-raw-enums.ts`, whose PR
@@ -135,7 +107,6 @@ const forgeSettingsJsonSchemas = {
         },
         required: [
             'disabledGitHubPolling',
-            'githubPollingAutoDisable',
             'trustedBotLogins',
         ],
     },
@@ -160,27 +131,77 @@ const forgeSettingsJsonSchemas = {
 } as const satisfies Record<ForgeType, JSONSchema>;
 /* eslint-enable @typescript-eslint/no-unnecessary-template-expression */
 
+/** One AI the user (or a folder settings file) defines. */
+const aiDefinitionJsonSchema = {
+    type: 'object',
+    additionalProperties: false,
+    title: 'AI',
+    properties: {
+        /** Opaque and stable: every override references an AI by this, never by name. */
+        id: {
+            type: 'string',
+            title: 'Id',
+        },
+        name: {
+            type: 'string',
+            title: 'Name',
+        },
+        resumeSessionCommand: {
+            type: 'string',
+            title: 'Resume session command',
+            description:
+                'Launched when an AI pane spawns for an existing tab (e.g. `claude --continue`).',
+        },
+        /**
+         * Used instead of `resumeSessionCommand` when the pane is deliberately starting over: a tab
+         * the user just created. Empty falls back to `resumeSessionCommand`.
+         */
+        newSessionCommand: {
+            type: 'string',
+            title: 'New session command',
+            description: 'Launched for a brand-new tab (e.g. `claude`).',
+        },
+        /**
+         * Bare filename inside the avatars directory, not a path — the file is read back through
+         * `/ai/avatar`. Absent when the user hasn't dropped an image.
+         */
+        avatarFile: {
+            type: 'string',
+            title: 'Avatar file',
+        },
+    },
+    required: [
+        'id',
+        'name',
+        'resumeSessionCommand',
+        'newSessionCommand',
+    ],
+} as const satisfies JSONSchema;
+
+export const aiDefinitionShape = mapSchemaToShape(aiDefinitionJsonSchema);
+
 /**
- * Single source of truth for the user-editable config. Defined as a JSON Schema so:
+ * Single source of truth for the user's settings, saved to `~/.agent-storm/settings.json`. Defined
+ * as a JSON Schema so:
  *
- * 1. The runtime shape (`configShape`) and the TypeScript `Config` type are derived from it via
+ * 1. The runtime shape (`settingsShape`) and the TypeScript `Settings` type are derived from it via
  *    `schema-vir` instead of being hand-written separately and drifting.
  * 2. The Settings modal builds its rows from this same schema — no parallel definition in the
  *    frontend.
  *
+ * Only settings belong here. State the app records on its own (the repo list, GitHub polling
+ * auto-disable) lives in the server's `state.json`.
+ *
  * Schema-vir's `mapSchemaToShape` interprets union-type orderings (`['string', 'null']` vs
- * `['null', 'string']`) for default selection — the first arm's default wins. We keep `null` last
- * for fields whose default value is the non-null variant (matching the prior
- * `nullableShape(defaultValue)` behavior), and put `null` first only for `githubPollingAutoDisable`
- * where the absence of an auto-disable is the natural default.
+ * `['null', 'string']`) for default selection — the first arm's default wins.
  *
  * `additionalProperties` must stay `false` here: `mapSchemaToShape` throws outright on a schema
  * that defines both `properties` and a permissive `additionalProperties`.
  */
-export const configJsonSchema = {
+export const settingsJsonSchema = {
     type: 'object',
     additionalProperties: false,
-    title: 'agent-storm config',
+    title: 'agent-storm settings',
     properties: {
         /**
          * Every AI the user has defined: a display name, the command that resumes its last
@@ -191,52 +212,7 @@ export const configJsonSchema = {
             type: 'array',
             default: [],
             title: 'AI definitions',
-            items: {
-                type: 'object',
-                additionalProperties: false,
-                title: 'AI',
-                properties: {
-                    /** Opaque and stable: every override references an AI by this, never by name. */
-                    id: {
-                        type: 'string',
-                        title: 'Id',
-                    },
-                    name: {
-                        type: 'string',
-                        title: 'Name',
-                    },
-                    resumeSessionCommand: {
-                        type: 'string',
-                        title: 'Resume session command',
-                        description:
-                            'Launched when an AI pane spawns for an existing tab (e.g. `claude --continue`).',
-                    },
-                    /**
-                     * Used instead of `resumeSessionCommand` when the pane is deliberately starting
-                     * over: a tab the user just created. Empty falls back to
-                     * `resumeSessionCommand`.
-                     */
-                    newSessionCommand: {
-                        type: 'string',
-                        title: 'New session command',
-                        description: 'Launched for a brand-new tab (e.g. `claude`).',
-                    },
-                    /**
-                     * Bare filename inside the avatars directory, not a path — the file is read
-                     * back through `/ai/avatar`. Absent when the user hasn't dropped an image.
-                     */
-                    avatarFile: {
-                        type: 'string',
-                        title: 'Avatar file',
-                    },
-                },
-                required: [
-                    'id',
-                    'name',
-                    'resumeSessionCommand',
-                    'newSessionCommand',
-                ],
-            },
+            items: aiDefinitionJsonSchema,
         },
         /**
          * Which definition every folder falls back to. Empty (or naming a deleted definition)
@@ -249,58 +225,88 @@ export const configJsonSchema = {
             description: 'Id of the AI used by folders with no override.',
         },
         postWorktreeCmd: {
-            type: [
-                'string',
-                'null',
-            ],
+            type: 'string',
             default: '',
             title: 'Default post-worktree command',
             description:
-                'Shell command run after a new worktree is created (per-repo overrides win).',
+                'Shell command run in each new worktree. A folder settings file or a per-folder command overrides it.',
         },
-        repos: {
+        /** Per-folder post-worktree commands, set from the Settings modal's Folders section. */
+        folderPostWorktreeCmds: {
             type: 'array',
             default: [],
-            title: 'Repos',
+            title: 'Folder post-worktree commands',
             items: {
                 type: 'object',
                 additionalProperties: false,
-                title: 'Repo',
+                title: 'Folder post-worktree command',
                 properties: {
-                    path: {
+                    folder: {
                         type: 'string',
-                        title: 'Path',
+                        title: 'Folder',
                     },
                     postWorktreeCmd: {
-                        type: [
-                            'string',
-                            'null',
-                        ],
-                        title: 'Post-worktree command (overrides global)',
-                    },
-                    /**
-                     * Milliseconds since epoch when the user last activated this repo (or any of
-                     * its worktrees). Optional — older configs without it just won't appear in any
-                     * "recently used" sort until the first activation writes the timestamp. Not in
-                     * `required` for forward/backward compat: dropping the field never invalidates
-                     * an existing config.
-                     */
-                    lastInteractedAtMs: {
-                        type: 'number',
-                        title: 'Last interaction (ms since epoch)',
-                        description:
-                            'Auto-updated when the user activates this repo or one of its worktrees in the sidebar.',
+                        type: 'string',
+                        title: 'Post-worktree command',
                     },
                 },
                 required: [
-                    'path',
+                    'folder',
                     'postWorktreeCmd',
                 ],
             },
         },
+        /** The Review tab's settings. */
+        review: {
+            type: 'object',
+            additionalProperties: false,
+            title: 'Review',
+            properties: {
+                /** Run in each new review checkout of a repo with no `initCmd` of its own. */
+                initCmd: {
+                    type: 'string',
+                    default: '',
+                    title: 'Review init command',
+                },
+                repos: {
+                    type: 'array',
+                    default: [],
+                    title: 'Per-repo review init commands',
+                    items: {
+                        type: 'object',
+                        additionalProperties: false,
+                        title: 'Repo review init command',
+                        properties: {
+                            owner: {
+                                type: 'string',
+                                title: 'Owner',
+                            },
+                            repoName: {
+                                type: 'string',
+                                title: 'Repo name',
+                            },
+                            initCmd: {
+                                type: 'string',
+                                title: 'Init command',
+                            },
+                        },
+                        required: [
+                            'owner',
+                            'repoName',
+                            'initCmd',
+                        ],
+                    },
+                },
+            },
+            required: [
+                'initCmd',
+                'repos',
+            ],
+        },
         /**
          * Per-folder AI choice, set from the "Change AI" modal. A worktree with no entry inherits
-         * its worktree-root's entry, and a folder with neither falls back to `defaultAiId`.
+         * its worktree-root's entry, and a folder with neither falls back to its folder settings
+         * files' `defaultAiId`, then to this file's.
          */
         folderAiIds: {
             type: 'array',
@@ -466,7 +472,8 @@ export const configJsonSchema = {
         'aiDefinitions',
         'defaultAiId',
         'postWorktreeCmd',
-        'repos',
+        'folderPostWorktreeCmds',
+        'review',
         'folderAiIds',
         'forges',
         'useWebgl',
@@ -475,7 +482,63 @@ export const configJsonSchema = {
     ],
 } as const satisfies JSONSchema;
 
-export const configShape = mapSchemaToShape(configJsonSchema);
+export const settingsShape = mapSchemaToShape(settingsJsonSchema);
+
+/**
+ * What a folder's own `.agent-storm/settings.*` file may set. Every key is optional: a folder file
+ * only overrides what it names.
+ */
+export const folderSettingsJsonSchema = {
+    type: 'object',
+    additionalProperties: false,
+    title: 'agent-storm folder settings',
+    properties: {
+        postWorktreeCmd: settingsJsonSchema.properties.postWorktreeCmd,
+        defaultAiId: settingsJsonSchema.properties.defaultAiId,
+        /** Added to the user's own AIs. The user's own win when ids collide. */
+        aiDefinitions: settingsJsonSchema.properties.aiDefinitions,
+        review: {
+            type: 'object',
+            additionalProperties: false,
+            title: 'Review',
+            properties: {
+                initCmd: settingsJsonSchema.properties.review.properties.initCmd,
+            },
+        },
+        forges: {
+            type: 'object',
+            additionalProperties: false,
+            title: 'Git forges',
+            properties: {
+                /* eslint-disable-next-line @typescript-eslint/no-unnecessary-template-expression -- plain string type to match the keys, see `forgeSettingsJsonSchemas`. */
+                [`${ForgeType.Github}`]: {
+                    type: 'object',
+                    additionalProperties: false,
+                    title: 'GitHub',
+                    properties: {
+                        /** Added to the user's own list. */
+                        trustedBotLogins:
+                            forgeSettingsJsonSchemas[ForgeType.Github].properties.trustedBotLogins,
+                    },
+                },
+            },
+        },
+    },
+} as const satisfies JSONSchema;
+
+export const folderSettingsShape = mapSchemaToShape(folderSettingsJsonSchema);
+
+/** One repo in the sidebar's repo list. */
+export const savedRepoShape = defineShape({
+    path: '',
+    /**
+     * Milliseconds since epoch when the user last activated this repo or one of its worktrees.
+     * Missing until the first activation, and cleared by hiding the repo.
+     */
+    lastInteractedAtMs: optionalShape(0, {
+        alsoUndefined: true,
+    }),
+});
 
 /**
  * Live status of one session tab. Reported per session rather than only per pane so a pane with
@@ -507,10 +570,14 @@ export const folderInfoShape = defineShape({
     isWorktreeRoot: false,
     /**
      * Id of the AI this folder resolves to — the backend already walked the per-folder override →
-     * worktree-root override → `defaultAiId` chain, so the frontend never recreates that lookup.
-     * Empty when the user has defined no AI at all.
+     * worktree-root override → folder settings files → `defaultAiId` chain, so the frontend never
+     * recreates that lookup. Empty when no AI is defined at all.
      */
     aiId: '',
+    /** The AI this folder would resolve to without its own per-folder override. */
+    inheritedAiId: '',
+    /** AIs this folder's settings files define, beside the user's own. */
+    folderAiDefinitions: [aiDefinitionShape],
     branch: nullableShape(''),
     git: {
         dirty: false,
@@ -548,8 +615,12 @@ const folderActivationShape = defineShape({
 
 const foldersResponseShape = defineShape({
     folders: [folderInfoShape],
-    /** Changes whenever the config does, so a poller only fetches `/config` again when it changed. */
-    configRevision: 0,
+    /**
+     * Changes whenever the user's settings do, so a poller only fetches `/settings` again when they
+     * changed.
+     */
+    settingsRevision: 0,
+    repos: [savedRepoShape],
     /** Only set for a short while after the request is made. */
     folderActivation: nullableShape(folderActivationShape),
     /** Changes whenever the stored UI layout does, so a poller only fetches `/ui-layout` then. */
@@ -582,6 +653,14 @@ export const sessionMetaShape = defineShape({
     conversationId: '',
     /** Whether the tab's next AI spawn should use the new-session command instead of resuming. */
     isNewConversation: false,
+    /**
+     * The AI this tab's process was last started with. A running process keeps its command when
+     * `aiId` or the folder's AI changes, so this, not `aiId`, says what a live tab is running.
+     * Missing for tabs last started before it was recorded.
+     */
+    launchedAiId: optionalShape('', {
+        alsoUndefined: true,
+    }),
 });
 
 /**
@@ -712,8 +791,8 @@ const updateStatusResponseShape = defineShape({
 const repoTouchRequestShape = defineShape({
     /**
      * Path of the activated folder. Can be a top-level repo path OR a worktree path — the backend
-     * resolves to the owning repo before stamping its `lastInteractedAtMs`. Folders not present in
-     * config (e.g. stale paths, freshly-deleted worktrees) are silently no-op'd.
+     * resolves to the owning repo before stamping its `lastInteractedAtMs`. Folders not in the repo
+     * list (e.g. stale paths, freshly-deleted worktrees) are silently no-op'd.
      */
     folder: '',
 });
@@ -1535,55 +1614,51 @@ export const maxDiffFileLines = 20_000;
  */
 export const maxDiffImageBytes = 4 * 1024 * 1024;
 
-export const configEndpoint = defineEndpoint({
-    path: '/config',
+export const settingsEndpoint = defineEndpoint({
+    path: '/settings',
     requests: {
         [HttpMethod.Get]: {
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: configShape,
+                    responseData: settingsShape,
                 },
             },
         },
         [HttpMethod.Put]: {
-            requestData: configShape,
+            requestData: settingsShape,
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: configShape,
+                    responseData: settingsShape,
                 },
             },
         },
     },
 });
 
-export const reviewConfigShape = defineShape({
-    /** Run in each new review checkout of a repo whose own `initCmd` is empty. */
-    defaultInitCmd: '',
-    repos: [
-        {
-            owner: '',
-            repoName: '',
-            initCmd: '',
-        },
-    ],
-});
-
-/** The Review tab's settings, kept in their own file apart from {@link configEndpoint}'s. */
-export const reviewConfigEndpoint = defineEndpoint({
-    path: '/review-config',
+/** The read-only settings files that apply to a folder, nearest first. */
+export const folderSettingsEndpoint = defineEndpoint({
+    path: '/settings/folder',
     requests: {
-        [HttpMethod.Get]: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                folder: '',
+            }),
             responses: {
                 [HttpStatus.Ok]: {
-                    responseData: reviewConfigShape,
-                },
-            },
-        },
-        [HttpMethod.Put]: {
-            requestData: reviewConfigShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewConfigShape,
+                    responseData: defineShape({
+                        files: [
+                            {
+                                path: '',
+                                /**
+                                 * The settings the file applies, as formatted JSON. Empty when it
+                                 * applies none.
+                                 */
+                                contents: '',
+                                /** Why the file is ignored. Empty when it applies. */
+                                problem: '',
+                            },
+                        ],
+                    }),
                 },
             },
         },
@@ -1631,7 +1706,11 @@ export type PaneState = typeof paneStateShape.runtimeType;
 export const paneTabShape = defineShape({
     /** `${kind}:${sessionId}` for a session tab. Any other tab's id only has to be unique. */
     id: '',
-    kind: enumShape(PaneTabKind),
+    /**
+     * The id of the pane the tab shows. A session tab's is its session's `PaneKind`. A kind no
+     * registered pane has shows as an unknown tab.
+     */
+    kind: '',
     /** Shown instead of the kind's label. A session tab's name lives on its session instead. */
     name: optionalShape('', {
         alsoUndefined: true,
@@ -2020,6 +2099,46 @@ export const touchRepoEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Adds a repo to the repo list, or touches it if it's already there. `aiId`, when set, becomes the
+ * new repo's AI override.
+ */
+export const addRepoEndpoint = defineEndpoint({
+    path: '/repos/add',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                path: '',
+                aiId: '',
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        repos: [savedRepoShape],
+                        isNew: false,
+                    }),
+                },
+            },
+        },
+    },
+});
+
+export const removeRepoEndpoint = defineEndpoint({
+    path: '/repos/remove',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                path: '',
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const hideRepoEndpoint = defineEndpoint({
     path: '/repos/hide',
     requests: {
@@ -2285,8 +2404,8 @@ export const ptyWebSocket = defineWebSocket({
 export const agentStormService = defineApi({
     apiName: 'agent-storm',
     endpoints: [
-        configEndpoint,
-        reviewConfigEndpoint,
+        settingsEndpoint,
+        folderSettingsEndpoint,
         uiLayoutEndpoint,
         tabLayoutSaveEndpoint,
         activityBarSaveEndpoint,
@@ -2307,6 +2426,8 @@ export const agentStormService = defineApi({
         clientErrorEndpoint,
         restartDaemonEndpoint,
         touchRepoEndpoint,
+        addRepoEndpoint,
+        removeRepoEndpoint,
         hideRepoEndpoint,
         watchModeEndpoint,
         closeEditorWindowEndpoint,
@@ -2340,19 +2461,19 @@ export const agentStormService = defineApi({
     webSockets: [ptyWebSocket],
 });
 
-export const defaultConfig = configShape.default;
+export const defaultSettings = settingsShape.default;
 
 /**
- * Derived directly from {@link configJsonSchema} via `json-schema-to-ts` so the runtime shape, the
+ * Derived directly from {@link settingsJsonSchema} via `json-schema-to-ts` so the runtime shape, the
  * settings modal's form schema, and this TypeScript type are all driven from the same definition.
  */
-export type Config = SchemaShapeToType<
-    typeof configJsonSchema,
+export type Settings = SchemaShapeToType<
+    typeof settingsJsonSchema,
     Omit<FromSchemaDefaultOptions, 'keepDefaultedPropertiesOptional'>
 >;
-export type RepoConfig = Config['repos'][number];
-export type ReviewConfig = typeof reviewConfigShape.runtimeType;
-export type AiDefinition = Config['aiDefinitions'][number];
+export type FolderSettings = typeof folderSettingsShape.runtimeType;
+export type SavedRepo = typeof savedRepoShape.runtimeType;
+export type AiDefinition = Settings['aiDefinitions'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
 export type FolderActivation = typeof folderActivationShape.runtimeType;
 export type PaneSessionStatus = typeof paneSessionStatusShape.runtimeType;

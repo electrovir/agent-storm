@@ -13,8 +13,8 @@
  *
  * Always exported into the child env (consumed by the workspaces): BACKEND_PORT read by
  * packages/server/src/index.ts and packages/frontend/configs/vite.config.ts (inlined into the
- * `VITE_INJECTED_DATA` global so packages/frontend/src/util/global-data.ts can read it at boot)
- * FRONTEND_PORT read by packages/server/src/index.ts (CORS origin guard) and
+ * `VITE_INJECTED_DATA` global so packages/core/src/frontend/util/global-data.ts can read it at
+ * boot) FRONTEND_PORT read by packages/server/src/index.ts (CORS origin guard) and
  * packages/frontend/configs/vite.config.ts (vite's listen port)
  */
 import {

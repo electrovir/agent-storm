@@ -1,8 +1,10 @@
-import {type Config, type FolderInfo} from '@agent-storm/common';
-import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {folderSettingsEndpoint, type FolderInfo, type Settings} from '@agent-storm/common';
+import {defineAppElement, fetchApi} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
+import {HttpMethod} from '@rest-vir/api';
+import {asyncProp, css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {ViraDropdown, ViraInput} from 'vira';
 import {type ValueUpdate} from '../../util/batched-writer.js';
-import {defineAppElement} from '../define-app-element.js';
 import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 
 function toFolderLabel(folder: Readonly<FolderInfo>, folderInfo: ReadonlyMap<string, FolderInfo>) {
@@ -12,18 +14,34 @@ function toFolderLabel(folder: Readonly<FolderInfo>, folderInfo: ReadonlyMap<str
 
 /**
  * The Settings modal's per-folder overrides. A worktree inherits its worktree root's AI, and shares
- * its repo's init command.
+ * its repo's init command. Also lists the folder's own settings files, which apply beneath the
+ * user's choices here and can't be edited from the app.
  */
 export const VirSettingsFolders = defineAppElement<{
-    config: Readonly<Config>;
+    settings: Readonly<Settings>;
     folderInfo: ReadonlyMap<string, FolderInfo>;
     /** The folder being edited. */
     folder: string | undefined;
 }>()({
     tagName: 'vir-settings-folders',
     events: {
-        configChange: defineElementEvent<ValueUpdate<Config>>(),
+        settingsChange: defineElementEvent<ValueUpdate<Settings>>(),
         folderSelect: defineElementEvent<string>(),
+    },
+    state() {
+        return {
+            folderFiles: asyncProp({
+                async updateCallback({folder}: Readonly<{folder: string}>) {
+                    return (
+                        await fetchApi(folderSettingsEndpoint, HttpMethod.Post, {
+                            requestData: {
+                                folder,
+                            },
+                        })
+                    ).files;
+                },
+            }),
+        };
     },
     styles: css`
         ${settingsCardCss}
@@ -33,17 +51,43 @@ export const VirSettingsFolders = defineAppElement<{
             flex-direction: column;
             gap: 16px;
         }
+
+        .settings-file {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px 16px;
+            min-width: 0;
+
+            & pre {
+                margin: 0;
+                overflow-x: auto;
+                font-family: ui-monospace, monospace;
+                font-size: 12px;
+            }
+        }
+
+        .file-path {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            overflow-wrap: anywhere;
+        }
     `,
-    render({inputs, dispatch, events}) {
-        function changeConfig(update: ValueUpdate<Config>) {
+    render({inputs, state, dispatch, events}) {
+        function changeSettings(update: ValueUpdate<Settings>) {
             dispatch(
-                new events.configChange({
+                new events.settingsChange({
                     detail: update,
                 }),
             );
         }
 
         const folder = inputs.folder ? inputs.folderInfo.get(inputs.folder) : undefined;
+        if (folder) {
+            state.folderFiles.update({
+                folder: folder.path,
+            });
+        }
         const folderOptions = [...inputs.folderInfo.values()]
             .map((info) => {
                 return {
@@ -53,26 +97,60 @@ export const VirSettingsFolders = defineAppElement<{
             })
             .toSorted((first, second) => first.label.localeCompare(second.label));
 
+        function renderSettingsFiles() {
+            const files = state.folderFiles.value;
+            if (!check.isArray(files)) {
+                return files instanceof Error
+                    ? html`
+                          <div class="card-hint">${files.message}</div>
+                      `
+                    : nothing;
+            }
+            return files.length
+                ? files.map((file) => {
+                      return html`
+                          <div class="settings-file">
+                              <span class="file-path">${file.path}</span>
+                              ${file.problem
+                                  ? html`
+                                        <span class="card-hint">${file.problem}</span>
+                                    `
+                                  : html`
+                                        <pre>${file.contents}</pre>
+                                    `}
+                          </div>
+                      `;
+                  })
+                : html`
+                      <div class="card-hint">
+                          No settings files. A repo can set its defaults in
+                          .agent-storm/settings.json (or .yaml or .toml) in any folder from this one
+                          up to your home folder.
+                      </div>
+                  `;
+        }
+
         function renderFolderRows(selected: Readonly<FolderInfo>) {
-            const config = inputs.config;
-            const override = config.folderAiIds.find((entry) => entry.folder === selected.path);
-            const parentOverrideId = selected.parentRepoPath
-                ? config.folderAiIds.find((entry) => entry.folder === selected.parentRepoPath)?.aiId
-                : undefined;
-            const inherited =
-                config.aiDefinitions.find((definition) => definition.id === parentOverrideId) ||
-                config.aiDefinitions.find((definition) => definition.id === config.defaultAiId) ||
-                config.aiDefinitions[0];
-            const repo =
-                config.repos.find((entry) => entry.path === selected.path) ||
-                config.repos.find((entry) => entry.path === selected.parentRepoPath);
+            const settings = inputs.settings;
+            const override = settings.folderAiIds.find((entry) => entry.folder === selected.path);
+            const aiDefinitions = [
+                ...settings.aiDefinitions,
+                ...selected.folderAiDefinitions,
+            ];
+            const inherited = aiDefinitions.find(
+                (definition) => definition.id === selected.inheritedAiId,
+            );
+            const repoPath = selected.parentRepoPath || selected.path;
             const repoName =
-                repo && repo.path !== selected.path
-                    ? inputs.folderInfo.get(repo.path)?.name || repo.path
-                    : undefined;
+                repoPath === selected.path
+                    ? undefined
+                    : inputs.folderInfo.get(repoPath)?.name || repoPath;
+            const initCommand =
+                settings.folderPostWorktreeCmds.find((entry) => entry.folder === repoPath)
+                    ?.postWorktreeCmd || '';
 
             function setAi(aiId: string) {
-                changeConfig((current) => {
+                changeSettings((current) => {
                     return {
                         ...current,
                         folderAiIds: [
@@ -92,18 +170,24 @@ export const VirSettingsFolders = defineAppElement<{
                 });
             }
 
-            function setInitCommand(postWorktreeCmd: string | null) {
-                changeConfig((current) => {
+            /** An empty command falls back to the folder's settings files, then the default. */
+            function setInitCommand(postWorktreeCmd: string) {
+                changeSettings((current) => {
                     return {
                         ...current,
-                        repos: current.repos.map((entry) => {
-                            return entry.path === repo?.path
-                                ? {
-                                      ...entry,
-                                      postWorktreeCmd,
-                                  }
-                                : entry;
-                        }),
+                        folderPostWorktreeCmds: [
+                            ...current.folderPostWorktreeCmds.filter(
+                                (entry) => entry.folder !== repoPath,
+                            ),
+                            ...(postWorktreeCmd
+                                ? [
+                                      {
+                                          folder: repoPath,
+                                          postWorktreeCmd,
+                                      },
+                                  ]
+                                : []),
+                        ],
                     };
                 });
             }
@@ -131,7 +215,7 @@ export const VirSettingsFolders = defineAppElement<{
                                     value: '',
                                     label: inherited ? `Inherit (${inherited.name})` : 'Inherit',
                                 },
-                                ...config.aiDefinitions.map((definition) => {
+                                ...aiDefinitions.map((definition) => {
                                     return {
                                         value: definition.id,
                                         label: definition.name,
@@ -147,36 +231,33 @@ export const VirSettingsFolders = defineAppElement<{
                             })}
                         ></${ViraDropdown}>
                     </${VirSettingsRow}>
-                    ${repo
-                        ? html`
-                              <${VirSettingsRow.assign({
-                                  rowTitle: 'Init command',
-                                  description: repoName
-                                      ? `Runs in each new worktree of ${repoName}, so every one of its worktrees shares it.`
-                                      : 'Runs in each new worktree of this repo.',
-                                  isModified: repo.postWorktreeCmd != undefined,
-                              })}
-                                  ${listen(VirSettingsRow.events.reset, () => {
-                                      setInitCommand(null);
-                                  })}
-                              >
-                                  <${ViraInput.assign({
-                                      value: repo.postWorktreeCmd ?? '',
-                                      placeholder: config.postWorktreeCmd
-                                          ? `Default: ${config.postWorktreeCmd}`
-                                          : 'None',
-                                      showClearButton: true,
-                                      disableBrowserHelps: true,
-                                  })}
-                                      ${listen(ViraInput.events.valueChange, (event) => {
-                                          /** Null falls back to the default command. */
-                                          setInitCommand(event.detail || null);
-                                      })}
-                                  ></${ViraInput}>
-                              </${VirSettingsRow}>
-                          `
-                        : nothing}
+                    <${VirSettingsRow.assign({
+                        rowTitle: 'Init command',
+                        description: repoName
+                            ? `Runs in each new worktree of ${repoName}, so every one of its worktrees shares it.`
+                            : 'Runs in each new worktree of this repo.',
+                        isModified: !!initCommand,
+                    })}
+                        ${listen(VirSettingsRow.events.reset, () => {
+                            setInitCommand('');
+                        })}
+                    >
+                        <${ViraInput.assign({
+                            value: initCommand,
+                            placeholder: settings.postWorktreeCmd
+                                ? `Default: ${settings.postWorktreeCmd}`
+                                : 'None',
+                            showClearButton: true,
+                            disableBrowserHelps: true,
+                        })}
+                            ${listen(ViraInput.events.valueChange, (event) => {
+                                setInitCommand(event.detail);
+                            })}
+                        ></${ViraInput}>
+                    </${VirSettingsRow}>
                 </div>
+                <span class="card-title">Settings files</span>
+                <div class="card">${renderSettingsFiles()}</div>
             `;
         }
 

@@ -1,4 +1,13 @@
-import {check} from '@augment-vir/assert';
+import {
+    countElementsBefore,
+    defineAppElement,
+    findElementIndexAt,
+    isActivityEnabled,
+    listInlineTabElements,
+    trackPointerDrag,
+    type AnyActivityDefinition,
+    type AppContext,
+} from '@agent-storm/core/frontend';
 import {css, html, listen, nothing} from 'element-vir';
 import {type FullSpaRoute} from 'spa-router-vir';
 import {
@@ -8,34 +17,22 @@ import {
     ViraThemeColorName,
     type ViraTab,
 } from 'vira';
-import {activityInfo, isActivityEnabled} from '../../util/activity-info.js';
-import {type AppContext} from '../../util/app-context.js';
-import {
-    ActivityId,
-    bareActivityPaths,
-    orderedActivityIds,
-    router,
-    type AppRouteUpdate,
-} from '../../util/router.js';
-import {
-    countElementsBefore,
-    findElementIndexAt,
-    listInlineTabElements,
-    trackPointerDrag,
-} from '../../util/tab-drag.js';
-import {defineAppElement} from '../define-app-element.js';
-import {activityDefinitions} from './activity-definitions.js';
+import {router} from '../../util/router.js';
 
 const dropLineThicknessPx = 2;
 
 /** Every main tab, in the stored order: listed tabs first, then the rest in their default order. */
-function orderMainTabs(storedOrder: ReadonlyArray<string>) {
+function orderMainTabs(
+    storedOrder: ReadonlyArray<string>,
+    activities: ReadonlyArray<AnyActivityDefinition>,
+) {
     const listed = storedOrder
-        .filter((tab) => check.isEnumValue(tab, ActivityId))
-        .filter((tab, index, tabs) => tabs.indexOf(tab) === index);
+        .filter((id, index) => storedOrder.indexOf(id) === index)
+        .map((id) => activities.find((activity) => activity.id === id))
+        .filter((activity) => activity != undefined);
     return [
         ...listed,
-        ...orderedActivityIds.filter((tab) => !listed.includes(tab)),
+        ...activities.filter((activity) => !listed.includes(activity)),
     ];
 }
 
@@ -46,6 +43,8 @@ function orderMainTabs(storedOrder: ReadonlyArray<string>) {
  */
 export const VirMainTabs = defineAppElement<{
     context: AppContext;
+    /** The activity the route selects. */
+    activityId: string;
     isHorizontal?: boolean | undefined;
 }>()({
     tagName: 'vir-main-tabs',
@@ -87,20 +86,25 @@ export const VirMainTabs = defineAppElement<{
         const context = inputs.context;
         const isVertical = !inputs.isHorizontal;
         host.toggleAttribute('data-horizontal', !isVertical);
-        const order = orderMainTabs(context.uiLayout.value.layout?.mainTabOrder || []);
+        const order = orderMainTabs(
+            context.uiLayout.value.layout?.mainTabOrder || [],
+            context.activities,
+        );
         const shownTabs = order.filter((tab) => isActivityEnabled(context, tab));
 
-        /** A main tab returns to the folder or PR it was last on. */
-        function toTargetRoute(route: Readonly<Partial<FullSpaRoute>>): AppRouteUpdate {
-            const routeTab = route.paths?.[0];
-            const tab = check.isEnumValue(routeTab, ActivityId)
-                ? routeTab
-                : context.resolved.activityId;
-            return (
-                context.resolved.restoredRouteByActivity[tab] || {
-                    paths: bareActivityPaths[tab],
-                }
-            );
+        /** A main tab returns to what it last had selected. */
+        function toTargetRoute(route: Readonly<Partial<FullSpaRoute>>) {
+            const tabId = route.paths?.[0] || inputs.activityId;
+            const tab = context.activities.find((activity) => activity.id === tabId);
+            return {
+                paths: [
+                    tabId,
+                    ...(tab?.findRestoredSubPaths?.({
+                        context,
+                        state: context.activityStates[tabId],
+                    }) || []),
+                ],
+            };
         }
 
         const mainTabRouter: (typeof ViraTabs.InputsType)['router'] = {
@@ -197,7 +201,7 @@ export const VirMainTabs = defineAppElement<{
                         order: [
                             ...reorderedShown,
                             ...order.filter((tab) => !reorderedShown.includes(tab)),
-                        ],
+                        ].map((tab) => tab.id),
                     });
                 },
             });
@@ -220,17 +224,19 @@ export const VirMainTabs = defineAppElement<{
             >
                 <${ViraTabs.assign({
                     tabs: shownTabs.map((tab): ViraTab => {
-                        const label = activityInfo[tab].label;
-                        const count = activityDefinitions[tab].findCount(context);
+                        const count = tab.findCount?.({
+                            context,
+                            state: context.activityStates[tab.id],
+                        });
                         return {
-                            label: count == undefined ? label : `${label} (${count})`,
+                            label: count == undefined ? tab.label : `${tab.label} (${count})`,
                             paths: {
-                                path: tab,
+                                path: tab.id,
                                 fullPaths: [
-                                    tab,
+                                    tab.id,
                                 ],
                                 PathsType: [
-                                    tab,
+                                    tab.id,
                                 ],
                             },
                         };
@@ -238,7 +244,7 @@ export const VirMainTabs = defineAppElement<{
                     router: mainTabRouter,
                     currentRoute: {
                         paths: [
-                            context.resolved.activityId,
+                            inputs.activityId,
                         ],
                         search: undefined,
                         hash: undefined,

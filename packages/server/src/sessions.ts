@@ -14,6 +14,7 @@ import {
     mapEnumToObject,
     omitObjectKeys,
     wrapInTry,
+    type MaybePromise,
 } from '@augment-vir/common';
 import {readdir, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -278,18 +279,20 @@ export async function startNewConversation({
 }
 
 /**
- * Called only once a PTY is actually running with the new-session command. A spawn that failed (the
- * OS out of PTYs, a bad command) leaves the flag set so the retry still starts a new conversation
- * instead of falling back to the resume command.
+ * Called only once a PTY is actually running. A spawn that failed (the OS out of PTYs, a bad
+ * command) leaves `isNewConversation` set so the retry still starts a new conversation instead of
+ * falling back to the resume command.
  */
-export async function markConversationStarted({
+export async function markPaneStarted({
     folder: folderPath,
     kind,
     sessionId,
+    launchedAiId,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     sessionId: string;
+    launchedAiId: string;
 }>): Promise<void> {
     const folder = normalizePath(folderPath);
     updateFolderSession({
@@ -301,6 +304,7 @@ export async function markConversationStarted({
             return {
                 ...session,
                 isNewConversation: false,
+                launchedAiId,
             };
         },
     });
@@ -408,36 +412,58 @@ function pruneSessionListAiIds({
     });
 }
 
+/**
+ * Clears every tab AI override whose AI its folder no longer defines. A folder can define AIs of
+ * its own through its settings files, so the valid ids are looked up per folder.
+ */
 export async function pruneSessionAiIds({
-    validAiIds,
+    findValidAiIds,
 }: Readonly<{
-    validAiIds: ReadonlyArray<string>;
+    findValidAiIds: (folder: string) => MaybePromise<ReadonlyArray<string>>;
 }>) {
+    const validAiIdsByFolder = new Map(
+        await Promise.all(
+            getObjectTypedKeys(await loadStore()).map(async (folder) => {
+                return [
+                    folder,
+                    await findValidAiIds(folder),
+                ] as const;
+            }),
+        ),
+    );
+    /** Read again after the lookups, so a session write that landed during them isn't dropped. */
     const store = await loadStore();
     const folders = getObjectTypedKeys(store);
     const hasStaleAiId = folders.some((folder) => {
-        const sessions = store[folder];
-        return !!sessions?.[PaneKind.Ai].some((session) => {
-            return session.aiId && !validAiIds.includes(session.aiId);
-        });
+        const validAiIds = validAiIdsByFolder.get(folder);
+        return (
+            !!validAiIds &&
+            !!store[folder]?.[PaneKind.Ai].some((session) => {
+                return session.aiId && !validAiIds.includes(session.aiId);
+            })
+        );
     });
     if (!hasStaleAiId) {
         return;
     }
     const updated = folders.reduce<SessionStore>((next, folder) => {
         const sessions = store[folder];
-        return sessions
-            ? {
-                  ...next,
-                  [folder]: {
+        const validAiIds = validAiIdsByFolder.get(folder);
+        if (!sessions) {
+            return next;
+        }
+        return {
+            ...next,
+            [folder]: validAiIds
+                ? {
                       ...sessions,
                       [PaneKind.Ai]: pruneSessionListAiIds({
                           sessions: sessions[PaneKind.Ai],
                           validAiIds,
                       }),
-                  },
-              }
-            : next;
+                  }
+                : sessions,
+        };
     }, {});
     storeState.loaded = updated;
     persistStore(updated);

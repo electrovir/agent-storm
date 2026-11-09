@@ -37,6 +37,7 @@
         "@rest-vir/api": "^2.4.1",
         "@rest-vir/host": "^2.4.1",
         "auth-vir": "^6.2.0",
+        "config-vir": "^1.1.0",
         "date-vir": "^9.4.1",
         "fastify": "^5.12.8",
         "node-pty": "^1.2.0-beta.15",

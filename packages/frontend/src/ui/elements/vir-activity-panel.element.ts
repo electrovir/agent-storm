@@ -1,21 +1,26 @@
+import {
+    type ActivityRoute,
+    type AnyActivityDefinition,
+    type AppContext,
+    ScreenSize,
+    defineAppElement,
+} from '@agent-storm/core/frontend';
 import {css, html, nothing} from 'element-vir';
-import {type AppContext} from '../../util/app-context.js';
-import {type ActivityId} from '../../util/router.js';
-import {ScreenSize} from '../../util/screen-size.js';
-import {defineAppElement} from '../define-app-element.js';
-import {activityDefinitions} from './activity-definitions.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirSidebarLayout} from './vir-sidebar-layout.element.js';
 
 /** One activity's area: its sidebar beside its content, or its content alone. */
 export const VirActivityPanel = defineAppElement<{
     context: AppContext;
-    activityId: ActivityId;
+    activity: AnyActivityDefinition;
+    route: ActivityRoute;
+    /** Whether the route selects this activity. */
+    isShown: boolean;
 }>()({
     tagName: 'vir-activity-panel',
     hostClasses: {
         'vir-activity-panel-hidden'({inputs}) {
-            return inputs.context.resolved.activityId !== inputs.activityId;
+            return !inputs.isShown;
         },
     },
     state() {
@@ -59,8 +64,13 @@ export const VirActivityPanel = defineAppElement<{
         `;
     },
     render({inputs, state, updateState}) {
-        const definition = activityDefinitions[inputs.activityId];
-        const isShown = inputs.context.resolved.activityId === inputs.activityId;
+        const definition = inputs.activity;
+        const isShown = inputs.isShown;
+        const params = {
+            context: inputs.context,
+            state: inputs.context.activityStates[definition.id],
+            route: inputs.route,
+        };
         if (isShown && !state.hasShown) {
             updateState({
                 hasShown: true,
@@ -73,7 +83,7 @@ export const VirActivityPanel = defineAppElement<{
         const isMobile =
             inputs.context.screenSize === ScreenSize.Mobile && !inputs.context.isInActivityTab;
         const content = definition.render({
-            context: inputs.context,
+            ...params,
             isShown,
         });
 
@@ -82,6 +92,7 @@ export const VirActivityPanel = defineAppElement<{
                 ? html`
                       <${VirMainTabs.assign({
                           context: inputs.context,
+                          activityId: definition.id,
                           isHorizontal: true,
                       })}></${VirMainTabs}>
                   `
@@ -101,7 +112,7 @@ export const VirActivityPanel = defineAppElement<{
                                             'vir-sidebar-layout-sidebar'
                                         ]}
                                     >
-                                        ${definition.sidebar.render(inputs.context)}
+                                        ${definition.sidebar.render(params)}
                                     </div>
                                 `}
                           ${content}

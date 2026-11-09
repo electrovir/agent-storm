@@ -14,16 +14,6 @@ export const paneKindRunsAi: Readonly<Record<PaneKind, boolean>> = {
     [PaneKind.Shell]: false,
 };
 
-/** What a tab in a folder's pane layout shows. AI and shell tabs each run one terminal session. */
-export enum PaneTabKind {
-    Ai = 'ai',
-    Shell = 'shell',
-    Diff = 'diff',
-    Review = 'review',
-    /** A whole activity, with its own selection apart from its vertical tab's. */
-    Activity = 'activity',
-}
-
 /** Which checkout a Diff tab shows. */
 export enum DiffView {
     /** The folder's own working tree. */

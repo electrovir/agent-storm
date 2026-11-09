@@ -80,9 +80,9 @@ export const githubCachePath = resolve(checkoutStateDir, 'github-cache.json');
 
 /**
  * Per-folder session tab lists (order + user-assigned names) for each pane kind. Lives here rather
- * than in {@link configPath} because it's app state, not a hand-editable setting — but it still has
- * to survive daemon and server restarts, since a tab name the user typed can't be regenerated the
- * way git or PR state can.
+ * than in {@link settingsJsonPath} because it's app state, not a hand-editable setting — but it
+ * still has to survive daemon and server restarts, since a tab name the user typed can't be
+ * regenerated the way git or PR state can.
  */
 export const sessionStorePath = resolve(userDataDir, 'folder-state', 'pane-sessions.json');
 /** Where {@link sessionStorePath} was kept before it moved, read only to migrate it. */
@@ -168,8 +168,17 @@ export const watchModeInstructionsPath = resolve(import.meta.dirname, 'watch-mod
 /** Each watched folder's latest pass: its tasks and PR check, for the AI to read. */
 export const watchModePassDir = resolve(userDataDir, 'watch-mode');
 
-/** User-level config file, managed via the settings modal. */
-export const configPath = resolve(userDataDir, 'config.json');
+/**
+ * The user's settings file, managed via the settings modal. It may also be YAML, TOML, or TS until
+ * the modal first saves it.
+ */
+export const settingsJsonPath = resolve(userDataDir, 'settings.json');
+
+/** The app's own state, such as the repo list, kept apart from the user's settings. */
+export const appStatePath = resolve(userDataDir, 'state.json');
+
+/** Held both settings and app state before they were split. Migrated once on startup. */
+export const legacyConfigPath = resolve(userDataDir, 'config.json');
 
 /**
  * An AI running in a tab launches a session in another folder by moving a signed `<id>.json`
@@ -184,8 +193,8 @@ export const agentLaunchRequestsDir = resolve(userDataDir, 'launch-requests');
  */
 export const agentLaunchScriptPath = resolve(import.meta.dirname, 'launch-session.script.ts');
 
-/** The Review tab's settings, managed from its sidebar menus. */
-export const reviewConfigPath = resolve(userDataDir, 'review-config.json');
+/** Held the Review tab's settings before they moved into the settings file. */
+export const legacyReviewConfigPath = resolve(userDataDir, 'review-config.json');
 
 /** The main tab order, shared by every window. */
 export const uiLayoutPath = resolve(userDataDir, 'ui-layout.json');
@@ -193,7 +202,7 @@ export const uiLayoutPath = resolve(userDataDir, 'ui-layout.json');
 export const folderStatesDir = resolve(userDataDir, 'folders');
 
 /**
- * Where daily snapshots of {@link configPath} are written. Lives alongside the config (not in
+ * Where daily snapshots of the user's settings file are written. Lives alongside the config (not in
  * `.not-committed/`, which is per-checkout) so backups survive a server reinstall as long as the
  * user's home directory is intact.
  */
@@ -203,7 +212,7 @@ export const configBackupDir = resolve(userDataDir, 'config-backups');
 export const uploadsDir = resolve(tmpdir(), `agent-storm${instanceSuffix}-uploads`);
 
 /**
- * Avatar images for the user's AI definitions. Lives next to {@link configPath} rather than in
+ * Avatar images for the user's AI definitions. Lives next to {@link settingsJsonPath} rather than in
  * `tmpdir()` like {@link uploadsDir}: these are referenced by the config and have to survive a
  * reboot, while uploads are throwaway files handed to a terminal once.
  */
@@ -238,7 +247,7 @@ export const fileIconsDir = resolve(
 export const fileIconMapPath = resolve(
     monorepoRoot,
     'packages',
-    'frontend',
+    'diff',
     'src',
     'util',
     'file-icon-map.generated.ts',
