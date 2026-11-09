@@ -2,9 +2,8 @@ import {waitUntil} from '@augment-vir/assert';
 import {log} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn} from 'node:child_process';
-import {existsSync} from 'node:fs';
 import {createConnection} from 'node:net';
-import {daemonScriptPath, daemonSocketPath} from '../file-paths.js';
+import {daemonScriptPath, daemonSocket} from '../file-paths.js';
 import {fetchDaemonProtocolVersion, shutdownDaemon} from './daemon-client.js';
 import {daemonProtocolVersion} from './protocol.js';
 
@@ -14,12 +13,9 @@ const pingTimeout: AnyDuration = {
 };
 
 async function pingDaemon(): Promise<boolean> {
-    if (!existsSync(daemonSocketPath)) {
-        return false;
-    }
     return await new Promise<boolean>((resolve) => {
         const socket = createConnection({
-            path: daemonSocketPath,
+            path: daemonSocket.path,
             timeout: convertDuration(pingTimeout, {
                 milliseconds: true,
             }).milliseconds,
@@ -119,20 +115,25 @@ export async function ensureDaemon(): Promise<void> {
     }
 
     log.info(`Starting PTY daemon (script: ${daemonScriptPath})...`);
-    /* eslint-disable sonarjs/no-os-command-from-path -- `npx` is resolved via the developer's PATH; this CLI only runs locally. */
+    /**
+     * Node itself rather than `npx tsx`: Windows can't spawn `npx`, a `.cmd` script, without a
+     * shell.
+     */
     const child = spawn(
-        'npx',
+        process.execPath,
         [
-            'tsx',
+            '--import',
+            import.meta.resolve('tsx'),
             daemonScriptPath,
         ],
         {
             detached: true,
             stdio: 'ignore',
+            /** A detached process on Windows otherwise opens its own console window. */
+            windowsHide: true,
             env: process.env,
         },
     );
-    /* eslint-enable sonarjs/no-os-command-from-path */
     child.unref();
 
     const readyTimeout: AnyDuration = {

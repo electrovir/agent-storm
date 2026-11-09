@@ -2,7 +2,7 @@ import {type PaneKind} from '@agent-storm/common';
 import {wrapPromiseInTimeout} from '@augment-vir/common';
 import {type AnyDuration} from 'date-vir';
 import {createConnection, type Socket} from 'node:net';
-import {daemonSocketPath} from '../file-paths.js';
+import {daemonSocket} from '../file-paths.js';
 import {
     DaemonAction,
     encodeControlFrame,
@@ -24,7 +24,7 @@ import {
 
 function connect(): Promise<Socket> {
     return new Promise((resolve, reject) => {
-        const socket = createConnection(daemonSocketPath);
+        const socket = createConnection(daemonSocket.path);
         socket.once('connect', () => resolve(socket));
         socket.once('error', reject);
     });

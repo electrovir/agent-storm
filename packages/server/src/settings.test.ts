@@ -11,6 +11,7 @@ import {
 import {assert} from '@augment-vir/assert';
 import {selectFrom} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
+import {resolve} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
 import {splitLegacyConfig} from './settings-migration.js';
 import {
@@ -71,11 +72,11 @@ describe(resolveFolderAi.name, () => {
         const settings = settingsWithAis({
             folderAiIds: [
                 {
-                    folder: '/tmp/project-a',
+                    folder: resolve('/tmp/project-a'),
                     aiId: codex.id,
                 },
                 {
-                    folder: '/tmp/project-root',
+                    folder: resolve('/tmp/project-root'),
                     aiId: codex.id,
                 },
             ],
@@ -86,18 +87,18 @@ describe(resolveFolderAi.name, () => {
                 resolveNames({
                     settings,
                     folderLayers: [],
-                    folder: '/tmp/project-a',
+                    folder: resolve('/tmp/project-a'),
                 }),
                 resolveNames({
                     settings,
                     folderLayers: [],
-                    folder: '/tmp/project-b',
+                    folder: resolve('/tmp/project-b'),
                 }),
                 resolveNames({
                     settings,
                     folderLayers: [],
-                    folder: '/tmp/project-root/worktree-a',
-                    fallbackFolders: ['/tmp/project-root'],
+                    folder: resolve('/tmp/project-root/worktree-a'),
+                    fallbackFolders: [resolve('/tmp/project-root')],
                 }),
             ],
             [
@@ -122,7 +123,7 @@ describe(resolveFolderAi.name, () => {
             settings: settingsWithAis({
                 folderAiIds: [
                     {
-                        folder: '/tmp/project-a',
+                        folder: resolve('/tmp/project-a'),
                         aiId: 'deleted-id',
                     },
                 ],
@@ -142,7 +143,7 @@ describe(resolveFolderAi.name, () => {
                     defaultAiId: codex.id,
                 },
             ],
-            folder: '/tmp/project-a',
+            folder: resolve('/tmp/project-a'),
         });
 
         assert.deepEquals(
@@ -168,7 +169,7 @@ describe(resolveFolderAi.name, () => {
                     defaultAiId: 'deleted-id',
                 }),
                 folderLayers: [],
-                folder: '/tmp/project-a',
+                folder: resolve('/tmp/project-a'),
             }).ai?.name,
             'Claude',
         );
@@ -179,7 +180,7 @@ describe(resolveFolderAi.name, () => {
             resolveFolderAi({
                 settings: defaultSettings,
                 folderLayers: [],
-                folder: '/tmp/project-a',
+                folder: resolve('/tmp/project-a'),
             }).ai,
         );
     });
@@ -189,17 +190,17 @@ describe(setFolderAiId.name, () => {
     it('adds, replaces, and clears folder overrides', () => {
         const withOverride = setFolderAiId({
             settings: settingsWithAis({}),
-            folder: '/tmp/project-a',
+            folder: resolve('/tmp/project-a'),
             aiId: codex.id,
         });
         const withReplacement = setFolderAiId({
             settings: withOverride,
-            folder: '/tmp/project-a',
+            folder: resolve('/tmp/project-a'),
             aiId: claude.id,
         });
         const cleared = setFolderAiId({
             settings: withReplacement,
-            folder: '/tmp/project-a',
+            folder: resolve('/tmp/project-a'),
             aiId: '',
         });
 
@@ -212,13 +213,13 @@ describe(setFolderAiId.name, () => {
             {
                 withOverride: [
                     {
-                        folder: '/tmp/project-a',
+                        folder: resolve('/tmp/project-a'),
                         aiId: codex.id,
                     },
                 ],
                 withReplacement: [
                     {
-                        folder: '/tmp/project-a',
+                        folder: resolve('/tmp/project-a'),
                         aiId: claude.id,
                     },
                 ],
@@ -277,12 +278,12 @@ describe(splitLegacyConfig.name, () => {
                 ],
                 repos: [
                     {
-                        path: '/tmp/project-a',
+                        path: resolve('/tmp/project-a'),
                         postWorktreeCmd: 'npm ci',
                         lastInteractedAtMs: 5,
                     },
                     {
-                        path: '/tmp/project-b',
+                        path: resolve('/tmp/project-b'),
                         postWorktreeCmd: null,
                     },
                 ],
@@ -312,7 +313,7 @@ describe(splitLegacyConfig.name, () => {
                     postWorktreeCmd: '',
                     folderPostWorktreeCmds: [
                         {
-                            folder: '/tmp/project-a',
+                            folder: resolve('/tmp/project-a'),
                             postWorktreeCmd: 'npm ci',
                         },
                     ],
@@ -332,11 +333,11 @@ describe(splitLegacyConfig.name, () => {
                 appState: {
                     repos: [
                         {
-                            path: '/tmp/project-a',
+                            path: resolve('/tmp/project-a'),
                             lastInteractedAtMs: 5,
                         },
                         {
-                            path: '/tmp/project-b',
+                            path: resolve('/tmp/project-b'),
                         },
                     ],
                     githubPollingAutoDisable: {

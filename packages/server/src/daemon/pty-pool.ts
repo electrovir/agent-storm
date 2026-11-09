@@ -3,11 +3,13 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
+import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn, type IPty} from 'node-pty';
 import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
+import {existsSync} from 'node:fs';
 import {homedir} from 'node:os';
-import {basename, join, resolve} from 'node:path';
+import {basename, delimiter, dirname, join, resolve} from 'node:path';
 import {
     agentLaunchScriptPath,
     defaultUserDataDir,
@@ -32,45 +34,102 @@ const idleThreshold: AnyDuration = {
  */
 const fallbackAiCommand = 'claude';
 
-const paneShell = process.env.SHELL || '/bin/bash';
+type PaneShell = {
+    path: string;
+    buildArgs: Record<PaneKind, (aiCmd: string) => string[]>;
+    /**
+     * Whether the pty's foreground process is something other than the shell, meaning a command is
+     * running in it.
+     */
+    isRunningCommand: (pty: Readonly<IPty>) => boolean;
+};
+
+function createUnixPaneShell(): PaneShell {
+    const path = process.env.SHELL || '/bin/bash';
+    return {
+        path,
+        /**
+         * Both are login shells. The AI pane is also interactive so `.zprofile` / `.zshrc` get
+         * sourced (those are where managed-Claude installers usually inject their PATH lines).
+         */
+        buildArgs: {
+            [PaneKind.Ai](aiCmd) {
+                return [
+                    '-lic',
+                    aiCmd,
+                ];
+            },
+            [PaneKind.Shell]() {
+                return [
+                    '-l',
+                ];
+            },
+        },
+        /**
+         * Node-pty's `process` names the pty's foreground process, which is the shell itself only
+         * while it sits at its prompt.
+         */
+        isRunningCommand(pty) {
+            return pty.process !== basename(path);
+        },
+    };
+}
+
+function createWindowsPaneShell(): PaneShell {
+    /** PowerShell 7 when it's installed; Windows PowerShell ships with every Windows. */
+    const path = (process.env.PATH || '')
+        .split(delimiter)
+        .some((directory) => directory && existsSync(join(directory, 'pwsh.exe')))
+        ? 'pwsh.exe'
+        : 'powershell.exe';
+    return {
+        path,
+        buildArgs: {
+            [PaneKind.Ai](aiCmd) {
+                return [
+                    '-NoLogo',
+                    '-Command',
+                    aiCmd,
+                ];
+            },
+            [PaneKind.Shell]() {
+                return [
+                    '-NoLogo',
+                ];
+            },
+        },
+        /**
+         * Node-pty on Windows has no foreground process to read: its `process` is always the
+         * terminal name. Output alone decides whether a shell pane is busy.
+         */
+        isRunningCommand() {
+            return false;
+        },
+    };
+}
 
 /**
- * How each pane kind is spawned and read. Both run {@link paneShell} as a login shell. The AI pane
- * is also interactive so `.zprofile` / `.zshrc` get sourced (those are where managed-Claude
- * installers usually inject their PATH lines). When the AI command exits the wrapper shell
- * terminates with it — the pane lands in `Exited` state so the user can read whatever the AI
- * command printed without it being clobbered by a new shell prompt. Restart via the row's menu when
- * ready to start a fresh session.
+ * The shell every pane runs in. When the AI command exits the wrapper shell terminates with it —
+ * the pane lands in `Exited` state so the user can read whatever the AI command printed without it
+ * being clobbered by a new shell prompt. Restart via the row's menu when ready to start a fresh
+ * session.
  */
-const paneKindBehaviors: Record<
-    PaneKind,
+const paneShell = (
     {
-        buildShellArgs: (aiCmd: string) => string[];
-        /**
-         * Whether a foreground process other than the shell means a command is running. The AI
-         * pane's foreground process is the AI itself for its whole life, so only a shell pane can
-         * tell a running command from its prompt.
-         */
-        hasCommandPrompt: boolean;
-    }
-> = {
-    [PaneKind.Ai]: {
-        buildShellArgs(aiCmd) {
-            return [
-                '-lic',
-                aiCmd,
-            ];
-        },
-        hasCommandPrompt: false,
-    },
-    [PaneKind.Shell]: {
-        buildShellArgs() {
-            return [
-                '-l',
-            ];
-        },
-        hasCommandPrompt: true,
-    },
+        [OperatingSystem.Mac]: createUnixPaneShell,
+        [OperatingSystem.Linux]: createUnixPaneShell,
+        [OperatingSystem.Windows]: createWindowsPaneShell,
+    } satisfies Record<OperatingSystem, () => PaneShell>
+)[currentOperatingSystem]();
+
+/**
+ * Whether a foreground process other than the shell means a command is running. The AI pane's
+ * foreground process is the AI itself for its whole life, so only a shell pane can tell a running
+ * command from its prompt.
+ */
+const paneKindHasCommandPrompt: Record<PaneKind, boolean> = {
+    [PaneKind.Ai]: false,
+    [PaneKind.Shell]: true,
 };
 
 type PaneSize = {
@@ -315,14 +374,18 @@ function spawnEnv({
      * .bin`). Keep everything else so user-customized PATH additions inherited from launchd /
      * Terminal.app survive into the spawned shell.
      */
-    const cleanedPath = process.env.PATH?.split(':')
-        .filter((entry) => !entry.endsWith('/node_modules/.bin'))
-        .join(':');
+    const cleanedPath = process.env.PATH?.split(delimiter)
+        .filter((entry) => {
+            return !(basename(entry) === '.bin' && basename(dirname(entry)) === 'node_modules');
+        })
+        .join(delimiter);
+    /** Windows spells it `Path`, and a second `PATH` key beside it would leave both in the env. */
+    const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
     return {
         ...base,
         ...(cleanedPath
             ? {
-                  PATH: cleanedPath,
+                  [pathKey]: cleanedPath,
               }
             : {}),
         ...(conversationId
@@ -447,6 +510,35 @@ function releasePty(pty: IPty): void {
     livePtys.delete(pty);
 }
 
+function killUnixPaneTree({
+    pty,
+    immediate,
+    processTable,
+}: Readonly<{
+    pty: Readonly<IPty>;
+    immediate: boolean | undefined;
+    processTable: string | undefined;
+}>) {
+    return killProcessTree(pty.pid, {
+        expectedParentPid: process.pid,
+        immediate,
+        processTable,
+    });
+}
+
+/** Kills a pane's whole process tree. Returns false when the pane's pid is no longer ours. */
+const paneTreeKillers: Record<OperatingSystem, typeof killUnixPaneTree> = {
+    [OperatingSystem.Mac]: killUnixPaneTree,
+    [OperatingSystem.Linux]: killUnixPaneTree,
+    /**
+     * Left to {@link releasePty}: node-pty's Windows `kill` ends every process attached to the
+     * pane's console, which is the whole tree.
+     */
+    [OperatingSystem.Windows]() {
+        return true;
+    },
+};
+
 /**
  * Kill a pane's process tree, release its fd, and clear the entry's pty. Every teardown path goes
  * through here so none of them can forget the parent check that keeps a recycled pid from taking an
@@ -466,8 +558,8 @@ function teardownPaneProcess(
     if (!pty) {
         return;
     }
-    const killed = killProcessTree(pty.pid, {
-        expectedParentPid: process.pid,
+    const killed = paneTreeKillers[currentOperatingSystem]({
+        pty,
         immediate,
         processTable,
     });
@@ -586,7 +678,7 @@ function startPty({
              */
             throw new Error(`daemon already holds ${livePtys.size} ptys (limit ${maxLivePtys})`);
         }
-        const pty = spawn(paneShell, paneKindBehaviors[kind].buildShellArgs(aiCmd), {
+        const pty = spawn(paneShell.path, paneShell.buildArgs[kind](aiCmd), {
             name: 'xterm-256color',
             cols: 120,
             rows: 32,
@@ -956,12 +1048,11 @@ function sweepOrphanedPtys(): void {
 }
 
 /**
- * A quiet command prints nothing for a while, so output alone would call its pane idle. node-pty's
- * `process` names the pty's foreground process, which is the shell itself only while it sits at its
- * prompt. Full-screen programs like `vim` or `less` count as running too.
+ * A quiet command prints nothing for a while, so output alone would call its pane idle. Full-screen
+ * programs like `vim` or `less` count as running too.
  */
 function isShellRunningCommand({kind, pty}: Readonly<PaneEntry>) {
-    return paneKindBehaviors[kind].hasCommandPrompt && !!pty && pty.process !== basename(paneShell);
+    return paneKindHasCommandPrompt[kind] && !!pty && paneShell.isRunningCommand(pty);
 }
 
 function entryStatus(entry: PaneEntry | undefined): PaneStatus {

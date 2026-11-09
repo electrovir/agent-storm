@@ -2,6 +2,7 @@
 
 import {assert, assertWrap, waitUntil} from '@augment-vir/assert';
 import {wait} from '@augment-vir/common';
+import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {describe, it} from '@augment-vir/test';
 import {spawn} from 'node:child_process';
 import {collectDescendantPids, killProcessTree, parseProcessTable} from './kill-process-tree.js';
@@ -65,8 +66,17 @@ describe(collectDescendantPids.name, () => {
     });
 });
 
+/** Windows panes skip {@link killProcessTree}: node-pty's own Windows kill ends the whole console. */
+const itOnUnix = (
+    {
+        [OperatingSystem.Mac]: it,
+        [OperatingSystem.Linux]: it,
+        [OperatingSystem.Windows]: it.skip,
+    } satisfies Record<OperatingSystem, typeof it.skip>
+)[currentOperatingSystem];
+
 describe(killProcessTree.name, () => {
-    it('kills a process and all of its descendants', async () => {
+    itOnUnix('kills a process and all of its descendants', async () => {
         /**
          * A parent shell that spawns two long-lived children and then blocks — mirrors the
          * shell→agent process tree a pane creates. The children print their pids so the test can
@@ -127,7 +137,7 @@ describe(killProcessTree.name, () => {
         );
     });
 
-    it('leaves a process alone when it is not a child of the expected parent', async () => {
+    itOnUnix('leaves a process alone when it is not a child of the expected parent', async () => {
         const stranger = spawn('/bin/bash', [
             '-c',
             'sleep 120',

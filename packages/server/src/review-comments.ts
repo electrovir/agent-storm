@@ -15,7 +15,7 @@ import {
     reviewBranchPrefix,
     type ManualReviewFile,
 } from './manual-review-state.js';
-import {hasErrorCode} from './paths.js';
+import {hasErrorCode, normalizePath} from './paths.js';
 import {writeFileAtomically} from './write-file-atomically.js';
 
 function getEntry({
@@ -55,7 +55,13 @@ async function resolveEntryKey(folder: string, state: Readonly<ManualReviewFile>
         ])
     )?.trim();
     const recorded = listManualReviewEntries(state).find((listed) => {
-        return listed.branchName === headBranch && listed.entry.folder === topLevel;
+        /** Git prints `/` separators even on Windows, where Node's paths use `\\`. */
+        return (
+            listed.branchName === headBranch &&
+            !!topLevel &&
+            !!listed.entry.folder &&
+            normalizePath(listed.entry.folder) === normalizePath(topLevel)
+        );
     });
     if (recorded) {
         return {

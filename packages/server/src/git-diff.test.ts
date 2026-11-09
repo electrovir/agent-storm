@@ -49,6 +49,14 @@ async function createRepo() {
         'user.name',
         'test',
     ]);
+    /** The tests read the file's bytes, which Windows CI's default `true` would turn into CRLF. */
+    await exec('git', [
+        '-C',
+        folder,
+        'config',
+        'core.autocrlf',
+        'false',
+    ]);
     await writeFile(filePath, `${committedLines.join('\n')}\n`);
     await exec('git', [
         '-C',

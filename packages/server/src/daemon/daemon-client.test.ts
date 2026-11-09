@@ -1,5 +1,6 @@
 import {assert} from '@augment-vir/assert';
 import {wrapPromiseInTimeout} from '@augment-vir/common';
+import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {createConnection, createServer, type Socket} from 'node:net';
@@ -17,7 +18,14 @@ async function withFakeDaemon(
     test: (client: Socket) => Promise<void>,
 ) {
     const dir = await mkdtemp(join(tmpdir(), 'agent-storm-daemon-client-'));
-    const socketPath = join(dir, 'daemon.sock');
+    const unixSocketPath = join(dir, 'daemon.sock');
+    const socketPath = (
+        {
+            [OperatingSystem.Mac]: unixSocketPath,
+            [OperatingSystem.Linux]: unixSocketPath,
+            [OperatingSystem.Windows]: String.raw`\\.\pipe\${basename(dir)}`,
+        } satisfies Record<OperatingSystem, string>
+    )[currentOperatingSystem];
     const sockets: Socket[] = [];
     const server = createServer((socket) => {
         sockets.push(socket);

@@ -1,6 +1,7 @@
 import {PaneKind} from '@agent-storm/common';
 import {assert, waitUntil} from '@augment-vir/assert';
 import {wait} from '@augment-vir/common';
+import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {describe, it} from '@augment-vir/test';
 import {createHmac} from 'node:crypto';
 import {mkdir, mkdtemp, rm} from 'node:fs/promises';
@@ -17,8 +18,56 @@ import {
     writeToPane,
 } from './pty-pool.js';
 
+type PaneTestCommands = {
+    printLine: (text: string) => string;
+    printEnvLine: (params: Readonly<{prefix: string; envKey: string}>) => string;
+    waitForever: string;
+};
+
+const unixPaneTestCommands: PaneTestCommands = {
+    printLine(text) {
+        return `printf '%s\\n' '${text}'`;
+    },
+    printEnvLine({prefix, envKey}) {
+        return `printf '${prefix}%s\\n' "$${envKey}"`;
+    },
+    waitForever: 'while true; do sleep 1; done',
+};
+
+/** Pane commands in the shell each OS's panes run in. */
+const paneTestCommands = (
+    {
+        [OperatingSystem.Mac]: unixPaneTestCommands,
+        [OperatingSystem.Linux]: unixPaneTestCommands,
+        [OperatingSystem.Windows]: {
+            printLine(text) {
+                return `Write-Output "${text.replaceAll('\x1b', '$([char]27)')}"`;
+            },
+            printEnvLine({prefix, envKey}) {
+                return `Write-Output "${prefix}$env:${envKey}"`;
+            },
+            waitForever: 'while ($true) { Start-Sleep 1 }',
+        },
+    } satisfies Record<OperatingSystem, PaneTestCommands>
+)[currentOperatingSystem];
+
+/**
+ * Node-pty on Windows reports the terminal's name as every pane's process, so a pane's foreground
+ * command can't be detected there.
+ */
+const itWithForegroundProcess = (
+    {
+        [OperatingSystem.Mac]: it,
+        [OperatingSystem.Linux]: it,
+        [OperatingSystem.Windows]: it.skip,
+    } satisfies Record<OperatingSystem, typeof it.skip>
+)[currentOperatingSystem];
+
 function persistentAiCommand(label: string): string {
-    return String.raw`printf '${label}\n'; while true; do sleep 1; done`;
+    return [
+        paneTestCommands.printLine(label),
+        paneTestCommands.waitForever,
+    ].join('; ');
 }
 
 describe(restartPane.name, () => {
@@ -90,7 +139,7 @@ describe(restartPane.name, () => {
             const attachment = attachPane({
                 folder,
                 kind: PaneKind.Ai,
-                aiCmd: String.raw`printf 'before-exit\n'`,
+                aiCmd: paneTestCommands.printLine('before-exit'),
                 onData(data) {
                     output.push(data);
                 },
@@ -340,7 +389,10 @@ describe(attachPane.name, () => {
             const first = attachPane({
                 folder,
                 kind: PaneKind.Ai,
-                aiCmd: String.raw`printf 'start\033[c\033[>0c end\n'; while true; do sleep 1; done`,
+                aiCmd: [
+                    paneTestCommands.printLine('start\x1b[c\x1b[>0c end'),
+                    paneTestCommands.waitForever,
+                ].join('; '),
                 onData(data) {
                     output.push(data);
                 },
@@ -448,7 +500,13 @@ describe(verifyLaunchSignature.name, () => {
                 folder,
                 kind: PaneKind.Ai,
                 conversationId: 'launch-conversation',
-                aiCmd: String.raw`printf 'key=%s\n' "$AGENT_STORM_LAUNCH_KEY"; while true; do sleep 1; done`,
+                aiCmd: [
+                    paneTestCommands.printEnvLine({
+                        prefix: 'key=',
+                        envKey: 'AGENT_STORM_LAUNCH_KEY',
+                    }),
+                    paneTestCommands.waitForever,
+                ].join('; '),
                 onData(data) {
                     output.push(data);
                 },
@@ -523,7 +581,7 @@ describe(verifyLaunchSignature.name, () => {
 });
 
 describe(listAllPaneStatuses.name, () => {
-    it('reports a running command only for a shell pane', async () => {
+    itWithForegroundProcess('reports a running command only for a shell pane', async () => {
         const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
         try {
             const aiOutput: string[] = [];

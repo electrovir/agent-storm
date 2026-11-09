@@ -4,7 +4,7 @@ import {check} from '@augment-vir/assert';
 import {convertDuration} from 'date-vir';
 import {existsSync, unlinkSync} from 'node:fs';
 import {createServer, type Socket} from 'node:net';
-import {daemonSocketPath} from '../file-paths.js';
+import {daemonSocket} from '../file-paths.js';
 import {createDaemonLog} from './daemon-log.js';
 import {
     DaemonAction,
@@ -37,9 +37,9 @@ import {
 
 const log = createDaemonLog();
 
-if (existsSync(daemonSocketPath)) {
+if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
     try {
-        unlinkSync(daemonSocketPath);
+        unlinkSync(daemonSocket.path);
     } catch (error) {
         log(`failed to remove stale socket: ${String(error)}`);
     }
@@ -248,8 +248,8 @@ server.on('error', (error) => {
     log(`server error: ${error.message}`);
 });
 
-server.listen(daemonSocketPath, () => {
-    log(`daemon listening on ${daemonSocketPath} (pid ${process.pid})`);
+server.listen(daemonSocket.path, () => {
+    log(`daemon listening on ${daemonSocket.path} (pid ${process.pid})`);
 });
 
 /**
@@ -273,9 +273,9 @@ function shutdown(signal: string): void {
     log(`${signal} received, shutting down`);
     killAllPanes();
     server.close(() => {
-        if (existsSync(daemonSocketPath)) {
+        if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
             try {
-                unlinkSync(daemonSocketPath);
+                unlinkSync(daemonSocket.path);
             } catch {
                 /* ignore */
             }
@@ -287,9 +287,9 @@ function shutdown(signal: string): void {
 function forceShutdown(reason: string): void {
     log(`force shutdown: ${reason}`);
     killAllPanes();
-    if (existsSync(daemonSocketPath)) {
+    if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
         try {
-            unlinkSync(daemonSocketPath);
+            unlinkSync(daemonSocket.path);
         } catch {
             /* ignore */
         }

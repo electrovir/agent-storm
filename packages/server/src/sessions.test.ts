@@ -4,7 +4,7 @@ import {omitObjectKeys} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {
     createFolderSession,
     forgetFolderSessions,
@@ -414,7 +414,7 @@ describe(parseSessionStore.name, () => {
     it('drops folders that do not match the shape, and sessions with no id', () => {
         const parsed = parseSessionStore(
             JSON.stringify({
-                '/tmp/keeps-valid': {
+                [resolve('/tmp/keeps-valid')]: {
                     ai: [
                         storedSession({
                             id: 'a',
@@ -426,7 +426,7 @@ describe(parseSessionStore.name, () => {
                     ],
                     shell: [],
                 },
-                '/tmp/drops-missing-fields': {
+                [resolve('/tmp/drops-missing-fields')]: {
                     ai: [
                         {
                             id: 'b',
@@ -439,7 +439,7 @@ describe(parseSessionStore.name, () => {
         );
 
         assert.deepEquals(parsed, {
-            '/tmp/keeps-valid': {
+            [resolve('/tmp/keeps-valid')]: {
                 ai: [
                     storedSession({
                         id: 'a',
@@ -454,7 +454,7 @@ describe(parseSessionStore.name, () => {
     it('replaces a conversation id that is unsafe in a file path', () => {
         const parsed = parseSessionStore(
             JSON.stringify({
-                '/tmp/unsafe': {
+                [resolve('/tmp/unsafe')]: {
                     ai: [
                         storedSession({
                             id: 'a',
@@ -467,7 +467,7 @@ describe(parseSessionStore.name, () => {
         );
 
         assert.matches(
-            assertWrap.isDefined(parsed['/tmp/unsafe']?.ai[0]).conversationId,
+            assertWrap.isDefined(parsed[resolve('/tmp/unsafe')]?.ai[0]).conversationId,
             /^[a-z0-9]+$/,
         );
     });

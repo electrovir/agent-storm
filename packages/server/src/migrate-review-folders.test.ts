@@ -4,6 +4,7 @@ import {mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile} from '
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {migrateReviewFolders} from './migrate-review-folders.js';
+import {normalizePath} from './paths.js';
 import {runCommand} from './run-command.js';
 
 type TestDirs = {
@@ -300,8 +301,16 @@ describe(migrateReviewFolders.name, () => {
                     },
                 },
             );
+            /** Git prints `/` separators even on Windows. */
             assert.isTrue(
-                stdout.includes(`worktree ${join(dirs.reviewsDir, 'acme', 'web', '3')}\n`),
+                stdout
+                    .split('\n')
+                    .some(
+                        (line) =>
+                            line.startsWith('worktree ') &&
+                            normalizePath(line.slice('worktree '.length)) ===
+                                join(dirs.reviewsDir, 'acme', 'web', '3'),
+                    ),
             );
             assert.deepEquals((await readdir(dirs.reviewsDir)).toSorted(), [
                 'acme',

@@ -1,3 +1,4 @@
+import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {homedir, tmpdir} from 'node:os';
 import {basename, resolve} from 'node:path';
 import {normalizePath} from './paths.js';
@@ -6,6 +7,18 @@ export const monorepoRoot = resolve(import.meta.dirname, '..', '..', '..');
 
 /** Git-ignored directory at the repo root for runtime secrets and on-disk caches. */
 export const notCommittedDir = resolve(monorepoRoot, '.not-committed');
+
+/** Run with Node directly rather than through `npx`: Windows can't spawn `npx` without a shell. */
+export const runstormCliPath = resolve(
+    monorepoRoot,
+    'node_modules',
+    'runstorm',
+    'dist',
+    'cli',
+    'cli.script.js',
+);
+
+export const nodePtyPrebuildsDir = resolve(monorepoRoot, 'node_modules', 'node-pty', 'prebuilds');
 
 /**
  * The env vars that keep one running agent-storm apart from another, so a debug copy can run beside
@@ -119,8 +132,25 @@ export const claudeHookInstallDir = resolve(homedir(), '.claude');
 /** Claude Code's user-level settings, where agent-storm registers its hooks. */
 export const claudeSettingsPath = resolve(claudeHookInstallDir, 'settings.json');
 
-/** Unix domain socket the pty daemon listens on for new pane attachments. */
-export const daemonSocketPath = resolve(tmpdir(), `agent-storm${instanceSuffix}-pty.sock`);
+const unixDaemonSocket = {
+    path: resolve(tmpdir(), `agent-storm${instanceSuffix}-pty.sock`),
+    isFile: true,
+};
+
+/**
+ * Where the pty daemon listens for new pane attachments. A Unix socket is a file that outlives a
+ * crashed daemon; a Windows named pipe disappears with the process that owns it.
+ */
+export const daemonSocket = (
+    {
+        [OperatingSystem.Mac]: unixDaemonSocket,
+        [OperatingSystem.Linux]: unixDaemonSocket,
+        [OperatingSystem.Windows]: {
+            path: String.raw`\\.\pipe\agent-storm${instanceSuffix}-pty`,
+            isFile: false,
+        },
+    } satisfies Record<OperatingSystem, {path: string; isFile: boolean}>
+)[currentOperatingSystem];
 
 /** Where the pty daemon's stdout/stderr is redirected (it runs detached from the server). */
 export const daemonLogPath = resolve(tmpdir(), `agent-storm${instanceSuffix}-pty-daemon.log`);
@@ -142,7 +172,7 @@ export const clientErrorLogPath = resolve(
     `agent-storm${instanceSuffix}-client-errors.log`,
 );
 
-/** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocketPath}. */
+/** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocket}. */
 export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts');
 
 /** Where review folders were kept before they moved into {@link manualReviewSkillDir}. */

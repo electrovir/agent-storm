@@ -401,6 +401,8 @@ export async function addWorktree({
     };
 }
 
+const worktreeLinePrefix = 'worktree ';
+
 /**
  * Undefined when git has no worktree registered at `worktreePath`. `git worktree add` locks a new
  * worktree with the reason `initializing` until its checkout finishes, which is what
@@ -425,7 +427,14 @@ async function findRegisteredWorktree({
     const entryLines = output
         ?.split('\n\n')
         .map((entry) => entry.split('\n'))
-        .find((lines) => lines[0] === `worktree ${realWorktreePath}`);
+        .find((lines) => {
+            const [firstLine] = lines;
+            /** Git prints `/` separators even on Windows, where Node's paths use `\\`. */
+            return (
+                !!firstLine?.startsWith(worktreeLinePrefix) &&
+                normalizePath(firstLine.slice(worktreeLinePrefix.length)) === realWorktreePath
+            );
+        });
     return entryLines
         ? {
               isInitializing: entryLines.includes('locked initializing'),

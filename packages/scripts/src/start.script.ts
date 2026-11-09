@@ -1,4 +1,4 @@
-// cspell:words libexec logd pids
+// cspell:words lastexitcode libexec logd pids
 
 /**
  * Sweeps up orphan processes from any prior `npm start` of the same instance (see
@@ -22,10 +22,12 @@ import {
     InstanceEnvVar,
     instanceName,
     monorepoRoot,
+    runstormCliPath,
     userDataDir,
 } from '@agent-storm/server/src/file-paths.js';
 import {defaultPorts, PortEnvVar, readEnvPort} from '@agent-storm/server/src/ports.js';
 import {filterMap, log} from '@augment-vir/common';
+import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {spawn, spawnSync} from 'node:child_process';
 
 type Signals = NodeJS.Signals;
@@ -205,7 +207,14 @@ if (
     );
 }
 
-killPriorInstances();
+(
+    ({
+        [OperatingSystem.Mac]: killPriorInstances,
+        [OperatingSystem.Linux]: killPriorInstances,
+        /** Windows has no `ps` to find them with. */
+        [OperatingSystem.Windows]() {},
+    }) satisfies Record<OperatingSystem, () => void>
+)[currentOperatingSystem]();
 
 const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -228,28 +237,45 @@ log.faint(
  */
 const restartDelaySeconds = 2;
 
+const unixSupervisor = {
+    shell: 'bash',
+    supervise(command: string) {
+        return `while true; do ${command}; echo "exited with status $?; restarting in ${restartDelaySeconds}s"; sleep ${restartDelaySeconds}; done`;
+    },
+};
+
 /**
- * Keep a service alive for the life of `npm start`. Both services are servers, so every exit is a
+ * Keeps a service alive for the life of `npm start`. Both services are servers, so every exit is a
  * failure — including being killed from outside, which runstorm reports as exit code 0 because a
  * signaled child closes with a null code and runstorm falls back to 0. The echoed status is the
  * shell's, where a kill reads as 128 plus the signal number, which is what separates a crash from
  * something sweeping the process up.
  */
-function supervised(command: string): string {
-    return `while true; do ${command}; echo "exited with status $?; restarting in ${restartDelaySeconds}s"; sleep ${restartDelaySeconds}; done`;
-}
+const supervisor = (
+    {
+        [OperatingSystem.Mac]: unixSupervisor,
+        [OperatingSystem.Linux]: unixSupervisor,
+        [OperatingSystem.Windows]: {
+            shell: 'powershell',
+            supervise(command: string) {
+                return `while ($true) { ${command}; Write-Host "exited with status $LASTEXITCODE; restarting in ${restartDelaySeconds}s"; Start-Sleep ${restartDelaySeconds} }`;
+            },
+        },
+    } satisfies Record<OperatingSystem, {shell: string; supervise: (command: string) => string}>
+)[currentOperatingSystem];
 
 const child = spawn(
-    // eslint-disable-next-line sonarjs/no-os-command-from-path
-    'npx',
+    process.execPath,
     [
-        'runstorm',
+        runstormCliPath,
+        '--shell',
+        supervisor.shell,
         '--colors',
         'green,blue',
         '--names',
         'backend,frontend',
-        supervised('npm start --workspace @agent-storm/server'),
-        supervised('npm start --workspace @agent-storm/frontend'),
+        supervisor.supervise('npm start --workspace @agent-storm/server'),
+        supervisor.supervise('npm start --workspace @agent-storm/frontend'),
     ],
     {
         stdio: 'inherit',

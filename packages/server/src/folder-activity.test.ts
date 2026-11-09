@@ -1,7 +1,7 @@
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {homedir} from 'node:os';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {
     forgetFolderActivity,
     getFolderActivityAtMs,
@@ -21,7 +21,7 @@ describe(recordFolderActivity.name, () => {
     });
 
     it('reports 0 for a folder nobody has typed in', () => {
-        assert.strictEquals(getFolderActivityAtMs('/tmp/agent-storm-never-typed-in'), 0);
+        assert.strictEquals(getFolderActivityAtMs(resolve('/tmp/agent-storm-never-typed-in')), 0);
     });
 });
 
@@ -40,15 +40,15 @@ describe(parseActivityStore.name, () => {
     it('keeps valid stamps and drops malformed ones', () => {
         const parsed = parseActivityStore(
             JSON.stringify({
-                '/tmp/good': 1_700_000_000_000,
-                '/tmp/string': 'nope',
-                '/tmp/zero': 0,
-                '/tmp/negative': -5,
+                [resolve('/tmp/good')]: 1_700_000_000_000,
+                [resolve('/tmp/string')]: 'nope',
+                [resolve('/tmp/zero')]: 0,
+                [resolve('/tmp/negative')]: -5,
             }),
         );
 
         assert.deepEquals(parsed, {
-            '/tmp/good': 1_700_000_000_000,
+            [resolve('/tmp/good')]: 1_700_000_000_000,
         });
     });
 

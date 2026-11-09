@@ -22,7 +22,7 @@
     "scripts": {
         "compile": "virmator compile",
         "format": "virmator format",
-        "init": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper",
+        "init": "tsx packages/scripts/src/init.script.ts",
         "lint": "virmator lint fix",
         "publish": "virmator publish npm run test:all",
         "start": "npm run init && tsx packages/scripts/src/start.script.ts",
