@@ -1,5 +1,6 @@
 {
     "name": "@agent-storm/frontend",
+    "version": "0.0.1",
     "private": true,
     "description": "",
     "keywords": [],
@@ -31,14 +32,14 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/build": "*",
         "@agent-storm/common": "*",
         "@agent-storm/core": "*",
-        "@agent-storm/dashboard": "*",
-        "@agent-storm/debug": "*",
-        "@agent-storm/diff": "*",
-        "@agent-storm/review": "*",
-        "@agent-storm/terminal": "*",
+        "@agent-storm/plugin-build": "*",
+        "@agent-storm/plugin-dashboard": "*",
+        "@agent-storm/plugin-debug": "*",
+        "@agent-storm/plugin-diff": "*",
+        "@agent-storm/plugin-review": "*",
+        "@agent-storm/plugin-terminal": "*",
         "@augment-vir/assert": "^32.7.0",
         "@augment-vir/common": "^32.7.0",
         "@augment-vir/web": "^32.7.0",

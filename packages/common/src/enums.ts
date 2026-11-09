@@ -14,6 +14,11 @@ export const paneKindRunsAi: Readonly<Record<PaneKind, boolean>> = {
     [PaneKind.Shell]: false,
 };
 
+/** The kind, and default tab id, of the Diff pane. Stored in every folder's tab layout. */
+export const diffPaneId = 'diff';
+/** The kind, and default tab id, of the Review pane. Stored in every folder's tab layout. */
+export const reviewPaneId = 'review';
+
 /** Which checkout a Diff tab shows. */
 export enum DiffView {
     /** The folder's own working tree. */

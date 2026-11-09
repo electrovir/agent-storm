@@ -1,11 +1,8 @@
 import {
-    DiffView,
     PaneKind,
     PaneStatus,
     restartPaneEndpoint,
-    type PaneState,
     type PaneTab,
-    type ReviewQueuePr,
     type SessionMeta,
 } from '@agent-storm/common';
 import {assertWrap, check} from '@augment-vir/assert';
@@ -16,7 +13,7 @@ import {
     typedObjectFromEntries,
 } from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
-import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
+import {css, html, listen, nothing, repeat} from 'element-vir';
 import {
     createSizedIcon,
     LucideCircleQuestionMarkIcon,
@@ -26,17 +23,14 @@ import {
 } from 'vira';
 import {fetchApi} from '../../util/api-client.js';
 import {createFolderSessions, type FolderSessionsObservable} from '../../util/folder-sessions.js';
-import {resolvePaneState} from '../../util/pane-layout.js';
+import {resolveTabState} from '../../util/pane-layout.js';
 import {paneRestartKey} from '../../util/pane-restarts.js';
 import {
-    createPaneReview,
-    type PaneReviewObservable,
-    type ReviewStart,
-} from '../../util/pane-review.js';
-import {
     PaneMounting,
+    type AnyPaneDefinition,
     type AppContext,
-    type PaneDefinition,
+    type NewTabRequest,
+    type PaneGroupExtensionInputs,
     type PaneGroupView,
     type SessionTab,
 } from '../../util/plugin-api.js';
@@ -46,13 +40,10 @@ import {
     closeTab,
     createDefaultTabLayout,
     createTabId,
-    diffPaneId,
     findSessionPaneKind,
-    hasTabOfKind,
     isTabLayoutConsistent,
     listDisplayedTabIds,
     renameTab,
-    reviewPaneId,
     showTabKind,
     syncSessionTabs,
     toSessionTabId,
@@ -80,34 +71,25 @@ function renderKindTooltip({
         : nothing;
 }
 
-/** A folder's tabs: its AI and Shell sessions, its diff, and its PR's review. */
+/** A folder's tabs: its sessions and every plugin's panes. */
 export const VirPaneGroup = defineAppElement<{
     folder: string;
     /** True when this pane-group is the user's currently focused folder. */
     active: boolean;
     context: AppContext;
-    /**
-     * Set when the folder is a pull request's review folder. Holds the Diff tab back until the
-     * manual review's startup has finished.
-     */
-    reviewPullRequest?: Readonly<ReviewQueuePr> | undefined;
-    /** Typed into the AI session once the folder's sessions load, unless it's already been sent. */
-    reviewStart?: Readonly<ReviewStart> | undefined;
+    /** What this folder's parent hands each plugin's pane group extension, by extension id. */
+    extensionInputs?: PaneGroupExtensionInputs | undefined;
 }>()({
     tagName: 'vir-pane-group',
-    events: {
-        /** The parent should set the `reviewStart` it passed in as sent. */
-        reviewStartSent: defineElementEvent<void>(),
-    },
     state() {
         return {
             /** Created in `init`, which has the folder. */
             folderSessions: undefined as FolderSessionsObservable | undefined,
-            paneReview: undefined as PaneReviewObservable | undefined,
+            /** Each extension's state, created in `init` and destroyed with the pane group. */
+            extensionRuns: {} as PaneGroupView['extensionRuns'],
+            extensionListeners: [] as ReadonlyArray<() => void>,
             /** Every tab that has been on screen, for panes that stay mounted once shown. */
             shownTabIds: [] as ReadonlyArray<string>,
-            /** Keeps the Diff tab on the manual review while its copy is still being made. */
-            isManualReviewStarting: false,
             /**
              * Per-session remount counters. Bumping one remounts its `VirTerminal`, which is how a
              * restart gets a fresh socket: the terminal connects in `onDomCreated`, which doesn't
@@ -126,21 +108,33 @@ export const VirPaneGroup = defineAppElement<{
             changeAiSubmitting: false,
         };
     },
-    init({inputs, updateState}) {
+    init({inputs, updateState, host}) {
         const folderSessions = createFolderSessions(inputs.folder);
+        const extensionRuns = arrayToObject(inputs.context.paneGroupExtensions, (extension) => {
+            return {
+                key: extension.id,
+                value: extension.create({
+                    folder: inputs.folder,
+                    context: inputs.context,
+                    folderSessions,
+                }),
+            };
+        });
         updateState({
             folderSessions,
-            paneReview: createPaneReview({
-                folder: inputs.folder,
-                uiLayout: inputs.context.uiLayout,
-                folderSessions,
-                prReviews: inputs.context.prReviews,
+            extensionRuns,
+            /** Element-vir only watches observables held directly in state, not inside a record. */
+            extensionListeners: getObjectTypedValues(extensionRuns).map((run) => {
+                return run.listen(false, () => {
+                    host.requestUpdate();
+                });
             }),
         });
     },
     cleanup({state}) {
         state.folderSessions?.destroy();
-        state.paneReview?.destroy();
+        state.extensionListeners.forEach((removeListener) => removeListener());
+        getObjectTypedValues(state.extensionRuns).forEach((run) => run.destroy());
     },
     styles: css`
         :host {
@@ -197,19 +191,18 @@ export const VirPaneGroup = defineAppElement<{
             min-width: 0;
         }
     `,
-    render({inputs, state, updateState, dispatch, events}) {
-        const {folderSessions, paneReview} = state;
-        if (!folderSessions || !paneReview) {
+    render({inputs, state, updateState}) {
+        const {folderSessions} = state;
+        if (!folderSessions) {
             return '';
         }
         const uiLayout = inputs.context.uiLayout;
         const info = inputs.context.folderData.value.folderInfo.get(inputs.folder);
         const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
-        const isReviewFolder = !!inputs.reviewPullRequest;
+        const extensionInputs = inputs.extensionInputs || {};
         const hasPr = !!info?.prUrl;
         const sessions = folderSessions.value.sessions;
         const sessionError = folderSessions.value.error;
-        const review = paneReview.value.review;
 
         folderSessions.sync(info?.sessionStatuses || []);
 
@@ -266,7 +259,8 @@ export const VirPaneGroup = defineAppElement<{
                 (layout: Readonly<TabLayout>, kind) => (kind ? showTabKind(layout, kind) : layout),
                 createDefaultTabLayout({
                     sessions,
-                    isReviewFolder,
+                    panes: inputs.context.panes,
+                    extensionInputs,
                 }),
             );
         if (!baseLayout) {
@@ -300,7 +294,6 @@ export const VirPaneGroup = defineAppElement<{
                     }),
                     kind,
                     session,
-                    count: sessions[kind].length,
                 };
             });
         });
@@ -310,24 +303,16 @@ export const VirPaneGroup = defineAppElement<{
             context: inputs.context,
             isActive: inputs.active,
             isMobile,
-            isReviewFolder,
             layout,
-            paneReview,
-            review,
-            reviewStart: inputs.reviewStart,
-            isManualReviewStarting: state.isManualReviewStarting,
-            setManualReviewStarting(isManualReviewStarting) {
-                updateState({
-                    isManualReviewStarting,
-                });
-            },
+            extensionInputs,
+            extensionRuns: state.extensionRuns,
             writeLayout,
             openNewTab,
             sessionToFocus: state.sessionToFocus,
             focusedTabId: state.focusedTabId,
         };
 
-        const panesById: Readonly<Record<string, PaneDefinition | undefined>> = arrayToObject(
+        const panesById: Readonly<Record<string, AnyPaneDefinition | undefined>> = arrayToObject(
             inputs.context.panes,
             (pane) => {
                 return {
@@ -352,14 +337,6 @@ export const VirPaneGroup = defineAppElement<{
             isAvailable,
             isMobile,
         });
-        const isDiffDisplayed = hasTabOfKind(layout, {
-            tabIds: displayedTabIds,
-            kind: diffPaneId,
-        });
-        const isReviewDisplayed = hasTabOfKind(layout, {
-            tabIds: displayedTabIds,
-            kind: reviewPaneId,
-        });
         const newlyShownTabIds = displayedTabIds.filter(
             (tabId) => !state.shownTabIds.includes(tabId),
         );
@@ -371,32 +348,16 @@ export const VirPaneGroup = defineAppElement<{
                 ],
             });
         }
-        paneReview.sync({
-            active: inputs.active,
-            hasPr,
-            isPrNeeded: isDiffDisplayed || isReviewDisplayed,
-            isReviewPaneOpen: isReviewDisplayed && inputs.active,
-            isDiffMounted:
-                hasTabOfKind(layout, {
-                    tabIds: state.shownTabIds,
-                    kind: diffPaneId,
-                }) || isDiffDisplayed,
-            reviewPullRequest: inputs.reviewPullRequest,
+        inputs.context.paneGroupExtensions.forEach((extension) => {
+            extension.sync({
+                run: assertWrap.isDefined(state.extensionRuns[extension.id]),
+                inputs: extensionInputs[extension.id],
+                view,
+                displayedTabIds,
+                shownTabIds: state.shownTabIds,
+                hasPr,
+            });
         });
-
-        if (
-            inputs.reviewStart &&
-            paneReview.sendReviewStart({
-                reviewStart: inputs.reviewStart,
-                isMobile,
-            })
-        ) {
-            dispatch(
-                new events.reviewStartSent({
-                    detail: undefined,
-                }),
-            );
-        }
 
         /** The last page load's answer stands in until this one's first poll. */
         const aiFolderInfo =
@@ -487,15 +448,7 @@ export const VirPaneGroup = defineAppElement<{
             });
         }
 
-        async function openNewTab({
-            kind,
-            groupId,
-            state: tabState,
-        }: Readonly<{
-            kind: string;
-            groupId: string | undefined;
-            state?: Readonly<Partial<PaneState>> | undefined;
-        }>) {
+        async function openNewTab({kind, groupId, state: tabState}: NewTabRequest) {
             const paneKind = findSessionPaneKind(kind);
             if (!paneKind) {
                 writeLayout((current) => {
@@ -543,7 +496,7 @@ export const VirPaneGroup = defineAppElement<{
         }
 
         function buildSessionMenu({
-            sessionTab: {kind, session, count},
+            sessionTab: {kind, session},
             label,
             hasAi,
         }: Readonly<{
@@ -585,18 +538,15 @@ export const VirPaneGroup = defineAppElement<{
                           },
                       }
                     : undefined,
-                /** A folder always keeps one session of each kind. */
-                count > 1
-                    ? {
-                          content: 'Close',
-                          onClick() {
-                              void folderSessions?.close({
-                                  kind,
-                                  sessionId: session.id,
-                              });
-                          },
-                      }
-                    : undefined,
+                {
+                    content: 'Close',
+                    onClick() {
+                        void folderSessions?.close({
+                            kind,
+                            sessionId: session.id,
+                        });
+                    },
+                },
             ];
             return entries.filter(check.isTruthy);
         }
@@ -623,12 +573,16 @@ export const VirPaneGroup = defineAppElement<{
                     ],
                 };
             }
+            const tabState = resolveTabState({
+                tabStateShape: definition.tabStateShape,
+                tabState: tab.state,
+            });
             const sessionTab = sessionTabs.find((entry) => entry.tabId === tab.id);
             if (sessionTab) {
                 const label =
                     sessionTab.session.name ||
                     definition.label({
-                        tabState: tab.state,
+                        tabState,
                         context: inputs.context,
                     });
                 const status =
@@ -651,7 +605,7 @@ export const VirPaneGroup = defineAppElement<{
                             ${renderKindTooltip({
                                 name: sessionTab.session.name,
                                 kindLabel: definition.label({
-                                    tabState: tab.state,
+                                    tabState,
                                     context: inputs.context,
                                 }),
                             })}
@@ -668,7 +622,7 @@ export const VirPaneGroup = defineAppElement<{
             const label =
                 tab.name ||
                 definition.label({
-                    tabState: tab.state,
+                    tabState,
                     context: inputs.context,
                 });
             return {
@@ -680,7 +634,7 @@ export const VirPaneGroup = defineAppElement<{
                         ${renderKindTooltip({
                             name: tab.name,
                             kindLabel: definition.label({
-                                tabState: tab.state,
+                                tabState,
                                 context: inputs.context,
                             }),
                         })}
@@ -821,15 +775,10 @@ export const VirPaneGroup = defineAppElement<{
                                     ...view,
                                     tabId: entry.tab.id,
                                     kind: entry.tab.kind,
-                                    paneState: resolvePaneState(
-                                        {
-                                            selectedFolder: inputs.folder,
-                                            diffView: DiffView.Source,
-                                            diffSelections: {},
-                                            activityPaths: [],
-                                        },
-                                        entry.tab,
-                                    ),
+                                    tabState: resolveTabState({
+                                        tabStateShape: entry.pane.tabStateShape,
+                                        tabState: entry.tab.state,
+                                    }),
                                     isDisplayed: displayedTabIds.includes(entry.tab.id),
                                     sessionTab: entry.sessionTab,
                                 })}

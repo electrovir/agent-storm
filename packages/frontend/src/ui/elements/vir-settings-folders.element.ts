@@ -1,11 +1,15 @@
 import {folderSettingsEndpoint, type FolderInfo, type Settings} from '@agent-storm/common';
-import {defineAppElement, fetchApi} from '@agent-storm/core/frontend';
+import {
+    defineAppElement,
+    fetchApi,
+    settingsCardCss,
+    VirSettingsRow,
+    type ValueUpdate,
+} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {HttpMethod} from '@rest-vir/api';
 import {asyncProp, css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {ViraDropdown, ViraInput} from 'vira';
-import {type ValueUpdate} from '../../util/batched-writer.js';
-import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 
 function toFolderLabel(folder: Readonly<FolderInfo>, folderInfo: ReadonlyMap<string, FolderInfo>) {
     const parentName = folder.parentRepoPath && folderInfo.get(folder.parentRepoPath)?.name;

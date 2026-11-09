@@ -1,6 +1,7 @@
 import {ForgeType, GitHubReaction} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, removeDuplicates} from '@augment-vir/common';
+import {runCommand} from 'agent-storm';
 import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
 import {
     assertWrapValidShape,
@@ -30,7 +31,6 @@ import {
     RawReviewState,
     runningCheckStatuses,
 } from './github-raw-enums.js';
-import {runCommand} from './run-command.js';
 import {loadSettings} from './settings.js';
 
 /** Gating jobs that only go green once everything else does, so they never count as failing work. */
@@ -202,6 +202,12 @@ function toLogin(value: Readonly<{login: string}> | null | undefined) {
 function isAiBody(body: string) {
     return body.startsWith('AI: ');
 }
+
+/**
+ * Marks the file comment that says why watch mode re-requested a review. Only the reviewer resolves
+ * it, so it is never work for a pass and never holds up the merge.
+ */
+export const reviewRequestNoteMarker = '<!-- watch-mode-review-request -->';
 
 /** Written by someone GitHub lists as having access to the repo, or by a trusted review bot. */
 function isTrustedComment({
@@ -389,7 +395,12 @@ export function classifyPrCheck({
     const assignees = pr.assignees.map(toLogin).filter(check.isTruthy);
     const authorLogin = toLogin(pr.author);
     const unresolvedThreads = threads
-        .filter((thread) => !thread.isResolved)
+        .filter((thread) => {
+            return (
+                !thread.isResolved &&
+                !thread.comments.nodes[0]?.body.includes(reviewRequestNoteMarker)
+            );
+        })
         .map((thread) => {
             return {
                 id: thread.id,

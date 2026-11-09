@@ -1,4 +1,4 @@
-import {PaneStatus, PrStatus, type ReviewQueuePr} from '@agent-storm/common';
+import {PaneStatus, PrStatus} from '@agent-storm/common';
 import {html} from 'element-vir';
 import {
     createColoredIcon,
@@ -116,10 +116,4 @@ export function renderPaneChip(label: string, status: PaneStatus) {
             })}></${ViraIcon}>
         </span>
     `;
-}
-
-export type ReviewedRepo = Pick<ReviewQueuePr, 'owner' | 'repoName'>;
-
-export function toRepoKey({owner, repoName}: Readonly<ReviewedRepo>) {
-    return `${owner}/${repoName}`;
 }

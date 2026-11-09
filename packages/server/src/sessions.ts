@@ -16,13 +16,12 @@ import {
     wrapInTry,
     type MaybePromise,
 } from '@augment-vir/common';
+import {normalizePath, writeFileAtomically} from 'agent-storm';
 import {readdir, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
 import {defaultSessionId} from './daemon/protocol.js';
 import {conversationStateDir, sessionStorePath} from './file-paths.js';
-import {normalizePath} from './paths.js';
-import {writeFileAtomically} from './write-file-atomically.js';
 
 /**
  * On-disk shape: folder path → per-kind ordered session lists. Folder keys are always normalized
@@ -94,12 +93,10 @@ export function parseSessionStore(contents: string): SessionStore {
                               };
                     });
             });
-            return getEnumValues(PaneKind).some((kind) => sessions[kind].length)
-                ? {
-                      ...store,
-                      [normalizePath(folder)]: sessions,
-                  }
-                : store;
+            return {
+                ...store,
+                [normalizePath(folder)]: sessions,
+            };
         },
         {},
     );
@@ -155,33 +152,29 @@ function writeFolder(folder: string, sessions: FolderSessions): void {
 }
 
 /**
- * Read a folder's sessions, materializing the implicit first session when none is stored yet. That
- * lazy default is what preserves single-pane behavior for every folder that existed before
- * multi-session: the user sees one tab, and its id is {@link defaultSessionId} so an attach carrying
- * no `sessionId` resolves to the same PTY.
+ * Read a folder's sessions, materializing the implicit first session when the folder has no stored
+ * entry yet. A folder whose tabs the user closed keeps its empty lists. That lazy default is what
+ * preserves single-pane behavior for every folder that existed before multi-session: the user sees
+ * one tab, and its id is {@link defaultSessionId} so an attach carrying no `sessionId` resolves to
+ * the same PTY.
  */
 export async function getFolderSessions(folderPath: string): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
     const store = await loadStore();
     const existing = store[folder];
-    const ensured = mapEnumToObject(PaneKind, (kind) => {
-        return existing?.[kind].length
-            ? existing[kind]
-            : [
-                  createSessionMeta({
-                      id: defaultSessionId,
-                      isNewConversation: false,
-                  }),
-              ];
-    });
-    /**
-     * Only touch disk when the defaults were actually synthesized, so a plain read of an
-     * already-populated folder stays read-only.
-     */
-    if (getEnumValues(PaneKind).some((kind) => !existing?.[kind].length)) {
-        writeFolder(folder, ensured);
+    if (existing) {
+        return existing;
     }
-    return ensured;
+    const defaults = mapEnumToObject(PaneKind, () => {
+        return [
+            createSessionMeta({
+                id: defaultSessionId,
+                isNewConversation: false,
+            }),
+        ];
+    });
+    writeFolder(folder, defaults);
+    return defaults;
 }
 
 /**
@@ -419,7 +412,8 @@ function pruneSessionListAiIds({
 export async function pruneSessionAiIds({
     findValidAiIds,
 }: Readonly<{
-    findValidAiIds: (folder: string) => MaybePromise<ReadonlyArray<string>>;
+    /** Undefined leaves the folder's overrides alone. */
+    findValidAiIds: (folder: string) => MaybePromise<ReadonlyArray<string> | undefined>;
 }>) {
     const validAiIdsByFolder = new Map(
         await Promise.all(
@@ -469,27 +463,7 @@ export async function pruneSessionAiIds({
     persistStore(updated);
 }
 
-/**
- * Whether {@link removeFolderSession} would drop the session: it exists and isn't the last one of
- * its kind.
- */
-export function isFolderSessionRemovable({
-    sessions,
-    kind,
-    sessionId,
-}: Readonly<{
-    sessions: Readonly<FolderSessions>;
-    kind: PaneKind;
-    sessionId: string;
-}>) {
-    return sessions[kind].length > 1 && sessions[kind].some((session) => session.id === sessionId);
-}
-
-/**
- * Remove a session from the list. Refuses to drop the last remaining session of a kind — a pane
- * with zero tabs has nothing to render, and the lazy default in {@link getFolderSessions} would
- * immediately recreate one anyway.
- */
+/** Remove a session from the list, including a kind's last one. */
 export async function removeFolderSession({
     folder: folderPath,
     kind,
@@ -502,14 +476,7 @@ export async function removeFolderSession({
     const folder = normalizePath(folderPath);
     const current = await getFolderSessions(folder);
     const removedSession = current[kind].find((session) => session.id === sessionId);
-    if (
-        !removedSession ||
-        !isFolderSessionRemovable({
-            sessions: current,
-            kind,
-            sessionId,
-        })
-    ) {
+    if (!removedSession) {
         return {
             sessions: current,
             removed: false,
@@ -590,6 +557,28 @@ export async function reconcileFolderSessions({
         writeFolder(folder, merged);
     }
     return merged;
+}
+
+/**
+ * The id of a folder's first session of `kind`, creating one when the user has closed every tab of
+ * that kind.
+ */
+export async function findOrCreateFirstSession({
+    folder,
+    kind,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+}>) {
+    const firstId = (await getFolderSessions(folder))[kind][0]?.id;
+    if (firstId) {
+        return firstId;
+    }
+    const created = await createFolderSession({
+        folder,
+        kind,
+    });
+    return created[kind].at(-1)?.id || defaultSessionId;
 }
 
 /**

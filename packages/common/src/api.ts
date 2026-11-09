@@ -7,9 +7,9 @@ import {
     exactShape,
     nullableShape,
     optionalShape,
-    partialShape,
     recordShape,
     unionShape,
+    unknownShape,
 } from 'object-shape-tester';
 import {
     mapSchemaToShape,
@@ -453,6 +453,22 @@ export const settingsJsonSchema = {
             description:
                 "When on, agent-storm stops checking GitHub for new commits on the dev branch and hides the sidebar's update banner.",
         },
+        /** Intentionally absent from `required` so configs written by older builds still load. */
+        disableAutoWatchMode: {
+            type: 'boolean',
+            default: false,
+            title: 'Disable automatic watch mode',
+            description:
+                'When on, watch mode only runs where you turn it on. Agent-storm stops turning it on for checkouts of PRs assigned to you, for a checkout once its `/manual-review here` verdict posts, and for folders it paused while they had nothing to do.',
+        },
+        /** Intentionally absent from `required` so configs written by older builds still load. */
+        disableAutoManualReview: {
+            type: 'boolean',
+            default: false,
+            title: 'Disable automatic manual reviews',
+            description:
+                "When on, a manual review only starts when you click Start Manual Review. Agent-storm stops starting reviews for PRs waiting on you, restarting them when your review is requested again or the PR gets new commits, and reviewing a Build folder's branch once it gets a PR.",
+        },
         /**
          * Path to a TLS certificate. When set, the vite dev server serves the frontend over https
          * with it, pairing it with the key file of the same name — see `readTlsOptions` in
@@ -483,6 +499,24 @@ export const settingsJsonSchema = {
 } as const satisfies JSONSchema;
 
 export const settingsShape = mapSchemaToShape(settingsJsonSchema);
+
+/** Setting keys that a settings section's own element renders instead of a generic schema row. */
+export const customSettingKeys = [
+    'aiDefinitions',
+    'defaultAiId',
+    'folderPostWorktreeCmds',
+    'review',
+    'folderAiIds',
+    'forges',
+] as const satisfies ReadonlyArray<keyof typeof settingsJsonSchema.properties>;
+
+type CustomSettingKey = (typeof customSettingKeys)[number];
+
+/** Settings that the Settings modal can render as a row built from the setting's schema. */
+export type SchemaSettingKey = Exclude<
+    keyof typeof settingsJsonSchema.properties,
+    CustomSettingKey
+>;
 
 /**
  * What a folder's own `.agent-storm/settings.*` file may set. Every key is optional: a folder file
@@ -777,15 +811,24 @@ const pathCreateResponseShape = defineShape({
 });
 
 /**
- * Result of the backend's "is this checkout behind upstream `dev`?" probe. All three fields are
- * nullable: when the backend can't determine status (not a git checkout, `git ls-remote` failed,
- * the user disabled the check, etc.) every field is `null` and the sidebar suppresses its update
- * banner. `isUpToDate === false` is the only signal that triggers the banner.
+ * Result of the backend's "is a newer agent-storm out?" probe: a checkout against upstream `dev`, a
+ * release against the latest GitHub release. When the backend can't determine status (`git
+ * ls-remote` failed, GitHub is unreachable, the user disabled the check, etc.) `isUpToDate` is
+ * `null` and the sidebar suppresses its update banner. `isUpToDate === false` is the only signal
+ * that triggers the banner.
  */
 const updateStatusResponseShape = defineShape({
     isUpToDate: nullableShape(false),
-    currentSha: nullableShape(''),
-    latestSha: nullableShape(''),
+    /** A release's version tag, or a checkout's commit. */
+    currentVersion: nullableShape(''),
+    latestVersion: nullableShape(''),
+    /**
+     * Whether `installUpdateEndpoint` can install the latest version. A checkout updates by
+     * pulling.
+     */
+    canInstall: false,
+    /** A release version that failed to install or to start. It isn't installed again. */
+    failedVersion: nullableShape(''),
 });
 
 const repoTouchRequestShape = defineShape({
@@ -1665,31 +1708,39 @@ export const folderSettingsEndpoint = defineEndpoint({
     },
 });
 
+/** The side a diff list reads as one stacked review, or `false` for a single-file diff. */
+export const diffReviewSideShape = unionShape(enumShape(GitDiffSide), exactShape(false));
+
 /** What one of a Diff tab's diff lists has open. */
 export const diffSelectionShape = defineShape({
     /** The open file, as the list's side-plus-path select value. */
     file: optionalShape('', {
         alsoUndefined: true,
     }),
-    /** The side read as one stacked review, or `false` for a single-file diff. */
-    reviewSide: optionalShape(unionShape(enumShape(GitDiffSide), exactShape(false)), {
+    reviewSide: optionalShape(diffReviewSideShape, {
         alsoUndefined: true,
     }),
+    /** The list's collapsed side sections. A missing side is expanded. */
+    collapsedSides: optionalShape(
+        recordShape({
+            keys: enumShape(GitDiffSide),
+            values: false,
+            partial: true,
+        }),
+        {
+            alsoUndefined: true,
+        },
+    ),
 });
 
 export type DiffSelection = typeof diffSelectionShape.runtimeType;
 
-/**
- * Every value a pane reads. The pane group supplies them all, and a tab's own `state` overrides any
- * of them for that tab alone.
- */
-export const paneStateShape = defineShape({
-    /** The folder the pane shows. */
-    selectedFolder: '',
-    /** Which checkout a Diff tab shows. */
+/** A Diff tab's own state. */
+export const diffTabStateShape = defineShape({
+    /** Which checkout the tab shows. */
     diffView: enumShape(DiffView),
     /**
-     * What a Diff tab's list for each checkout has open. A missing value falls back to whatever any
+     * What the tab's list for each checkout has open. A missing value falls back to whatever any
      * Diff tab last opened in that checkout.
      */
     diffSelections: recordShape({
@@ -1697,11 +1748,28 @@ export const paneStateShape = defineShape({
         values: diffSelectionShape,
         partial: true,
     }),
-    /** An Activity tab's own app route: its activity's id, then what that activity selects. */
+});
+
+export type DiffTabState = typeof diffTabStateShape.runtimeType;
+
+/** An Activity tab's own state. */
+export const activityTabStateShape = defineShape({
+    /** The tab's own app route: its activity's id, then what that activity selects. */
     activityPaths: [''],
 });
 
-export type PaneState = typeof paneStateShape.runtimeType;
+export type ActivityTabState = typeof activityTabStateShape.runtimeType;
+
+/**
+ * A tab's own state. Only the tab's pane reads it, through the pane's own state shape, so each pane
+ * picks its own keys.
+ */
+export const tabStateShape = recordShape({
+    keys: '',
+    values: unknownShape(),
+});
+
+export type TabState = typeof tabStateShape.runtimeType;
 
 export const paneTabShape = defineShape({
     /** `${kind}:${sessionId}` for a session tab. Any other tab's id only has to be unique. */
@@ -1716,7 +1784,7 @@ export const paneTabShape = defineShape({
         alsoUndefined: true,
     }),
     /** Set by whoever opens or changes the tab. */
-    state: optionalShape(partialShape(paneStateShape), {
+    state: optionalShape(tabStateShape, {
         alsoUndefined: true,
     }),
 });
@@ -1889,6 +1957,93 @@ export const updateCheckEndpoint = defineEndpoint({
     },
 });
 
+/**
+ * Starts installing the latest release in the background, then switches to it. The update check's
+ * `currentVersion` becomes the new version once it runs, or its `failedVersion` does when it
+ * fails.
+ */
+export const installUpdateEndpoint = defineEndpoint({
+    path: '/update-install',
+    requests: {
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** The first-run setup's steps, and which of them are already done. */
+const onboardingStatusShape = defineShape({
+    /** Setup was never finished or skipped, and no folder is saved yet. */
+    shouldShowOnboarding: false,
+    /** A named instance runs the default instance's hooks, so it can't install its own. */
+    canInstallClaudeHooks: false,
+    areClaudeHooksInstalled: false,
+    /** `gh auth status` succeeds. */
+    isGitHubConnected: false,
+    /** Only a release started by `npx agent-storm`, on macOS or Linux, can start at login. */
+    canStartAtLogin: false,
+    isStartAtLoginEnabled: false,
+});
+
+export const onboardingEndpoint = defineEndpoint({
+    path: '/onboarding',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: onboardingStatusShape,
+                },
+            },
+        },
+        /** Records that setup was finished or skipped, so it never opens on its own again. */
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: onboardingStatusShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Registers agent-storm's Claude Code hooks in `~/.claude/settings.json`, beside the user's own.
+ * Once any of them is registered, the server keeps them all current on every start.
+ */
+export const claudeHooksInstallEndpoint = defineEndpoint({
+    path: '/claude-hooks/install',
+    requests: {
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: onboardingStatusShape,
+                },
+            },
+        },
+    },
+});
+
+/** Adds or removes the login item. It takes effect at the next login and doesn't start anything now. */
+export const startAtLoginEndpoint = defineEndpoint({
+    path: '/start-at-login',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                isEnabled: false,
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: onboardingStatusShape,
+                },
+            },
+        },
+    },
+});
+
 export const createWorktreeEndpoint = defineEndpoint({
     path: '/worktrees/create',
     requests: {
@@ -2009,7 +2164,7 @@ export const sessionRenameEndpoint = defineEndpoint({
     },
 });
 
-/** Drops the session from the store and kills its PTY. Closing the last session is a no-op. */
+/** Drops the session from the store and kills its PTY. */
 export const sessionCloseEndpoint = defineEndpoint({
     path: '/sessions/close',
     requests: {
@@ -2411,6 +2566,10 @@ export const agentStormService = defineApi({
         activityBarSaveEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
+        installUpdateEndpoint,
+        onboardingEndpoint,
+        claudeHooksInstallEndpoint,
+        startAtLoginEndpoint,
         createWorktreeEndpoint,
         deleteWorktreeEndpoint,
         restartPaneEndpoint,
@@ -2478,6 +2637,7 @@ export type FolderInfo = typeof folderInfoShape.runtimeType;
 export type FolderActivation = typeof folderActivationShape.runtimeType;
 export type PaneSessionStatus = typeof paneSessionStatusShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
+export type OnboardingStatus = typeof onboardingStatusShape.runtimeType;
 export type SessionMeta = typeof sessionMetaShape.runtimeType;
 export type FolderSessions = typeof folderSessionsShape.runtimeType;
 export type PaneStatuses = typeof paneStatusesShape.runtimeType;

@@ -8,6 +8,7 @@ import {
     aiAvatarEndpoint,
     aiAvatarUploadEndpoint,
     checkPathEndpoint,
+    claudeHooksInstallEndpoint,
     clientErrorEndpoint,
     closeEditorWindowEndpoint,
     createPathEndpoint,
@@ -33,9 +34,11 @@ import {
     gitStageFileEndpoint,
     gitStageHunkEndpoint,
     hideRepoEndpoint,
+    installUpdateEndpoint,
     killPanesEndpoint,
     manualReviewCopyEndpoint,
     manualReviewStateEndpoint,
+    onboardingEndpoint,
     paneInputEndpoint,
     PaneKind,
     paneKindRunsAi,
@@ -51,6 +54,7 @@ import {
     sessionRenameEndpoint,
     sessionSetAiEndpoint,
     settingsEndpoint,
+    startAtLoginEndpoint,
     tabLayoutSaveEndpoint,
     touchRepoEndpoint,
     uiLayoutEndpoint,
@@ -68,15 +72,16 @@ import {
     log,
     mapEnumToObject,
     omitObjectKeys,
-    replaceExtension,
     wait,
 } from '@augment-vir/common';
+import fastifyStatic from '@fastify/static';
 import {type OriginRequirement} from '@rest-vir/api';
 import {attachApi, createApiImplementor, implementApi, silentServerLogger} from '@rest-vir/host';
+import {defaultPorts, instanceName, normalizePath, PortEnvVar, readEnvPort} from 'agent-storm';
 import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
 import fastify from 'fastify';
 import {appendFileSync, writeFileSync} from 'node:fs';
-import {appendFile, mkdir, readFile, stat} from 'node:fs/promises';
+import {appendFile, mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {getFolderActivation, startLaunchRequestWatch, type LaunchRequest} from './agent-launch.js';
 import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
@@ -96,17 +101,17 @@ import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
 import {
     clientErrorLogPath,
     folderActivityPath,
-    instanceName,
     legacyFolderActivityPath,
     legacyReviewsDir,
     legacySessionStorePath,
     manualReviewSkillDir,
+    releaseFrontendDir,
     serverLogPath,
     sessionStorePath,
 } from './file-paths.js';
 import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
-import {loadFolderSettings, readFolderSettingsFiles} from './folder-settings.js';
+import {readFolderSettingsFiles} from './folder-settings.js';
 import {
     discardFileChanges,
     discardHunkChanges,
@@ -134,9 +139,10 @@ import {
     resolveReviewFolder,
     startPostedVerdictWatch,
 } from './github-review-queue.js';
-import {installClaudeHooks} from './install-claude-hooks.js';
+import {installClaudeHooks, updateInstalledClaudeHooks} from './install-claude-hooks.js';
 import {readManualReviewState} from './manual-review-state.js';
 import {migrateReviewFolders} from './migrate-review-folders.js';
+import {finishOnboarding, readOnboardingStatus, setStartAtLogin} from './onboarding.js';
 import {
     launchFolderSession,
     resolveAiForSession,
@@ -146,9 +152,8 @@ import {
     sendPaneText,
     spawnPane,
 } from './pane-launch.js';
-import {normalizePath} from './paths.js';
-import {defaultPorts, PortEnvVar, readEnvPort} from './ports.js';
 import {getLivePaneSessionIds, invalidatePaneStatuses} from './pty.js';
+import {launcherOriginEnvVar, releaseBuild} from './release-build.js';
 import {startReviewAutoStart} from './review-auto-start.js';
 import {
     addReviewComment,
@@ -159,8 +164,6 @@ import {
 import {
     createFolderSession,
     forgetFolderSessions,
-    getFolderSessions,
-    isFolderSessionRemovable,
     pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
@@ -178,6 +181,7 @@ import {
     setFolderAiId,
     updateSettings,
 } from './settings.js';
+import {readTlsOptions} from './tls-options.js';
 import {
     deleteFolderState,
     loadUiLayout,
@@ -186,7 +190,7 @@ import {
     saveActivityBar,
     saveTabLayout,
 } from './ui-layout.js';
-import {getUpdateStatus} from './update-check.js';
+import {getUpdateStatus, startUpdateInstall} from './update-check.js';
 import {saveUpload} from './uploads.js';
 import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
 
@@ -264,7 +268,7 @@ const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
  * The hooks go first so running Claude sessions stop writing to the old conversation state folder
  * before it's moved.
  */
-await installClaudeHooks();
+await updateInstalledClaudeHooks();
 await migrateLegacyConfigFiles();
 
 await migrateReviewFolders({
@@ -327,9 +331,14 @@ const settingsImplementation = implementor.implementEndpoint(settingsEndpoint, {
         const settings = await loadSettings();
         await pruneSessionAiIds({
             async findValidAiIds(folder) {
+                const files = await readFolderSettingsFiles(normalizePath(folder));
+                /** A file that's unreadable or held back may define AIs that tabs still use. */
+                if (files.some((file) => file.problem)) {
+                    return undefined;
+                }
                 return combineAiDefinitions({
                     settings,
-                    folderLayers: await loadFolderSettings(folder),
+                    folderLayers: files.map((file) => file.folderSettings).filter(check.isTruthy),
                 }).map((definition) => definition.id);
             },
         });
@@ -489,6 +498,59 @@ const updateCheckImplementation = implementor.implementEndpoint(updateCheckEndpo
     },
 });
 
+const installUpdateImplementation = implementor.implementEndpoint(installUpdateEndpoint, {
+    async [HttpMethod.Post]() {
+        await startUpdateInstall();
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const onboardingImplementation = implementor.implementEndpoint(onboardingEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readOnboardingStatus(),
+            },
+        };
+    },
+    async [HttpMethod.Post]() {
+        await finishOnboarding();
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readOnboardingStatus(),
+            },
+        };
+    },
+});
+
+const claudeHooksInstallImplementation = implementor.implementEndpoint(claudeHooksInstallEndpoint, {
+    async [HttpMethod.Post]() {
+        await installClaudeHooks();
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readOnboardingStatus(),
+            },
+        };
+    },
+});
+
+const startAtLoginImplementation = implementor.implementEndpoint(startAtLoginEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await setStartAtLogin(requestData.isEnabled);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readOnboardingStatus(),
+            },
+        };
+    },
+});
+
 const createWorktreeImplementation = implementor.implementEndpoint(createWorktreeEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         const {worktreePath} = await addWorktree(requestData);
@@ -603,27 +665,16 @@ const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEnd
          * Kill the PTY and drop the cached daemon snapshot before removing the tab. The other order
          * leaves a window where the tab is gone but a snapshot still lists its PTY as live, and any
          * session-list request in that window has `reconcileFolderSessions` re-add it as an unnamed
-         * tab. The check for whether the tab can close comes first because closing the last
-         * remaining session is refused store-side, and killing its process while the tab stays
-         * visible would leave the user looking at a dead terminal with no obvious way to revive
-         * it.
+         * tab.
          */
-        if (
-            isFolderSessionRemovable({
-                sessions: await getFolderSessions(folder),
-                kind: requestData.kind,
-                sessionId: requestData.sessionId,
-            })
-        ) {
-            await killPaneSession({
-                folder,
-                kind: requestData.kind,
-                sessionId: requestData.sessionId,
-            }).catch(() => {
-                /* no live PTY for this session (never attached, or daemon restarted) */
-            });
-            invalidatePaneStatuses();
-        }
+        await killPaneSession({
+            folder,
+            kind: requestData.kind,
+            sessionId: requestData.sessionId,
+        }).catch(() => {
+            /* no live PTY for this session (never attached, or daemon restarted) */
+        });
+        invalidatePaneStatuses();
         const {sessions} = await removeFolderSession({
             folder,
             kind: requestData.kind,
@@ -1439,6 +1490,10 @@ const implementation = implementApi<undefined>()(agentStormService, {
         activityBarSaveImplementation,
         foldersImplementation,
         updateCheckImplementation,
+        installUpdateImplementation,
+        onboardingImplementation,
+        claudeHooksInstallImplementation,
+        startAtLoginImplementation,
         createWorktreeImplementation,
         deleteWorktreeImplementation,
         restartPaneImplementation,
@@ -1487,39 +1542,11 @@ const implementation = implementApi<undefined>()(agentStormService, {
     webSockets: [ptyImplementation],
 });
 
-/**
- * This server has to match whatever scheme the frontend is served over, because the browser builds
- * its URL from `location.protocol` (see `getBackendBaseUrl` in
- * `packages/core/src/frontend/util/service-origin.ts`). An http backend behind an https page fails
- * every request at the TLS handshake. `tlsCertPath` is the single switch for both, and the key is
- * the file of the same name beside the certificate — same convention as
- * `packages/frontend/configs/vite.config.ts`.
- */
-async function readTlsOptions() {
-    const certPath = await loadSettings()
-        .then((settings) => settings.tlsCertPath || '')
-        .catch(() => '');
-    if (!certPath) {
-        return undefined;
-    }
-    const keyPath = replaceExtension({
-        path: certPath,
-        newExtension: '.key',
-    });
-    try {
-        return {
-            cert: await readFile(certPath),
-            key: await readFile(keyPath),
-        };
-    } catch (error) {
-        log.warning(
-            `Serving over http: failed to read TLS cert "${certPath}" / key "${keyPath}": ${String(error)}`,
-        );
-        return undefined;
-    }
-}
+/** Set when a release's launcher started this server, to the origin the launcher serves. */
+const launcherOrigin = process.env[launcherOriginEnvVar] || undefined;
 
-const tlsOptions = await readTlsOptions();
+/** Behind the launcher, the browser's TLS ends at the launcher, which owns the public port. */
+const tlsOptions = launcherOrigin ? undefined : await readTlsOptions();
 
 /**
  * Custom Fastify instance so we can raise `bodyLimit` past Fastify's 1 MB default. Image uploads
@@ -1542,17 +1569,29 @@ const server = fastify({
         : {}),
 });
 await attachApi(server, implementation, {
-    externalOrigin: `${tlsOptions ? 'https' : 'http'}://localhost:${port}`,
+    externalOrigin: launcherOrigin || `${tlsOptions ? 'https' : 'http'}://localhost:${port}`,
 });
+if (releaseBuild) {
+    await server.register(fastifyStatic, {
+        root: releaseFrontendDir,
+    });
+    /** The frontend routes by URL path, so every page load gets the app itself. */
+    server.setNotFoundHandler(async (request, reply) => {
+        if (request.method !== 'GET') {
+            return await reply.code(HttpStatus.NotFound).send();
+        }
+        return await reply.sendFile('index.html');
+    });
+}
 /**
  * Bind to `0.0.0.0` so the dev server is reachable over LAN (testing the UI from a phone or another
  * laptop after running the vite frontend with `--host`). The auth-secret check in
  * `createHostContext` is what actually keeps a LAN attacker out — the bind alone is just a
- * reachability concern.
+ * reachability concern. Behind the launcher, only the launcher needs to reach this server.
  */
 const listenAddress = await server.listen({
     port,
-    host: '0.0.0.0',
+    host: launcherOrigin ? '127.0.0.1' : '0.0.0.0',
 });
 
 await startLaunchRequestWatch(launchRequestedSession);

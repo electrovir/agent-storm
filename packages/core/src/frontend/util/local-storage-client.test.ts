@@ -1,36 +1,41 @@
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {localStorageClient, scrollbackLimit} from './local-storage-client.js';
+import {defineFolderSetting, localStorageClient, scrollbackLimit} from './local-storage-client.js';
 
 describe('localStorageClient', () => {
+    const fileByFolder = defineFolderSetting({
+        key: 'agent-storm:test:file-by-folder',
+        valueShape: '',
+    });
+
     it('writes and removes one folder’s entry without touching the others', () => {
-        localStorageClient.diffFileByFolder.clear();
-        localStorageClient.diffFileByFolder.writeFolder({
+        fileByFolder.clear();
+        fileByFolder.writeFolder({
             folder: '/repo-a',
             value: 'a.ts',
         });
-        localStorageClient.diffFileByFolder.writeFolder({
+        fileByFolder.writeFolder({
             folder: '/repo-b',
             value: 'b.ts',
         });
-        localStorageClient.diffFileByFolder.writeFolder({
+        fileByFolder.writeFolder({
             folder: '/repo-a',
             value: undefined,
         });
-        assert.deepEquals(localStorageClient.diffFileByFolder.read(), {
+        assert.deepEquals(fileByFolder.read(), {
             '/repo-b': 'b.ts',
         });
-        localStorageClient.diffFileByFolder.clear();
+        fileByFolder.clear();
     });
     it('discards a stored map that does not match its shape', () => {
         globalThis.localStorage.setItem(
-            localStorageClient.diffFileByFolder.key,
+            fileByFolder.key,
             JSON.stringify({
                 '/repo': 5,
             }),
         );
-        assert.deepEquals(localStorageClient.diffFileByFolder.read(), {});
-        localStorageClient.diffFileByFolder.clear();
+        assert.deepEquals(fileByFolder.read(), {});
+        fileByFolder.clear();
     });
     it('clamps a stored number into its bounds and rounds integer settings', () => {
         globalThis.localStorage.setItem(localStorageClient.scrollbackLimit.key, '12.6');

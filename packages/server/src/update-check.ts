@@ -1,9 +1,19 @@
 // cspell:words askpass
 
 import {type UpdateStatus} from '@agent-storm/common';
+import {extractErrorMessage, log} from '@augment-vir/common';
+import {
+    fetchLatestVersion,
+    installRelease,
+    isNewerVersion,
+    isReleaseVersion,
+    readActiveVersions,
+    runCommand,
+    versionsDir,
+} from 'agent-storm';
 import {type AnyDuration, convertDuration} from 'date-vir';
 import {monorepoRoot} from './file-paths.js';
-import {runCommand} from './run-command.js';
+import {type launcherSwitchRequestShape, type ReleaseBuild, releaseBuild} from './release-build.js';
 import {loadSettings} from './settings.js';
 
 /**
@@ -13,26 +23,53 @@ import {loadSettings} from './settings.js';
 const upstreamBranch = 'dev';
 
 /**
- * Cache window for the remote SHA. The remote lookup costs one git protocol round-trip per call, so
- * a TTL of minutes keeps polling traffic flat while still letting the banner clear within minutes
- * of a fresh push landing on `dev`. Negative results (network down, branch missing) honor the same
- * TTL so a sustained outage doesn't have us re-running `git ls-remote` every sidebar poll.
+ * Cache window for the remote lookups (the upstream SHA, the latest release). Each costs a network
+ * round-trip per call, so a TTL of minutes keeps polling traffic flat while still letting the
+ * banner clear within minutes of a fresh push landing on `dev`. Negative results (network down,
+ * branch missing) honor the same TTL so a sustained outage doesn't have us re-running the lookup
+ * every sidebar poll.
  */
-const remoteShaCacheTtl: AnyDuration = {
+const remoteLookupCacheTtl: AnyDuration = {
     minutes: 10,
 };
 
 const fullShaPattern = /^[0-9a-f]{40}$/i;
 
-const remoteShaState: {
-    sha: string | undefined;
-    fetchedAt: number;
-    inFlight: Promise<string | undefined> | undefined;
-} = {
-    sha: undefined,
-    fetchedAt: 0,
-    inFlight: undefined,
-};
+/** Wraps `lookup` so its result, `undefined` included, is reused for {@link remoteLookupCacheTtl}. */
+function createCachedLookup<T>(lookup: () => Promise<T | undefined>) {
+    const cache: {
+        value: T | undefined;
+        fetchedAt: number;
+        inFlight: Promise<T | undefined> | undefined;
+    } = {
+        value: undefined,
+        fetchedAt: 0,
+        inFlight: undefined,
+    };
+    return async function getCachedValue(): Promise<T | undefined> {
+        if (
+            cache.fetchedAt > 0 &&
+            Date.now() - cache.fetchedAt <
+                convertDuration(remoteLookupCacheTtl, {
+                    milliseconds: true,
+                }).milliseconds
+        ) {
+            return cache.value;
+        } else if (cache.inFlight) {
+            return cache.inFlight;
+        }
+        cache.inFlight = lookup()
+            .then((value) => {
+                cache.value = value;
+                cache.fetchedAt = Date.now();
+                return value;
+            })
+            .finally(() => {
+                cache.inFlight = undefined;
+            });
+        return cache.inFlight;
+    };
+}
 
 /**
  * Run `git` inside the agent-storm checkout with all credential prompting disabled — a missing or
@@ -111,46 +148,42 @@ async function fetchRemoteSha(): Promise<string | undefined> {
     return sha && fullShaPattern.test(sha) ? sha : undefined;
 }
 
-async function getRemoteSha(): Promise<string | undefined> {
-    if (
-        remoteShaState.fetchedAt > 0 &&
-        Date.now() - remoteShaState.fetchedAt <
-            convertDuration(remoteShaCacheTtl, {
-                milliseconds: true,
-            }).milliseconds
-    ) {
-        return remoteShaState.sha;
-    } else if (remoteShaState.inFlight) {
-        return remoteShaState.inFlight;
+const getRemoteSha = createCachedLookup(fetchRemoteSha);
+
+const getLatestReleaseVersion = createCachedLookup(async () => {
+    try {
+        return await fetchLatestVersion();
+    } catch {
+        return undefined;
     }
-    remoteShaState.inFlight = fetchRemoteSha()
-        .then((sha) => {
-            remoteShaState.sha = sha;
-            remoteShaState.fetchedAt = Date.now();
-            return sha;
-        })
-        .finally(() => {
-            remoteShaState.inFlight = undefined;
-        });
-    return remoteShaState.inFlight;
-}
+});
 
 /**
  * Sentinel returned whenever the backend can't (or has been told not to) determine update status.
- * The sidebar treats any field of `null` as "no banner" — only `isUpToDate === false` triggers the
- * "pull from github to update" notice.
+ * The sidebar treats `isUpToDate: null` as "no banner" — only `isUpToDate === false` triggers it.
  */
 const unknownUpdateStatus: UpdateStatus = {
     isUpToDate: null,
-    currentSha: null,
-    latestSha: null,
+    currentVersion: null,
+    latestVersion: null,
+    canInstall: false,
+    failedVersion: null,
 };
 
-export async function getUpdateStatus(): Promise<UpdateStatus> {
-    const settings = await loadSettings().catch(() => undefined);
-    if (settings?.disableUpdateCheck) {
-        return unknownUpdateStatus;
-    }
+const updateInstallState: {
+    inFlight: Promise<void> | undefined;
+    failedVersion: string | undefined;
+} = {
+    inFlight: undefined,
+    failedVersion: undefined,
+};
+
+/** Only a release started by the launcher has the IPC channel the switch request goes over. */
+function canSwitchVersions() {
+    return !!releaseBuild && process.send != undefined;
+}
+
+async function getCheckoutUpdateStatus(): Promise<UpdateStatus> {
     const [
         currentSha,
         remoteSha,
@@ -160,18 +193,84 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
     ]);
     if (!currentSha || !remoteSha) {
         return {
-            isUpToDate: null,
-            currentSha: currentSha || null,
-            latestSha: remoteSha || null,
+            ...unknownUpdateStatus,
+            currentVersion: currentSha || null,
+            latestVersion: remoteSha || null,
         };
     }
     return {
+        ...unknownUpdateStatus,
         /**
          * Ancestor check instead of plain equality so a local branch that has merged + committed
          * past the remote tip ("ahead") still reads as up-to-date and the banner stays hidden.
          */
         isUpToDate: await isRemoteShaAncestorOfHead(remoteSha),
-        currentSha,
-        latestSha: remoteSha,
+        currentVersion: currentSha,
+        latestVersion: remoteSha,
     };
+}
+
+async function getReleaseUpdateStatus(release: Readonly<ReleaseBuild>): Promise<UpdateStatus> {
+    const [
+        latestVersion,
+        activeVersions,
+    ] = await Promise.all([
+        getLatestReleaseVersion(),
+        readActiveVersions(versionsDir).catch(() => undefined),
+    ]);
+    const status: UpdateStatus = {
+        ...unknownUpdateStatus,
+        currentVersion: release.version,
+        latestVersion: latestVersion || null,
+        canInstall: canSwitchVersions(),
+        failedVersion: updateInstallState.failedVersion || activeVersions?.rejected || null,
+    };
+    /** A release built from an untagged commit has no version to compare. */
+    if (!latestVersion || !isReleaseVersion(release.version)) {
+        return status;
+    }
+    return {
+        ...status,
+        isUpToDate: !isNewerVersion({
+            version: latestVersion,
+            than: release.version,
+        }),
+    };
+}
+
+export async function getUpdateStatus(): Promise<UpdateStatus> {
+    const settings = await loadSettings().catch(() => undefined);
+    if (settings?.disableUpdateCheck) {
+        return unknownUpdateStatus;
+    }
+    return releaseBuild
+        ? await getReleaseUpdateStatus(releaseBuild)
+        : await getCheckoutUpdateStatus();
+}
+
+/**
+ * Installs the latest release in the background, then asks the launcher to switch to it. Does
+ * nothing while an install is already running.
+ */
+export async function startUpdateInstall() {
+    const version = await getLatestReleaseVersion();
+    if (!version || !canSwitchVersions()) {
+        throw new Error('This agent-storm cannot install updates itself.');
+    }
+    updateInstallState.inFlight ??= installRelease({
+        versionsDir,
+        version,
+    })
+        .then(() => {
+            process.send?.({
+                switchTo: version,
+            } satisfies typeof launcherSwitchRequestShape.runtimeType);
+        })
+        .catch((error: unknown) => {
+            updateInstallState.failedVersion = version;
+            log.error(`Failed to install agent-storm ${version}: ${extractErrorMessage(error)}`);
+        })
+        .finally(() => {
+            updateInstallState.inFlight = undefined;
+        });
 }

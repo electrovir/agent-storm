@@ -1,7 +1,9 @@
+import {replaceExtension} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
+import {instanceName, instanceSuffix, ReleaseDir, userDataDir} from 'agent-storm';
 import {homedir, tmpdir} from 'node:os';
 import {basename, resolve} from 'node:path';
-import {normalizePath} from './paths.js';
+import {releaseBuild} from './release-build.js';
 
 export const monorepoRoot = resolve(import.meta.dirname, '..', '..', '..');
 
@@ -20,60 +22,34 @@ export const runstormCliPath = resolve(
 
 export const nodePtyPrebuildsDir = resolve(monorepoRoot, 'node_modules', 'node-pty', 'prebuilds');
 
-/**
- * The env vars that keep one running agent-storm apart from another, so a debug copy can run beside
- * the everyday one. With both unset, every path is the default instance's.
- */
-export enum InstanceEnvVar {
-    /**
-     * Names the instance. Its name is appended to everything it would otherwise share with the
-     * default instance outside {@link userDataDir}: the pty daemon's socket, the logs, uploads, and
-     * {@link checkoutStateDir}.
-     */
-    Name = 'AGENT_STORM_INSTANCE',
-    /** Overrides {@link userDataDir}. */
-    DataDir = 'AGENT_STORM_DATA_DIR',
-}
-
-function readInstanceName() {
-    const name = process.env[InstanceEnvVar.Name] || '';
-    if (name && !/^[a-z0-9-]+$/.test(name)) {
-        throw new Error(
-            `${InstanceEnvVar.Name} may only hold lowercase letters, digits, and dashes, got "${name}".`,
-        );
-    }
-    return name;
-}
-
-/** Empty for the default instance. */
-export const instanceName = readInstanceName();
-const instanceSuffix = instanceName ? `-${instanceName}` : '';
-
-/** The default instance's {@link userDataDir}. */
-export const defaultUserDataDir = resolve(homedir(), '.agent-storm');
-
-/** Agent-storm's user-level files: config, its backups, and anything else that outlives a checkout. */
-export const userDataDir = normalizePath(
-    process.env[InstanceEnvVar.DataDir] || resolve(homedir(), `.agent-storm${instanceSuffix}`),
-);
+/** The launcher bundled beside a release's server. Only a release has it. */
+export const releaseLauncherPath = resolve(import.meta.dirname, 'launcher.js');
 
 /**
  * This instance's files inside {@link notCommittedDir}. Two instances run from one checkout must not
  * share pane sessions or caches, so a named instance gets a subdirectory.
  */
-export const checkoutStateDir = instanceName
+const checkoutStateDir = instanceName
     ? resolve(notCommittedDir, 'instances', instanceName)
     : notCommittedDir;
+
+/**
+ * The server's own files: its auth secret and on-disk caches. A release keeps them in
+ * {@link userDataDir} so they outlive switching to another release.
+ */
+export const serverStateDir = releaseBuild
+    ? resolve(userDataDir, 'server-state')
+    : checkoutStateDir;
 
 /**
  * Argon2id hash of the bearer secret used for browser ↔ backend auth. Only the hash is stored on
  * disk; the cleartext is shown once at startup and is required by the client.
  */
-export const authSecretPath = resolve(checkoutStateDir, 'auth-secret');
+export const authSecretPath = resolve(serverStateDir, 'auth-secret');
 
 /**
  * Filename portion of {@link authSecretPath}, used to filter `fs.watch` events on
- * {@link checkoutStateDir} (the watcher delivers basenames, not full paths).
+ * {@link serverStateDir} (the watcher delivers basenames, not full paths).
  */
 export const authSecretFileName = basename(authSecretPath);
 
@@ -81,7 +57,7 @@ export const authSecretFileName = basename(authSecretPath);
  * Persisted folder-info cache so the sidebar reappears with last-known git/PR/pane state on server
  * restart instead of waiting a full sweep cycle to repopulate.
  */
-export const folderInfoCachePath = resolve(checkoutStateDir, 'folder-info-cache.json');
+export const folderInfoCachePath = resolve(serverStateDir, 'folder-info-cache.json');
 
 /**
  * Persisted GitHub PR cache + auto-disable state. Survives server restarts so `tsx --watch` reloads
@@ -89,7 +65,7 @@ export const folderInfoCachePath = resolve(checkoutStateDir, 'folder-info-cache.
  * every file save, and so a rate-limit/auth auto-disable sticks until its expiry rather than
  * resetting on every restart.
  */
-export const githubCachePath = resolve(checkoutStateDir, 'github-cache.json');
+export const githubCachePath = resolve(serverStateDir, 'github-cache.json');
 
 /**
  * Per-folder session tab lists (order + user-assigned names) for each pane kind. Lives here rather
@@ -172,8 +148,26 @@ export const clientErrorLogPath = resolve(
     `agent-storm${instanceSuffix}-client-errors.log`,
 );
 
+/**
+ * A script the server spawns, from its source path. A release bundles each one into a `.js` file of
+ * the same name beside the server's own bundle.
+ */
+function toSpawnedScriptPath(sourcePath: string) {
+    return releaseBuild
+        ? resolve(
+              import.meta.dirname,
+              replaceExtension({
+                  path: basename(sourcePath),
+                  newExtension: '.js',
+              }),
+          )
+        : sourcePath;
+}
+
 /** Daemon entrypoint that `ensureDaemon` spawns when no daemon is alive on {@link daemonSocket}. */
-export const daemonScriptPath = resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts');
+export const daemonScriptPath = toSpawnedScriptPath(
+    resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts'),
+);
 
 /** Where review folders were kept before they moved into {@link manualReviewSkillDir}. */
 export const legacyReviewsDir = resolve(userDataDir, 'reviews');
@@ -221,7 +215,12 @@ export const agentLaunchRequestsDir = resolve(userDataDir, 'launch-requests');
  * Signs and submits a launch request. Its path is given to every AI tab as
  * `AGENT_STORM_LAUNCH_SCRIPT`.
  */
-export const agentLaunchScriptPath = resolve(import.meta.dirname, 'launch-session.script.ts');
+export const agentLaunchScriptPath = toSpawnedScriptPath(
+    resolve(import.meta.dirname, 'launch-session.script.ts'),
+);
+
+/** A release's built frontend, which its server serves. */
+export const releaseFrontendDir = resolve(import.meta.dirname, '..', ReleaseDir.Frontend);
 
 /** Held the Review tab's settings before they moved into the settings file. */
 export const legacyReviewConfigPath = resolve(userDataDir, 'review-config.json');
@@ -277,7 +276,7 @@ export const fileIconsDir = resolve(
 export const fileIconMapPath = resolve(
     monorepoRoot,
     'packages',
-    'diff',
+    'plugin-diff',
     'src',
     'util',
     'file-icon-map.generated.ts',

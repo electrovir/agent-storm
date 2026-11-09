@@ -1,74 +1,60 @@
-import {DiffView, ManualReviewStatus} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {resolveDiffView, resolvePaneState} from './pane-layout.js';
+import {defineShape} from 'object-shape-tester';
+import {resolveTabState} from './pane-layout.js';
 
-const startedReview = {
-    status: ManualReviewStatus.Started,
-    isPending: false,
-    lastUpdatedAt: 1,
-};
-
-describe(resolveDiffView.name, () => {
-    const baseParams = {
-        chosen: DiffView.ManualReview,
-        hasChanges: true,
-        reviewCopyFolder: undefined,
-        review: undefined,
-        isManualReviewStarting: false,
-    } as const;
-
-    it('falls back to a view with something to show', () => {
-        assert.strictEquals(resolveDiffView(baseParams).diffView, DiffView.Source);
+describe(resolveTabState.name, () => {
+    const tabStateShape = defineShape({
+        name: 'default',
+        paths: [
+            '',
+        ],
     });
 
-    it('keeps a chosen manual review while it is starting or available', () => {
+    it('uses the tab’s own valid values over the defaults', () => {
         assert.deepEquals(
             [
-                resolveDiffView({
-                    ...baseParams,
-                    isManualReviewStarting: true,
-                }).diffView,
-                resolveDiffView({
-                    ...baseParams,
-                    hasChanges: false,
-                    reviewCopyFolder: '/repos/copy',
-                    review: startedReview,
-                }).diffView,
-            ],
-            [
-                DiffView.ManualReview,
-                DiffView.ManualReview,
-            ],
-        );
-    });
-});
-
-describe(resolvePaneState.name, () => {
-    const shared = {
-        selectedFolder: '/repos/app',
-        diffView: DiffView.Source,
-        diffSelections: {},
-        activityPaths: [],
-    };
-
-    it('uses the tab’s own values over the shared ones', () => {
-        assert.deepEquals(
-            [
-                resolvePaneState(shared, undefined),
-                resolvePaneState(shared, {
-                    state: {
-                        diffView: DiffView.ManualReview,
+                resolveTabState({
+                    tabStateShape,
+                    tabState: undefined,
+                }),
+                resolveTabState({
+                    tabStateShape,
+                    tabState: {
+                        name: 'mine',
                     },
                 }),
             ],
             [
-                shared,
                 {
-                    ...shared,
-                    diffView: DiffView.ManualReview,
+                    name: 'default',
+                    paths: [],
+                },
+                {
+                    name: 'mine',
+                    paths: [],
                 },
             ],
+        );
+    });
+    it('replaces an invalid value with its default and drops unknown keys', () => {
+        assert.deepEquals(
+            resolveTabState({
+                tabStateShape,
+                tabState: {
+                    name: 5,
+                    paths: [
+                        'a',
+                    ],
+                    stale: true,
+                },
+            }),
+            {
+                name: 'default',
+                paths: [
+                    'a',
+                ],
+            },
         );
     });
 });

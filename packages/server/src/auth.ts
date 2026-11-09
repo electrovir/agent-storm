@@ -1,10 +1,12 @@
 import {check} from '@augment-vir/assert';
 import {ensureErrorAndPrependMessage, log} from '@augment-vir/common';
+import {pendingAuthSecretPath} from 'agent-storm';
 import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
 import {randomBytes} from 'node:crypto';
 import {watch, type FSWatcher} from 'node:fs';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
-import {authSecretFileName, authSecretPath, checkoutStateDir} from './file-paths.js';
+import {authSecretFileName, authSecretPath, serverStateDir} from './file-paths.js';
+import {launcherOriginEnvVar} from './release-build.js';
 
 /**
  * Argon2 encoded hashes always start with `$argon2`. Any other content (e.g. a plain-text key left
@@ -40,7 +42,7 @@ async function readStoredHash(): Promise<string | undefined> {
 async function generateAndStoreSecret(): Promise<string> {
     const cleartext = randomBytes(32).toString('hex');
     const hash = await hashPassword(cleartext);
-    await mkdir(checkoutStateDir, {
+    await mkdir(serverStateDir, {
         recursive: true,
     });
     authState.isWritingSelf = true;
@@ -55,7 +57,14 @@ async function generateAndStoreSecret(): Promise<string> {
     return cleartext;
 }
 
-function logNewSecret(cleartext: string): void {
+async function reportNewSecret(cleartext: string): Promise<void> {
+    if (process.env[launcherOriginEnvVar]) {
+        await writeFile(pendingAuthSecretPath, `${cleartext}\n`, {
+            mode: 0o600,
+        });
+        log.info('A new auth secret is waiting. Run `npx agent-storm` to print it.');
+        return;
+    }
     log.info(
         [
             `auth secret: ${cleartext}`,
@@ -71,7 +80,7 @@ async function loadOrGenerateSecret(): Promise<void> {
     if (existing) {
         authState.cachedHash = existing;
     } else {
-        logNewSecret(await generateAndStoreSecret());
+        await reportNewSecret(await generateAndStoreSecret());
     }
 }
 
@@ -91,12 +100,12 @@ function handleWatchEvent(filename: string | null): void {
 }
 
 export async function initAuth(): Promise<void> {
-    await mkdir(checkoutStateDir, {
+    await mkdir(serverStateDir, {
         recursive: true,
     });
     await loadOrGenerateSecret();
     authState.watcher?.close();
-    authState.watcher = watch(checkoutStateDir, (_eventType, filename) => {
+    authState.watcher = watch(serverStateDir, (_eventType, filename) => {
         handleWatchEvent(filename);
     });
 }

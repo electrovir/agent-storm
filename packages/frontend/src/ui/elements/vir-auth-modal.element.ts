@@ -103,9 +103,10 @@ export const VirAuthModal = defineAppElement()({
             })}>
                 <div class="body">
                     <div class="description">
-                        Paste the auth secret the server printed on startup. Delete
-                        <code>.not-committed/auth-secret</code>
-                        if you need to generate a new key.
+                        Paste the auth secret agent-storm printed in its terminal output when it
+                        first started. It's printed only once. To make a new one, delete the
+                        <code>auth-secret</code>
+                        file that output names, then restart agent-storm.
                     </div>
                     <${ViraInput.assign({
                         value: state.pending,

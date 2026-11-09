@@ -3,14 +3,15 @@ import {
     SplitDirection,
     SplitEdge,
     type FolderSessions,
-    type PaneState,
     type PaneTab,
     type SharedTabLayout,
     type TabSelection,
+    type TabState,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
     clamp,
+    getEnumValues,
     getObjectTypedKeys,
     getObjectTypedValues,
     mapObjectValues,
@@ -19,6 +20,11 @@ import {
     typedObjectFromEntries,
     type PartialWithUndefined,
 } from '@augment-vir/common';
+import {
+    DefaultTabPosition,
+    type AnyPaneDefinition,
+    type PaneGroupExtensionInputs,
+} from './plugin-api.js';
 
 /** A folder's shared layout joined with this window's {@link TabSelection}. */
 export type TabLayout = Omit<SharedTabLayout, 'groups'> & {
@@ -58,11 +64,6 @@ const splitEdgePlacements: Readonly<
         isAfter: true,
     },
 };
-
-/** The Diff pane's id. Manual review opens it, and every folder's first layout holds one. */
-export const diffPaneId = 'diff';
-/** The Review pane's id. Every folder's first layout holds one. */
-export const reviewPaneId = 'review';
 
 /**
  * The session kind of a tab kind whose tabs are terminal sessions. Those panes' ids are the
@@ -379,44 +380,53 @@ function listSessionTabs(sessions: Readonly<FolderSessions>, kind: PaneKind) {
 }
 
 /**
- * A folder's first layout: AI sessions beside shells, with the Diff and Review tabs placed where
- * that kind of folder reaches for them.
+ * A folder's first layout: each session kind's tabs in a group of their own, with each pane's tab
+ * placed where its `defaultPlacement` says.
  */
 export function createDefaultTabLayout({
     sessions,
-    isReviewFolder,
+    panes,
+    extensionInputs,
 }: Readonly<{
     sessions: Readonly<FolderSessions>;
-    isReviewFolder: boolean;
+    panes: ReadonlyArray<Readonly<Pick<AnyPaneDefinition, 'id' | 'defaultPlacement'>>>;
+    extensionInputs: PaneGroupExtensionInputs;
 }>) {
-    const diffTab: PaneTab = {
-        id: diffPaneId,
-        kind: diffPaneId,
-    };
-    const reviewTab: PaneTab = {
-        id: reviewPaneId,
-        kind: reviewPaneId,
-    };
-    return createTabLayout(
-        isReviewFolder
+    const placedTabs = panes.flatMap((pane) => {
+        const placement = pane.defaultPlacement?.({
+            extensionInputs,
+        });
+        return placement
             ? [
-                  listSessionTabs(sessions, PaneKind.Ai),
-                  [
-                      reviewTab,
-                      ...listSessionTabs(sessions, PaneKind.Shell),
-                      diffTab,
-                  ],
+                  {
+                      placement,
+                      tab: {
+                          id: pane.id,
+                          kind: pane.id,
+                      } satisfies PaneTab,
+                  },
               ]
-            : [
-                  [
-                      ...listSessionTabs(sessions, PaneKind.Ai),
-                      diffTab,
-                  ],
-                  [
-                      ...listSessionTabs(sessions, PaneKind.Shell),
-                      reviewTab,
-                  ],
-              ],
+            : [];
+    });
+
+    return createTabLayout(
+        getEnumValues(PaneKind).map((group) => {
+            function listPlacedTabs(position: DefaultTabPosition) {
+                return placedTabs
+                    .filter((entry) => {
+                        return (
+                            entry.placement.group === group && entry.placement.position === position
+                        );
+                    })
+                    .map((entry) => entry.tab);
+            }
+
+            return [
+                ...listPlacedTabs(DefaultTabPosition.Start),
+                ...listSessionTabs(sessions, group),
+                ...listPlacedTabs(DefaultTabPosition.End),
+            ];
+        }),
     );
 }
 
@@ -529,7 +539,7 @@ export function updateTabState(
         state,
     }: Readonly<{
         tabId: string;
-        state: Readonly<Partial<PaneState>>;
+        state: Readonly<TabState>;
     }>,
 ): TabLayout {
     const tab = layout.tabs[tabId];

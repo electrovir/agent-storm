@@ -3,7 +3,10 @@ import {
     defineAppElement,
     fetchApi,
     resizeImageForAvatar,
+    settingsCardCss,
     VirAiAvatar,
+    VirSettingsRow,
+    type ValueUpdate,
 } from '@agent-storm/core/frontend';
 import {createCuid2, extractErrorMessage} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
@@ -19,8 +22,6 @@ import {
     viraThemeByKeys,
     type ViraDropdownOption,
 } from 'vira';
-import {type ValueUpdate} from '../../util/batched-writer.js';
-import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 
 /** The editor's working copy of one AI. `id` is empty while adding, and assigned on save. */
 type AiDraft = {

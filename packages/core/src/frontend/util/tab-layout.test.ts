@@ -7,12 +7,12 @@ import {
     selectFrom,
 } from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
+import {DefaultTabPosition, type PaneGroupView} from './plugin-api.js';
 import {
     addTab,
     closeTab,
     createDefaultTabLayout,
     createTabLayout,
-    diffPaneId,
     findActiveTabId,
     findShownSessionId,
     findTabGroupId,
@@ -24,7 +24,6 @@ import {
     moveTab,
     renameTab,
     resizeSplit,
-    reviewPaneId,
     selectTab,
     showTabKind,
     splitTab,
@@ -68,8 +67,40 @@ function createSession(id: string) {
     };
 }
 
-/** A build folder with two AI sessions and one shell. */
-function createFolderLayout() {
+const firstPaneId = 'first-pane';
+const secondPaneId = 'second-pane';
+
+/** Panes that put a tab at the end of a group, or at its start when `isStartPlaced` is passed. */
+const testPanes = [
+    {
+        id: firstPaneId,
+        defaultPlacement({extensionInputs}: Readonly<Pick<PaneGroupView, 'extensionInputs'>>) {
+            return {
+                group: PaneKind.Ai,
+                position: extensionInputs.isStartPlaced
+                    ? DefaultTabPosition.Start
+                    : DefaultTabPosition.End,
+            };
+        },
+    },
+    {
+        id: secondPaneId,
+        defaultPlacement({extensionInputs}: Readonly<Pick<PaneGroupView, 'extensionInputs'>>) {
+            return {
+                group: PaneKind.Shell,
+                position: extensionInputs.isStartPlaced
+                    ? DefaultTabPosition.Start
+                    : DefaultTabPosition.End,
+            };
+        },
+    },
+    {
+        id: 'unplaced-pane',
+    },
+];
+
+/** A folder with two AI sessions and one shell. */
+function createFolderLayout(isStartPlaced = false) {
     return createDefaultTabLayout({
         sessions: {
             [PaneKind.Ai]: [
@@ -80,7 +111,10 @@ function createFolderLayout() {
                 createSession('sh1'),
             ],
         },
-        isReviewFolder: false,
+        panes: testPanes,
+        extensionInputs: {
+            isStartPlaced,
+        },
     });
 }
 
@@ -128,16 +162,29 @@ describe(createTabLayout.name, () => {
 });
 
 describe(createDefaultTabLayout.name, () => {
-    it('puts AI beside shells, with Diff and Review at the ends', () => {
+    it('puts each session kind in its own group, with placed tabs at the ends', () => {
         assert.deepEquals(listGroupTabs(createFolderLayout()), [
             [
                 'ai:ai1',
                 'ai:ai2',
-                diffPaneId,
+                firstPaneId,
             ],
             [
                 'shell:sh1',
-                reviewPaneId,
+                secondPaneId,
+            ],
+        ]);
+    });
+    it('puts placed tabs at the start when their placement says so', () => {
+        assert.deepEquals(listGroupTabs(createFolderLayout(true)), [
+            [
+                firstPaneId,
+                'ai:ai1',
+                'ai:ai2',
+            ],
+            [
+                secondPaneId,
+                'shell:sh1',
             ],
         ]);
     });
@@ -404,10 +451,10 @@ describe(syncSessionTabs.name, () => {
                     [
                         'ai:ai1',
                         'ai:ai2',
-                        diffPaneId,
+                        firstPaneId,
                     ],
                     [
-                        reviewPaneId,
+                        secondPaneId,
                         'shell:sh2',
                     ],
                 ],
@@ -418,10 +465,10 @@ describe(syncSessionTabs.name, () => {
 });
 
 describe(showTabKind.name, () => {
-    it('shows the session the user last looked at, and adds a missing Diff tab', () => {
-        const start = closeTab(selectTab(createFolderLayout(), 'ai:ai2'), diffPaneId);
+    it('shows the session the user last looked at, and adds a missing tab of a kind', () => {
+        const start = closeTab(selectTab(createFolderLayout(), 'ai:ai2'), firstPaneId);
         const shownShell = showTabKind(start, PaneKind.Shell);
-        const shownDiff = showTabKind(shownShell, diffPaneId);
+        const shownDiff = showTabKind(shownShell, firstPaneId);
         const diffTabId = assertWrap.isDefined(findActiveTabId(shownDiff));
         assert.deepEquals(
             {
@@ -430,13 +477,13 @@ describe(showTabKind.name, () => {
                 diffKind: shownDiff.tabs[diffTabId]?.kind,
                 diffGroupTabs: listGroupTabs(shownDiff),
                 diffAfterReturning: findActiveTabId(
-                    showTabKind(showTabKind(shownDiff, PaneKind.Shell), diffPaneId),
+                    showTabKind(showTabKind(shownDiff, PaneKind.Shell), firstPaneId),
                 ),
             },
             {
                 shownAi: 'ai2',
                 shellActive: 'shell:sh1',
-                diffKind: diffPaneId,
+                diffKind: firstPaneId,
                 diffAfterReturning: diffTabId,
                 diffGroupTabs: [
                     [
@@ -445,7 +492,7 @@ describe(showTabKind.name, () => {
                     ],
                     [
                         'shell:sh1',
-                        reviewPaneId,
+                        secondPaneId,
                         diffTabId,
                     ],
                 ],
@@ -476,7 +523,7 @@ describe(listDisplayedTabIds.name, () => {
             [
                 [
                     'ai:ai1',
-                    reviewPaneId,
+                    secondPaneId,
                 ],
                 [
                     'ai:ai1',

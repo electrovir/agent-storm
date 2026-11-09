@@ -1,55 +1,21 @@
 // cspell:words forgejo, gitea
 
-import {type settingsJsonSchema} from '@agent-storm/common';
-import {SettingsSection} from '@agent-storm/core/frontend';
-import {type PartialWithUndefined} from '@augment-vir/common';
+import {
+    SettingsSection,
+    type AnySettingsSectionContribution,
+    type SettingsSectionContribution,
+} from '@agent-storm/core/frontend';
+import {getEnumValues} from '@augment-vir/common';
 
-/** Setting keys that a section's own element renders instead of a generic row. */
-type CustomSettingKey =
-    | 'aiDefinitions'
-    | 'defaultAiId'
-    | 'folderPostWorktreeCmds'
-    | 'review'
-    | 'folderAiIds'
-    | 'forges';
-
-export type SchemaSettingKey = Exclude<
-    keyof typeof settingsJsonSchema.properties,
-    CustomSettingKey
->;
+/** A page of the Settings modal, whether core's own or a plugin's. */
+export type SettingsSectionPage = Omit<AnySettingsSectionContribution, 'listAfter'>;
 
 /**
- * The section each remaining setting key shows in, as a row built from its schema. Rows list in
- * this order.
+ * Core's own sections. Their rows are built from the schema keys listed here, in order, and the
+ * dedicated element each section renders is chosen by the modal.
  */
-export const schemaSettingKeySections: Readonly<Record<SchemaSettingKey, SettingsSection>> = {
-    disableUpdateCheck: SettingsSection.General,
-    tlsCertPath: SettingsSection.General,
-    useWebgl: SettingsSection.Terminal,
-    terminalClickableLinks: SettingsSection.Terminal,
-    sidebarGrouping: SettingsSection.Sidebar,
-    sidebarSorting: SettingsSection.Sidebar,
-    onlyShowRecent: SettingsSection.Sidebar,
-    diffLayout: SettingsSection.Diff,
-    diffHideWhitespace: SettingsSection.Diff,
-    diffCollapseUnchanged: SettingsSection.Diff,
-    postWorktreeCmd: SettingsSection.Folders,
-};
-
-export const settingsSections: Readonly<
-    Record<
-        SettingsSection,
-        Readonly<{
-            label: string;
-            group: string;
-            /** Matched by the nav search, beside the section's label and its rows' text. */
-            searchTerms: ReadonlyArray<string>;
-        }> &
-            PartialWithUndefined<{
-                /** Titles the card of the section's schema settings, for a section with more cards. */
-                schemaCardTitle: string;
-            }>
-    >
+const coreSettingsSections: Readonly<
+    Record<SettingsSection, Omit<SettingsSectionContribution, 'id' | 'listAfter' | 'render'>>
 > = {
     [SettingsSection.General]: {
         label: 'General',
@@ -58,21 +24,32 @@ export const settingsSections: Readonly<
             'scrollback',
             'https',
         ],
+        schemaCardTitle: undefined,
+        schemaKeys: [
+            'disableUpdateCheck',
+            'tlsCertPath',
+        ],
     },
     [SettingsSection.Terminal]: {
         label: 'Terminal',
         group: 'App',
         searchTerms: [],
+        schemaCardTitle: undefined,
+        schemaKeys: [
+            'useWebgl',
+            'terminalClickableLinks',
+        ],
     },
     [SettingsSection.Sidebar]: {
         label: 'Sidebar',
         group: 'App',
         searchTerms: [],
-    },
-    [SettingsSection.Diff]: {
-        label: 'Diff',
-        group: 'App',
-        searchTerms: [],
+        schemaCardTitle: undefined,
+        schemaKeys: [
+            'sidebarGrouping',
+            'sidebarSorting',
+            'onlyShowRecent',
+        ],
     },
     [SettingsSection.Activities]: {
         label: 'Activities',
@@ -83,6 +60,8 @@ export const settingsSections: Readonly<
             'dashboard',
             'debug',
         ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
     },
     [SettingsSection.Ai]: {
         label: 'AI',
@@ -93,6 +72,8 @@ export const settingsSections: Readonly<
             'model',
             'default ai',
         ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
     },
     [SettingsSection.Folders]: {
         label: 'Folders',
@@ -104,13 +85,8 @@ export const settingsSections: Readonly<
             'init command',
             'override',
         ],
-    },
-    [SettingsSection.Review]: {
-        label: 'Review',
-        group: 'Agents',
-        searchTerms: [
-            'init command',
-            'pull request',
+        schemaKeys: [
+            'postWorktreeCmd',
         ],
     },
     [SettingsSection.Forges]: {
@@ -124,6 +100,8 @@ export const settingsSections: Readonly<
             'bot',
             'polling',
         ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
     },
     [SettingsSection.Maintenance]: {
         label: 'Maintenance',
@@ -133,5 +111,42 @@ export const settingsSections: Readonly<
             'pty',
             'restart',
         ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
     },
 };
+
+/**
+ * Every section in tab order: core's in their own order, each plugin section right after the core
+ * section it names, in the order the plugins were registered.
+ */
+export function listSettingsSections(
+    pluginSections: ReadonlyArray<AnySettingsSectionContribution>,
+): ReadonlyArray<SettingsSectionPage> {
+    return getEnumValues(SettingsSection).flatMap((section) => {
+        return [
+            {
+                ...coreSettingsSections[section],
+                id: section,
+            },
+            ...pluginSections.filter((pluginSection) => pluginSection.listAfter === section),
+        ];
+    });
+}
+
+/**
+ * The section `id` names, or the General section when none does, like a plugin's section from
+ * before that plugin was turned off.
+ */
+export function findSettingsSection({
+    sections,
+    id,
+}: Readonly<{
+    sections: ReadonlyArray<SettingsSectionPage>;
+    id: string;
+}>) {
+    return (
+        sections.find((section) => section.id === id) ||
+        sections.find((section) => section.id === SettingsSection.General)
+    );
+}

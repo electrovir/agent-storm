@@ -4,18 +4,14 @@ import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
+import {defaultUserDataDir, InstanceEnvVar, userDataDir} from 'agent-storm';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn, type IPty} from 'node-pty';
 import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {homedir} from 'node:os';
-import {basename, delimiter, dirname, join, resolve} from 'node:path';
-import {
-    agentLaunchScriptPath,
-    defaultUserDataDir,
-    InstanceEnvVar,
-    userDataDir,
-} from '../file-paths.js';
+import {basename, delimiter, dirname, join, resolve, sep} from 'node:path';
+import {agentLaunchScriptPath} from '../file-paths.js';
 import {createDaemonLog} from './daemon-log.js';
 import {killProcessTree, snapshotProcessTable} from './kill-process-tree.js';
 import {defaultSessionId, type StatusEntry, type TerminalColors} from './protocol.js';
@@ -269,7 +265,11 @@ export function livePtyCount(): number {
 
 function normalizePath(path: string): string {
     const expanded =
-        path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
+        path === '~'
+            ? homedir()
+            : path.startsWith('~/') || path.startsWith(`~${sep}`)
+              ? join(homedir(), path.slice(2))
+              : path;
     return resolve(expanded);
 }
 

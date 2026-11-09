@@ -1,4 +1,4 @@
-import {SplitDirection, SplitEdge, type PaneState} from '@agent-storm/common';
+import {SplitDirection, SplitEdge, type TabState} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {clamp, getEnumValues, type PartialWithUndefined} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
@@ -22,6 +22,7 @@ import {
     type ViraMenuItemEntry,
     type ViraTab,
 } from 'vira';
+import {type NewTabRequest} from '../../util/plugin-api.js';
 import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
 import {
     countElementsBefore,
@@ -58,7 +59,7 @@ export type TabHostNewTabOption = {
     label: HtmlInterpolation;
     kind: string;
     /** The new tab's own state. */
-    state: Readonly<Partial<PaneState>> | undefined;
+    state: Readonly<TabState> | undefined;
 };
 
 type PixelRect = Readonly<{
@@ -167,14 +168,7 @@ export const VirTabHost = defineAppElement<{
         layoutChanged: defineElementEvent<Readonly<TabLayout>>(),
         /** The tab shown in the group the user last focused, for panes that look different then. */
         focusedTabChanged: defineElementEvent<string | undefined>(),
-        newTabRequested: defineElementEvent<
-            Readonly<{
-                kind: string;
-                /** Undefined on mobile, which has no groups of its own. */
-                groupId: string | undefined;
-                state: Readonly<Partial<PaneState>> | undefined;
-            }>
-        >(),
+        newTabRequested: defineElementEvent<NewTabRequest>(),
     },
     state() {
         return {

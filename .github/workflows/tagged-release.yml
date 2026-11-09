@@ -5,16 +5,42 @@ on:
         tags:
             - 'v*'
 permissions:
-    contents: write
+    contents: read
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: true
 
 jobs:
+    build-release-asset:
+        name: 'Build Release Asset'
+        runs-on: 'ubuntu-latest'
+
+        steps:
+            - uses: actions/checkout@v4.1.7
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+            - uses: actions/setup-node@v4.0.3
+              with:
+                  node-version-file: '.nvmrc'
+                  cache: 'npm'
+            - name: build
+              run: |
+                  npm ci
+                  npm run build:release
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: release-asset
+                  path: dist-release-asset/
+                  if-no-files-found: error
+
     tagged-release:
         name: 'Tagged Release'
+        needs: build-release-asset
         runs-on: 'ubuntu-latest'
+        permissions:
+            contents: write
 
         steps:
             - uses: actions/checkout@v4.1.7
@@ -23,5 +49,15 @@ jobs:
             - uses: actions/setup-node@v4.0.3
               with:
                   node-version-file: '.nvmrc'
-                  cache: 'npm'
+            - uses: actions/download-artifact@v4
+              with:
+                  name: release-asset
+                  path: dist-release-asset
+            # Immutable releases reject assets once published, so the asset goes on a draft first.
+            - name: publish release with its asset
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  gh release create "$GITHUB_REF_NAME" dist-release-asset/* --draft --verify-tag --title "$GITHUB_REF_NAME" --notes ''
+                  gh release edit "$GITHUB_REF_NAME" --draft=false
             - uses: electrovir/release-vir@dev

@@ -34,17 +34,17 @@ const depCruiserConfig: IConfiguration = {
             },
         },
         {
-            name: 'plugin-only-to-core',
+            name: 'plugin-only-to-plugins',
             comment:
-                'A plugin builds only on core and common, so the host can register any set of plugins. Move code two plugins share into core.',
+                'A plugin builds on core, common, and other plugins, never on the host that registers it.',
             severity: 'error',
             from: {
-                path: '^packages/(?!common/|core/|frontend/|scripts/|server/)([^/]+)/',
+                path: '^packages/plugin-[^/]+/',
             },
             to: {
                 path: '^packages/',
                 pathNot: [
-                    '^packages/(common|core|$1)/',
+                    '^packages/(common|core|plugin-[^/]+)/',
                 ],
             },
         },

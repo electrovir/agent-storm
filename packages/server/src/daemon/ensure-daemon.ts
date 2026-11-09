@@ -4,6 +4,7 @@ import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn} from 'node:child_process';
 import {createConnection} from 'node:net';
 import {daemonScriptPath, daemonSocket} from '../file-paths.js';
+import {releaseBuild} from '../release-build.js';
 import {fetchDaemonProtocolVersion, shutdownDaemon} from './daemon-client.js';
 import {daemonProtocolVersion} from './protocol.js';
 
@@ -122,8 +123,13 @@ export async function ensureDaemon(): Promise<void> {
     const child = spawn(
         process.execPath,
         [
-            '--import',
-            import.meta.resolve('tsx'),
+            /** A release's daemon is already JavaScript. */
+            ...(releaseBuild
+                ? []
+                : [
+                      '--import',
+                      import.meta.resolve('tsx'),
+                  ]),
             daemonScriptPath,
         ],
         {

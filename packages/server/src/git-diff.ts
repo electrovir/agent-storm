@@ -23,13 +23,13 @@ import {
 } from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
 import {type EndpointRequestType} from '@rest-vir/api';
+import {runCommand} from 'agent-storm';
 import {convertDuration} from 'date-vir';
 import {execFile} from 'node:child_process';
 import {readFile, rm} from 'node:fs/promises';
 import {isAbsolute, resolve} from 'node:path';
 import {promisify} from 'node:util';
 import {extractCommandStderr, gitTimeout, readOnlyGitEnv} from './git.js';
-import {runCommand} from './run-command.js';
 
 /**
  * Buffer ceiling for these git calls. `git show` of a single blob is bounded by

@@ -217,7 +217,7 @@ describe(renameFolderSession.name, () => {
 });
 
 describe(removeFolderSession.name, () => {
-    it('refuses to remove the last session of a kind', async () => {
+    it('removes the last session of a kind and keeps the kind empty', async () => {
         await withTempFolder(async (folder) => {
             const initial = await getFolderSessions(folder);
 
@@ -227,8 +227,9 @@ describe(removeFolderSession.name, () => {
                 sessionId: initial.ai[0]?.id || '',
             });
 
-            assert.isFalse(result.removed);
-            assert.isLengthExactly(result.sessions.ai, 1);
+            assert.isTrue(result.removed);
+            assert.isLengthExactly(result.sessions.ai, 0);
+            assert.isLengthExactly((await getFolderSessions(folder)).ai, 0);
         });
     });
 

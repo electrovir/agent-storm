@@ -1,5 +1,6 @@
 {
     "name": "@agent-storm/server",
+    "version": "0.0.1",
     "private": true,
     "description": "",
     "keywords": [],
@@ -34,8 +35,10 @@
         "@augment-vir/assert": "^32.7.0",
         "@augment-vir/common": "^32.7.0",
         "@augment-vir/node": "^32.7.0",
+        "@fastify/static": "^10.1.9",
         "@rest-vir/api": "^2.4.1",
         "@rest-vir/host": "^2.4.1",
+        "agent-storm": "*",
         "auth-vir": "^6.2.0",
         "config-vir": "^1.1.0",
         "date-vir": "^9.4.1",

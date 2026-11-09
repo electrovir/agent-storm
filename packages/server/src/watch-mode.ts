@@ -2,6 +2,7 @@ import {
     ManualReviewStatus,
     PaneKind,
     PaneStatus,
+    PrStatus,
     WatchModeStatus,
     type FolderInfo,
     type PullRequestBranch,
@@ -19,6 +20,7 @@ import {
     typedObjectFromEntries,
 } from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
+import {instanceName, normalizePath, writeFileAtomically} from 'agent-storm';
 import {convertDuration} from 'date-vir';
 import {mkdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -32,12 +34,12 @@ import {
 import {isSafeBranchName} from './branch-name.js';
 import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
 import {
-    instanceName,
     manualReviewSkillDir,
     watchModeInstructionsPath,
     watchModePassDir,
     watchModeStatePath,
 } from './file-paths.js';
+import {recordFolderPrStatus} from './folder-info.js';
 import {getCurrentBranch, getRepoSlug, isManualReviewHereCopy, tryGit} from './git.js';
 import {RawPrState} from './github-raw-enums.js';
 import {listenToAssigneeQueue, readViewerLogin} from './github-review-queue.js';
@@ -48,7 +50,6 @@ import {
     reviewBranchPrefix,
     type ListedManualReviewEntry,
 } from './manual-review-state.js';
-import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds, getPaneSessionStatusLookup} from './pty.js';
 import {hasReviewableChanges} from './push-review.js';
 import {
@@ -57,8 +58,15 @@ import {
     getFolderSessions,
     renameFolderSession,
 } from './sessions.js';
-import {fetchPrCheck, formatPrCheck, PrNeed, runGhIn, type PrCheck} from './watch-pr-check.js';
-import {writeFileAtomically} from './write-file-atomically.js';
+import {loadSettings} from './settings.js';
+import {
+    fetchPrCheck,
+    formatPrCheck,
+    PrNeed,
+    reviewRequestNoteMarker,
+    runGhIn,
+    type PrCheck,
+} from './watch-pr-check.js';
 
 /** Work an AI pass can be handed. The order is the order the pass does it in. */
 enum WatchTask {
@@ -259,6 +267,11 @@ async function findReviewedCheckout({
     return candidates.find(check.isTruthy);
 }
 
+/** An unreadable settings file leaves automatic watch mode on, like the setting's default. */
+async function isAutoWatchModeDisabled() {
+    return !!(await loadSettings().catch(() => undefined))?.disableAutoWatchMode;
+}
+
 /**
  * Turns watch mode on in the checkout a `/manual-review here` review came from, once the review's
  * approval or change request posts.
@@ -270,6 +283,9 @@ async function watchNewlyReviewedCheckouts({
     deps: Readonly<WatchModeDeps>;
     changedEntries: ReadonlyArray<ListedManualReviewEntry>;
 }>) {
+    if (await isAutoWatchModeDisabled()) {
+        return;
+    }
     const hereCopyEntries = await awaitedFilter(changedEntries, async ({entry}) => {
         return (
             !!entry.folder &&
@@ -307,6 +323,9 @@ async function watchAssignedCheckouts({
     deps: Readonly<WatchModeDeps>;
     pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>;
 }>) {
+    if (await isAutoWatchModeDisabled()) {
+        return;
+    }
     const folders = await Promise.all(
         pullRequests
             .filter((pullRequest) => pullRequest.branchName)
@@ -460,14 +479,21 @@ async function isRebaseOnlyPush({
     return !!newSubjects && oldSubjects === newSubjects;
 }
 
+/**
+ * Also leaves a file comment on the PR's first file with `reason`, for the reviewers to resolve.
+ * The comment goes first: GitHub files it as a review by the account posting it, and that review
+ * clears the account's own request when the account is one of the reviewers.
+ */
 async function requestReviews({
     folder,
     prCheck,
     logins,
+    reason,
 }: Readonly<{
     folder: string;
     prCheck: Readonly<PrCheck>;
     logins: ReadonlyArray<string>;
+    reason: string;
 }>) {
     const slug = await getRepoSlug(folder);
     /** GitHub rejects a review request for the PR's author. */
@@ -476,6 +502,44 @@ async function requestReviews({
     });
     if (!slug || !newReviewers.length || !watchState.entries[folder]?.isEnabled) {
         return;
+    }
+    try {
+        const firstFile = (
+            await runGhIn(folder, [
+                'api',
+                `repos/${slug.owner}/${slug.name}/pulls/${prCheck.number}/files?per_page=1`,
+                '--jq',
+                '.[0].filename',
+            ])
+        ).trim();
+        if (firstFile) {
+            await runGhIn(folder, [
+                'api',
+                '-X',
+                'POST',
+                `repos/${slug.owner}/${slug.name}/pulls/${prCheck.number}/comments`,
+                '-f',
+                `body=${[
+                    [
+                        'AI: Re-requested review from ',
+                        newReviewers.map((login) => '@' + login).join(', '),
+                        ': ',
+                        reason,
+                    ].join(''),
+                    reviewRequestNoteMarker,
+                ].join('\n\n')}`,
+                '-f',
+                `commit_id=${prCheck.headSha}`,
+                '-f',
+                `path=${firstFile}`,
+                '-f',
+                'subject_type=file',
+            ]);
+        }
+    } catch (error) {
+        log.warning(
+            `Failed to explain the review request on ${prCheck.url}: ${extractErrorMessage(error)}`,
+        );
     }
     await runGhIn(folder, [
         'api',
@@ -999,6 +1063,7 @@ async function checkFolder({
             folder,
             prCheck,
             logins: [viewerLogin],
+            reason: `watch mode pushed ${prCheck.headSha.slice(0, 7)} for ${finishedPass.tasks.join(', ')}, which changed code you have not reviewed.`,
         });
     }
     if (prCheck.reReviewLogins.length) {
@@ -1006,6 +1071,7 @@ async function checkFolder({
             folder,
             prCheck,
             logins: prCheck.reReviewLogins,
+            reason: 'none of the threads from your changes-requested review is still unresolved, so it is ready for another look.',
         });
     }
 
@@ -1092,6 +1158,15 @@ async function checkFolder({
             await stopWatching({
                 folder,
                 message: `Merged PR #${prCheck.number}.`,
+            });
+            await recordFolderPrStatus({
+                folder,
+                slug,
+                branchName: branch,
+                prInfo: {
+                    url: prCheck.url,
+                    status: PrStatus.Merged,
+                },
             });
             return;
         } else {
@@ -1281,6 +1356,9 @@ async function loadEntries() {
  * passes in a row pushed nothing, and when only the user's review was left.
  */
 async function resumeIdleStoppedFolders() {
+    if (await isAutoWatchModeDisabled()) {
+        return;
+    }
     await Promise.all(
         getObjectTypedEntries(watchState.entries)
             .filter(

@@ -1,8 +1,6 @@
+import {type ValueUpdate} from '@agent-storm/core/frontend';
 import {type MaybePromise} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
-
-/** Turns the latest stored value into the next one. */
-export type ValueUpdate<Value> = (current: Readonly<Value>) => Value;
 
 /**
  * Collects edits to one stored value and writes them together once edits stop arriving for `delay`.

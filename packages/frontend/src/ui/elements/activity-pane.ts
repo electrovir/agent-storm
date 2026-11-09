@@ -1,3 +1,4 @@
+import {activityTabStateShape, type ActivityTabState} from '@agent-storm/common';
 import {
     isActivityEnabled,
     PaneMounting,
@@ -7,9 +8,9 @@ import {
 } from '@agent-storm/core/frontend';
 import {createSizedIcon, LucideAppWindowIcon} from 'vira';
 
-function renderActivity(params: PaneRenderParams) {
+function renderActivity(params: PaneRenderParams<typeof activityTabStateShape>) {
     return params.context.renderActivityTab({
-        paths: params.paneState.activityPaths,
+        paths: params.tabState.activityPaths,
         navigate(paths) {
             params.writeLayout((current) => {
                 return updateTabState(current, {
@@ -18,7 +19,7 @@ function renderActivity(params: PaneRenderParams) {
                         activityPaths: [
                             ...paths,
                         ],
-                    },
+                    } satisfies Partial<ActivityTabState>,
                 });
             });
         },
@@ -26,10 +27,11 @@ function renderActivity(params: PaneRenderParams) {
 }
 
 /** A tab showing a whole activity, with its own selection apart from its vertical tab's. */
-export const activityPane: PaneDefinition = {
+export const activityPane: PaneDefinition<typeof activityTabStateShape> = {
     id: 'activity',
+    tabStateShape: activityTabStateShape,
     label({tabState, context}) {
-        const activityId = tabState?.activityPaths?.[0];
+        const activityId = tabState.activityPaths[0];
         return (
             context.activities.find((activity) => activity.id === activityId)?.label || 'Activity'
         );

@@ -9,7 +9,7 @@ import {
 } from 'date-vir';
 import {copyFile, mkdir, readdir, stat, unlink} from 'node:fs/promises';
 import {join} from 'node:path';
-import {configBackupDir} from './file-paths.js';
+import {appStatePath, configBackupDir} from './file-paths.js';
 import {findSettingsPath} from './settings.js';
 
 /**
@@ -42,25 +42,43 @@ function backupPathForToday(settingsPath: string): string {
  * Filename format we'll trust as one of our own backups when pruning. Anything else in the backup
  * dir (manual user copies, partial writes, junk) is left alone.
  */
-const backupFileNamePattern = /^(?:agent-storm|settings)-(\d{4}-\d{2}-\d{2})\.\w+$/;
+const backupFileNamePattern = /^(?:agent-storm|settings|state)-(\d{4}-\d{2}-\d{2})\.\w+$/;
 
-async function ensureTodaysBackup(): Promise<void> {
-    const settingsPath = await findSettingsPath();
-    if (!settingsPath) {
-        return;
-    }
-    const destPath = backupPathForToday(settingsPath);
+async function backupFileForToday({
+    sourcePath,
+    destPath,
+}: Readonly<{sourcePath: string; destPath: string}>) {
+    const sourceExists = await stat(sourcePath)
+        .then(() => true)
+        .catch(() => false);
     const alreadyExists = await stat(destPath)
         .then(() => true)
         .catch(() => false);
-    if (alreadyExists) {
+    if (!sourceExists || alreadyExists) {
         return;
     }
     await mkdir(configBackupDir, {
         recursive: true,
     });
-    await copyFile(settingsPath, destPath);
-    log.info(`Wrote settings backup to ${destPath}.`);
+    await copyFile(sourcePath, destPath);
+    log.info(`Wrote backup to ${destPath}.`);
+}
+
+async function ensureTodaysBackup(): Promise<void> {
+    const settingsPath = await findSettingsPath();
+    if (settingsPath) {
+        await backupFileForToday({
+            sourcePath: settingsPath,
+            destPath: backupPathForToday(settingsPath),
+        });
+    }
+    await backupFileForToday({
+        sourcePath: appStatePath,
+        destPath: join(
+            configBackupDir,
+            `state-${toSimpleDatePartString(getNowInUserTimezone())}.json`,
+        ),
+    });
 }
 
 async function pruneOldBackups(): Promise<void> {

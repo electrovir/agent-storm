@@ -1,10 +1,15 @@
 import {GitHubPollingDisableReason, savedRepoShape} from '@agent-storm/common';
-import {log, PromiseQueue} from '@augment-vir/common';
 import {readFileIfExists} from '@augment-vir/node';
-import {defineShape, enumShape, nullableShape, parseJsonWithShape} from 'object-shape-tester';
+import {normalizePath, writeFileAtomically} from 'agent-storm';
+import {
+    defineShape,
+    enumShape,
+    nullableShape,
+    optionalShape,
+    parseJsonWithShape,
+} from 'object-shape-tester';
 import {appStatePath} from './file-paths.js';
-import {normalizePath} from './paths.js';
-import {writeFileAtomically} from './write-file-atomically.js';
+import {createQueuedFile} from './queued-file.js';
 
 /**
  * Saved so a restart during development doesn't immediately poll GitHub again and hit the same rate
@@ -19,6 +24,10 @@ export const githubPollingAutoDisableShape = nullableShape({
 const appStateShape = defineShape({
     repos: [savedRepoShape],
     githubPollingAutoDisable: githubPollingAutoDisableShape,
+    /** Set once first-run setup is finished or skipped. */
+    isOnboardingDone: optionalShape(false, {
+        alsoUndefined: true,
+    }),
 });
 
 export type AppState = typeof appStateShape.runtimeType;
@@ -54,25 +63,15 @@ export async function writeAppState(state: Readonly<AppState>) {
     });
 }
 
-/** Serializes every state write, so two load-modify-save updates can't drop each other's change. */
-const appStateWriteQueue = new PromiseQueue();
+const appStateFile = createQueuedFile({
+    description: appStatePath,
+    load: loadAppState,
+    write: writeAppState,
+});
 
 /**
  * Load, modify, and save the state as one queued step. Skips the write when `update` returns
  * `undefined` or when the current state can't be read, so a transient read failure never wipes the
  * repo list.
  */
-export async function updateAppState(
-    update: (state: Readonly<AppState>) => AppState | undefined,
-): Promise<void> {
-    await appStateWriteQueue.add(async () => {
-        const state = await loadAppState().catch((error: unknown) => {
-            log.warning(`Not updating ${appStatePath}, it can't be read: ${String(error)}`);
-            return undefined;
-        });
-        const updated = state && update(state);
-        if (updated) {
-            await writeAppState(updated);
-        }
-    });
-}
+export const updateAppState = appStateFile.update;

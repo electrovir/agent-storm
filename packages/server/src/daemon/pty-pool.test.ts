@@ -3,6 +3,7 @@ import {assert, waitUntil} from '@augment-vir/assert';
 import {wait} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {describe, it} from '@augment-vir/test';
+import {type AnyDuration} from 'date-vir';
 import {createHmac} from 'node:crypto';
 import {mkdir, mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -26,10 +27,10 @@ type PaneTestCommands = {
 
 const unixPaneTestCommands: PaneTestCommands = {
     printLine(text) {
-        return `printf '%s\\n' '${text}'`;
+        return String.raw`printf '%s\n' '${text}'`;
     },
     printEnvLine({prefix, envKey}) {
-        return `printf '${prefix}%s\\n' "$${envKey}"`;
+        return String.raw`printf '${prefix}%s\n' "$${envKey}"`;
     },
     waitForever: 'while true; do sleep 1; done',
 };
@@ -63,6 +64,14 @@ const itWithForegroundProcess = (
     } satisfies Record<OperatingSystem, typeof it.skip>
 )[currentOperatingSystem];
 
+/**
+ * Each pane starts the user's interactive login shell, which can take seconds while the other
+ * packages' tests load every core.
+ */
+const paneOutputTimeout: AnyDuration = {
+    seconds: 15,
+};
+
 function persistentAiCommand(label: string): string {
     return [
         paneTestCommands.printLine(label),
@@ -93,9 +102,7 @@ describe(restartPane.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
 
                 restartPane({
@@ -108,9 +115,7 @@ describe(restartPane.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
                 await wait({
                     milliseconds: 200,
@@ -153,17 +158,13 @@ describe(restartPane.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
                 await waitUntil(() => exits.includes(0), {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
 
                 restartPane({
@@ -176,9 +177,7 @@ describe(restartPane.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
             } finally {
                 attachment.detach();
@@ -300,9 +299,7 @@ describe('pane sessions', () => {
                         interval: {
                             milliseconds: 20,
                         },
-                        timeout: {
-                            seconds: 3,
-                        },
+                        timeout: paneOutputTimeout,
                     },
                 );
 
@@ -403,9 +400,7 @@ describe(attachPane.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
                 const second = attachPane({
                     folder,
@@ -453,9 +448,7 @@ describe(livePtyCount.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
 
                 restartPane({
@@ -467,9 +460,7 @@ describe(livePtyCount.name, () => {
                     interval: {
                         milliseconds: 20,
                     },
-                    timeout: {
-                        seconds: 3,
-                    },
+                    timeout: paneOutputTimeout,
                 });
 
                 /** The superseded pty is released, not stranded, so a restart is net zero. */

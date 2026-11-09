@@ -1,6 +1,7 @@
 import {folderSettingsShape, type FolderSettings} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {extractErrorMessage, omitObjectKeys} from '@augment-vir/common';
+import {normalizePath} from 'agent-storm';
 import {
     ConfigFileType,
     deduceFileType,
@@ -12,13 +13,13 @@ import {convertDuration, type AnyDuration} from 'date-vir';
 import {homedir} from 'node:os';
 import {dirname} from 'node:path';
 import {assertValidShape} from 'object-shape-tester';
-import {normalizePath} from './paths.js';
 
 /** One folder settings file and what became of it. */
 type FolderSettingsFile = {
     path: string;
     /** Undefined when the file is skipped or invalid, which `problem` explains. */
     folderSettings: FolderSettings | undefined;
+    /** Also set when the file is read but some of its fields are held back. */
     problem: string;
 };
 
@@ -46,16 +47,26 @@ async function readFolderSettingsFile(path: string): Promise<FolderSettingsFile>
             configPath: path,
         });
         assertValidShape(parsed, folderSettingsShape, {}, 'Invalid folder settings.');
+        /**
+         * These fields run commands, and a folder's files come from whoever wrote the repo,
+         * including the author of a PR being reviewed. They're held back until the user can approve
+         * the file.
+         */
+        const heldBackFields = [
+            parsed.postWorktreeCmd ? 'postWorktreeCmd' : '',
+            parsed.review?.initCmd ? 'review.initCmd' : '',
+            parsed.aiDefinitions?.length ? 'aiDefinitions' : '',
+        ].filter(check.isTruthy);
         return {
             path,
-            folderSettings: {
-                ...parsed,
-                /** Avatars are files in the user's own data folder, which a repo can't add to. */
-                aiDefinitions: parsed.aiDefinitions?.map((definition) => {
-                    return omitObjectKeys(definition, ['avatarFile']);
-                }),
-            },
-            problem: '',
+            folderSettings: omitObjectKeys(parsed, [
+                'postWorktreeCmd',
+                'review',
+                'aiDefinitions',
+            ]),
+            problem: heldBackFields.length
+                ? `Ignored until agent-storm can ask you to approve this file, since they run commands: ${heldBackFields.join(', ')}.`
+                : '',
         };
     } catch (error) {
         return {

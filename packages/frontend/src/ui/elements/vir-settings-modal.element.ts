@@ -2,11 +2,15 @@
 
 import {
     checkPathEndpoint,
+    claudeHooksInstallEndpoint,
     defaultSettings,
     ForgeType,
+    onboardingEndpoint,
     restartDaemonEndpoint,
     settingsEndpoint,
     settingsJsonSchema,
+    startAtLoginEndpoint,
+    type OnboardingStatus,
     type Settings,
 } from '@agent-storm/common';
 import {
@@ -16,19 +20,22 @@ import {
     localStorageClient,
     ScreenSize,
     scrollbackLimit,
+    settingsCardCss,
     SettingsSection,
     staticTabRouter,
     toStaticTabRoute,
+    VirSettingsRow,
     type AppContext,
     type SettingsTarget,
+    type ValueUpdate,
 } from '@agent-storm/core/frontend';
 import {assertWrap, check} from '@augment-vir/assert';
 import {
     extractErrorMessage,
     getEnumValues,
     getObjectTypedEntries,
-    mapEnumToObject,
     pickObjectKeys,
+    typedObjectFromEntries,
     type JsonValue,
 } from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
@@ -58,12 +65,14 @@ import {
     ViraThemeColorName,
     ViraThemeSwitcher,
 } from 'vira';
-import {createBatchedWriter, type ValueUpdate} from '../../util/batched-writer.js';
-import {schemaSettingKeySections, settingsSections} from '../../util/settings-sections.js';
+import {createBatchedWriter} from '../../util/batched-writer.js';
+import {
+    findSettingsSection,
+    listSettingsSections,
+    type SettingsSectionPage,
+} from '../../util/settings-sections.js';
 import {VirSettingsAi} from './vir-settings-ai.element.js';
 import {VirSettingsFolders} from './vir-settings-folders.element.js';
-import {VirSettingsReview} from './vir-settings-review.element.js';
-import {settingsCardCss, VirSettingsRow} from './vir-settings-row.element.js';
 import {VirSettingsSchemaRow, type SettingSchema} from './vir-settings-schema-row.element.js';
 
 /** Each forge with settings to show. A forge with none gets no card. */
@@ -81,17 +90,6 @@ const forgeCards = getEnumValues(ForgeType)
         };
     })
     .filter((card) => card.properties.length);
-
-function getSchemaKeys(section: SettingsSection) {
-    return getObjectTypedEntries(schemaSettingKeySections)
-        .filter(
-            ([
-                ,
-                keySection,
-            ]) => keySection === section,
-        )
-        .map(([key]) => key);
-}
 
 function readForgeSetting(settings: Readonly<Settings>, forgeType: ForgeType, key: string) {
     return (settings.forges[forgeType] satisfies object as Readonly<Record<string, unknown>>)[key];
@@ -116,7 +114,8 @@ function setForgeSettings(
 
 /** One row of settings that search can show outside its section. */
 type SettingsEntry = Readonly<{
-    section: SettingsSection;
+    /** The id of the section the row belongs to. */
+    section: string;
     /** Consecutive entries with the same title share a card, titled when this is set. */
     cardTitle: string | undefined;
     /** The row's title and description, which search matches. */
@@ -128,38 +127,37 @@ function isDefault({value, defaultValue}: Readonly<{value: unknown; defaultValue
     return check.jsonEquals((value ?? null) as JsonValue, (defaultValue ?? null) as JsonValue);
 }
 
-/** Puts a section's settings back to their defaults. Undefined for a section with none. */
-const sectionDefaults: Readonly<
-    Record<
-        SettingsSection,
-        | Readonly<{
-              isModified: (settings: Readonly<Settings>) => boolean;
-              restore: ValueUpdate<Settings>;
-          }>
-        | undefined
-    >
-> = {
-    ...mapEnumToObject(SettingsSection, (section) => {
-        const keys = getSchemaKeys(section);
-        return keys.length
-            ? {
-                  isModified(settings: Readonly<Settings>) {
-                      return keys.some((key) => {
-                          return !isDefault({
-                              value: settings[key],
-                              defaultValue: defaultSettings[key],
-                          });
+type SectionDefaults = Readonly<{
+    isModified: (settings: Readonly<Settings>) => boolean;
+    restore: ValueUpdate<Settings>;
+}>;
+
+/** Puts a section's schema settings back to their defaults. Undefined for a section with none. */
+function createSchemaDefaults({
+    schemaKeys,
+}: Readonly<Pick<SettingsSectionPage, 'schemaKeys'>>): SectionDefaults | undefined {
+    return schemaKeys.length
+        ? {
+              isModified(settings) {
+                  return schemaKeys.some((key) => {
+                      return !isDefault({
+                          value: settings[key],
+                          defaultValue: defaultSettings[key],
                       });
-                  },
-                  restore(settings: Readonly<Settings>): Settings {
-                      return {
-                          ...settings,
-                          ...pickObjectKeys(defaultSettings, keys),
-                      };
-                  },
-              }
-            : undefined;
-    }),
+                  });
+              },
+              restore(settings) {
+                  return {
+                      ...settings,
+                      ...pickObjectKeys(defaultSettings, schemaKeys),
+                  };
+              },
+          }
+        : undefined;
+}
+
+/** Sections whose settings don't all come from their schema keys. */
+const customSectionDefaults: Readonly<Record<string, SectionDefaults | undefined>> = {
     [SettingsSection.Forges]: {
         isModified(settings) {
             return forgeCards.some((card) => {
@@ -181,7 +179,7 @@ const sectionDefaults: Readonly<
                 return setForgeSettings(
                     current,
                     card.forgeType,
-                    Object.fromEntries(
+                    typedObjectFromEntries(
                         card.properties.map(
                             ([
                                 key,
@@ -235,6 +233,11 @@ export const VirSettingsModal = defineAppElement<{
             scrollbackDraft: undefined as string | undefined,
             isRestartingDaemon: false,
             daemonRestartError: '',
+            /** Undefined until loaded, and when it fails to load, which hides the rows it drives. */
+            onboardingStatus: undefined as OnboardingStatus | undefined,
+            startAtLoginError: '',
+            claudeHooksError: '',
+            isInstallingClaudeHooks: false,
         };
     },
     styles: css`
@@ -326,6 +329,7 @@ export const VirSettingsModal = defineAppElement<{
     `,
     render({inputs, state, updateState, host}) {
         const target = inputs.settingsTarget.value;
+        const sections = listSettingsSections(inputs.context.settingsSections);
         const isOpen = inputs.isSettingsOpen.value;
         if (isOpen !== state.wasOpen) {
             updateState({
@@ -422,8 +426,16 @@ export const VirSettingsModal = defineAppElement<{
             try {
                 /** Edits from the last time the modal was open land before the fresh read. */
                 await writers.settings.flush();
+                const [
+                    settings,
+                    onboardingStatus,
+                ] = await Promise.all([
+                    fetchApi(settingsEndpoint, HttpMethod.Get),
+                    fetchApi(onboardingEndpoint, HttpMethod.Get).catch(() => undefined),
+                ]);
                 updateState({
-                    settings: await fetchApi(settingsEndpoint, HttpMethod.Get),
+                    settings,
+                    onboardingStatus,
                 });
             } catch (error: unknown) {
                 updateState({
@@ -479,6 +491,44 @@ export const VirSettingsModal = defineAppElement<{
             }
         }
 
+        async function setStartAtLogin(isEnabled: boolean) {
+            try {
+                updateState({
+                    onboardingStatus: await fetchApi(startAtLoginEndpoint, HttpMethod.Post, {
+                        requestData: {
+                            isEnabled,
+                        },
+                    }),
+                    startAtLoginError: '',
+                });
+            } catch (error: unknown) {
+                updateState({
+                    startAtLoginError: extractErrorMessage(error),
+                });
+            }
+        }
+
+        async function installClaudeHooks() {
+            if (state.isInstallingClaudeHooks || state.onboardingStatus?.areClaudeHooksInstalled) {
+                return;
+            }
+            updateState({
+                isInstallingClaudeHooks: true,
+                claudeHooksError: '',
+            });
+            try {
+                updateState({
+                    onboardingStatus: await fetchApi(claudeHooksInstallEndpoint, HttpMethod.Post),
+                    isInstallingClaudeHooks: false,
+                });
+            } catch (error: unknown) {
+                updateState({
+                    isInstallingClaudeHooks: false,
+                    claudeHooksError: extractErrorMessage(error),
+                });
+            }
+        }
+
         function setScrollbackLimit(text: string) {
             const value = Number(text);
             const isValid =
@@ -522,7 +572,7 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        function openSection(section: SettingsSection) {
+        function openSection(section: string) {
             scrollToTop();
             updateState({
                 search: '',
@@ -541,6 +591,10 @@ export const VirSettingsModal = defineAppElement<{
             const scrollbackDescription = `Lines each terminal keeps, from ${scrollbackLimit.min.toLocaleString()} to ${scrollbackLimit.max.toLocaleString()}. Stored in this browser.`;
             const restartDescription =
                 'Kills every running terminal session and starts the daemon that holds them again.';
+            const startAtLoginDescription =
+                'Starts agent-storm in the background when you log in. Takes effect at your next login.';
+            const claudeHooksDescription =
+                "Lets each AI tab resume its own conversation and show when Claude is working. Adds agent-storm's hooks to ~/.claude/settings.json beside your own.";
 
             return [
                 {
@@ -623,15 +677,12 @@ export const VirSettingsModal = defineAppElement<{
                         `,
                     };
                 }),
-                ...getObjectTypedEntries(schemaSettingKeySections).map(
-                    ([
-                        key,
-                        section,
-                    ]): SettingsEntry => {
+                ...sections.flatMap((section) => {
+                    return section.schemaKeys.map((key): SettingsEntry => {
                         const schema = settingsJsonSchema.properties[key];
                         return {
-                            section,
-                            cardTitle: settingsSections[section].schemaCardTitle,
+                            section: section.id,
+                            cardTitle: section.schemaCardTitle,
                             searchText: [
                                 schema.title,
                                 schema.description,
@@ -655,8 +706,8 @@ export const VirSettingsModal = defineAppElement<{
                                 ></${VirSettingsSchemaRow}>
                             `,
                         };
-                    },
-                ),
+                    });
+                }),
                 ...forgeCards.flatMap((card) => {
                     return card.properties.map(
                         ([
@@ -696,6 +747,69 @@ export const VirSettingsModal = defineAppElement<{
                         },
                     );
                 }),
+                ...(state.onboardingStatus?.canStartAtLogin
+                    ? [
+                          {
+                              section: SettingsSection.General,
+                              cardTitle: undefined,
+                              searchText: [
+                                  'Start at login',
+                                  startAtLoginDescription,
+                              ],
+                              template: html`
+                                  <${VirSettingsRow.assign({
+                                      rowTitle: 'Start at login',
+                                      description: startAtLoginDescription,
+                                      errorMessage: state.startAtLoginError,
+                                  })}>
+                                      <${ViraCheckbox.assign({
+                                          value: state.onboardingStatus.isStartAtLoginEnabled,
+                                      })}
+                                          ${listen(
+                                              ViraCheckbox.events.valueChange,
+                                              async (event) => {
+                                                  await setStartAtLogin(event.detail);
+                                              },
+                                          )}
+                                      ></${ViraCheckbox}>
+                                  </${VirSettingsRow}>
+                              `,
+                          } satisfies SettingsEntry,
+                      ]
+                    : []),
+                ...(state.onboardingStatus?.canInstallClaudeHooks
+                    ? [
+                          {
+                              section: SettingsSection.Maintenance,
+                              cardTitle: undefined,
+                              searchText: [
+                                  'Claude Code hooks',
+                                  claudeHooksDescription,
+                              ],
+                              template: html`
+                                  <${VirSettingsRow.assign({
+                                      rowTitle: 'Claude Code hooks',
+                                      description: claudeHooksDescription,
+                                      errorMessage: state.claudeHooksError,
+                                  })}>
+                                      <${ViraButton.assign({
+                                          text: state.onboardingStatus.areClaudeHooksInstalled
+                                              ? 'Installed'
+                                              : state.isInstallingClaudeHooks
+                                                ? 'Installing...'
+                                                : 'Install',
+                                          buttonSize: ViraSize.Small,
+                                          isDisabled:
+                                              state.isInstallingClaudeHooks ||
+                                              state.onboardingStatus.areClaudeHooksInstalled,
+                                      })}
+                                          ${listen('click', installClaudeHooks)}
+                                      ></${ViraButton}>
+                                  </${VirSettingsRow}>
+                              `,
+                          } satisfies SettingsEntry,
+                      ]
+                    : []),
                 {
                     section: SettingsSection.Maintenance,
                     cardTitle: undefined,
@@ -789,9 +903,6 @@ export const VirSettingsModal = defineAppElement<{
             [SettingsSection.Sidebar]({entries}) {
                 return renderEntries(entries);
             },
-            [SettingsSection.Diff]({entries}) {
-                return renderEntries(entries);
-            },
             [SettingsSection.Activities]({entries}) {
                 return renderEntries(entries);
             },
@@ -826,18 +937,6 @@ export const VirSettingsModal = defineAppElement<{
                     ></${VirSettingsFolders}>
                 `;
             },
-            [SettingsSection.Review]({settings}) {
-                return html`
-                    <${VirSettingsReview.assign({
-                        settings,
-                        reviewRepo: target.reviewRepo,
-                    })}
-                        ${listen(VirSettingsReview.events.settingsChange, (event) => {
-                            changeSettings(event.detail);
-                        })}
-                    ></${VirSettingsReview}>
-                `;
-            },
             [SettingsSection.Forges]({entries}) {
                 return renderEntries(entries);
             },
@@ -852,13 +951,13 @@ export const VirSettingsModal = defineAppElement<{
          * settings live in their own element.
          */
         function renderSearchResults(entries: ReadonlyArray<SettingsEntry>) {
-            const results = getEnumValues(SettingsSection)
+            const results = sections
                 .map((section) => {
                     const isSectionMatch = matchesSearch([
-                        settingsSections[section].label,
-                        ...settingsSections[section].searchTerms,
+                        section.label,
+                        ...section.searchTerms,
                     ]);
-                    const sectionEntries = entries.filter((entry) => entry.section === section);
+                    const sectionEntries = entries.filter((entry) => entry.section === section.id);
                     return {
                         section,
                         isSectionMatch,
@@ -884,7 +983,7 @@ export const VirSettingsModal = defineAppElement<{
                 return html`
                     <div class="result-section">
                         <div class="result-header">
-                            <h3>${settingsSections[section].label}</h3>
+                            <h3>${section.label}</h3>
                             <${ViraButton.assign({
                                 text: 'Open',
                                 buttonSize: ViraSize.Small,
@@ -892,7 +991,7 @@ export const VirSettingsModal = defineAppElement<{
                                 color: ViraColorVariant.Neutral,
                             })}
                                 ${listen('click', () => {
-                                    openSection(section);
+                                    openSection(section.id);
                                 })}
                             ></${ViraButton}>
                         </div>
@@ -902,7 +1001,7 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        function renderContent(section: SettingsSection) {
+        function renderContent(section: SettingsSectionPage) {
             if (!state.settings) {
                 return state.loadError
                     ? nothing
@@ -911,16 +1010,27 @@ export const VirSettingsModal = defineAppElement<{
                       `;
             }
             const entries = buildEntries(state.settings);
+            const sectionEntries = entries.filter((entry) => entry.section === section.id);
             return isSearching
                 ? renderSearchResults(entries)
-                : sectionContent[section]({
-                      settings: state.settings,
-                      entries: entries.filter((entry) => entry.section === section),
-                  });
+                : section.render
+                  ? section.render({
+                        settings: state.settings,
+                        details: target.details,
+                        changeSettings,
+                    })
+                  : check.isEnumValue(section.id, SettingsSection)
+                    ? sectionContent[section.id]({
+                          settings: state.settings,
+                          entries: sectionEntries,
+                      })
+                    : renderEntries(sectionEntries);
         }
 
-        function renderBody(section: SettingsSection) {
-            const defaults = isSearching ? undefined : sectionDefaults[section];
+        function renderBody(section: SettingsSectionPage) {
+            const defaults = isSearching
+                ? undefined
+                : customSectionDefaults[section.id] || createSchemaDefaults(section);
             const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
 
             return html`
@@ -940,23 +1050,23 @@ export const VirSettingsModal = defineAppElement<{
                             })}
                         ></${ViraInput}>
                         <${ViraTabs.assign({
-                            tabs: getEnumValues(SettingsSection).map((tabSection) => {
+                            tabs: sections.map((tabSection) => {
                                 return {
-                                    label: settingsSections[tabSection].label,
-                                    group: settingsSections[tabSection].group,
+                                    label: tabSection.label,
+                                    group: tabSection.group,
                                     paths: {
-                                        path: tabSection,
+                                        path: tabSection.id,
                                         fullPaths: [
-                                            tabSection,
+                                            tabSection.id,
                                         ],
                                         PathsType: [
-                                            tabSection,
+                                            tabSection.id,
                                         ],
                                     },
                                 };
                             }),
                             router: staticTabRouter,
-                            currentRoute: toStaticTabRoute(isSearching ? undefined : section),
+                            currentRoute: toStaticTabRoute(isSearching ? undefined : section.id),
                             barDirection: isMobile
                                 ? ViraTabsBarDirection.Bottom
                                 : ViraTabsBarDirection.Right,
@@ -965,7 +1075,7 @@ export const VirSettingsModal = defineAppElement<{
                         })}
                             ${listen(ViraTabs.events.tabSelect, (event) => {
                                 const selected = event.detail.paths.fullPaths[0];
-                                if (check.isEnumValue(selected, SettingsSection)) {
+                                if (check.isString(selected)) {
                                     openSection(selected);
                                 }
                             })}
@@ -985,9 +1095,7 @@ export const VirSettingsModal = defineAppElement<{
                         })}
                     >
                         <div class="header">
-                            <h2>
-                                ${isSearching ? 'Search results' : settingsSections[section].label}
-                            </h2>
+                            <h2>${isSearching ? 'Search results' : section.label}</h2>
                             ${defaults && state.settings && defaults.isModified(state.settings)
                                 ? html`
                                       <${ViraButton.assign({
@@ -1019,6 +1127,12 @@ export const VirSettingsModal = defineAppElement<{
             `;
         }
 
+        const shownSection = assertWrap.isDefined(
+            findSettingsSection({
+                sections,
+                id: target.section,
+            }),
+        );
         const searchText = state.search.trim().toLowerCase();
         const isSearching = !!searchText;
 
@@ -1034,7 +1148,7 @@ export const VirSettingsModal = defineAppElement<{
             })}
                 ${listen(ViraModal.events.modalClose, close)}
             >
-                ${isOpen || state.closedTarget ? renderBody(target.section) : nothing}
+                ${isOpen || state.closedTarget ? renderBody(shownSection) : nothing}
             </${ViraModal}>
         `;
     },

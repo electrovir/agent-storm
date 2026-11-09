@@ -1,14 +1,14 @@
 import {check} from '@augment-vir/assert';
-import {getObjectTypedEntries, getObjectTypedValues, log} from '@augment-vir/common';
+import {
+    extractErrorMessage,
+    getObjectTypedEntries,
+    getObjectTypedValues,
+    log,
+} from '@augment-vir/common';
+import {instanceName, writeFileAtomically} from 'agent-storm';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {
-    claudeHookInstallDir,
-    claudeHookSourceDir,
-    claudeSettingsPath,
-    instanceName,
-} from './file-paths.js';
-import {writeFileAtomically} from './write-file-atomically.js';
+import {claudeHookInstallDir, claudeHookSourceDir, claudeSettingsPath} from './file-paths.js';
 
 enum ClaudeHookScript {
     Session = 'agent-storm-session.sh',
@@ -61,6 +61,24 @@ function hasHookCommand(entry: unknown, command: string): boolean {
     );
 }
 
+function isHookRegistered(
+    hooks: Readonly<Record<PropertyKey, unknown>>,
+    {event, command}: Readonly<(typeof requiredHooks)[number]>,
+) {
+    const entries: unknown = hooks[event];
+    return Array.isArray(entries) && entries.some((entry) => hasHookCommand(entry, command));
+}
+
+function readHooks(settings: Readonly<Record<PropertyKey, unknown>>) {
+    return check.isObject(settings.hooks) ? settings.hooks : {};
+}
+
+/** Whether the user ever installed agent-storm's hooks, even when some are missing now. */
+export function hasAnyClaudeHook(settings: Readonly<Record<PropertyKey, unknown>>) {
+    const hooks = readHooks(settings);
+    return requiredHooks.some((hook) => isHookRegistered(hooks, hook));
+}
+
 /**
  * Same settings with an entry appended for every agent-storm hook it doesn't already run, leaving
  * every existing entry (the user's own hooks included) untouched. Returns `undefined` when nothing
@@ -70,11 +88,8 @@ function hasHookCommand(entry: unknown, command: string): boolean {
 export function addMissingClaudeHooks(
     settings: Readonly<Record<PropertyKey, unknown>>,
 ): Record<PropertyKey, unknown> | undefined {
-    const hooks = check.isObject(settings.hooks) ? settings.hooks : {};
-    const missing = requiredHooks.filter(({event, command}) => {
-        const entries: unknown = hooks[event];
-        return !(Array.isArray(entries) && entries.some((entry) => hasHookCommand(entry, command)));
-    });
+    const hooks = readHooks(settings);
+    const missing = requiredHooks.filter((hook) => !isHookRegistered(hooks, hook));
     if (!missing.length) {
         return undefined;
     }
@@ -100,54 +115,78 @@ export function addMissingClaudeHooks(
     };
 }
 
+/** Settings that fail to parse throw, so they're never replaced. */
+async function readClaudeSettings() {
+    const settingsText = await readFile(claudeSettingsPath, 'utf8').catch(() => undefined);
+    const settings: unknown = settingsText == undefined ? {} : JSON.parse(settingsText);
+    if (!check.isObject(settings)) {
+        throw new TypeError(`${claudeSettingsPath} does not hold a JSON object.`);
+    }
+    return settings;
+}
+
 /**
  * Copy the hook scripts into `~/.claude/` and register them in Claude Code's user settings. AI tabs
  * resume their own chat and report background activity only through these hooks. They can't be
  * passed per launch with `claude --settings` because the user's `claude` shell wrapper skips its
  * resume logic whenever it is given any argument.
- *
- * Failure only costs those features, so it is logged rather than thrown. Settings that fail to
- * parse are left alone rather than replaced.
  */
-export async function installClaudeHooks(): Promise<void> {
+export async function installClaudeHooks() {
     /**
      * `~/.claude` belongs to the default instance, and a named one may run from a checkout with
      * different hook scripts. Its tabs run the default instance's hooks, which write wherever the
      * tab's `AGENT_STORM_DATA_DIR` points.
      */
     if (instanceName) {
+        throw new Error('A named instance uses the Claude hooks of the default instance.');
+    }
+    await mkdir(claudeHookInstallDir, {
+        recursive: true,
+    });
+    await Promise.all(
+        getObjectTypedValues(ClaudeHookScript).map(async (script) => {
+            const source = await readFile(join(claudeHookSourceDir, script), 'utf8');
+            const installedPath = join(claudeHookInstallDir, script);
+            const installed = await readFile(installedPath, 'utf8').catch(() => undefined);
+            if (installed !== source) {
+                await writeFile(installedPath, source);
+            }
+        }),
+    );
+    const updated = addMissingClaudeHooks(await readClaudeSettings());
+    if (!updated) {
+        return;
+    }
+    await writeFileAtomically({
+        path: claudeSettingsPath,
+        contents: `${JSON.stringify(updated, undefined, 2)}\n`,
+        /** Claude Code creates this file owner-only, and it can hold credentials. */
+        mode: 0o600,
+    });
+}
+
+export async function areClaudeHooksInstalled() {
+    try {
+        return !addMissingClaudeHooks(await readClaudeSettings());
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Brings the scripts and the registered hooks up to date, but only once the user installed them,
+ * since writing to `~/.claude` is their choice. Failure only costs the features the hooks power, so
+ * it is logged rather than thrown.
+ */
+export async function updateInstalledClaudeHooks() {
+    if (instanceName) {
         return;
     }
     try {
-        await mkdir(claudeHookInstallDir, {
-            recursive: true,
-        });
-        await Promise.all(
-            getObjectTypedValues(ClaudeHookScript).map(async (script) => {
-                const source = await readFile(join(claudeHookSourceDir, script), 'utf8');
-                const installedPath = join(claudeHookInstallDir, script);
-                const installed = await readFile(installedPath, 'utf8').catch(() => undefined);
-                if (installed !== source) {
-                    await writeFile(installedPath, source);
-                }
-            }),
-        );
-        const settingsText = await readFile(claudeSettingsPath, 'utf8').catch(() => undefined);
-        const settings: unknown = settingsText == undefined ? {} : JSON.parse(settingsText);
-        if (!check.isObject(settings)) {
-            throw new TypeError(`${claudeSettingsPath} does not hold a JSON object.`);
+        if (hasAnyClaudeHook(await readClaudeSettings())) {
+            await installClaudeHooks();
         }
-        const updated = addMissingClaudeHooks(settings);
-        if (!updated) {
-            return;
-        }
-        await writeFileAtomically({
-            path: claudeSettingsPath,
-            contents: `${JSON.stringify(updated, undefined, 2)}\n`,
-            /** Claude Code creates this file owner-only, and it can hold credentials. */
-            mode: 0o600,
-        });
     } catch (error) {
-        log.warning(`Failed to install Claude hooks: ${String(error)}`);
+        log.warning(`Failed to update Claude hooks: ${extractErrorMessage(error)}`);
     }
 }

@@ -22,22 +22,22 @@
             "path": "../core"
         },
         {
-            "path": "../terminal"
+            "path": "../plugin-terminal"
         },
         {
-            "path": "../diff"
+            "path": "../plugin-diff"
         },
         {
-            "path": "../review"
+            "path": "../plugin-review"
         },
         {
-            "path": "../build"
+            "path": "../plugin-build"
         },
         {
-            "path": "../dashboard"
+            "path": "../plugin-dashboard"
         },
         {
-            "path": "../debug"
+            "path": "../plugin-debug"
         }
     ]
 }

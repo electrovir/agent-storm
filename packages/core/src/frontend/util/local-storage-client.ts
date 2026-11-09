@@ -1,20 +1,11 @@
 import {
     folderInfoShape,
-    GitDiffSide,
     savedRepoShape,
     settingsShape,
     tabSelectionShape,
 } from '@agent-storm/common';
 import {clamp, omitObjectKeys, type PartialWithUndefined} from '@augment-vir/common';
-import {
-    checkValidShape,
-    defineShape,
-    enumShape,
-    exactShape,
-    recordShape,
-    unionShape,
-    type ShapeInitType,
-} from 'object-shape-tester';
+import {checkValidShape, defineShape, recordShape, type ShapeInitType} from 'object-shape-tester';
 
 type Listener<T> = (value: T) => void;
 
@@ -100,26 +91,20 @@ export const sidebarWidth = {
     default: 280,
 } as const;
 
-export const diffSidebarWidth = {
-    min: 140,
-    max: 700,
-    default: 260,
-} as const;
-
 export const scrollbackLimit = {
     min: 100,
     max: 100_000,
     default: 20_000,
 } as const;
 
-type NumberBounds = Readonly<{
+export type NumberBounds = Readonly<{
     min: number;
     max: number;
     default: number;
 }>;
 
 /** A number setting clamped into `bounds`, falling back to the default when it isn't a number. */
-function defineNumberSetting({
+export function defineNumberSetting({
     key,
     bounds,
     isInteger,
@@ -159,7 +144,7 @@ export type FolderSetting<Value> = Setting<Partial<Record<string, Value>>> & {
  * is discarded on read, so a hand-edited or stale value falls back to the caller's default rather
  * than being trusted.
  */
-function defineFolderSetting<const ValueShape>({
+export function defineFolderSetting<const ValueShape>({
     key,
     valueShape,
 }: Readonly<{
@@ -216,33 +201,6 @@ export const localStorageClient = {
     sidebarWidth: defineNumberSetting({
         key: 'agent-storm:sidebar-width',
         bounds: sidebarWidth,
-    }),
-    /** Same as `sidebarWidth`, for the Review tab's sidebar. */
-    reviewSidebarWidth: defineNumberSetting({
-        key: 'agent-storm:review-sidebar-width',
-        bounds: sidebarWidth,
-    }),
-    diffSidebarWidth: defineNumberSetting({
-        key: 'agent-storm:diff-sidebar-width',
-        bounds: diffSidebarWidth,
-    }),
-    /**
-     * Which file each folder's diff pane was last showing, as that pane's own side-plus-path select
-     * value. A value naming a file that no longer has a diff is discarded when the pane next reads
-     * git status.
-     */
-    diffFileByFolder: defineFolderSetting({
-        key: 'agent-storm:diff-file-by-folder',
-        valueShape: '',
-    }),
-    /**
-     * Which side each folder's diff pane was last reading as one stacked review, or `false` for a
-     * folder that was last on a single-file diff. A folder with no entry opens the unstaged
-     * review.
-     */
-    diffReviewSideByFolder: defineFolderSetting({
-        key: 'agent-storm:diff-review-side-by-folder',
-        valueShape: unionShape(enumShape(GitDiffSide), exactShape(false)),
     }),
     /**
      * The tab selection the last window to change one had in each folder, which a newly opened

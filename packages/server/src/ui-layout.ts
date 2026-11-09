@@ -12,12 +12,12 @@ import {
     type PartialWithUndefined,
 } from '@augment-vir/common';
 import {readFileIfExists} from '@augment-vir/node';
+import {writeFileAtomically} from 'agent-storm';
 import {createHash} from 'node:crypto';
 import {readdir, rm, stat} from 'node:fs/promises';
 import {basename, join} from 'node:path';
 import {defineShape, optionalShape, parseJsonWithShape, recordShape} from 'object-shape-tester';
 import {folderStatesDir, uiLayoutPath} from './file-paths.js';
-import {writeFileAtomically} from './write-file-atomically.js';
 
 const appLayoutShape = defineShape({
     mainTabOrder: [''],

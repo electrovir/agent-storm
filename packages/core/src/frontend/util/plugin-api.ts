@@ -1,46 +1,114 @@
 import {
-    type ManualReviewState,
     type PaneKind,
-    type PaneState,
-    type ReviewQueuePr,
+    type SchemaSettingKey,
     type SessionMeta,
+    type Settings,
+    type TabState,
 } from '@agent-storm/common';
+import {assertWrap} from '@augment-vir/assert';
 import {type PartialWithUndefined} from '@augment-vir/common';
-import {type HtmlInterpolation} from 'element-vir';
+import {type HtmlInterpolation, type ObservableBase} from 'element-vir';
+import {defineShape, type Shape} from 'object-shape-tester';
 import {type ViraIconSvg, type ViraThemeClient} from 'vira';
 import {type FolderDataObservable} from './folder-data.js';
+import {type FolderSessionsObservable} from './folder-sessions.js';
 import {type Setting} from './local-storage-client.js';
 import {type PaneRestartsObservable} from './pane-restarts.js';
-import {type PaneReviewObservable, type ReviewStart} from './pane-review.js';
-import {type PrReviewsObservable} from './pr-reviews.js';
 import {type ScreenSize} from './screen-size.js';
 import {type TabLayout} from './tab-layout.js';
 import {type UiLayoutObservable} from './ui-layout.js';
 
-/** One page of the Settings modal. Its tabs list in this order. */
+/** Turns the latest stored value into the next one. */
+export type ValueUpdate<Value> = (current: Readonly<Value>) => Value;
+
+/** One of core's own pages of the Settings modal. Its tabs list in this order. */
 export enum SettingsSection {
     General = 'general',
     Terminal = 'terminal',
     Sidebar = 'sidebar',
-    Diff = 'diff',
     Activities = 'activities',
     Ai = 'ai',
     Folders = 'folders',
-    Review = 'review',
     Forges = 'forges',
     Maintenance = 'maintenance',
 }
 
-/** Where the Settings modal is open. */
+/**
+ * A page of the Settings modal that a plugin adds. `Details` is whatever the page's opener passes
+ * through {@link createSettingsTarget}.
+ */
+export type SettingsSectionContribution<Details = undefined> = Readonly<{
+    /** Prefixed by the owning plugin's id, so no two plugins' sections can collide. */
+    id: string;
+    label: string;
+    group: string;
+    /** Matched by the nav search, beside the section's label and its rows' text. */
+    searchTerms: ReadonlyArray<string>;
+    /** Titles the card of the section's schema settings, for a section with more cards. */
+    schemaCardTitle: string | undefined;
+    /** The settings shown as rows built from their schemas, in order. */
+    schemaKeys: ReadonlyArray<SchemaSettingKey>;
+    /** The core section whose tab this one follows. */
+    listAfter: SettingsSection;
+}> &
+    PartialWithUndefined<{
+        /** Replaces the section's schema rows. */
+        render(
+            params: Readonly<{
+                settings: Readonly<Settings>;
+                details: Details | undefined;
+                changeSettings(update: ValueUpdate<Settings>): void;
+            }>,
+        ): HtmlInterpolation;
+    }>;
+
+/** Any settings section, as registries hold them. */
+export type AnySettingsSectionContribution = SettingsSectionContribution<any>;
+
+/** Types a plugin's settings section and prefixes its id with the plugin's. */
+export function defineSettingsSection<Details = undefined>({
+    pluginId,
+    name,
+    ...section
+}: Readonly<
+    Omit<SettingsSectionContribution<Details>, 'id'> & {
+        pluginId: string;
+        name: string;
+    }
+>): SettingsSectionContribution<Details> {
+    return {
+        ...section,
+        id: `${pluginId}:${name}`,
+    };
+}
+
+/**
+ * Where the Settings modal is open: a core {@link SettingsSection}, or a plugin's section by its id.
+ * An id with no section, like one from a plugin since turned off, opens the General section.
+ */
 export type SettingsTarget = Readonly<{
-    section: SettingsSection;
+    section: string;
 }> &
     PartialWithUndefined<{
         /** The folder the Folders section edits. */
         folder: string;
-        /** The repo the Review section lists first, even before it has a command of its own. */
-        reviewRepo: Readonly<Pick<ReviewQueuePr, 'owner' | 'repoName'>>;
+        /** Handed to the plugin section's `render`. */
+        details: unknown;
     }>;
+
+/** Opens a plugin's section with details its `render` reads. */
+export function createSettingsTarget<Details>({
+    section,
+    details,
+}: Readonly<{
+    section: SettingsSectionContribution<Details>;
+    details: Details | undefined;
+}>) {
+    return {
+        section: section.id,
+        details,
+    } satisfies SettingsTarget;
+}
 
 /**
  * `vir-app`'s state, handed to every element below it. A new object on each `vir-app` render, so
@@ -49,8 +117,6 @@ export type SettingsTarget = Readonly<{
 export type AppContext = Readonly<{
     screenSize: ScreenSize;
     folderData: FolderDataObservable;
-    /** PR details and sent verdicts, shared by every tab that reviews a PR. */
-    prReviews: PrReviewsObservable;
     themeClient: Readonly<ViraThemeClient>;
     /**
      * Selects a route, starting with an activity id, in whatever shows this context: the window's
@@ -62,7 +128,11 @@ export type AppContext = Readonly<{
     /** Each activity's state, keyed by activity id. */
     activityStates: Readonly<Record<string, unknown>>;
     /** Every pane a pane group's tab can hold, in the new-tab menu's order. */
-    panes: ReadonlyArray<PaneDefinition>;
+    panes: ReadonlyArray<AnyPaneDefinition>;
+    /** Every plugin's per-pane-group state, which each pane group runs. */
+    paneGroupExtensions: ReadonlyArray<AnyPaneGroupExtension>;
+    /** Every plugin's page of the Settings modal. */
+    settingsSections: ReadonlyArray<AnySettingsSectionContribution>;
     /** Set inside an Activity tab, which can't hold another and doesn't touch remembered selections. */
     isInActivityTab: boolean;
     /**
@@ -85,7 +155,7 @@ export type AppContext = Readonly<{
 /** The parts of the context that are the same objects for the app's whole life. */
 export type AppServices = Pick<
     AppContext,
-    'folderData' | 'paneRestarts' | 'uiLayout' | 'themeClient' | 'prReviews'
+    'folderData' | 'paneRestarts' | 'uiLayout' | 'themeClient'
 >;
 
 /** An activity's part of the route: the path segments after its id. */
@@ -216,9 +286,17 @@ export enum PaneMounting {
 export type SessionTab = Readonly<{
     kind: PaneKind;
     session: Readonly<SessionMeta>;
-    /** How many sessions of this kind the folder has. */
-    count: number;
 }>;
+
+export type NewTabRequest = Readonly<{
+    kind: string;
+    /** Undefined on mobile, which has no groups of its own. */
+    groupId: string | undefined;
+    state?: Readonly<TabState> | undefined;
+}>;
+
+/** What a pane group's parent hands each extension, by the extension's id. */
+export type PaneGroupExtensionInputs = Readonly<Record<string, unknown>>;
 
 /** What a pane group knows about itself and hands to each tab's pane. */
 export type PaneGroupView = Readonly<{
@@ -227,63 +305,141 @@ export type PaneGroupView = Readonly<{
     /** True when the pane group is the user's currently focused folder. */
     isActive: boolean;
     isMobile: boolean;
-    isReviewFolder: boolean;
     layout: Readonly<TabLayout>;
-    paneReview: PaneReviewObservable;
-    review: Readonly<ManualReviewState> | undefined;
-    reviewStart: Readonly<ReviewStart> | undefined;
-    /** Keeps the Diff tab on the manual review while its copy is still being made. */
-    isManualReviewStarting: boolean;
-    setManualReviewStarting(isManualReviewStarting: boolean): void;
+    extensionInputs: PaneGroupExtensionInputs;
+    /**
+     * Each extension's per-pane-group state, by the extension's id. Read it with
+     * `findExtensionRun`.
+     */
+    extensionRuns: Readonly<Record<string, ObservableBase>>;
     writeLayout(change: (current: Readonly<TabLayout>) => Readonly<TabLayout>): void;
-    openNewTab(
-        params: Readonly<{
-            kind: string;
-            groupId: string | undefined;
-            state?: Readonly<Partial<PaneState>> | undefined;
-        }>,
-    ): Promise<void>;
+    openNewTab(params: NewTabRequest): Promise<void>;
     /** The session whose terminal grabs focus when it mounts. */
     sessionToFocus: string | undefined;
     focusedTabId: string | undefined;
 }>;
 
+/**
+ * State a plugin keeps beside each pane group's tabs, for work that must run whether or not any of
+ * the plugin's panes shows. A pane group re-renders when its `Run` changes and destroys it with the
+ * group.
+ */
+export type PaneGroupExtension<
+    Inputs = undefined,
+    Run extends ObservableBase = ObservableBase,
+> = Readonly<{
+    /** Keys the extension's inputs and run on the pane group. */
+    id: string;
+    create(
+        params: Readonly<{
+            folder: string;
+            context: AppContext;
+            folderSessions: FolderSessionsObservable;
+        }>,
+    ): Run;
+    /** Run from each pane group render, once its displayed tabs are known. */
+    sync(
+        params: Readonly<{
+            run: Run;
+            inputs: Inputs | undefined;
+            view: PaneGroupView;
+            displayedTabIds: ReadonlyArray<string>;
+            /** The tabs that had been displayed before this render. */
+            shownTabIds: ReadonlyArray<string>;
+            /** Whether the folder's branch has a PR. */
+            hasPr: boolean;
+        }>,
+    ): void;
+}>;
+
+/** Any pane group extension, as registries hold them. */
+export type AnyPaneGroupExtension = PaneGroupExtension<any, any>;
+
+/** The pane group's state for `extension`. */
+export function findExtensionRun<Run extends ObservableBase>(
+    {extensionRuns}: Readonly<Pick<PaneGroupView, 'extensionRuns'>>,
+    extension: PaneGroupExtension<any, Run>,
+) {
+    return assertWrap.isDefined(extensionRuns[extension.id]) satisfies ObservableBase as Run;
+}
+
+/** What the pane group's parent passed `extension`, if anything. */
+export function findExtensionInputs<Inputs>(
+    {extensionInputs}: Readonly<Pick<PaneGroupView, 'extensionInputs'>>,
+    extension: PaneGroupExtension<Inputs, any>,
+) {
+    return extensionInputs[extension.id] satisfies unknown as Inputs | undefined;
+}
+
 /** One tab's pane, as its definition renders it. */
-export type PaneRenderParams = PaneGroupView &
+export type PaneRenderParams<TabStateShape extends Shape = typeof noTabStateShape> = PaneGroupView &
     Readonly<{
         tabId: string;
         kind: string;
-        /** The pane group's values, with the tab's own state over them. */
-        paneState: Readonly<PaneState>;
+        /** The tab's own state, read through its pane's `tabStateShape`. */
+        tabState: Readonly<TabStateShape['runtimeType']>;
         isDisplayed: boolean;
         /** Set for a session kind's tab, once its session exists. */
         sessionTab: SessionTab | undefined;
     }>;
 
 /** One entry in the new-tab menu. */
-export type NewTabEntry = Readonly<{
+export type NewTabEntry<TabStateShape extends Shape = typeof noTabStateShape> = Readonly<{
     label: string;
     /** The new tab's own state. */
-    state: Readonly<Partial<PaneState>> | undefined;
+    state: Readonly<Partial<TabStateShape['runtimeType']>> | undefined;
+}>;
+
+/** The `tabStateShape` of a pane whose tabs keep no state of their own. */
+export const noTabStateShape = defineShape({});
+
+/** Which end of its group a pane's default tab goes at. */
+export enum DefaultTabPosition {
+    Start = 'start',
+    End = 'end',
+}
+
+/** Where a pane's tab goes in a folder's first layout. */
+export type DefaultTabPlacement = Readonly<{
+    /** The group holding this kind's sessions. */
+    group: PaneKind;
+    position: DefaultTabPosition;
 }>;
 
 /** One kind of pane a pane group's tab can hold. */
-export type PaneDefinition = Readonly<{
+export type PaneDefinition<TabStateShape extends Shape = typeof noTabStateShape> = Readonly<{
     /** Stored as the kind of every tab showing the pane. */
     id: string;
+    /**
+     * Reads each tab's stored state. A key the shape doesn't accept is replaced by the shape's
+     * default, so a stored value from an older version can't reach the pane.
+     */
+    tabStateShape: TabStateShape;
     /** Names a tab with no name of its own. */
     label(
         params: Readonly<{
-            tabState: Readonly<Partial<PaneState>> | undefined;
+            tabState: Readonly<TabStateShape['runtimeType']>;
             context: AppContext;
         }>,
     ): string;
     /** The kind's entries in the new-tab menu. */
-    newTabEntries(view: PaneGroupView): ReadonlyArray<NewTabEntry>;
+    newTabEntries(view: PaneGroupView): ReadonlyArray<NewTabEntry<TabStateShape>>;
     icon: ViraIconSvg;
     /** Whether the pane runs an AI, which its tab shows and its menu can change. */
     hasAi: boolean;
     mounting: PaneMounting;
     isAvailable(view: PaneGroupView): boolean;
-    render(params: PaneRenderParams): HtmlInterpolation;
-}>;
+    render(params: PaneRenderParams<TabStateShape>): HtmlInterpolation;
+}> &
+    PartialWithUndefined<{
+        /**
+         * Where a folder's first layout puts a tab of this pane. Omitted or undefined, the layout
+         * has none.
+         */
+        defaultPlacement(
+            params: Readonly<Pick<PaneGroupView, 'extensionInputs'>>,
+        ): DefaultTabPlacement | undefined;
+    }>;
+
+/** Any pane definition, as registries hold them. */
+export type AnyPaneDefinition = PaneDefinition<any>;

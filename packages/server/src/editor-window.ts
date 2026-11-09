@@ -2,9 +2,9 @@
 
 import {type MaybePromise} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
+import {runCommand} from 'agent-storm';
 import {homedir} from 'node:os';
 import {relative} from 'node:path';
-import {runCommand} from './run-command.js';
 
 /**
  * Finds the window by the folder path in its title, which VS Code's default `window.title` leaves

@@ -2,6 +2,7 @@
 
 import {paneKindRunsAi, PaneStatus} from '@agent-storm/common';
 import {filterMap} from '@augment-vir/common';
+import {runCommand} from 'agent-storm';
 import {convertDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -9,7 +10,6 @@ import {checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
 import {collectDescendantPids} from './daemon/kill-process-tree.js';
 import {type StatusEntry} from './daemon/protocol.js';
 import {claudeActivityDir} from './file-paths.js';
-import {runCommand} from './run-command.js';
 import {findFolderSession} from './sessions.js';
 
 /** What `claude-hooks/agent-storm-activity.sh` writes for each conversation. */

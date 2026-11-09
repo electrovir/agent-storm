@@ -1,0 +1,59 @@
+{
+    "name": "agent-storm",
+    "version": "0.0.1",
+    "description": "Installs and starts agent-storm, a local web app for running AI coding sessions beside a shell in each of your git repos.",
+    "keywords": [
+        "agent",
+        "ai",
+        "claude",
+        "terminal"
+    ],
+    "homepage": "https://github.com/electrovir/agent-storm",
+    "bugs": {
+        "url": "https://github.com/electrovir/agent-storm/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/electrovir/agent-storm.git"
+    },
+    "license": "(MIT OR CC0-1.0)",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "sideEffects": false,
+    "type": "module",
+    "main": "src/index.ts",
+    "module": "src/index.ts",
+    "types": "src/index.ts",
+    "bin": {
+        "agent-storm": "src/agent-storm.script.ts"
+    },
+    "scripts": {
+        "compile": "virmator compile",
+        "docs": "virmator docs",
+        "test": "virmator test node",
+        "test:docs": "virmator docs check",
+        "test:update": "npm test update"
+    },
+    "dependencies": {
+        "@augment-vir/assert": "^32.7.0",
+        "@augment-vir/common": "^32.7.0",
+        "@augment-vir/node": "^32.7.0",
+        "date-vir": "^9.4.1",
+        "object-shape-tester": "^6.15.3",
+        "url-vir": "^2.2.2"
+    },
+    "devDependencies": {
+        "@augment-vir/test": "^32.7.0",
+        "@types/node": "^26.6.6",
+        "c8": "^12.0.0",
+        "istanbul-smart-text-reporter": "^1.1.5"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
+}

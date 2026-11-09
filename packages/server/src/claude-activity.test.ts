@@ -2,12 +2,12 @@ import {PaneStatus} from '@agent-storm/common';
 import {assert, check} from '@augment-vir/assert';
 import {awaitedBlockingMap} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
+import {runCommand} from 'agent-storm';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {parseCpuTime, resolveQuietClaudeStatus} from './claude-activity.js';
 import {claudeHookSourceDir} from './file-paths.js';
-import {runCommand} from './run-command.js';
 
 const now = 10_000_000;
 

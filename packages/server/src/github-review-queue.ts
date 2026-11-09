@@ -489,10 +489,19 @@ const assigneeQueue = createPrQueue({
     },
 });
 
+/**
+ * GitHub's search index lags a review by minutes, so a PR the viewer just approved or rejected can
+ * still match `user-review-requested:@me`. The PR's own `viewerLatestReviewRequest` is current, so
+ * this drops the stale matches.
+ */
+function filterAwaitingViewer(pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) {
+    return pullRequests.filter((pr) => pr.isAwaitingViewerReview);
+}
+
 /** Every queued PR that can get a review folder: the viewer's own PRs can't. */
 function listReviewablePrs() {
     return [
-        ...reviewQueue.cache.pullRequests,
+        ...filterAwaitingViewer(reviewQueue.cache.pullRequests),
         ...assigneeQueue.cache.pullRequests.filter((pr) => !pr.isViewerAuthor),
     ];
 }
@@ -518,9 +527,16 @@ function combineReviewerQueues([
         ReviewQueue,
     ]
 >) {
+    const staleRequests = queue.pullRequests.filter((pr) => !pr.isAwaitingViewerReview);
     return {
         ...queue,
-        reviewedPullRequests: reviewed.pullRequests,
+        pullRequests: filterAwaitingViewer(queue.pullRequests),
+        reviewedPullRequests: [
+            ...staleRequests,
+            ...reviewed.pullRequests.filter((pr) => {
+                return !staleRequests.some((stale) => stale.url === pr.url);
+            }),
+        ],
         isUpdating: queue.isUpdating || reviewed.isUpdating,
         error: queue.error || reviewed.error,
     };

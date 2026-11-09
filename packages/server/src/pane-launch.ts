@@ -1,15 +1,20 @@
 import {PaneKind, paneKindRunsAi, type AiDefinition} from '@agent-storm/common';
 import {waitUntil} from '@augment-vir/assert';
 import {log, wait} from '@augment-vir/common';
+import {normalizePath} from 'agent-storm';
 import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
 import {attachPane, fetchPaneStatuses} from './daemon/daemon-client.js';
 import {defaultSessionId} from './daemon/protocol.js';
 import {findParentRepoPath} from './folder-info.js';
 import {findNearestFolderSetting, loadFolderSettings} from './folder-settings.js';
 import {resolveReviewFolder} from './github-review-queue.js';
-import {normalizePath} from './paths.js';
 import {getLivePaneSessionIds} from './pty.js';
-import {findFolderSession, getFolderSessions, markPaneStarted} from './sessions.js';
+import {
+    findFolderSession,
+    findOrCreateFirstSession,
+    getFolderSessions,
+    markPaneStarted,
+} from './sessions.js';
 import {findAiDefinition, loadSettings, resolveFolderAi} from './settings.js';
 
 /**
@@ -211,7 +216,7 @@ export async function sendPaneText({
     attachment.close();
 }
 
-/** Types `prompt` into a folder's first AI tab, starting that tab first if it isn't running. */
+/** Types `prompt` into a folder's first AI tab, opening and starting one first if needed. */
 export async function launchFolderSession({
     folder,
     prompt,
@@ -219,10 +224,10 @@ export async function launchFolderSession({
     folder: string;
     prompt: string;
 }>) {
-    const sessionId = (await getFolderSessions(folder))[PaneKind.Ai][0]?.id;
-    if (!sessionId) {
-        return;
-    }
+    const sessionId = await findOrCreateFirstSession({
+        folder,
+        kind: PaneKind.Ai,
+    });
     if (!(await getLivePaneSessionIds(folder, PaneKind.Ai)).includes(sessionId)) {
         await spawnPane({
             folder,
@@ -242,11 +247,20 @@ export async function launchFolderSession({
     });
 }
 
-/** Types `command` into a folder's first shell tab and runs it, starting the tab if needed. */
-async function runInShellPane({folder, command}: Readonly<{folder: string; command: string}>) {
+/** Types `command` into a folder's shell tab and runs it, starting the tab if needed. */
+async function runInShellPane({
+    folder,
+    command,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    command: string;
+    sessionId: string;
+}>) {
     const attachment = await attachPane({
         folder,
         kind: PaneKind.Shell,
+        sessionId,
         onData() {},
         onExit() {},
     });
@@ -283,6 +297,10 @@ export async function runPostWorktreeCmd({
         await runInShellPane({
             folder: worktreePath,
             command,
+            sessionId: await findOrCreateFirstSession({
+                folder: worktreePath,
+                kind: PaneKind.Shell,
+            }),
         });
     }
 }
@@ -327,11 +345,15 @@ export async function runReviewInitCmd({
      * The shell's foreground process is also something other than the shell when the user's shell
      * starts tmux or similar, so this errs on the side of not typing.
      */
+    const shellSessionId = await findOrCreateFirstSession({
+        folder: reviewFolder.folder,
+        kind: PaneKind.Shell,
+    });
     const isShellBusy = (await fetchPaneStatuses()).some((entry) => {
         return (
             entry.folder === reviewFolder.folder &&
             entry.kind === PaneKind.Shell &&
-            (entry.sessionId || defaultSessionId) === defaultSessionId &&
+            (entry.sessionId || defaultSessionId) === shellSessionId &&
             entry.isRunningCommand
         );
     });
@@ -344,5 +366,6 @@ export async function runReviewInitCmd({
     await runInShellPane({
         folder: reviewFolder.folder,
         command,
+        sessionId: shellSessionId,
     });
 }

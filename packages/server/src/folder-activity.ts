@@ -7,11 +7,10 @@ import {
     PromiseQueue,
     wrapInTry,
 } from '@augment-vir/common';
+import {normalizePath, writeFileAtomically} from 'agent-storm';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
 import {folderActivityPath} from './file-paths.js';
-import {normalizePath} from './paths.js';
-import {writeFileAtomically} from './write-file-atomically.js';
 
 /**
  * Folder path → milliseconds since epoch of the last keystroke the user sent to one of that

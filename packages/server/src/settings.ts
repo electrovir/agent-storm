@@ -9,21 +9,21 @@ import {check} from '@augment-vir/assert';
 import {
     extractExtension,
     getObjectTypedEntries,
+    getObjectTypedKeys,
     log,
     mapObjectValues,
-    PromiseQueue,
     removeDuplicates,
     typedObjectFromEntries,
     type UnknownObject,
 } from '@augment-vir/common';
+import {normalizePath, userDataDir, writeFileAtomically} from 'agent-storm';
 import {findConfigFile, parseConfigContents} from 'config-vir';
 import {mkdir, rename, stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {assertValidShape} from 'object-shape-tester';
 import {pruneAiAvatars} from './ai-avatar.js';
-import {configBackupDir, settingsJsonPath, userDataDir} from './file-paths.js';
-import {normalizePath} from './paths.js';
-import {writeFileAtomically} from './write-file-atomically.js';
+import {configBackupDir, settingsJsonPath} from './file-paths.js';
+import {createQueuedFile} from './queued-file.js';
 
 /**
  * The user's settings file, whichever format it's in. Undefined when there's none, and throws when
@@ -94,7 +94,7 @@ export function stripSettingsDefaults({
                     defaults: defaultValue,
                     settings: value,
                 });
-                return Object.keys(stripped).length
+                return getObjectTypedKeys(stripped).length
                     ? [
                           [
                               key,
@@ -352,30 +352,18 @@ async function writeSettings(settings: Readonly<Settings>): Promise<void> {
     }
 }
 
-/**
- * Serializes every settings write. Without it, two requests that each load, modify, and save the
- * settings interleave and the later save silently drops the earlier one's change.
- */
-const settingsWriteQueue = new PromiseQueue();
+const settingsFile = createQueuedFile({
+    description: 'settings',
+    load: loadSettings,
+    write: writeSettings,
+});
 
 /** Replaces the user's settings. Runs after any queued {@link updateSettings} calls finish. */
-export async function saveSettings(settings: Readonly<Settings>): Promise<void> {
-    await settingsWriteQueue.add(async () => await writeSettings(settings));
-}
+export const saveSettings = settingsFile.save;
 
 /**
  * Load, modify, and save the settings as one queued step so concurrent updates can't overwrite each
  * other. Skips the write when `update` returns `undefined` or when the current settings can't be
  * read, so a transient read failure never resets the user's settings to defaults.
  */
-export async function updateSettings(
-    update: (settings: Readonly<Settings>) => Settings | undefined,
-): Promise<void> {
-    await settingsWriteQueue.add(async () => {
-        const settings = await loadSettings().catch(() => undefined);
-        const updated = settings && update(settings);
-        if (updated) {
-            await writeSettings(updated);
-        }
-    });
-}
+export const updateSettings = settingsFile.update;

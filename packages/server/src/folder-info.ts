@@ -21,6 +21,7 @@ import {
     PromiseQueue,
     wait,
 } from '@augment-vir/common';
+import {normalizePath, writeFileAtomically} from 'agent-storm';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {readFile, stat} from 'node:fs/promises';
 import {basename} from 'node:path';
@@ -34,7 +35,7 @@ import {
     unknownShape,
 } from 'object-shape-tester';
 import {loadAppState, updateAppState, type AppState} from './app-state.js';
-import {repoCacheKey, repoPrCache} from './branch-prs.js';
+import {recordBranchPr, repoCacheKey, repoPrCache} from './branch-prs.js';
 import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {loadFolderSettings} from './folder-settings.js';
@@ -52,10 +53,8 @@ import {
     type RepoSlug,
 } from './git.js';
 import {applyManualReviewStatus} from './github-review-queue.js';
-import {normalizePath} from './paths.js';
 import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
 import {loadSettings, resolveFolderAi} from './settings.js';
-import {writeFileAtomically} from './write-file-atomically.js';
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
@@ -542,13 +541,6 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
 }
 
 /**
- * Pane status changes (Busy ↔ Idle) need to surface within a frontend poll, not within the slow
- * git-driven sweep cycle. Overlay live statuses from the daemon (briefly cached in
- * `getPaneStatusLookup`) on top of the cached FolderInfo so the sidebar's loader icon flips within
- * about one poll interval of the pane going busy, instead of waiting for the next sweep to bake the
- * new status into the cache.
- */
-/**
  * The repo `folder` is a worktree of, per the last sweep. Undefined for a repo or an unknown
  * folder.
  */
@@ -560,6 +552,13 @@ export function findParentRepoPath(folder: string) {
     );
 }
 
+/**
+ * Pane status changes (Busy ↔ Idle) need to surface within a frontend poll, not within the slow
+ * git-driven sweep cycle. Overlay live statuses from the daemon (briefly cached in
+ * `getPaneStatusLookup`) on top of the cached FolderInfo so the sidebar's loader icon flips within
+ * about one poll interval of the pane going busy, instead of waiting for the next sweep to bake the
+ * new status into the cache.
+ */
 export async function getCachedFolders(): Promise<FolderInfo[]> {
     const statusLookup = await getPaneStatusLookup();
     const sessionStatusLookup = await getPaneSessionStatusLookup();
@@ -894,6 +893,30 @@ async function applyGitInfoChange(folder: string) {
     } catch (error) {
         log.warning(`Failed to update ${folder}: ${extractErrorMessage(error)}`);
     }
+}
+
+/**
+ * Shows a PR's new status in the sidebar right away, for a change agent-storm made itself (like a
+ * merge) that the repo's next GitHub lookup would otherwise take a while to see.
+ */
+export async function recordFolderPrStatus({
+    folder,
+    slug,
+    branchName,
+    prInfo,
+}: Readonly<{
+    folder: string;
+    slug: Readonly<RepoSlug>;
+    branchName: string;
+    prInfo: Readonly<PrInfo>;
+}>) {
+    recordBranchPr({
+        ...slug,
+        branchName,
+        prInfo,
+    });
+    persistGithubCache();
+    await applyGitInfoChange(folder);
 }
 
 /**

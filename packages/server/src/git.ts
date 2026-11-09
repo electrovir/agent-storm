@@ -9,6 +9,7 @@ import {
     type AnyByteSize,
     type Overwrite,
 } from '@augment-vir/common';
+import {normalizePath, runCommand} from 'agent-storm';
 import {
     calculateRelativeDate,
     convertDuration,
@@ -37,8 +38,6 @@ import {
     RawReviewState,
 } from './github-raw-enums.js';
 import {readManualReviewEntry, reviewBranchPrefix, toReviewFolder} from './manual-review-state.js';
-import {normalizePath} from './paths.js';
-import {runCommand} from './run-command.js';
 
 type GitInfo = {
     branch: string | null;
@@ -656,7 +655,7 @@ const ghAvailability: {isAvailable: boolean} = {
     isAvailable: false,
 };
 
-async function isGhAvailable(): Promise<boolean> {
+export async function isGhAvailable(): Promise<boolean> {
     if (!ghAvailability.isAvailable) {
         ghAvailability.isAvailable = await runCommand(
             'gh',

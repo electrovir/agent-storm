@@ -19,6 +19,12 @@ import {
     resolveReviewFolder,
 } from './github-review-queue.js';
 import {readManualReviewEntry, readManualReviewState} from './manual-review-state.js';
+import {loadSettings} from './settings.js';
+
+/** An unreadable settings file leaves automatic reviews on, like the setting's default. */
+async function isAutoManualReviewDisabled() {
+    return !!(await loadSettings().catch(() => undefined))?.disableAutoManualReview;
+}
 
 export type ReviewAutoStartDeps = {
     /** Types `prompt` into the folder's first AI tab, starting that tab first if it isn't running. */
@@ -190,6 +196,9 @@ async function restartOutdatedReview({
     pullRequest: Readonly<ReviewQueuePr>;
     deps: Readonly<ReviewAutoStartDeps>;
 }>) {
+    if (await isAutoManualReviewDisabled()) {
+        return;
+    }
     const restartKey = `${pullRequest.url}@${pullRequest.headSha}`;
     if (!pullRequest.headSha || autoStartState.restartedHeads.includes(restartKey)) {
         return;
@@ -289,6 +298,9 @@ async function autoStartReview({
     deps: Readonly<ReviewAutoStartDeps>;
 }>) {
     try {
+        if (await isAutoManualReviewDisabled()) {
+            return;
+        }
         const {folder, review} = await resolveReviewFolder({
             owner: pullRequest.owner,
             repoName: pullRequest.repoName,
@@ -354,6 +366,7 @@ async function autoStartBuildReview({
     try {
         const slug = await getRepoSlug(folder);
         if (
+            (await isAutoManualReviewDisabled()) ||
             !slug ||
             (await readManualReviewState({
                 owner: slug.owner,

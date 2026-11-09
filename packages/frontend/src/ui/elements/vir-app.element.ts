@@ -2,7 +2,6 @@ import {
     applyThemeMode,
     createFolderData,
     createPaneRestarts,
-    createPrReviews,
     createUiLayout,
     defineAppElement,
     installClientErrorLog,
@@ -25,7 +24,8 @@ import {resolveActivityRoute} from '../../util/activity-route.js';
 import {bookRouteBase, router, sanitizeActivityPaths} from '../../util/router.js';
 import {trackVisualViewportHeight} from '../../util/visual-viewport.js';
 import {activities} from './activity-definitions.js';
-import {panes} from './pane-definitions.js';
+import {paneGroupExtensions, panes} from './pane-definitions.js';
+import {settingsSections} from './settings-section-definitions.js';
 import {VirActivityPanel} from './vir-activity-panel.element.js';
 import {VirAppModals} from './vir-app-modals.element.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
@@ -39,7 +39,6 @@ export const VirApp = defineAppElement()({
         const folderData = createFolderData();
         return {
             route: router.readCurrentRoute(),
-            prReviews: createPrReviews(),
             folderData,
             paneRestarts: createPaneRestarts(folderData),
             uiLayout: createUiLayout(folderData),
@@ -113,7 +112,6 @@ export const VirApp = defineAppElement()({
             paneRestarts: state.paneRestarts,
             uiLayout: state.uiLayout,
             themeClient: state.themeClient,
-            prReviews: state.prReviews,
         };
         /**
          * `/` (and any unrecognized URL) sanitizes to the Dashboard tab on read, but the window's
@@ -173,7 +171,6 @@ export const VirApp = defineAppElement()({
         state.disposers.forEach((dispose) => dispose());
         state.folderData.destroy();
         state.uiLayout.destroy();
-        state.prReviews.destroy();
     },
     render({state}) {
         if (state.route.paths[0] === bookRouteBase) {
@@ -196,7 +193,6 @@ export const VirApp = defineAppElement()({
         const context: AppContext = {
             screenSize: state.screenSize,
             folderData: state.folderData,
-            prReviews: state.prReviews,
             themeClient: state.themeClient,
             navigate(paths) {
                 router.setRoute({
@@ -206,6 +202,8 @@ export const VirApp = defineAppElement()({
             activities,
             activityStates: state.activityStates,
             panes,
+            paneGroupExtensions,
+            settingsSections,
             isInActivityTab: false,
             renderActivityTab({paths, navigate}) {
                 const tabContext: AppContext = {

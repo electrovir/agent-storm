@@ -16,6 +16,7 @@ import {
     classifyPrCheck,
     classifyThread,
     PrNeed,
+    reviewRequestNoteMarker,
     ThreadStatus,
     type RawPrView,
     type RawReviewThread,
@@ -260,6 +261,38 @@ describe(classifyPrCheck.name, () => {
             ),
             {
                 failingChecks: [],
+                needs: [],
+                isReadyToMerge: true,
+            },
+        );
+    });
+
+    it('leaves review-request notes out of the open work', () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: baseRawPr,
+                    threads: [
+                        createThread([
+                            {
+                                login: 'viewer',
+                                body: [
+                                    'AI: Re-requested review from @assignee: it changed.',
+                                    reviewRequestNoteMarker,
+                                ].join('\n\n'),
+                            },
+                        ]),
+                    ],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    needs: true,
+                    isReadyToMerge: true,
+                },
+            ),
+            {
                 needs: [],
                 isReadyToMerge: true,
             },

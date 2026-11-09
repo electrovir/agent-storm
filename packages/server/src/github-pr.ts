@@ -9,6 +9,7 @@ import {
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedEntries, wrapInTry} from '@augment-vir/common';
+import {normalizePath} from 'agent-storm';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {
     assertWrapValidShape,
@@ -30,7 +31,6 @@ import {
     RawPrState,
     RawReviewState,
 } from './github-raw-enums.js';
-import {normalizePath} from './paths.js';
 
 /**
  * Per-connection caps on the one PR query. Each `first:` multiplies into GitHub's GraphQL cost
