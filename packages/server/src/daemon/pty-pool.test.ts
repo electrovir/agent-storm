@@ -379,6 +379,53 @@ describe('pane sessions', () => {
 });
 
 describe(attachPane.name, () => {
+    it('replays mode settings that scrollback trimming dropped', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
+        try {
+            const output: string[] = [];
+            const first = attachPane({
+                folder,
+                kind: PaneKind.Ai,
+                aiCmd: String.raw`printf '\033[?25l\033[?2004h\033[?1004h\033[?20'; printf '04l\033[?1049h'; seq 1 50; printf 'done\n'; while true; do sleep 1; done`,
+                onData(data) {
+                    output.push(data);
+                },
+                onExit() {},
+            });
+            try {
+                await waitUntil(() => output.join('').includes('done'), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: {
+                        seconds: 3,
+                    },
+                });
+                const second = attachPane({
+                    folder,
+                    kind: PaneKind.Ai,
+                    scrollbackLimit: 5,
+                    onData() {},
+                    onExit() {},
+                });
+                second.detach();
+
+                assert.isTrue(second.scrollback.startsWith('\x1b[?25l\x1b[?2004l\x1b[?1004h'));
+                assert.isFalse(second.scrollback.includes('\x1b[?1049h'));
+            } finally {
+                first.detach();
+                killFolderPanes({
+                    folder,
+                });
+            }
+        } finally {
+            await rm(folder, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+
     it('drops device attributes queries from the replayed scrollback', async () => {
         const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
         try {
