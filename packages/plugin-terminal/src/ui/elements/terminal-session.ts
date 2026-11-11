@@ -114,26 +114,44 @@ async function createTerminal({
 
     /**
      * WebGL must be attached after `open()` because it needs the DOM-mounted canvases to bind to.
-     * On a context loss (tab send to the background long enough for the browser to reclaim the GPU
-     * context, driver crash, etc.) we dispose the addon and let xterm fall through to its DOM
-     * renderer rather than leave the terminal blank. WebGL construction itself can throw on
-     * machines without WebGL2 — wrap it so those users also fall through to DOM rather than getting
-     * a blank pane.
+     * On a context loss we dispose the addon and let xterm fall through to its DOM renderer rather
+     * than leave the terminal blank. WebGL construction itself can throw on machines without WebGL2
+     * — those users also fall through to DOM rather than getting a blank pane, and are never
+     * retried.
+     *
+     * A lost context is retried, though, from {@link restoreWebgl}. Browsers cap how many WebGL
+     * contexts one page may hold (Chrome allows 16) and reclaim the oldest when a new one is
+     * created, so with many panes open the hidden ones keep losing theirs. The DOM renderer they
+     * would otherwise be stuck on draws block and box characters from the font, which leaves gaps
+     * between rows (Claude Code's mascot falls apart), where WebGL draws them to fill the cell.
      *
      * Toggleable via the settings modal; the preference is read once at terminal construction, so
      * the modal reloads the page after a change to apply it.
      */
-    if (useWebgl) {
+    const webgl = {
+        addon: undefined as WebglAddon | undefined,
+        isUnsupported: !useWebgl,
+    };
+    function restoreWebgl() {
+        if (webgl.addon || webgl.isUnsupported) {
+            return;
+        }
         try {
             const webglAddon = new WebglAddon();
             webglAddon.onContextLoss(() => {
                 webglAddon.dispose();
+                if (webgl.addon === webglAddon) {
+                    webgl.addon = undefined;
+                }
             });
             terminal.loadAddon(webglAddon);
+            webgl.addon = webglAddon;
         } catch (error) {
+            webgl.isUnsupported = true;
             console.warn('xterm WebGL renderer unavailable, falling back to DOM', error);
         }
     }
+    restoreWebgl();
 
     /**
      * Intentionally skip an eager `fitAddon.fit()` here. If this terminal is mounting inside a
@@ -190,6 +208,7 @@ async function createTerminal({
         terminal,
         fitAddon,
         scrollbackLimit,
+        restoreWebgl,
     };
 }
 
@@ -218,7 +237,7 @@ export async function connectTerminalSession({
     onDarkThemeChange: (isDark: boolean) => void;
     reportError: (message: string) => void;
 }>) {
-    const {terminal, fitAddon, scrollbackLimit} = await createTerminal({
+    const {terminal, fitAddon, scrollbackLimit, restoreWebgl} = await createTerminal({
         element,
         inputs,
     });
@@ -358,6 +377,7 @@ export async function connectTerminalSession({
     fitter.fitAndResend(0);
 
     const resizeObserver = new ResizeObserver(() => {
+        restoreWebgl();
         fitter.fitAndResend(stableFitFrames);
     });
     resizeObserver.observe(element);
@@ -387,6 +407,7 @@ export async function connectTerminalSession({
          * case that used to come back wrapped at a stale width.
          */
         onActivate() {
+            restoreWebgl();
             fitter.fitAndResend(stableFitFrames);
         },
         stopThemeListener,

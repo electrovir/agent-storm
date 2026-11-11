@@ -163,6 +163,10 @@ type PaneEntry = {
     /** Bounded scrollback used to replay output to a newly attaching client. */
     scrollbackChunks: string[];
     scrollbackBytes: number;
+    /** See {@link replayedPrivateModes}. */
+    privateModes: Map<number, boolean>;
+    /** An unfinished mode sequence at the end of the last chunk, finished by the next one. */
+    privateModeScanTail: string;
     /**
      * Palette this pane's OSC 10 / 11 queries are answered with. Undefined until a client attaches
      * carrying valid colors, which is also how "leave those queries unanswered" is expressed.
@@ -229,6 +233,63 @@ function appendScrollback(entry: PaneEntry, data: string): void {
         }
     }
     enforceTotalScrollbackBudget(entry);
+}
+
+/**
+ * DEC private modes whose latest setting is replayed ahead of the scrollback.
+ *
+ * Programs set these once and rely on them staying set: Claude Code hides the cursor (`CSI ?25l`)
+ * at startup and draws its own caret. Once trimming drops the chunk that held the sequence, a
+ * reattaching xterm falls back to its defaults, and draws its own blinking cursor over the TUI's
+ * caret. Limited to modes that change input handling or the cursor; alternate-screen and
+ * synchronized-output modes would change how the replay itself is laid out or painted.
+ */
+const replayedPrivateModes: ReadonlySet<number> = new Set([
+    1,
+    12,
+    25,
+    1000,
+    1002,
+    1003,
+    1004,
+    1005,
+    1006,
+    1015,
+    2004,
+]);
+
+// eslint-disable-next-line no-control-regex
+const privateModeRegExp = /\x1b\[\?([\d;]+)([hl])/g;
+// eslint-disable-next-line no-control-regex, sonarjs/no-control-regex
+const partialPrivateModeRegExp = /\x1b(?:\[(?:\?[\d;]*)?)?$/;
+
+function trackPrivateModes(entry: PaneEntry, data: string): void {
+    const scanned = entry.privateModeScanTail + data;
+    Array.from(scanned.matchAll(privateModeRegExp)).forEach(
+        ([
+            ,
+            params,
+            setOrReset,
+        ]) => {
+            params?.split(';').forEach((param) => {
+                const mode = Number(param);
+                if (replayedPrivateModes.has(mode)) {
+                    entry.privateModes.set(mode, setOrReset === 'h');
+                }
+            });
+        },
+    );
+    entry.privateModeScanTail = partialPrivateModeRegExp.exec(scanned)?.[0] ?? '';
+}
+
+function privateModesReplay(entry: PaneEntry): string {
+    return Array.from(
+        entry.privateModes,
+        ([
+            mode,
+            isSet,
+        ]) => `\x1b[?${mode}${isSet ? 'h' : 'l'}`,
+    ).join('');
 }
 
 function clearScrollback(entry: PaneEntry): void {
@@ -299,6 +360,8 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
         appliedSize: undefined,
         scrollbackChunks: [],
         scrollbackBytes: 0,
+        privateModes: new Map(),
+        privateModeScanTail: '',
         colors: undefined,
         conversationId: undefined,
         launchKey: undefined,
@@ -670,6 +733,9 @@ function startPty({
     const cwd = normalizePath(folder);
     entry.conversationId = conversationId;
     entry.launchKey = conversationId ? randomBytes(32).toString('hex') : undefined;
+    /** A new process starts from the terminal's defaults, not from what the last one set. */
+    entry.privateModes = new Map();
+    entry.privateModeScanTail = '';
     try {
         if (livePtys.size >= maxLivePtys) {
             /**
@@ -695,6 +761,7 @@ function startPty({
         pty.onData((data) => {
             entry.lastOutputAt = Date.now();
             answerColorQueries(entry, data);
+            trackPrivateModes(entry, data);
             appendScrollback(entry, data);
             entry.subscribers.forEach((subscriber) => {
                 subscriber.onData(data);
@@ -818,14 +885,16 @@ export function attachPane({
      * parses, including stale ones in the replay. Those answers reach the pty as typed input, and
      * an idle shell prints them at the prompt as `1;2c`.
      */
-    const scrollback = limitScrollbackLines(
-        entry.scrollbackChunks.join('').replaceAll(
-            // eslint-disable-next-line no-control-regex
-            /\x1b\[[>=]?0?c/g,
-            '',
-        ),
-        scrollbackLimit,
-    );
+    const scrollback =
+        privateModesReplay(entry) +
+        limitScrollbackLines(
+            entry.scrollbackChunks.join('').replaceAll(
+                // eslint-disable-next-line no-control-regex
+                /\x1b\[[>=]?0?c/g,
+                '',
+            ),
+            scrollbackLimit,
+        );
     return {
         isNew,
         /**
