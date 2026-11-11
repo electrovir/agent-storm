@@ -119,11 +119,9 @@ async function createTerminal({
      * — those users also fall through to DOM rather than getting a blank pane, and are never
      * retried.
      *
-     * A lost context is retried, though, from {@link restoreWebgl}. Browsers cap how many WebGL
-     * contexts one page may hold (Chrome allows 16) and reclaim the oldest when a new one is
-     * created, so with many panes open the hidden ones keep losing theirs. The DOM renderer they
-     * would otherwise be stuck on draws block and box characters from the font, which leaves gaps
-     * between rows (Claude Code's mascot falls apart), where WebGL draws them to fill the cell.
+     * A lost context is retried from {@link restoreWebgl}: browsers cap WebGL contexts per page
+     * (Chrome allows 16) and reclaim the oldest, so hidden panes keep losing theirs, and the DOM
+     * renderer draws block characters from the font with gaps between rows.
      *
      * Toggleable via the settings modal; the preference is read once at terminal construction, so
      * the modal reloads the page after a change to apply it.

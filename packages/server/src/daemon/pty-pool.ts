@@ -236,13 +236,10 @@ function appendScrollback(entry: PaneEntry, data: string): void {
 }
 
 /**
- * DEC private modes whose latest setting is replayed ahead of the scrollback.
- *
- * Programs set these once and rely on them staying set: Claude Code hides the cursor (`CSI ?25l`)
- * at startup and draws its own caret. Once trimming drops the chunk that held the sequence, a
- * reattaching xterm falls back to its defaults, and draws its own blinking cursor over the TUI's
- * caret. Limited to modes that change input handling or the cursor; alternate-screen and
- * synchronized-output modes would change how the replay itself is laid out or painted.
+ * DEC private modes whose latest setting is replayed ahead of the scrollback. Claude Code hides the
+ * cursor (`CSI ?25l`) only at startup, so once trimming drops that chunk a reattaching xterm draws
+ * its own cursor over the TUI's caret. Alternate-screen and synchronized-output modes are left out
+ * because they change how the replay itself is laid out or painted.
  */
 const replayedPrivateModes: ReadonlySet<number> = new Set([
     1,
