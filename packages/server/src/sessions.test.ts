@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {
     createFolderSession,
+    findConversationTab,
     forgetFolderSessions,
     getFolderSessions,
     markPaneStarted,
@@ -471,5 +472,40 @@ describe(parseSessionStore.name, () => {
             assertWrap.isDefined(parsed[resolve('/tmp/unsafe')]?.ai[0]).conversationId,
             /^[a-z0-9]+$/,
         );
+    });
+});
+
+describe(findConversationTab.name, () => {
+    it("finds a tab's folder from its conversation id", async () => {
+        await withTempFolder(async (folder) => {
+            const sessions = await createFolderSession({
+                folder,
+                kind: PaneKind.Ai,
+            });
+            const session = assertWrap.isDefined(sessions.ai[1]);
+
+            assert.deepEquals(await findConversationTab(session.conversationId), {
+                folder: resolve(folder),
+                kind: PaneKind.Ai,
+                session,
+            });
+        });
+    });
+
+    it('finds nothing for an unknown or empty conversation id', async () => {
+        await withTempFolder(async (folder) => {
+            await getFolderSessions(folder);
+
+            assert.deepEquals(
+                [
+                    await findConversationTab('unknown'),
+                    await findConversationTab(''),
+                ],
+                [
+                    undefined,
+                    undefined,
+                ],
+            );
+        });
     });
 });
