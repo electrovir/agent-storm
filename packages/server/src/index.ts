@@ -72,7 +72,6 @@ import {
     log,
     mapEnumToObject,
     omitObjectKeys,
-    wait,
 } from '@augment-vir/common';
 import fastifyStatic from '@fastify/static';
 import {type OriginRequirement} from '@rest-vir/api';
@@ -109,7 +108,8 @@ import {
     serverLogPath,
     sessionStorePath,
 } from './file-paths.js';
-import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
+import {deleteWorktreeFolder, handleFinishRequest} from './finish-worktree.js';
+import {loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
 import {readFolderSettingsFiles} from './folder-settings.js';
 import {
@@ -122,12 +122,7 @@ import {
     setFileStaged,
     setSideStaged,
 } from './git-diff.js';
-import {
-    addWorktree,
-    findManualReviewCopy,
-    removeWorktree,
-    sweepDeletingReviewFolders,
-} from './git.js';
+import {addWorktree, findManualReviewCopy, sweepDeletingReviewFolders} from './git.js';
 import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './github-pr.js';
 import {
     closeReviewWindow,
@@ -183,7 +178,6 @@ import {
 } from './settings.js';
 import {readTlsOptions} from './tls-options.js';
 import {
-    deleteFolderState,
     loadUiLayout,
     pruneFolderStates,
     readUiLayoutRevision,
@@ -581,24 +575,7 @@ const createWorktreeImplementation = implementor.implementEndpoint(createWorktre
 
 const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktreeEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        await killFolderPanes({
-            folder: requestData.worktreePath,
-        }).catch(() => {
-            /* if the daemon has no live panes for this folder, continue with deletion */
-        });
-        await wait({
-            milliseconds: 250,
-        });
-        await removeWorktree(requestData);
-        /**
-         * Drop the folder's session tabs now that the folder is gone. Worktree paths are derived
-         * deterministically from the worktree name, so leaving them behind means a later worktree
-         * created with the same name inherits this one's named, PTY-less tabs.
-         */
-        await forgetFolderSessions(requestData.worktreePath);
-        forgetFolderActivity(requestData.worktreePath);
-        await deleteFolderState(requestData.worktreePath);
-        await refreshFolderInfoNow();
+        await deleteWorktreeFolder(requestData.worktreePath);
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -1594,6 +1571,9 @@ const listenAddress = await server.listen({
     host: launcherOrigin ? '127.0.0.1' : '0.0.0.0',
 });
 
-await startLaunchRequestWatch(launchRequestedSession);
+await startLaunchRequestWatch({
+    launch: launchRequestedSession,
+    finish: handleFinishRequest,
+});
 
 log.success(`agent-storm server listening on ${listenAddress}`);

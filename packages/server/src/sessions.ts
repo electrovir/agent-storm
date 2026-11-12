@@ -197,6 +197,39 @@ async function forgetConversationState(conversationIds: ReadonlyArray<string>): 
     );
 }
 
+/** The tab whose conversation is `conversationId`, in whichever folder it is. */
+export async function findConversationTab(conversationId: string): Promise<
+    | {
+          folder: string;
+          kind: PaneKind;
+          session: SessionMeta;
+      }
+    | undefined
+> {
+    if (!conversationId) {
+        return undefined;
+    }
+    const store = await loadStore();
+    return getObjectTypedEntries(store)
+        .flatMap(
+            ([
+                folder,
+                sessions,
+            ]) => {
+                return getEnumValues(PaneKind).flatMap((kind) => {
+                    return sessions[kind].map((session) => {
+                        return {
+                            folder,
+                            kind,
+                            session,
+                        };
+                    });
+                });
+            },
+        )
+        .find(({session}) => session.conversationId === conversationId);
+}
+
 export async function findFolderSession({
     folder,
     kind,

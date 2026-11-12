@@ -300,20 +300,48 @@ export async function openAddWorktreeModal(
     }
 }
 
+/** The delete confirmation's text, which names the row and warns about work that would be lost. */
+export function describeWorktreeDeletion(
+    folder: Readonly<Pick<FolderInfo, 'path' | 'name' | 'branch' | 'git'>>,
+): string {
+    return [
+        `Delete worktree "${folder.name}"?`,
+        '',
+        `Branch: ${folder.branch || '(detached HEAD)'}`,
+        `Path: ${folder.path}`,
+        ...(folder.git.dirty || folder.git.notPushed
+            ? [
+                  '',
+                  ...(folder.git.dirty
+                      ? [
+                            '⚠ It has uncommitted changes, which will be lost.',
+                        ]
+                      : []),
+                  ...(folder.git.notPushed
+                      ? [
+                            '⚠ It has commits that were never pushed. They stay on the local branch.',
+                        ]
+                      : []),
+              ]
+            : []),
+    ].join('\n');
+}
+
 export async function confirmDeleteWorktree({
-    worktreePath,
+    folder,
     updateState,
     refreshFolderData,
     removeFolderLocally,
     notifyRemoved,
 }: Readonly<{
-    worktreePath: string;
+    folder: Readonly<Pick<FolderInfo, 'path' | 'name' | 'branch' | 'git'>>;
     updateState: SidebarUpdate;
     refreshFolderData: () => Promise<void>;
     removeFolderLocally: (path: string) => void;
     notifyRemoved: () => void;
 }>): Promise<void> {
-    if (!window.confirm(`Delete worktree ${worktreePath}?`)) {
+    const worktreePath = folder.path;
+    if (!window.confirm(describeWorktreeDeletion(folder))) {
         return;
     }
     /**
@@ -461,7 +489,7 @@ export const folderActionHandlers: Record<
         emitFoldersRemoved,
     }) {
         await confirmDeleteWorktree({
-            worktreePath: folder.path,
+            folder,
             updateState,
             refreshFolderData,
             removeFolderLocally,
