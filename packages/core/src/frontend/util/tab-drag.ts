@@ -57,9 +57,10 @@ export function countElementsBefore({
 
 /**
  * Follows a mouse or pen press until it's released, and reports it as a drag once it moves far
- * enough. Touch is left alone, so a finger still scrolls and long-presses. Once a drag starts, the
- * pointer is captured (so a terminal under it can't take the events) and the click that ends it is
- * swallowed (so dropping a tab doesn't also click whatever it was dropped on).
+ * enough. Touch is left alone, so a finger still scrolls and long-presses. The press starts no text
+ * selection, so dragging across panes can't select their text. Once a drag starts, the pointer is
+ * captured (so a terminal under it can't take the events) and the click that ends it is swallowed
+ * (so dropping a tab doesn't also click whatever it was dropped on).
  */
 export function trackPointerDrag({
     event,
@@ -113,6 +114,11 @@ export function trackPointerDrag({
         onMove(moveEvent);
     }
 
+    /** The browser starts a text selection from the press's `mousedown`, before any drag begins. */
+    function preventSelectionStart(mouseEvent: MouseEvent) {
+        mouseEvent.preventDefault();
+    }
+
     function swallowClick(clickEvent: MouseEvent) {
         clickEvent.stopPropagation();
         clickEvent.preventDefault();
@@ -125,6 +131,9 @@ export function trackPointerDrag({
         window.removeEventListener('pointermove', handleMove);
         window.removeEventListener('pointerup', finish);
         window.removeEventListener('pointercancel', finish);
+        window.removeEventListener('mousedown', preventSelectionStart, {
+            capture: true,
+        });
         if (!drag.isDragging) {
             return;
         }
@@ -143,6 +152,10 @@ export function trackPointerDrag({
         onEnd(endEvent.type === 'pointerup' ? endEvent : undefined);
     }
 
+    window.addEventListener('mousedown', preventSelectionStart, {
+        capture: true,
+        once: true,
+    });
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish);
