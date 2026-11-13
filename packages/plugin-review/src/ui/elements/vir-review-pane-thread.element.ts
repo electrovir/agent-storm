@@ -26,6 +26,15 @@ export const VirReviewPaneThread = defineAppElement<{
     /** By comment id. */
     pendingReactions: Readonly<Partial<Record<string, PendingReactions>>>;
     reactionError: Readonly<ReactionError> | undefined;
+    /** By comment id. */
+    editDrafts: Readonly<Partial<Record<string, string>>>;
+    savingEditCommentId: string;
+    editError:
+        | Readonly<{
+              commentId: string;
+              message: string;
+          }>
+        | undefined;
 }>()({
     tagName: 'vir-review-pane-thread',
     events: {
@@ -151,6 +160,13 @@ export const VirReviewPaneThread = defineAppElement<{
                                 reactionError:
                                     inputs.reactionError?.commentId === comment.id
                                         ? inputs.reactionError.message
+                                        : undefined,
+                                editDraft: inputs.editDrafts[comment.id],
+                                isSavingEdit: inputs.savingEditCommentId === comment.id,
+                                isAnyEditSaving: !!inputs.savingEditCommentId,
+                                editError:
+                                    inputs.editError?.commentId === comment.id
+                                        ? inputs.editError.message
                                         : undefined,
                             })}></${VirReviewPaneComment}>
                         `;

@@ -203,6 +203,14 @@ export const reviewApi = definePluginApi({
             }),
             responseShape: okResponseShape,
         },
+        /** Replaces the body of one of the viewer's own review thread comments. */
+        editGitHubThreadComment: {
+            requestShape: defineShape({
+                commentId: '',
+                body: '',
+            }),
+            responseShape: okResponseShape,
+        },
         setGitHubReaction: {
             requestShape: defineShape({
                 /** Node id of the comment being reacted to. */

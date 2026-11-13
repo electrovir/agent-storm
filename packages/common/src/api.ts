@@ -974,6 +974,8 @@ const gitHubCommentShape = defineShape({
     createdAt: '',
     url: '',
     reactions: [gitHubReactionGroupShape],
+    /** The viewer wrote this comment and GitHub still lets them change it. */
+    viewerCanEdit: false,
 });
 
 /**

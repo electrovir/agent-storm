@@ -55,6 +55,7 @@ export const commentFields = [
     'createdAt',
     'url',
     'author { login avatarUrl }',
+    'viewerDidAuthor viewerCanUpdate',
     reactionGroupFields,
 ].join(' ');
 
@@ -138,6 +139,14 @@ const addReactionMutation = [
 const removeReactionMutation = [
     'mutation($subjectId: ID!, $content: ReactionContent!) {',
     '  removeReaction(input: {subjectId: $subjectId, content: $content}) { clientMutationId }',
+    '}',
+].join('\n');
+
+const editThreadCommentMutation = [
+    'mutation($commentId: ID!, $body: String!) {',
+    '  updatePullRequestReviewComment(input: {pullRequestReviewCommentId: $commentId, body: $body}) {',
+    '    pullRequestReviewComment { id }',
+    '  }',
     '}',
 ].join('\n');
 
@@ -261,6 +270,8 @@ const rawCommentFields = {
     createdAt: '',
     url: '',
     author: rawAuthorShape,
+    viewerDidAuthor: false,
+    viewerCanUpdate: false,
     reactionGroups: nullableShape([
         rawReactionGroupShape,
     ]),
@@ -447,6 +458,8 @@ function toComment(raw: Readonly<typeof rawCommentShape.runtimeType>) {
         createdAt: raw.createdAt,
         url: raw.url,
         reactions: toReactionGroups(raw.reactionGroups),
+        /** Repo admins can update anyone's comment, but only the author's own is theirs to edit. */
+        viewerCanEdit: raw.viewerDidAuthor && raw.viewerCanUpdate,
     };
 }
 
@@ -739,6 +752,20 @@ export async function setReaction({
     await runGraphql(add ? addReactionMutation : removeReactionMutation, {
         subjectId,
         content: reaction,
+    });
+    gitHubWriteState.lastWriteAt = Date.now();
+}
+
+export async function editThreadComment({
+    commentId,
+    body,
+}: Readonly<{
+    commentId: string;
+    body: string;
+}>) {
+    await runGraphql(editThreadCommentMutation, {
+        commentId,
+        body,
     });
     gitHubWriteState.lastWriteAt = Date.now();
 }

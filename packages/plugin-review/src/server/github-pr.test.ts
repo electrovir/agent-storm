@@ -41,6 +41,8 @@ const baseRawComment = {
         login: 'reviewer',
         avatarUrl: '',
     },
+    viewerDidAuthor: false,
+    viewerCanUpdate: false,
 };
 
 const baseRawCheckRun = {

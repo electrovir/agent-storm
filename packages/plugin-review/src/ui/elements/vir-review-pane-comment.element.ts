@@ -2,7 +2,10 @@ import {type GitHubComment, type GitHubReaction} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, defineElementEvent, html, listen, nothing, unsafeHTML} from 'element-vir';
 import {
+    createSizedIcon,
+    LoaderAnimated24Icon,
     LucideFaceSlightlySmilingPlusIcon,
+    LucidePencilIcon,
     renderMenuItemEntries,
     tooltip,
     ViraButton,
@@ -11,6 +14,7 @@ import {
     ViraLink,
     ViraMenuTrigger,
     ViraSize,
+    ViraTextArea,
     ViraThemeColorName,
 } from 'vira';
 import {sanitizeGitHubHtml} from '../../util/github-markdown.js';
@@ -24,11 +28,19 @@ import {relativeTime} from '../../util/relative-time.js';
 import {getDisplayedReactions, type PendingReactions} from './review-pane-reactions.js';
 import {commentHeaderStyles, markdownStyles, messageStyles} from './review-pane-styles.js';
 
-/** One review thread comment with its reactions. */
+const buttonLoaderIcon = createSizedIcon(LoaderAnimated24Icon, 14);
+
+/** One review thread comment with its reactions, editable in place when the viewer wrote it. */
 export const VirReviewPaneComment = defineAppElement<{
     comment: Readonly<GitHubComment>;
     pendingReactions: Readonly<PendingReactions> | undefined;
     reactionError: string | undefined;
+    /** The unsaved body while the comment is open for editing. */
+    editDraft: string | undefined;
+    isSavingEdit: boolean;
+    /** Some comment's edit is saving, which blocks saving this one too. */
+    isAnyEditSaving: boolean;
+    editError: string | undefined;
 }>()({
     tagName: 'vir-review-pane-comment',
     events: {
@@ -36,6 +48,13 @@ export const VirReviewPaneComment = defineAppElement<{
             comment: Readonly<GitHubComment>;
             reaction: GitHubReaction;
         }>(),
+        /** A draft of undefined closes the editor. */
+        editDraftChanged: defineElementEvent<{
+            commentId: string;
+            draft: string | undefined;
+        }>(),
+        /** The comment id. Fires for ⌘↩ even when Save is disabled. */
+        editSubmitted: defineElementEvent<string>(),
     },
     styles: css`
         :host {
@@ -54,6 +73,17 @@ export const VirReviewPaneComment = defineAppElement<{
             flex-wrap: wrap;
             gap: 4px;
         }
+
+        ${ViraTextArea} {
+            width: 100%;
+            font-size: 14px;
+        }
+
+        .edit-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
     `,
     render({inputs, dispatch, events}) {
         function toggleReaction(reaction: GitHubReaction) {
@@ -66,6 +96,90 @@ export const VirReviewPaneComment = defineAppElement<{
                 }),
             );
         }
+
+        function changeEditDraft(draft: string | undefined) {
+            dispatch(
+                new events.editDraftChanged({
+                    detail: {
+                        commentId: inputs.comment.id,
+                        draft,
+                    },
+                }),
+            );
+        }
+
+        function submitEdit() {
+            dispatch(
+                new events.editSubmitted({
+                    detail: inputs.comment.id,
+                }),
+            );
+        }
+
+        const editDraft = inputs.editDraft;
+        const isSaveDisabled = !editDraft?.trim() || inputs.isAnyEditSaving;
+        const bodyTemplate =
+            editDraft == undefined
+                ? html`
+                      <div class="markdown">
+                          ${unsafeHTML(sanitizeGitHubHtml(inputs.comment.bodyHtml))}
+                      </div>
+                  `
+                : html`
+                      <${ViraTextArea.assign({
+                          value: editDraft,
+                          rows: 4,
+                          disabled: inputs.isSavingEdit,
+                      })}
+                          ${listen(ViraTextArea.events.valueChange, (event) => {
+                              changeEditDraft(event.detail);
+                          })}
+                          ${listen('keydown', (event) => {
+                              if (event.key === 'Escape' && !inputs.isSavingEdit) {
+                                  event.preventDefault();
+                                  changeEditDraft(undefined);
+                              } else if (event.key === 'Enter' && event.metaKey) {
+                                  event.preventDefault();
+                                  submitEdit();
+                              }
+                          })}
+                      ></${ViraTextArea}>
+                      ${inputs.editError
+                          ? html`
+                                <div class="message" data-error role="alert">
+                                    ${inputs.editError}
+                                </div>
+                            `
+                          : nothing}
+                      <div class="edit-actions">
+                          <${ViraButton.assign({
+                              text: 'Cancel',
+                              buttonSize: ViraSize.Small,
+                              color: ViraColorVariant.Neutral,
+                              isDisabled: inputs.isSavingEdit,
+                          })}
+                              ${listen('click', () => {
+                                  if (inputs.isSavingEdit) {
+                                      return;
+                                  }
+                                  changeEditDraft(undefined);
+                              })}
+                          ></${ViraButton}>
+                          <${ViraButton.assign({
+                              text: 'Save',
+                              icon: inputs.isSavingEdit ? buttonLoaderIcon : undefined,
+                              buttonSize: ViraSize.Small,
+                              isDisabled: isSaveDisabled,
+                          })}
+                              ${listen('click', () => {
+                                  if (isSaveDisabled) {
+                                      return;
+                                  }
+                                  submitEdit();
+                              })}
+                          ></${ViraButton}>
+                      </div>
+                  `;
 
         return html`
             <div class="comment-header">
@@ -84,7 +198,7 @@ export const VirReviewPaneComment = defineAppElement<{
                     ${relativeTime(inputs.comment.createdAt)}
                 </${ViraLink}>
             </div>
-            <div class="markdown">${unsafeHTML(sanitizeGitHubHtml(inputs.comment.bodyHtml))}</div>
+            ${bodyTemplate}
             <div class="reactions">
                 ${getDisplayedReactions({
                     comment: inputs.comment,
@@ -127,6 +241,21 @@ export const VirReviewPaneComment = defineAppElement<{
                         }),
                     )}
                 </${ViraMenuTrigger}>
+                ${inputs.comment.viewerCanEdit && editDraft == undefined
+                    ? html`
+                          <${ViraButton.assign({
+                              icon: LucidePencilIcon,
+                              buttonSize: ViraSize.Small,
+                              buttonEmphasis: ViraEmphasis.Subtle,
+                              color: ViraColorVariant.Neutral,
+                          })}
+                              ${tooltip('Edit comment')}
+                              ${listen('click', () => {
+                                  changeEditDraft(inputs.comment.body);
+                              })}
+                          ></${ViraButton}>
+                      `
+                    : nothing}
             </div>
             ${inputs.reactionError
                 ? html`

@@ -36,14 +36,26 @@ export function createConversationState() {
         reactionQueue: Promise.resolve() as Promise<void>,
         queuedReactionCount: 0,
         reactionError: undefined as ReactionError | undefined,
+        /**
+         * Unsaved edits of the viewer's own comments, by comment id. A comment with one is open for
+         * editing.
+         */
+        editDrafts: {} as Partial<Record<string, string>>,
+        savingEditCommentId: '',
+        editError: undefined as
+            | {
+                  commentId: string;
+                  message: string;
+              }
+            | undefined,
     };
 }
 
 export type ConversationState = ReturnType<typeof createConversationState>;
 
 /**
- * The conversation list's replies, resolves, and reactions. Each one that lands calls `refreshPr`
- * so the list shows GitHub's copy.
+ * The conversation list's replies, edits, resolves, and reactions. Each one that lands calls
+ * `refreshPr` so the list shows GitHub's copy.
  */
 export function createConversationActions({
     state,
@@ -180,6 +192,59 @@ export function createConversationActions({
         }
     }
 
+    function setEditDraft({
+        commentId,
+        draft,
+    }: Readonly<{
+        commentId: string;
+        /** Undefined closes the editor. */
+        draft: string | undefined;
+    }>) {
+        updateState({
+            editDrafts: {
+                ...state.editDrafts,
+                [commentId]: draft,
+            },
+            editError: state.editError?.commentId === commentId ? undefined : state.editError,
+        });
+    }
+
+    async function saveEdit(commentId: string) {
+        const body = state.editDrafts[commentId]?.trim();
+        if (!body || state.savingEditCommentId) {
+            return;
+        }
+        updateState({
+            savingEditCommentId: commentId,
+            editError: undefined,
+        });
+        try {
+            await reviewClient.call('editGitHubThreadComment', {
+                commentId,
+                body,
+            });
+            /** The editor stays open until the refresh lands so the old body doesn't flash back. */
+            await refreshPr();
+            updateState({
+                editDrafts: {
+                    ...state.editDrafts,
+                    [commentId]: undefined,
+                },
+            });
+        } catch (error) {
+            updateState({
+                editError: {
+                    commentId,
+                    message: extractErrorMessage(error),
+                },
+            });
+        } finally {
+            updateState({
+                savingEditCommentId: '',
+            });
+        }
+    }
+
     function isThreadResolved(thread: Readonly<GitHubReviewThread>) {
         return state.pendingResolved[thread.id] ?? thread.isResolved;
     }
@@ -248,6 +313,8 @@ export function createConversationActions({
     return {
         toggleReaction,
         sendReply,
+        setEditDraft,
+        saveEdit,
         isThreadResolved,
         toggleThreadResolved,
     };

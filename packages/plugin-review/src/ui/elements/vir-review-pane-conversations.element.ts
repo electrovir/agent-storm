@@ -32,7 +32,7 @@ const conversationSortDirections: Record<ConversationSortOrder, number> = {
 };
 
 /**
- * The PR's review threads, reviews, and review requests in one sorted list. Owns every reply,
+ * The PR's review threads, reviews, and review requests in one sorted list. Owns every reply, edit,
  * resolve, and reaction sent from it.
  */
 export const VirReviewPaneConversations = defineAppElement<{
@@ -128,6 +128,9 @@ export const VirReviewPaneConversations = defineAppElement<{
                             : undefined,
                     pendingReactions: state.pendingReactions,
                     reactionError: state.reactionError,
+                    editDrafts: state.editDrafts,
+                    savingEditCommentId: state.savingEditCommentId,
+                    editError: state.editError,
                 })}
                     ${listen(VirReviewPaneThread.events.expandAllRequested, () => {
                         host.shadowRoot
@@ -154,6 +157,12 @@ export const VirReviewPaneConversations = defineAppElement<{
                     })}
                     ${listen(VirReviewPaneComment.events.reactionToggled, (event) => {
                         actions.toggleReaction(event.detail.comment, event.detail.reaction);
+                    })}
+                    ${listen(VirReviewPaneComment.events.editDraftChanged, (event) => {
+                        actions.setEditDraft(event.detail);
+                    })}
+                    ${listen(VirReviewPaneComment.events.editSubmitted, async (event) => {
+                        await actions.saveEdit(event.detail);
                     })}
                 ></${VirReviewPaneThread}>
             `;

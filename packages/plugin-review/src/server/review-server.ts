@@ -2,6 +2,7 @@ import {definePluginServer} from '@agent-storm/core/server';
 import {instanceName, normalizePath} from 'agent-storm-util';
 import {reviewApi} from '../review-api.js';
 import {
+    editThreadComment,
     fetchFolderPr,
     postComment,
     setReaction,
@@ -127,6 +128,10 @@ export default definePluginServer({
                 },
                 async postGitHubComment(request) {
                     await postComment(request);
+                    return ok;
+                },
+                async editGitHubThreadComment(request) {
+                    await editThreadComment(request);
                     return ok;
                 },
                 async setGitHubReaction(request) {
