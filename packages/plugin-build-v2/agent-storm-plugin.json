@@ -1,0 +1,23 @@
+{
+    "activities": [
+        {
+            "id": "build-v2",
+            "isEnabledByDefault": true,
+            "label": "Build V2"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "description": "Chat threads with Claude and Codex, grouped by repo, with every write gated by approval.",
+    "id": "build-v2",
+    "isBeta": true,
+    "name": "Build V2",
+    "panes": [
+        {
+            "icon": "LucideMessageSquareIcon",
+            "id": "ai-chat",
+            "label": "AI Chat"
+        }
+    ],
+    "serverEntry": "server.js"
+}

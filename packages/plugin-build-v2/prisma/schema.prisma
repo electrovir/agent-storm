@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/server/generated"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum AiProvider {
+  claude
+  codex
+}
+
+enum ThreadStatus {
+  idle
+  running
+  needsApproval
+  failed
+}
+
+enum ThreadItemKind {
+  userMessage
+  assistantMessage
+  reasoning
+  command
+  fileChange
+  toolCall
+  plan
+  notice
+}
+
+enum ThreadItemStatus {
+  inProgress
+  completed
+  failed
+  declined
+}
+
+enum ApprovalKind {
+  command
+  fileChange
+  permission
+}
+
+enum ReasoningEffort {
+  low
+  medium
+  high
+  xhigh
+  max
+  ultra
+}
+
+enum ApprovalDecision {
+  approve
+  approveForSession
+  decline
+}
+
+model Thread {
+  id                String       @id @default(cuid(2))
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @default(now()) @updatedAt
+  deactivatedAt     DateTime?
+  repoPath          String
+  cwd               String
+  worktreeBranch    String?
+  provider          AiProvider
+  model             String
+  /// Null for the model's default effort.
+  effort            ReasoningEffort?
+  title             String
+  status            ThreadStatus
+  /// The provider's own id for the conversation: Claude's session id or Codex's thread id.
+  providerSessionId String?
+
+  items    ThreadItem[]
+  requests ApprovalRequest[]
+
+  @@index([deactivatedAt, updatedAt])
+}
+
+model ThreadItem {
+  id             String           @id @default(cuid(2))
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @default(now()) @updatedAt
+  turnId         String
+  kind           ThreadItemKind
+  status         ThreadItemStatus
+  title          String
+  text           String
+  order          Int
+  /// The provider's id for the item, so later updates from the provider find it.
+  providerItemId String?
+  threadId       String
+
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, providerItemId])
+  @@index([threadId, order])
+}
+
+model ApprovalRequest {
+  id         String            @id @default(cuid(2))
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @default(now()) @updatedAt
+  kind       ApprovalKind
+  title      String
+  detail     String
+  reason     String
+  resolvedAt DateTime?
+  decision   ApprovalDecision?
+  threadId   String
+
+  thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, resolvedAt])
+}
+
+/// One line of a Claude session transcript, mirrored through the Agent SDK's session store.
+model ClaudeTranscriptEntry {
+  id        String   @id @default(cuid(2))
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  sessionId String
+  /// Empty for the main transcript, else the SDK's subagent subpath.
+  subpath   String
+  order     Int
+  /// The SDK's idempotency key for the entry, when it has one.
+  uuid      String?
+  entry     String
+
+  @@unique([sessionId, subpath, uuid])
+  @@index([sessionId, subpath, order])
+}

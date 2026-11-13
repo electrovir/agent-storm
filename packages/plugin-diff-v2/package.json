@@ -1,0 +1,52 @@
+{
+    "name": "@agent-storm/plugin-diff-v2",
+    "version": "0.0.1",
+    "private": true,
+    "description": "",
+    "keywords": [],
+    "homepage": "https://github.com/electrovir/agent-storm",
+    "bugs": {
+        "url": "https://github.com/electrovir/agent-storm/issues"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/electrovir/agent-storm.git"
+    },
+    "license": "(MIT or CC0 1.0)",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "sideEffects": false,
+    "type": "module",
+    "main": "src/index.ts",
+    "module": "src/index.ts",
+    "types": "src/index.ts",
+    "scripts": {
+        "compile": "virmator compile",
+        "docs": "virmator docs",
+        "test": "exit 0;",
+        "test:docs": "virmator docs check",
+        "test:update": "npm test update"
+    },
+    "dependencies": {
+        "@agent-storm/core": "*",
+        "@agent-storm/plugin-diff": "*",
+        "@augment-vir/assert": "^32.5.0",
+        "@pierre/diffs": "^1.6.4",
+        "element-vir": "^27.0.2"
+    },
+    "devDependencies": {
+        "@augment-vir/test": "^32.7.0",
+        "@web/dev-server-esbuild": "^2.0.0",
+        "@web/test-runner": "^1.0.0",
+        "@web/test-runner-playwright": "^1.0.0",
+        "istanbul-smart-text-reporter": "^1.1.5"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
+}

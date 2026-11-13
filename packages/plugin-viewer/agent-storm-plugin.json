@@ -1,0 +1,16 @@
+{
+    "activities": [],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "description": "Tabs showing an HTML, Markdown, or image file.",
+    "id": "viewer",
+    "name": "Viewer",
+    "panes": [
+        {
+            "icon": "LucideEyeIcon",
+            "id": "viewer",
+            "label": "Viewer"
+        }
+    ],
+    "serverEntry": "server.js"
+}
