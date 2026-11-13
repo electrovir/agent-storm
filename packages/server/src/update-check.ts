@@ -4,15 +4,18 @@ import {type UpdateStatus} from '@agent-storm/common';
 import {extractErrorMessage, log} from '@augment-vir/common';
 import {
     fetchLatestVersion,
+    getVersionDir,
     installRelease,
     isNewerVersion,
     isReleaseVersion,
     readActiveVersions,
-    runCommand,
-    versionsDir,
+    readReleaseCoreVersion,
 } from 'agent-storm';
+import {runCommand, versionsDir} from 'agent-storm-util';
 import {type AnyDuration, convertDuration} from 'date-vir';
 import {monorepoRoot} from './file-paths.js';
+import {findPluginsTurnedOffByCore} from './plugin-compat.js';
+import {readPlugins} from './plugins.js';
 import {type launcherSwitchRequestShape, type ReleaseBuild, releaseBuild} from './release-build.js';
 import {loadSettings} from './settings.js';
 
@@ -168,10 +171,13 @@ const unknownUpdateStatus: UpdateStatus = {
     latestVersion: null,
     canInstall: false,
     failedVersion: null,
+    preparedVersion: null,
+    preparedCoreVersion: null,
+    pluginsToTurnOff: [],
 };
 
 const updateInstallState: {
-    inFlight: Promise<void> | undefined;
+    inFlight: Promise<unknown> | undefined;
     failedVersion: string | undefined;
 } = {
     inFlight: undefined,
@@ -229,12 +235,32 @@ async function getReleaseUpdateStatus(release: Readonly<ReleaseBuild>): Promise<
     if (!latestVersion || !isReleaseVersion(release.version)) {
         return status;
     }
+    const isUpToDate = !isNewerVersion({
+        version: latestVersion,
+        than: release.version,
+    });
+    /** Only an installed release has its core version on disk. */
+    const preparedCoreVersion = isUpToDate
+        ? undefined
+        : await readReleaseCoreVersion(
+              getVersionDir({
+                  versionsDir,
+                  version: latestVersion,
+              }),
+          );
     return {
         ...status,
-        isUpToDate: !isNewerVersion({
-            version: latestVersion,
-            than: release.version,
-        }),
+        isUpToDate,
+        ...(preparedCoreVersion
+            ? {
+                  preparedVersion: latestVersion,
+                  preparedCoreVersion,
+                  pluginsToTurnOff: findPluginsTurnedOffByCore({
+                      plugins: (await readPlugins()).plugins,
+                      coreVersion: preparedCoreVersion,
+                  }),
+              }
+            : {}),
     };
 }
 
@@ -248,10 +274,7 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
         : await getCheckoutUpdateStatus();
 }
 
-/**
- * Installs the latest release in the background, then asks the launcher to switch to it. Does
- * nothing while an install is already running.
- */
+/** Installs the latest release in the background, without switching to it. */
 export async function startUpdateInstall() {
     const version = await getLatestReleaseVersion();
     if (!version || !canSwitchVersions()) {
@@ -261,11 +284,6 @@ export async function startUpdateInstall() {
         versionsDir,
         version,
     })
-        .then(() => {
-            process.send?.({
-                switchTo: version,
-            } satisfies typeof launcherSwitchRequestShape.runtimeType);
-        })
         .catch((error: unknown) => {
             updateInstallState.failedVersion = version;
             log.error(`Failed to install agent-storm ${version}: ${extractErrorMessage(error)}`);
@@ -273,4 +291,24 @@ export async function startUpdateInstall() {
         .finally(() => {
             updateInstallState.inFlight = undefined;
         });
+}
+
+/** Asks the launcher to switch to the latest release, which must be installed already. */
+export async function switchToPreparedUpdate() {
+    const version = await getLatestReleaseVersion();
+    if (!version || !canSwitchVersions()) {
+        throw new Error('This agent-storm cannot switch versions itself.');
+    } else if (
+        !(await readReleaseCoreVersion(
+            getVersionDir({
+                versionsDir,
+                version,
+            }),
+        ))
+    ) {
+        throw new Error(`agent-storm ${version} isn't installed yet.`);
+    }
+    process.send?.({
+        switchTo: version,
+    } satisfies typeof launcherSwitchRequestShape.runtimeType);
 }

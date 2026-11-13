@@ -5,6 +5,14 @@ Web-based multi-folder development environment for running AI coding sessions (C
 ## Get started
 
 ```bash
+npx agent-storm@latest
+```
+
+The first run downloads the latest release from GitHub and installs it under `~/.agent-storm`. Every run then starts agent-storm in the background, if it isn't already running, and opens it in your browser. agent-storm updates itself after that, so the command only needs to run again to reopen it.
+
+### From source
+
+```bash
 git clone https://github.com/electrovir/agent-storm.git
 cd agent-storm
 npm ci
@@ -25,7 +33,7 @@ auth secret: 3f9a…
 
 Copy that string and paste it into the browser when prompted.
 
-If you lose the secret, delete `.not-committed/auth-secret` at the repo root and run `npm start` again.
+If you lose the secret, delete `~/.agent-storm/server-state/auth-secret` (or `.not-committed/auth-secret` at the repo root when running from source) and restart agent-storm.
 
 ## Config
 

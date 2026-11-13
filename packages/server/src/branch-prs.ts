@@ -14,6 +14,13 @@ type RepoPrCacheEntry = {
  */
 export const repoPrCache = new Map<string, RepoPrCacheEntry>();
 
+/**
+ * A fingerprint of each open PR as its repo's latest lookup saw it, by repo and then head branch.
+ * It changes whenever anything that lookup reads about the PR changes, so a caller that needs more
+ * than the lookup holds can skip its own fetch while the PR holds still.
+ */
+export const openPrChangeKeys = new Map<string, Map<string, string>>();
+
 export function repoCacheKey(slug: Readonly<RepoSlug>) {
     return `${slug.owner}/${slug.name}`;
 }

@@ -17,19 +17,17 @@
  * boot) FRONTEND_PORT read by packages/server/src/index.ts (CORS origin guard) and
  * packages/frontend/configs/vite.config.ts (vite's listen port)
  */
-import {monorepoRoot, runstormCliPath} from '@agent-storm/server/src/file-paths.js';
+import {
+    findBuiltInPluginDir,
+    monorepoRoot,
+    runstormCliPath,
+} from '@agent-storm/server/src/file-paths.js';
 import {filterMap, log} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
-import {
-    defaultPorts,
-    defaultUserDataDir,
-    InstanceEnvVar,
-    instanceName,
-    PortEnvVar,
-    readEnvPort,
-    userDataDir,
-} from 'agent-storm';
+import {defaultPorts, PortEnvVar, readEnvPort} from 'agent-storm';
+import {defaultUserDataDir, InstanceEnvVar, instanceName, userDataDir} from 'agent-storm-util';
 import {spawn, spawnSync} from 'node:child_process';
+import {buildBuiltInPlugins} from './built-in-plugin-build.js';
 
 type Signals = NodeJS.Signals;
 
@@ -264,6 +262,11 @@ const supervisor = (
         },
     } satisfies Record<OperatingSystem, {shell: string; supervise: (command: string) => string}>
 )[currentOperatingSystem];
+
+await buildBuiltInPlugins({
+    findOutDir: findBuiltInPluginDir,
+    isWatching: true,
+});
 
 const child = spawn(
     process.execPath,

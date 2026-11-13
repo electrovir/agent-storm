@@ -1,7 +1,6 @@
-import {uploadEndpoint} from '@agent-storm/common';
-import {fetchApi} from '@agent-storm/core/frontend';
-import {HttpMethod} from '@rest-vir/api';
+import {createPluginApiClient} from '@agent-storm/core/frontend';
 import {convertDuration} from 'date-vir';
+import {terminalApi} from '../../terminal-api.js';
 
 function fileToBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -28,11 +27,9 @@ export async function uploadDroppedFiles(files: ReadonlyArray<File>): Promise<st
         files.map(async (file) => {
             const dataBase64 = await fileToBase64(file);
             return (
-                await fetchApi(uploadEndpoint, HttpMethod.Post, {
-                    requestData: {
-                        filename: file.name || 'upload',
-                        dataBase64,
-                    },
+                await createPluginApiClient(terminalApi).call('upload', {
+                    filename: file.name || 'upload',
+                    dataBase64,
                 })
             ).path;
         }),

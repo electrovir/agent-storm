@@ -51,10 +51,9 @@ export type SidebarState = {
      */
     onlyShowRecent: boolean | undefined;
     /**
-     * Live text from the header search pop-up. While non-empty it temporarily overrides the
-     * hide-inactive filter and shows only repos/worktrees whose names match (searching active and
-     * inactive repos alike). Persists after the pop-up closes — clearing the input (or its clear
-     * button) is what ends the search.
+     * Live text from the header search. While non-empty it temporarily overrides the hide-inactive
+     * filter and shows only repos/worktrees whose names match (searching active and inactive repos
+     * alike). The search clears it when its input loses focus, unless a result row was clicked.
      */
     searchQuery: string;
     /**
@@ -70,6 +69,11 @@ export type SidebarState = {
      * the check) keeps the banner hidden. `undefined` while the first poll is still in flight.
      */
     updateStatus: UpdateStatus | undefined;
+    /**
+     * The update status fetched right after the update finished installing. The folder poll's
+     * `updateStatus` can be minutes stale, so this shows the prepared update sooner.
+     */
+    preparedUpdateStatus: UpdateStatus | undefined;
     /** Set from clicking the update banner until the page reloads into the new version. */
     isUpdating: boolean;
 };

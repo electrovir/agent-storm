@@ -1,12 +1,8 @@
 import {
     diffPaneId,
-    gitHubPrEndpoint,
-    manualReviewCopyEndpoint,
-    manualReviewStateEndpoint,
     ManualReviewStatus,
     paneInputEndpoint,
     PaneKind,
-    reviewInitEndpoint,
     type ManualReviewState,
     type ReviewQueuePr,
 } from '@agent-storm/common';
@@ -21,6 +17,7 @@ import {HttpMethod} from '@rest-vir/api';
 import {convertDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {reviewPrKey, type PrReviewsObservable, type ReviewVerdict} from './pr-reviews.js';
+import {reviewClient} from './review-client.js';
 
 /** A verdict can only be posted while the skill holds a review that hasn't posted yet. */
 export const canPostVerdictByStatus: Readonly<Record<ManualReviewStatus, boolean>> = {
@@ -69,14 +66,18 @@ type PaneReviewState = {
     pullRequest: ReviewPanePr | undefined;
     /**
      * The PR on a Build folder's branch, which its Review tab and the Diff tab's verdict buttons
-     * act on. Only looked up once one of those tabs first shows in this folder, then again when the
-     * folder list first sees the branch's PR.
+     * act on. Only looked up once one of those tabs first shows in this folder, then again whenever
+     * the folder list's PR for the branch changes, such as a new PR replacing a closed one.
      */
     buildPr: ReviewPanePr | undefined;
     buildPrError: string | undefined;
     isBuildPrMissing: boolean;
-    /** The `hasPr` input as of the last `buildPr` lookup, or `undefined` before the first. */
-    buildPrLookupHasPr: boolean | undefined;
+    /** The `prUrl` input as of the last `buildPr` lookup, or `undefined` before the first. */
+    buildPrLookup:
+        | {
+              prUrl: string | undefined;
+          }
+        | undefined;
     /** Whether the Review pane was showing in the active folder as of the last sync. */
     wasReviewPaneOpen: boolean;
     /** Where the manual-review skill says this review stands. Only polled while active. */
@@ -145,7 +146,7 @@ export function createPaneReview({
             buildPr: undefined,
             buildPrError: undefined,
             isBuildPrMissing: false,
-            buildPrLookupHasPr: undefined,
+            buildPrLookup: undefined,
             wasReviewPaneOpen: false,
             review: undefined,
             reviewPollHandle: undefined,
@@ -168,25 +169,23 @@ export function createPaneReview({
     }
 
     async function loadBuildPr({
-        hasPr,
+        prUrl,
         forceRefresh,
     }: Readonly<{
-        hasPr: boolean;
+        prUrl: string | undefined;
         forceRefresh: boolean;
     }>) {
         try {
             const pr = (
-                await fetchApi(gitHubPrEndpoint, HttpMethod.Post, {
-                    requestData: {
-                        folder,
-                        forceRefresh,
-                    },
+                await reviewClient.call('readFolderPr', {
+                    folder,
+                    forceRefresh,
                 })
             ).pr;
-            if (!pr && !forceRefresh && hasPr) {
-                /** The folder list has already found this branch's PR, so a cached miss is stale. */
+            if (!forceRefresh && prUrl && pr?.url !== prUrl) {
+                /** The folder list has already found a different PR, so the cached answer is stale. */
                 await loadBuildPr({
-                    hasPr,
+                    prUrl,
                     forceRefresh: true,
                 });
                 return;
@@ -210,12 +209,10 @@ export function createPaneReview({
 
     async function loadReview(pullRequest: Readonly<ReviewPanePr>) {
         try {
-            const {review} = await fetchApi(manualReviewStateEndpoint, HttpMethod.Post, {
-                requestData: {
-                    owner: pullRequest.owner,
-                    repoName: pullRequest.repoName,
-                    branchName: pullRequest.branchName,
-                },
+            const {review} = await reviewClient.call('readManualReviewState', {
+                owner: pullRequest.owner,
+                repoName: pullRequest.repoName,
+                branchName: pullRequest.branchName,
             });
             update({
                 review: review ?? undefined,
@@ -227,10 +224,8 @@ export function createPaneReview({
 
     async function loadReviewCopy() {
         try {
-            const response = await fetchApi(manualReviewCopyEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder,
-                },
+            const response = await reviewClient.call('findManualReviewCopy', {
+                folder,
             });
             update({
                 reviewCopyFolder: response.folder ?? undefined,
@@ -240,7 +235,11 @@ export function createPaneReview({
         }
     }
 
-    /** Types `prompt` into the AI pane's selected session. On mobile, switches to the AI pane first. */
+    /**
+     * Types `prompt` into the AI pane's selected session, or the folder's first one, which the
+     * server creates and starts as needed. On mobile, switches to the AI pane first. Failures are
+     * reported, and resolve to `false`.
+     */
     async function sendPrompt({
         prompt,
         isMobile,
@@ -253,10 +252,6 @@ export function createPaneReview({
         const shownSessionId = tabLayout && findShownSessionId(tabLayout, PaneKind.Ai);
         const session =
             aiSessions.find((aiSession) => aiSession.id === shownSessionId) || aiSessions[0];
-        if (!session) {
-            folderSessions.reportError(new Error('The AI pane has no session to type into yet.'));
-            return;
-        }
         if (isMobile) {
             uiLayout.showPaneTab({
                 folder,
@@ -268,12 +263,14 @@ export function createPaneReview({
                 requestData: {
                     folder,
                     kind: PaneKind.Ai,
-                    sessionId: session.id,
+                    sessionId: session?.id,
                     text: prompt,
                 },
             });
+            return true;
         } catch (error) {
             folderSessions.reportError(error);
+            return false;
         }
     }
 
@@ -288,14 +285,14 @@ export function createPaneReview({
         /** Run from each pane group render. */
         sync({
             active,
-            hasPr,
+            prUrl,
             isPrNeeded,
             isReviewPaneOpen,
             isDiffMounted,
             reviewPullRequest,
         }: Readonly<{
             active: boolean;
-            hasPr: boolean;
+            prUrl: string | undefined;
             /** Whether a tab that acts on a Build folder's PR is showing. */
             isPrNeeded: boolean;
             /** Whether the Review pane is showing in the active folder. */
@@ -305,22 +302,22 @@ export function createPaneReview({
         }>) {
             /**
              * Each lookup runs GitHub's full PR query, which costs far more rate limit than the
-             * folder list's per-repo PR check, so a missing PR is only looked up again once that
-             * check finds one.
+             * folder list's per-repo PR check, so the PR is only looked up again once that check
+             * finds a different one.
              */
-            if (
-                !reviewPullRequest &&
-                isPrNeeded &&
-                active &&
-                !observable.value.buildPr &&
-                observable.value.buildPrLookupHasPr !== hasPr
-            ) {
-                const isRepeatLookup = observable.value.buildPrLookupHasPr != undefined;
+            const isBuildPrOutdated = observable.value.buildPrLookup
+                ? observable.value.buildPrLookup.prUrl !== prUrl &&
+                  observable.value.buildPr?.url !== prUrl
+                : !observable.value.buildPr;
+            if (!reviewPullRequest && isPrNeeded && active && isBuildPrOutdated) {
+                const isRepeatLookup = !!observable.value.buildPrLookup;
                 update({
-                    buildPrLookupHasPr: hasPr,
+                    buildPrLookup: {
+                        prUrl,
+                    },
                 });
                 void loadBuildPr({
-                    hasPr,
+                    prUrl,
                     forceRefresh: isRepeatLookup,
                 });
             }
@@ -333,7 +330,7 @@ export function createPaneReview({
                         isBuildPrMissing: false,
                     });
                     void loadBuildPr({
-                        hasPr,
+                        prUrl,
                         forceRefresh: true,
                     });
                 }
@@ -388,13 +385,16 @@ export function createPaneReview({
                     reviewPullRequest &&
                     observable.value.review?.status === ManualReviewStatus.Started
                 ) {
-                    void fetchApi(reviewInitEndpoint, HttpMethod.Post, {
-                        requestData: pickObjectKeys(reviewPullRequest, [
-                            'owner',
-                            'repoName',
-                            'number',
-                        ]),
-                    }).catch(folderSessions.reportError);
+                    void reviewClient
+                        .call(
+                            'runReviewInit',
+                            pickObjectKeys(reviewPullRequest, [
+                                'owner',
+                                'repoName',
+                                'number',
+                            ]),
+                        )
+                        .catch(folderSessions.reportError);
                 }
             }
             if (!active && observable.value.reviewPollHandle) {
@@ -463,7 +463,7 @@ export function createPaneReview({
             update({
                 verdictSentAt: review.lastUpdatedAt,
             });
-            await prReviews.requestVerdict({
+            const isSent = await prReviews.requestVerdict({
                 pullRequest,
                 verdict,
                 sendPrompt(prompt) {
@@ -473,6 +473,11 @@ export function createPaneReview({
                     });
                 },
             });
+            if (!isSent) {
+                update({
+                    verdictSentAt: undefined,
+                });
+            }
         },
         setManualReviewStarting(isManualReviewStarting: boolean) {
             update({

@@ -1,6 +1,7 @@
-import {GitDiffSide, GitFileChange, type GitDiffFile} from '@agent-storm/common';
+import {GitDiffSide, GitFileChange} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
+import {type GitDiffFile} from '../diff-api.js';
 import {findSelected, nextSideValue, reselectValue, toSelectValue} from './diff-status.js';
 
 function createFile(path: string): GitDiffFile {

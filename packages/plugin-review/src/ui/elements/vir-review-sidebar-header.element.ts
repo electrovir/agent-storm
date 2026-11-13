@@ -4,6 +4,7 @@ import {
     sidebarTooltipOptions,
     spinAnimationCss,
     spinKeyframesCss,
+    VirSidebarSearch,
 } from '@agent-storm/core/frontend';
 import {getObjectTypedValues} from '@augment-vir/common';
 import {convertDuration} from 'date-vir';
@@ -31,8 +32,8 @@ const mobileRefreshIcon = createSizedIcon(LucideRotateCwIcon, 24);
 const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 /**
- * The Review sidebar's brand row, refresh status, and list tabs. Its settings menu's
- * `settingsRequested` event bubbles out unchanged.
+ * The Review sidebar's brand row, search, refresh status, and list tabs. The search's events and
+ * its settings menu's `settingsRequested` event bubble out unchanged.
  */
 export const VirReviewSidebarHeader = defineAppElement<{
     queues: ReviewSidebarQueues | undefined;
@@ -41,6 +42,9 @@ export const VirReviewSidebarHeader = defineAppElement<{
     /** Shows only this list's label beside the brand mark in place of the list tabs. */
     fixedQueue?: PrQueueKind | undefined;
     mobileModal?: boolean | undefined;
+    searchQuery: string;
+    /** Whether Enter in the search input has a PR to open. */
+    hasSearchResult: boolean;
 }>()({
     tagName: 'vir-review-sidebar-header',
     events: {
@@ -77,6 +81,7 @@ export const VirReviewSidebarHeader = defineAppElement<{
         }
 
         .title {
+            flex-shrink: 0;
             display: inline-flex;
             align-items: center;
             gap: 6px;
@@ -86,6 +91,9 @@ export const VirReviewSidebarHeader = defineAppElement<{
 
         .updates {
             display: flex;
+            flex-grow: 1;
+            justify-content: flex-end;
+            min-width: 0;
             align-items: center;
             gap: 4px;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
@@ -199,6 +207,10 @@ export const VirReviewSidebarHeader = defineAppElement<{
                     ${inputs.fixedQueue ? renderQueueLabel(inputs.fixedQueue) : nothing}
                 </span>
                 <span class="updates">
+                    <${VirSidebarSearch.assign({
+                        query: inputs.searchQuery,
+                        hasResult: inputs.hasSearchResult,
+                    })}></${VirSidebarSearch}>
                     ${isUpdating
                         ? html`
                               <${ViraIcon.assign({

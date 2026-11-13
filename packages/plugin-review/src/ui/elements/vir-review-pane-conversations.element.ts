@@ -1,5 +1,6 @@
 import {
     type GitHubReviewThread,
+    type PushEvent,
     type ReviewPr,
     type ReviewQueuePr,
     type ReviewRequestEvent,
@@ -173,6 +174,21 @@ export const VirReviewPaneConversations = defineAppElement<{
             `;
         }
 
+        function renderPush(push: Readonly<PushEvent>) {
+            return html`
+                <div class="comment-header review-request">
+                    ${push.pusherAvatarUrl
+                        ? html`
+                              <img class="avatar" src=${push.pusherAvatarUrl} alt="" />
+                          `
+                        : nothing}
+                    <span class="comment-author">${push.pusher || 'Someone'}</span>
+                    ${push.isForcePush ? 'force pushed' : 'pushed'}
+                    <span>${relativeTime(push.createdAt)}</span>
+                </div>
+            `;
+        }
+
         const loadErrorTemplate = inputs.loadError
             ? html`
                   <div class="message" data-error role="alert">${inputs.loadError}</div>
@@ -194,7 +210,7 @@ export const VirReviewPaneConversations = defineAppElement<{
 
         const sortOrder = state.sortOrder;
         /** GitHub's UTC ISO 8601 timestamps sort chronologically as plain strings. */
-        const timeline = [
+        const oldestFirst = [
             ...inputs.prDetails.threads.map((thread) => {
                 return {
                     id: thread.id,
@@ -216,12 +232,33 @@ export const VirReviewPaneConversations = defineAppElement<{
                     request,
                 };
             }),
-        ].toSorted((first, second) => {
-            return (
-                conversationSortDirections[sortOrder] *
-                first.createdAt.localeCompare(second.createdAt)
-            );
-        });
+            ...inputs.prDetails.pushes.map((push) => {
+                return {
+                    id: push.id,
+                    createdAt: push.createdAt,
+                    push,
+                };
+            }),
+        ].toSorted((first, second) => first.createdAt.localeCompare(second.createdAt));
+        /** Commits arrive one by one, so a run of them from one author reads as a single push. */
+        const timeline = oldestFirst
+            .filter((entry, index) => {
+                const next = oldestFirst[index + 1];
+                return !(
+                    'push' in entry &&
+                    !entry.push.isForcePush &&
+                    next &&
+                    'push' in next &&
+                    !next.push.isForcePush &&
+                    next.push.pusher === entry.push.pusher
+                );
+            })
+            .toSorted((first, second) => {
+                return (
+                    conversationSortDirections[sortOrder] *
+                    first.createdAt.localeCompare(second.createdAt)
+                );
+            });
 
         return html`
             <div class="threads-header">
@@ -263,8 +300,10 @@ export const VirReviewPaneConversations = defineAppElement<{
                                       review: entry.review,
                                   })}></${VirReviewPaneReview}>
                               `;
-                          } else {
+                          } else if ('request' in entry) {
                               return renderReviewRequest(entry.request);
+                          } else {
+                              return renderPush(entry.push);
                           }
                       },
                   )

@@ -10,8 +10,9 @@ import {
     settingsEndpoint,
     type SidebarGrouping,
     type SidebarSorting,
+    switchUpdateEndpoint,
     updateCheckEndpoint,
-    watchModeEndpoint,
+    type UpdateStatus,
     WatchModeStatus,
 } from '@agent-storm/common';
 import {
@@ -21,6 +22,7 @@ import {
     SettingsSection,
     type SettingsTarget,
 } from '@agent-storm/core/frontend';
+import {reviewClient} from '@agent-storm/plugin-review';
 import {waitUntil} from '@augment-vir/assert';
 import {extractErrorMessage, type MaybePromise, omitObjectKeys} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
@@ -35,10 +37,11 @@ import {
 } from './sidebar-state.js';
 
 /**
- * Installs `version` and reloads the page into it once it's running. A version that fails also
- * reloads, which shows its failure in the banner.
+ * Installs `version` beside the running one, then switches to it unless the switch would turn off
+ * plugins, which the banner lists first. A version that fails to install shows its failure in the
+ * banner.
  */
-export async function installUpdate({
+export async function prepareUpdate({
     version,
     updateState,
 }: Readonly<{
@@ -50,23 +53,76 @@ export async function installUpdate({
     });
     try {
         await fetchApi(installUpdateEndpoint, HttpMethod.Post);
-        await waitUntil.isTrue(
-            async () => {
-                /** The server is briefly unreachable while the launcher switches versions. */
-                const status = await fetchApi(updateCheckEndpoint, HttpMethod.Get).catch(
-                    () => undefined,
-                );
-                return status?.currentVersion === version || status?.failedVersion === version;
+        const preparedUpdateStatus = await waitForUpdateStatus({
+            isDone(status) {
+                return status.preparedVersion === version || status.failedVersion === version;
             },
-            {
-                interval: {
-                    seconds: 2,
-                },
-                timeout: {
-                    minutes: 15,
-                },
+        });
+        if (
+            preparedUpdateStatus.preparedVersion === version &&
+            !preparedUpdateStatus.pluginsToTurnOff.length
+        ) {
+            await switchUpdate({
+                version,
+                updateState,
+            });
+            return;
+        }
+        updateState({
+            isUpdating: false,
+            preparedUpdateStatus,
+        });
+    } catch (error: unknown) {
+        updateState({
+            isUpdating: false,
+        });
+        showError(updateState, error);
+    }
+}
+
+async function waitForUpdateStatus({
+    isDone,
+}: Readonly<{isDone: (status: Readonly<UpdateStatus>) => boolean}>) {
+    return await waitUntil.isDefined(
+        async () => {
+            /** The server is briefly unreachable while the launcher switches versions. */
+            const status = await fetchApi(updateCheckEndpoint, HttpMethod.Get).catch(
+                () => undefined,
+            );
+            return status && isDone(status) ? status : undefined;
+        },
+        {
+            interval: {
+                seconds: 2,
             },
-        );
+            timeout: {
+                minutes: 15,
+            },
+        },
+    );
+}
+
+/**
+ * Switches to the prepared `version` and reloads the page into it once it's running. A version that
+ * fails to start also reloads, which shows its failure in the banner.
+ */
+export async function switchUpdate({
+    version,
+    updateState,
+}: Readonly<{
+    version: string;
+    updateState: SidebarUpdate;
+}>) {
+    updateState({
+        isUpdating: true,
+    });
+    try {
+        await fetchApi(switchUpdateEndpoint, HttpMethod.Post);
+        await waitForUpdateStatus({
+            isDone(status) {
+                return status.currentVersion === version || status.failedVersion === version;
+            },
+        });
         globalThis.location.reload();
     } catch (error: unknown) {
         updateState({
@@ -365,11 +421,9 @@ export const folderActionHandlers: Record<
 > = {
     async [SidebarFolderAction.ToggleWatch]({folder, updateState}) {
         try {
-            await fetchApi(watchModeEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder: folder.path,
-                    isEnabled: folder.watchMode.status === WatchModeStatus.Off,
-                },
+            await reviewClient.call('setWatchMode', {
+                folder: folder.path,
+                isEnabled: folder.watchMode.status === WatchModeStatus.Off,
             });
         } catch (error: unknown) {
             showError(updateState, error);

@@ -1,5 +1,5 @@
 import {PaneKind} from '@agent-storm/common';
-import {assert, waitUntil} from '@augment-vir/assert';
+import {assert, assertWrap, waitUntil} from '@augment-vir/assert';
 import {wait} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {describe, it} from '@augment-vir/test';
@@ -483,15 +483,18 @@ describe(livePtyCount.name, () => {
 });
 
 describe(verifyLaunchSignature.name, () => {
-    it('accepts only signatures from the running tab key', async () => {
+    it('accepts only signatures from the running tab key, even without a conversation', async () => {
         const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
         try {
             const output: string[] = [];
             const attachment = attachPane({
                 folder,
                 kind: PaneKind.Ai,
-                conversationId: 'launch-conversation',
                 aiCmd: [
+                    paneTestCommands.printEnvLine({
+                        prefix: 'id=',
+                        envKey: 'AGENT_STORM_LAUNCH_ID',
+                    }),
                     paneTestCommands.printEnvLine({
                         prefix: 'key=',
                         envKey: 'AGENT_STORM_LAUNCH_KEY',
@@ -517,23 +520,26 @@ describe(verifyLaunchSignature.name, () => {
                         },
                     },
                 );
+                const launchId = assertWrap.isString(
+                    /id=([0-9a-f-]{36})/.exec(output.join(''))?.[1],
+                );
                 const payload = '{"folder":"/example"}';
                 const signature = createHmac('sha256', launchKey).update(payload).digest('hex');
 
                 assert.deepEquals(
                     [
                         verifyLaunchSignature({
-                            conversationId: 'launch-conversation',
+                            launchId,
                             payload,
                             signature,
                         }),
                         verifyLaunchSignature({
-                            conversationId: 'launch-conversation',
+                            launchId,
                             payload: '{"folder":"/elsewhere"}',
                             signature,
                         }),
                         verifyLaunchSignature({
-                            conversationId: 'other-conversation',
+                            launchId: 'other-launch-id',
                             payload,
                             signature,
                         }),
@@ -551,7 +557,7 @@ describe(verifyLaunchSignature.name, () => {
                 });
                 assert.isFalse(
                     verifyLaunchSignature({
-                        conversationId: 'launch-conversation',
+                        launchId,
                         payload,
                         signature,
                     }),

@@ -9,6 +9,13 @@
 import {assertWrap, waitUntil} from '@augment-vir/assert';
 import {extractErrorMessage, HttpStatus, log} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
+import {
+    launcherLogPath,
+    launcherOriginPath,
+    pendingAuthSecretPath,
+    userDataDir,
+    versionsDir,
+} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {execFile, spawn} from 'node:child_process';
 import {once} from 'node:events';
@@ -20,13 +27,6 @@ import {resolve} from 'node:path';
 import {promisify} from 'node:util';
 import {defaultPorts, PortEnvVar, readEnvPort} from './ports.js';
 import {ReleaseDir} from './release-layout.js';
-import {
-    launcherLogPath,
-    launcherOriginPath,
-    pendingAuthSecretPath,
-    userDataDir,
-    versionsDir,
-} from './user-data-paths.js';
 import {
     activateVersion,
     fetchLatestVersion,

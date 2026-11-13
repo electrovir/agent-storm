@@ -8,17 +8,23 @@ import {
     mapObjectValuesSync,
 } from '@augment-vir/common';
 import {doesPathContain, readFileIfExists} from '@augment-vir/node';
-import {runCommand, writeFileAtomically} from 'agent-storm';
-import {mkdir, readdir, rename, rm, rmdir, stat} from 'node:fs/promises';
-import {basename, dirname, join, relative, sep} from 'node:path';
-import {defineShape, parseJsonWithShape, recordShape, unknownShape} from 'object-shape-tester';
 import {
     listManualReviewEntries,
     readManualReviewFile,
     reviewBranchPrefix,
-    type ListedManualReviewEntry,
-} from './manual-review-state.js';
-import {withManualReviewStateLock} from './review-comments.js';
+    runCommand,
+    withManualReviewStateLock,
+    writeFileAtomically,
+} from 'agent-storm-util';
+import {mkdir, readdir, rename, rm, rmdir, stat} from 'node:fs/promises';
+import {basename, dirname, join, relative, sep} from 'node:path';
+import {
+    defineShape,
+    parseJsonWithShape,
+    partialShape,
+    recordShape,
+    unknownShape,
+} from 'object-shape-tester';
 
 /** Names directly in the skill's folder that belong to the skill rather than to a repo. */
 const skillOwnedNames: ReadonlyArray<string> = [
@@ -30,6 +36,15 @@ const folderKeyedFileShape = defineShape(
     recordShape({
         keys: '',
         values: unknownShape(),
+    }),
+);
+
+/** The parts of a manual-review state file entry a move needs. */
+const movableEntryShape = defineShape(
+    partialShape({
+        prNumber: 0,
+        /** Top of the checkout the review runs in. */
+        folder: '',
     }),
 );
 
@@ -99,7 +114,7 @@ async function planSkillFolderMoves({
     entries,
 }: Readonly<{
     reviewsDir: string;
-    entries: ReadonlyArray<ListedManualReviewEntry>;
+    entries: ReturnType<typeof listManualReviewEntries<typeof movableEntryShape>>;
 }>) {
     const repoFolders = (await listSubfolders(reviewsDir)).filter((folder) => {
         return !skillOwnedNames.includes(basename(folder));
@@ -342,7 +357,12 @@ export async function migrateReviewFolders({
 }>) {
     const statePath = join(reviewsDir, 'state.json');
     const entries = await readManualReviewFile(statePath)
-        .then(listManualReviewEntries)
+        .then((file) => {
+            return listManualReviewEntries({
+                file,
+                entryShape: movableEntryShape,
+            });
+        })
         .catch((error: unknown) => {
             log.warning(
                 `Not moving old review checkouts: can't read the manual-review state file: ${extractErrorMessage(error)}`,

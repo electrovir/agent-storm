@@ -24,7 +24,7 @@ export const reviewExtension: PaneGroupExtension<ReviewExtensionInputs, PaneRevi
             prReviews: findReviewState(context).prReviews,
         });
     },
-    sync({run, inputs, view, displayedTabIds, shownTabIds, hasPr}) {
+    sync({run, inputs, view, displayedTabIds, shownTabIds, prUrl}) {
         const isDiffDisplayed = hasTabOfKind(view.layout, {
             tabIds: displayedTabIds,
             kind: diffPaneId,
@@ -35,7 +35,7 @@ export const reviewExtension: PaneGroupExtension<ReviewExtensionInputs, PaneRevi
         });
         run.sync({
             active: view.isActive,
-            hasPr,
+            prUrl,
             isPrNeeded: isDiffDisplayed || isReviewDisplayed,
             isReviewPaneOpen: isReviewDisplayed && view.isActive,
             isDiffMounted:

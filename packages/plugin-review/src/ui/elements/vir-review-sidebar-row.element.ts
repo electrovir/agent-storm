@@ -10,7 +10,6 @@ import {
     spinAnimationCss,
     spinKeyframesCss,
 } from '@agent-storm/core/frontend';
-import {check} from '@augment-vir/assert';
 import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen, nothing, unsafeHTML} from 'element-vir';
 import {
@@ -34,7 +33,6 @@ export const VirReviewSidebarRow = defineAppElement<{
     /** Decides which statuses get an icon and what their tooltips say. */
     queueKind: PrQueueKind;
     isActive: boolean;
-    canRestartPanes: boolean;
     mobileModal?: boolean | undefined;
 }>()({
     tagName: 'vir-review-sidebar-row',
@@ -243,36 +241,32 @@ export const VirReviewSidebarRow = defineAppElement<{
                           `
                         : nothing}
                 </div>
-                ${renderMenuItemEntries(
-                    [
-                        {
-                            content: html`
-                                <${ViraLink.assign({
-                                    link: {
-                                        url: inputs.pr.url,
-                                        newTab: true,
-                                    },
-                                    disableLinkStyles: true,
-                                })}>
-                                    Open PR
-                                </${ViraLink}>
-                            `,
-                        },
-                        /** The viewer's own PRs open on GitHub, so they have no panes. */
-                        inputs.canRestartPanes &&
-                            !inputs.pr.isViewerAuthor && {
-                                content: 'Restart panes',
-                                iconOverride: LucideRotateCwIcon,
-                                onClick() {
-                                    dispatch(
-                                        new events.restartPanesRequested({
-                                            detail: inputs.pr,
-                                        }),
-                                    );
+                ${renderMenuItemEntries([
+                    {
+                        content: html`
+                            <${ViraLink.assign({
+                                link: {
+                                    url: inputs.pr.url,
+                                    newTab: true,
                                 },
-                            },
-                    ].filter(check.isTruthy),
-                )}
+                                disableLinkStyles: true,
+                            })}>
+                                Open PR
+                            </${ViraLink}>
+                        `,
+                    },
+                    {
+                        content: 'Restart panes',
+                        iconOverride: LucideRotateCwIcon,
+                        onClick() {
+                            dispatch(
+                                new events.restartPanesRequested({
+                                    detail: inputs.pr,
+                                }),
+                            );
+                        },
+                    },
+                ])}
             </${ViraMenuTrigger}>
         `;
     },

@@ -10,4 +10,5 @@ dist/
 generated-config-*
 graphics/
 node_modules/
+packages/*/src/server/generated/
 tsconfig.tsbuildinfo

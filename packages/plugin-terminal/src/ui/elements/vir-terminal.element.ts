@@ -120,6 +120,7 @@ export const VirTerminal = defineAppElement<{
             useDarkTheme: isDarkMode(),
             /** Unsubscribes this terminal from theme changes. Set once the terminal is created. */
             stopThemeListener: undefined as (() => void) | undefined,
+            stopTypographyListener: undefined as (() => void) | undefined,
         };
     },
     hostClasses: {
@@ -209,6 +210,7 @@ export const VirTerminal = defineAppElement<{
         });
         state.resizeObserver?.disconnect();
         state.stopThemeListener?.();
+        state.stopTypographyListener?.();
         state.disconnect?.();
         state.terminal?.dispose();
         if (state.uploadErrorTimeout) {

@@ -1,9 +1,10 @@
-import {type GitDiffFileContents, type ReviewComment} from '@agent-storm/common';
+import {type ReviewComment} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {type Text} from '@codemirror/state';
 import {EditorView} from '@codemirror/view';
 import {asyncProp, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
+import {type GitDiffFileContents} from '../../diff-api.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {type AddCommentRequest, type EditCommentRequest} from './diff-editor-comments.js';
 import {
@@ -29,6 +30,7 @@ export const VirDiffCodeView = defineAppElement<{
     hideWhitespace: boolean;
     unified: boolean;
     collapseUnchanged: boolean;
+    softWrap: boolean;
     isDark: boolean;
     isMobile: boolean;
     enableComments: boolean;
@@ -206,6 +208,7 @@ export const VirDiffCodeView = defineAppElement<{
                     newContent: content.newContent,
                     unified: inputs.unified,
                     collapseUnchanged: inputs.collapseUnchanged,
+                    softWrap: inputs.softWrap,
                     isDark: inputs.isDark,
                     isMobile: inputs.isMobile,
                     syntaxExtensions: state.syntax.value,

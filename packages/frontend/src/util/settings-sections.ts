@@ -3,19 +3,28 @@
 import {
     SettingsSection,
     type AnySettingsSectionContribution,
-    type SettingsSectionContribution,
+    type PluginDefinition,
 } from '@agent-storm/core/frontend';
 import {getEnumValues} from '@augment-vir/common';
 
+/** One of core's own pages of the Settings modal, each of which gets a nav tab. */
+export type CoreSettingsSectionPage = Omit<AnySettingsSectionContribution, 'id' | 'pluginId'> &
+    Readonly<{
+        id: SettingsSection;
+        pluginId: undefined;
+        /** The heading the page's tab lists under. */
+        group: string;
+    }>;
+
 /** A page of the Settings modal, whether core's own or a plugin's. */
-export type SettingsSectionPage = Omit<AnySettingsSectionContribution, 'listAfter'>;
+export type SettingsSectionPage = CoreSettingsSectionPage | AnySettingsSectionContribution;
 
 /**
  * Core's own sections. Their rows are built from the schema keys listed here, in order, and the
  * dedicated element each section renders is chosen by the modal.
  */
 const coreSettingsSections: Readonly<
-    Record<SettingsSection, Omit<SettingsSectionContribution, 'id' | 'listAfter' | 'render'>>
+    Record<SettingsSection, Omit<CoreSettingsSectionPage, 'id' | 'pluginId' | 'render'>>
 > = {
     [SettingsSection.General]: {
         label: 'General',
@@ -23,11 +32,32 @@ const coreSettingsSections: Readonly<
         searchTerms: [
             'scrollback',
             'https',
+            'logs',
         ],
         schemaCardTitle: undefined,
         schemaKeys: [
             'disableUpdateCheck',
             'tlsCertPath',
+            'enableDebugLogs',
+        ],
+    },
+    [SettingsSection.Typography]: {
+        label: 'Typography',
+        group: 'App',
+        searchTerms: [
+            'font',
+            'family',
+            'size',
+            'monospace',
+            'smoothing',
+            'wrap',
+            'code',
+            'prompt',
+            'interface',
+        ],
+        schemaCardTitle: undefined,
+        schemaKeys: [
+            'diffSoftWrap',
         ],
     },
     [SettingsSection.Terminal]: {
@@ -37,28 +67,31 @@ const coreSettingsSections: Readonly<
         schemaCardTitle: undefined,
         schemaKeys: [
             'useWebgl',
-            'terminalClickableLinks',
-        ],
-    },
-    [SettingsSection.Sidebar]: {
-        label: 'Sidebar',
-        group: 'App',
-        searchTerms: [],
-        schemaCardTitle: undefined,
-        schemaKeys: [
-            'sidebarGrouping',
-            'sidebarSorting',
-            'onlyShowRecent',
         ],
     },
     [SettingsSection.Activities]: {
-        label: 'Activities',
+        label: 'Activity tabs',
         group: 'App',
         searchTerms: [
+            'activities',
             'plugin',
+            'show',
+            'hide',
             'vertical tab',
             'dashboard',
             'debug',
+        ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
+    },
+    [SettingsSection.Plugins]: {
+        label: 'Plugins',
+        group: 'App',
+        searchTerms: [
+            'extension',
+            'approve',
+            'block',
+            'trust',
         ],
         schemaCardTitle: undefined,
         schemaKeys: [],
@@ -116,22 +149,48 @@ const coreSettingsSections: Readonly<
     },
 };
 
+/** Core's own pages, in the order of their nav tabs. */
+export const coreSettingsSectionPages: ReadonlyArray<CoreSettingsSectionPage> = getEnumValues(
+    SettingsSection,
+).map((section) => {
+    return {
+        ...coreSettingsSections[section],
+        id: section,
+        pluginId: undefined,
+    };
+});
+
 /**
- * Every section in tab order: core's in their own order, each plugin section right after the core
- * section it names, in the order the plugins were registered.
+ * Every section in the order search lists them: core's in their own order, with every plugin
+ * section after the Plugins section, in the order the plugins were registered.
  */
 export function listSettingsSections(
     pluginSections: ReadonlyArray<AnySettingsSectionContribution>,
 ): ReadonlyArray<SettingsSectionPage> {
-    return getEnumValues(SettingsSection).flatMap((section) => {
+    return coreSettingsSectionPages.flatMap((page) => {
         return [
-            {
-                ...coreSettingsSections[section],
-                id: section,
-            },
-            ...pluginSections.filter((pluginSection) => pluginSection.listAfter === section),
+            page,
+            ...(page.id === SettingsSection.Plugins ? pluginSections : []),
         ];
     });
+}
+
+/** Each plugin that has a settings section, with its sections, in the plugins' order. */
+export function groupPluginSettingsSections({
+    plugins,
+    sections,
+}: Readonly<{
+    plugins: ReadonlyArray<Pick<PluginDefinition, 'id' | 'name'>>;
+    sections: ReadonlyArray<AnySettingsSectionContribution>;
+}>) {
+    return plugins
+        .map((plugin) => {
+            return {
+                plugin,
+                sections: sections.filter((section) => section.pluginId === plugin.id),
+            };
+        })
+        .filter((group) => group.sections.length);
 }
 
 /**

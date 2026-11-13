@@ -1,4 +1,4 @@
-import {type GitDiffSide, type GitDiffStatus} from '@agent-storm/common';
+import {type GitDiffSide} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen} from 'element-vir';
@@ -10,6 +10,7 @@ import {
     createSizedIcon,
     viraThemeByKeys,
 } from 'vira';
+import {type GitDiffStatus} from '../../diff-api.js';
 import {
     allSelectValues,
     findSelected,

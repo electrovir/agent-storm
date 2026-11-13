@@ -166,19 +166,19 @@ export async function killFolderPanes({folder}: Readonly<{folder: string}>): Pro
     });
 }
 
-/** Whether `signature` is `payload` signed with the launch key of a running AI tab. */
+/** Whether `signature` is `payload` signed with the launch key of a running tab. */
 export async function verifyLaunchSignature({
-    conversationId,
+    launchId,
     payload,
     signature,
 }: Readonly<{
-    conversationId: string;
+    launchId: string;
     payload: string;
     signature: string;
 }>) {
     const response = await singleShot<VerifyLaunchResponse>({
         action: DaemonAction.VerifyLaunch,
-        conversationId,
+        launchId,
         payload,
         signature,
     });

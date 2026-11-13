@@ -1,16 +1,11 @@
 // cspell:words unstages
 
-import {
-    GitDiffSide,
-    type DiffSelection,
-    type GitDiffFileContents,
-    type GitDiffStatus,
-    type ReviewComment,
-} from '@agent-storm/common';
+import {GitDiffSide, type DiffSelection, type ReviewComment} from '@agent-storm/common';
 import {isDarkMode} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {PromiseQueue, extractErrorMessage} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
+import {type GitDiffFileContents, type GitDiffStatus} from '../../diff-api.js';
 import {diffMemory} from '../../util/diff-memory.js';
 import {
     allSelectValues,

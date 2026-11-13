@@ -5,36 +5,23 @@ import {
     isActivityEnabled,
     listInlineTabElements,
     trackPointerDrag,
-    type AnyActivityDefinition,
     type AppContext,
 } from '@agent-storm/core/frontend';
 import {css, html, listen, nothing} from 'element-vir';
 import {type FullSpaRoute} from 'spa-router-vir';
 import {
+    createSizedIcon,
+    LucideTriangleAlertIcon,
     ViraTabs,
     ViraTabsBarDirection,
     viraThemeByKeys,
     ViraThemeColorName,
     type ViraTab,
 } from 'vira';
+import {orderMainTabs} from '../../util/activity-route.js';
 import {router} from '../../util/router.js';
 
 const dropLineThicknessPx = 2;
-
-/** Every main tab, in the stored order: listed tabs first, then the rest in their default order. */
-function orderMainTabs(
-    storedOrder: ReadonlyArray<string>,
-    activities: ReadonlyArray<AnyActivityDefinition>,
-) {
-    const listed = storedOrder
-        .filter((id, index) => storedOrder.indexOf(id) === index)
-        .map((id) => activities.find((activity) => activity.id === id))
-        .filter((activity) => activity != undefined);
-    return [
-        ...listed,
-        ...activities.filter((activity) => !listed.includes(activity)),
-    ];
-}
 
 /**
  * The app's outermost navigation: a vertical strip pinned to the left of the sidebar, or with
@@ -228,8 +215,23 @@ export const VirMainTabs = defineAppElement<{
                             context,
                             state: context.activityStates[tab.id],
                         });
+                        const isPending = context.plugins.value.pendingActivityIds.includes(tab.id);
+                        const label = count == undefined ? tab.label : `${tab.label} (${count})`;
                         return {
-                            label: count == undefined ? tab.label : `${tab.label} (${count})`,
+                            label: isPending
+                                ? html`
+                                      <span
+                                          style=${css`
+                                              opacity: 0.6;
+                                          `}
+                                      >
+                                          ${label}
+                                      </span>
+                                  `
+                                : label,
+                            icon: isPending
+                                ? createSizedIcon(LucideTriangleAlertIcon, 14)
+                                : undefined,
                             paths: {
                                 path: tab.id,
                                 fullPaths: [

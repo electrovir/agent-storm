@@ -1,6 +1,11 @@
-import {GitHubPollingDisableReason, savedRepoShape} from '@agent-storm/common';
+import {
+    approvedFolderSettingsShape,
+    GitHubPollingDisableReason,
+    pluginDecisionRecordShape,
+    savedRepoShape,
+} from '@agent-storm/common';
 import {readFileIfExists} from '@augment-vir/node';
-import {normalizePath, writeFileAtomically} from 'agent-storm';
+import {normalizePath, writeFileAtomically} from 'agent-storm-util';
 import {
     defineShape,
     enumShape,
@@ -26,6 +31,14 @@ const appStateShape = defineShape({
     githubPollingAutoDisable: githubPollingAutoDisableShape,
     /** Set once first-run setup is finished or skipped. */
     isOnboardingDone: optionalShape(false, {
+        alsoUndefined: true,
+    }),
+    /** What the user chose for each plugin, built-in plugins' included. */
+    pluginDecisions: optionalShape([pluginDecisionRecordShape], {
+        alsoUndefined: true,
+    }),
+    /** Folder settings files whose commands and code the user approved. */
+    approvedFolderSettings: optionalShape([approvedFolderSettingsShape], {
         alsoUndefined: true,
     }),
 });

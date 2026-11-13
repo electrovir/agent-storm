@@ -16,6 +16,9 @@
     "extends": "../../configs/tsconfig.base.json",
     "references": [
         {
+            "path": "../agent-storm"
+        },
+        {
             "path": "../common"
         },
         {

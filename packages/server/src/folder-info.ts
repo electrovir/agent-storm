@@ -13,15 +13,18 @@ import {
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
+    awaitedBlockingMap,
     awaitedForEach,
     extractErrorMessage,
     getEnumValues,
     log,
     mapEnumToObject,
     PromiseQueue,
+    removeDuplicates,
     wait,
+    wrapPromiseInTimeout,
 } from '@augment-vir/common';
-import {normalizePath, writeFileAtomically} from 'agent-storm';
+import {normalizePath, writeFileAtomically} from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {readFile, stat} from 'node:fs/promises';
 import {basename} from 'node:path';
@@ -35,11 +38,12 @@ import {
     unknownShape,
 } from 'object-shape-tester';
 import {loadAppState, updateAppState, type AppState} from './app-state.js';
-import {recordBranchPr, repoCacheKey, repoPrCache} from './branch-prs.js';
+import {openPrChangeKeys, recordBranchPr, repoCacheKey, repoPrCache} from './branch-prs.js';
 import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {loadFolderSettings} from './folder-settings.js';
 import {
+    fetchRateLimitResumeAtMs,
     fetchRepoPrs,
     forgetGitInfo,
     getGitInfo,
@@ -52,7 +56,7 @@ import {
     type PrInfo,
     type RepoSlug,
 } from './git.js';
-import {applyManualReviewStatus} from './github-review-queue.js';
+import {applyPluginPrStatusOverrides} from './plugin-folder-hooks.js';
 import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
 import {loadSettings, resolveFolderAi} from './settings.js';
 
@@ -263,9 +267,70 @@ function isGitHubPollingDisabled(settings: Readonly<Settings>): boolean {
     return settings.forges[ForgeType.Github].disabledGitHubPolling || isAutoDisabled();
 }
 
+/** Undefined unless GitHub calls are paused, as after a rate limit. */
+export function readGitHubPause() {
+    return githubPollingState.autoDisable && isAutoDisabled()
+        ? {
+              reason: githubPollingState.autoDisable.reason,
+              resumeAtMs: githubPollingState.autoDisable.disabledUntilMs,
+          }
+        : undefined;
+}
+
+/** Pauses GitHub polling until the rate limit a GitHub call outside it hit resets. */
+export async function pauseGitHubForRateLimit(message: string) {
+    markAutoDisabled({
+        reason: GitHubPollingDisableReason.RateLimited,
+        message,
+        resumeAtMs: await fetchRateLimitResumeAtMs(),
+    });
+}
+
+/** The branch's {@link openPrChangeKeys} entry, refreshing its repo first once `maxAge` old. */
+export async function readOpenPrChangeKey({
+    owner,
+    name,
+    branchName,
+    maxAge,
+}: Readonly<
+    RepoSlug & {
+        branchName: string;
+        maxAge: AnyDuration;
+    }
+>) {
+    if (isGitHubPollingDisabled(await loadSettings())) {
+        return undefined;
+    }
+    const slug = {
+        owner,
+        name,
+    };
+    await getCachedRepoPrMap(slug, maxAge);
+    return openPrChangeKeys.get(repoCacheKey(slug))?.get(branchName);
+}
+
 /**
- * The repo's branch → PR lookup, refreshing it first if the cached copy is older than `refreshTtl`.
- * An `undefined` TTL means "never refresh this repo" (it isn't visible in the sidebar).
+ * Whether the repo's PR map is older than `refreshTtl`. An `undefined` TTL means "never refresh
+ * this repo" (it isn't visible in the sidebar).
+ */
+function isRepoPrMapDue(slug: Readonly<RepoSlug>, refreshTtl: AnyDuration | undefined) {
+    /**
+     * Auto-disable is re-checked here rather than trusted from the caller: the per-sweep flag is
+     * captured once at sweep start, so a folder that trips auto-disable mid-sweep would otherwise
+     * let every later folder in that same sweep hit the API.
+     */
+    return (
+        !isAutoDisabled() &&
+        refreshTtl != undefined &&
+        Date.now() - (repoPrCache.get(repoCacheKey(slug))?.fetchedAt || 0) >=
+            convertDuration(refreshTtl, {
+                milliseconds: true,
+            }).milliseconds
+    );
+}
+
+/**
+ * The repo's branch → PR lookup, refreshing it first when {@link isRepoPrMapDue}.
  *
  * Whatever is cached is always returned, however stale, and that's deliberate: a marker built from
  * an hour-old fetch is right far more often than no marker at all, and the alternative — returning
@@ -277,41 +342,93 @@ async function getCachedRepoPrMap(
     refreshTtl: AnyDuration | undefined,
 ): Promise<Map<string, PrInfo>> {
     const key = repoCacheKey(slug);
-    const cached = repoPrCache.get(key)?.prsByBranch || new Map<string, PrInfo>();
-    const fetchedAt = repoPrCache.get(key)?.fetchedAt || 0;
-    /**
-     * Auto-disable is re-checked here rather than trusted from the caller: the per-sweep flag is
-     * captured once at sweep start, so a folder that trips auto-disable mid-sweep would otherwise
-     * let every later folder in that same sweep hit the API.
-     */
-    if (
-        isAutoDisabled() ||
-        refreshTtl == undefined ||
-        Date.now() - fetchedAt <
-            convertDuration(refreshTtl, {
-                milliseconds: true,
-            }).milliseconds
-    ) {
-        return cached;
+    if (isRepoPrMapDue(slug, refreshTtl)) {
+        /**
+         * Folder sweeps can overlap (see {@link refreshFolderInfoNow}), and both would fetch the
+         * repo.
+         */
+        await (repoPrFetchesInFlight.get(key) ||
+            refreshRepoPrMaps([
+                slug,
+            ]));
+    }
+    return repoPrCache.get(key)?.prsByBranch || new Map<string, PrInfo>();
+}
+
+const repoPrFetchesInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Fetches the repos' PR maps into the cache together, so GitHub answers them in as few calls as fit
+ * in a point each. A repo GitHub doesn't answer keeps its cached map.
+ */
+function refreshRepoPrMaps(slugs: ReadonlyArray<Readonly<RepoSlug>>) {
+    const fetching = fetchRepoPrs(slugs)
+        .then(
+            (answers) => {
+                slugs.forEach((slug) => {
+                    const key = repoCacheKey(slug);
+                    repoPrCache.set(key, {
+                        fetchedAt: Date.now(),
+                        prsByBranch:
+                            answers.get(key)?.prsByBranch ||
+                            repoPrCache.get(key)?.prsByBranch ||
+                            new Map<string, PrInfo>(),
+                    });
+                    const changeKeys = answers.get(key)?.changeKeysByBranch;
+                    if (changeKeys) {
+                        openPrChangeKeys.set(key, changeKeys);
+                    }
+                });
+                persistGithubCache();
+            },
+            (error: unknown) => {
+                if (!(error instanceof GitHubPollingError)) {
+                    throw error;
+                }
+                markAutoDisabled({
+                    reason: error.reason,
+                    message: error.message,
+                    resumeAtMs: error.resumeAtMs,
+                });
+            },
+        )
+        .finally(() => {
+            slugs.forEach((slug) => repoPrFetchesInFlight.delete(repoCacheKey(slug)));
+        });
+    slugs.forEach((slug) => repoPrFetchesInFlight.set(repoCacheKey(slug), fetching));
+    return fetching;
+}
+
+/**
+ * Refreshes, before the sweep walks its folders, every repo the walk would refresh one folder at a
+ * time, so they share GitHub calls instead of spending one each.
+ */
+async function refreshDueRepoPrMaps({
+    targets,
+    prRefreshTtlByRepo,
+}: Readonly<{
+    targets: ReadonlyArray<RefreshTarget>;
+    prRefreshTtlByRepo: ReadonlyMap<string, AnyDuration | undefined>;
+}>) {
+    const dueSlugs = (
+        await awaitedBlockingMap(targets, async (target) => {
+            const refreshTtl = prRefreshTtlByRepo.get(repoActivityKey(target));
+            const slug =
+                target.isWorktreeRoot || !refreshTtl ? undefined : await getRepoSlug(target.folder);
+            return slug &&
+                isRepoPrMapDue(slug, refreshTtl) &&
+                !repoPrFetchesInFlight.has(repoCacheKey(slug))
+                ? slug
+                : undefined;
+        })
+    ).filter(check.isTruthy);
+    if (!dueSlugs.length) {
+        return;
     }
     try {
-        const prsByBranch = (await fetchRepoPrs(slug)) || cached;
-        repoPrCache.set(key, {
-            fetchedAt: Date.now(),
-            prsByBranch,
-        });
-        persistGithubCache();
-        return prsByBranch;
+        await refreshRepoPrMaps(removeDuplicates(dueSlugs, repoCacheKey));
     } catch (error) {
-        if (error instanceof GitHubPollingError) {
-            markAutoDisabled({
-                reason: error.reason,
-                message: error.message,
-                resumeAtMs: error.resumeAtMs,
-            });
-            return cached;
-        }
-        throw error;
+        log.warning(`Failed to look up PRs: ${extractErrorMessage(error)}`);
     }
 }
 
@@ -331,7 +448,7 @@ async function getCachedPrInfo(
     return pr
         ? {
               ...pr,
-              status: await applyManualReviewStatus({
+              status: await applyPluginPrStatusOverrides({
                   prStatus: pr.status,
                   owner: slug.owner,
                   repoName: slug.name,
@@ -810,19 +927,18 @@ export function isFolderRefreshDue({
  */
 const loggedRefreshErrors = new Map<string, string>();
 
-const folderPrHooks: {
-    onNewPr: ((info: Readonly<FolderInfo>) => void) | undefined;
-} = {
-    onNewPr: undefined,
-};
+const newFolderPrListeners = new Set<(info: Readonly<FolderInfo>) => void>();
 
 /**
  * Calls `listener` when a sweep finds a PR on a folder whose previous sweep found none. A folder's
  * first sweep never counts, so a newly added folder whose branch already has a PR doesn't trigger
- * it. Replaces any earlier listener.
+ * it. Returns a function that stops listening.
  */
 export function listenToNewFolderPrs(listener: (info: Readonly<FolderInfo>) => void) {
-    folderPrHooks.onNewPr = listener;
+    newFolderPrListeners.add(listener);
+    return () => {
+        newFolderPrListeners.delete(listener);
+    };
 }
 
 async function refreshOnce({
@@ -839,11 +955,21 @@ async function refreshOnce({
     refreshState.sweepingFolder = target.folder;
     try {
         storeFolderInfo(
-            await buildFolderInfo({
-                target,
-                statusLookup,
-                prRefreshTtl,
-            }),
+            /**
+             * A hung filesystem leaves git stuck in the kernel, where even a kill can't end it, and
+             * waiting on it would stall the refresh of every folder after this one.
+             */
+            await wrapPromiseInTimeout(
+                {
+                    seconds: 20,
+                },
+                buildFolderInfo({
+                    target,
+                    statusLookup,
+                    prRefreshTtl,
+                }),
+                `Reading ${target.folder} took too long.`,
+            ),
         );
         loggedRefreshErrors.delete(target.folder);
     } catch (error) {
@@ -865,7 +991,7 @@ function storeFolderInfo(info: Readonly<FolderInfo>) {
         refreshState.hasUnsavedChanges = true;
     }
     if (previous && !previous.prUrl && info.prUrl) {
-        folderPrHooks.onNewPr?.(info);
+        newFolderPrListeners.forEach((listener) => listener(info));
     }
 }
 
@@ -1058,24 +1184,28 @@ async function runSweep(): Promise<void> {
         everHadPrPaths: everHadPrRepoPaths,
         nowMs: Date.now(),
     });
+    const dueTargets = targets.filter((target) => {
+        return isFolderRefreshDue({
+            target,
+            statusLookup,
+            repos: sweepInputs.repos,
+            folderActivityAtMs: getFolderActivityAtMs(target.folder),
+            lastRefreshedAtMs: lastRefreshedAtMsByFolder.get(target.folder),
+            nowMs: Date.now(),
+        });
+    });
+    if (!disabledGitHubPolling) {
+        await refreshDueRepoPrMaps({
+            targets: dueTargets,
+            prRefreshTtlByRepo,
+        });
+    }
     /**
      * Sequential on purpose: parallel refresh is what created the original 100% CPU problem.
      * `awaitedForEach` awaits each callback before invoking the next, so subprocess pressure stays
      * at one folder at a time.
      */
-    await awaitedForEach(targets, async (target) => {
-        if (
-            !isFolderRefreshDue({
-                target,
-                statusLookup,
-                repos: sweepInputs.repos,
-                folderActivityAtMs: getFolderActivityAtMs(target.folder),
-                lastRefreshedAtMs: lastRefreshedAtMsByFolder.get(target.folder),
-                nowMs: Date.now(),
-            })
-        ) {
-            return;
-        }
+    await awaitedForEach(dueTargets, async (target) => {
         await refreshOnce({
             target,
             statusLookup,

@@ -5,7 +5,7 @@ import {
     getObjectTypedValues,
     log,
 } from '@augment-vir/common';
-import {instanceName, writeFileAtomically} from 'agent-storm';
+import {instanceName, writeFileAtomically} from 'agent-storm-util';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {claudeHookInstallDir, claudeHookSourceDir, claudeSettingsPath} from './file-paths.js';

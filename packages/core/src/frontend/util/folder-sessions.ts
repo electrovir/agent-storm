@@ -67,16 +67,22 @@ export function createFolderSessions(folder: string) {
         }
     }
 
-    void applySessions(
-        fetchApi(sessionListEndpoint, HttpMethod.Post, {
-            requestData: {
-                folder,
-            },
-        }),
-    );
+    function reload() {
+        return applySessions(
+            fetchApi(sessionListEndpoint, HttpMethod.Post, {
+                requestData: {
+                    folder,
+                },
+            }),
+        );
+    }
+
+    void reload();
 
     return Object.assign(observable, {
         reportError,
+        /** Picks up changes the server made on its own, like the AI a restarted tab launched with. */
+        reload,
         /** Reloads the list for a live session it's missing. */
         sync(sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>) {
             const {sessions, reloadedSessionIds} = observable.value;
@@ -102,13 +108,7 @@ export function createFolderSessions(folder: string) {
                     unlistedSessionId,
                 ],
             });
-            void applySessions(
-                fetchApi(sessionListEndpoint, HttpMethod.Post, {
-                    requestData: {
-                        folder,
-                    },
-                }),
-            );
+            void reload();
         },
         create(kind: PaneKind) {
             return applySessions(

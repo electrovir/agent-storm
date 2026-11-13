@@ -1,7 +1,8 @@
-import {type GitDiffFile, type GitDiffSide, type ReviewComment} from '@agent-storm/common';
+import {type GitDiffSide, type ReviewComment} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {css, html, repeat} from 'element-vir';
+import {css, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
+import {type GitDiffFile} from '../../diff-api.js';
 import {VirDiffReviewFile} from './vir-diff-review-file.element.js';
 
 /**
@@ -16,6 +17,7 @@ export const VirDiffReview = defineAppElement<{
     hideWhitespace: boolean;
     unified: boolean;
     collapseUnchanged: boolean;
+    softWrap: boolean;
     isDark: boolean;
     isMobile: boolean;
     reviewComments: ReadonlyArray<ReviewComment>;
@@ -29,6 +31,20 @@ export const VirDiffReview = defineAppElement<{
         | undefined;
 }>()({
     tagName: 'vir-diff-review',
+    state() {
+        return {
+            /**
+             * Set by a file's stage button: once the staged file leaves the list, the file after it
+             * is scrolled to the top so the next thing to read is right there.
+             */
+            pendingScroll: undefined as
+                | {
+                      stagedPath: string;
+                      nextPath: string;
+                  }
+                | undefined,
+        };
+    },
     styles: css`
         :host {
             display: flex;
@@ -45,7 +61,28 @@ export const VirDiffReview = defineAppElement<{
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
     `,
-    render({inputs, host}) {
+    render({inputs, state, updateState, host}) {
+        const pendingScroll = state.pendingScroll;
+        if (pendingScroll && !inputs.files.some((file) => file.path === pendingScroll.stagedPath)) {
+            /** After this render commits, so the staged file's editor is already gone. */
+            requestAnimationFrame(() => {
+                updateState({
+                    pendingScroll: undefined,
+                });
+                const nextFile = [
+                    ...host.shadowRoot.querySelectorAll(VirDiffReviewFile.tagName),
+                ].find((element) => {
+                    return (
+                        element instanceof HTMLElement &&
+                        element.dataset.path === pendingScroll.nextPath
+                    );
+                });
+                if (nextFile) {
+                    host.scrollTop +=
+                        nextFile.getBoundingClientRect().top - host.getBoundingClientRect().top;
+                }
+            });
+        }
         if (!inputs.files.length) {
             return html`
                 <div class="note">Nothing to review on this side.</div>
@@ -56,7 +93,8 @@ export const VirDiffReview = defineAppElement<{
             ${repeat(
                 inputs.files,
                 (file) => file.path,
-                (file) => {
+                (file, index) => {
+                    const nextPath = inputs.files.at(index + 1)?.path;
                     return html`
                         <${VirDiffReviewFile.assign({
                             folder: inputs.folder,
@@ -66,6 +104,7 @@ export const VirDiffReview = defineAppElement<{
                             hideWhitespace: inputs.hideWhitespace,
                             unified: inputs.unified,
                             collapseUnchanged: inputs.collapseUnchanged,
+                            softWrap: inputs.softWrap,
                             isDark: inputs.isDark,
                             isMobile: inputs.isMobile,
                             enableComments: inputs.enableComments,
@@ -76,7 +115,19 @@ export const VirDiffReview = defineAppElement<{
                                 inputs.commentDraft?.path === file.path
                                     ? inputs.commentDraft.line
                                     : undefined,
-                        })}></${VirDiffReviewFile}>
+                        })}
+                            data-path=${file.path}
+                            ${listen(VirDiffReviewFile.events.stageFile, () => {
+                                updateState({
+                                    pendingScroll: nextPath
+                                        ? {
+                                              stagedPath: file.path,
+                                              nextPath,
+                                          }
+                                        : undefined,
+                                });
+                            })}
+                        ></${VirDiffReviewFile}>
                     `;
                 },
             )}

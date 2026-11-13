@@ -41,31 +41,54 @@ const activities = [
 ];
 
 /** Only what `resolveActivityRoute` reads; the activities above ignore the rest. */
-function createContext(enabledActivities: Readonly<Record<string, boolean>> | undefined) {
+function createContext({
+    enabledActivities,
+    arePluginsLoading,
+    mainTabOrder = [],
+}: Readonly<{
+    enabledActivities: Readonly<Record<string, boolean>> | undefined;
+    arePluginsLoading: boolean;
+    mainTabOrder?: ReadonlyArray<string> | undefined;
+}>) {
     return {
         activities,
         activityStates: {},
+        plugins: {
+            value: {
+                isLoading: arePluginsLoading,
+            },
+        },
         uiLayout: {
             value: {
                 layout: enabledActivities && {
                     ...uiLayoutShape.default,
                     enabledActivities,
+                    mainTabOrder: [
+                        ...mainTabOrder,
+                    ],
                 },
                 selections: {},
             },
         },
     } satisfies Pick<AppContext, 'activities' | 'activityStates'> & {
         uiLayout: Pick<AppContext['uiLayout'], 'value'>;
+        plugins: {
+            value: Pick<AppContext['plugins']['value'], 'isLoading'>;
+        };
     } as unknown as AppContext;
 }
 
 function findRedirect(
     paths: ReadonlyArray<string>,
     enabledActivities: Readonly<Record<string, boolean>> | undefined = {},
+    arePluginsLoading = false,
 ) {
     return resolveActivityRoute({
         paths,
-        context: createContext(enabledActivities),
+        context: createContext({
+            enabledActivities,
+            arePluginsLoading,
+        }),
     }).redirect;
 }
 
@@ -134,7 +157,55 @@ describe(resolveActivityRoute.name, () => {
         );
     });
 
-    it('throws for an id no activity has', () => {
-        assert.throws(() => findRedirect(['missing']));
+    it('leaves an id no activity has only once every plugin has loaded', () => {
+        assert.deepEquals(
+            [
+                findRedirect(['missing']),
+                findRedirect(
+                    [
+                        'missing',
+                    ],
+                    {},
+                    true,
+                ),
+            ],
+            [
+                {
+                    paths: ['first'],
+                    replace: true,
+                },
+                undefined,
+            ],
+        );
+    });
+
+    it('redirects to the first enabled main tab in the order the user arranged them', () => {
+        assert.deepEquals(
+            [
+                resolveActivityRoute({
+                    paths: ['missing'],
+                    context: createContext({
+                        enabledActivities: {},
+                        arePluginsLoading: false,
+                        mainTabOrder: ['picker'],
+                    }),
+                }).redirect,
+                resolveActivityRoute({
+                    paths: ['missing'],
+                    context: createContext({
+                        enabledActivities: undefined,
+                        arePluginsLoading: false,
+                        mainTabOrder: ['picker'],
+                    }),
+                }).redirect,
+            ],
+            [
+                {
+                    paths: ['picker'],
+                    replace: true,
+                },
+                undefined,
+            ],
+        );
     });
 });

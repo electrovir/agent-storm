@@ -12,7 +12,7 @@ import {
     type PartialWithUndefined,
 } from '@augment-vir/common';
 import {readFileIfExists} from '@augment-vir/node';
-import {writeFileAtomically} from 'agent-storm';
+import {writeFileAtomically} from 'agent-storm-util';
 import {createHash} from 'node:crypto';
 import {readdir, rm, stat} from 'node:fs/promises';
 import {basename, join} from 'node:path';

@@ -1,21 +1,11 @@
-// cspell:words meslo menlo
-
-import {
-    gitDiffFileEndpoint,
-    GitDiffSide,
-    GitFileChange,
-    type GitDiffFile,
-    type GitDiffFileContents,
-    type ReviewComment,
-} from '@agent-storm/common';
-import {defineAppElement, fetchApi} from '@agent-storm/core/frontend';
+import {type GitDiffSide, type ReviewComment} from '@agent-storm/common';
+import {createPluginApiClient, defineAppElement} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
 import {type Extension, type Text} from '@codemirror/state';
-import {HttpMethod} from '@rest-vir/api';
 import {css, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
-import {ViraButton, ViraColorVariant, ViraSize, viraThemeByKeys} from 'vira';
+import {viraThemeByKeys} from 'vira';
+import {diffApi, type GitDiffFile, type GitDiffFileContents} from '../../diff-api.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
-import {toFileIconUrl} from '../../util/file-icon.js';
 import {type AddCommentRequest, type EditCommentRequest} from './diff-editor-comments.js';
 import {
     remountChangedDiffEditor,
@@ -24,14 +14,9 @@ import {
     type RenderedDiff,
 } from './diff-editor.js';
 import {chunkSelectionsAtPointer, type SelectedChunk} from './diff-selection.js';
-import {imageDiffStyles, renderImageDiff} from './image-diff.js';
+import {VirDiffFileHeader} from './vir-diff-file-header.element.js';
 import {VirFileComments} from './vir-file-comments.element.js';
-
-/** What a file's stage button does to a file on this side. */
-export const stageActionLabels: Readonly<Record<GitDiffSide, string>> = {
-    [GitDiffSide.Staged]: 'Unstage',
-    [GitDiffSide.Unstaged]: 'Stage',
-};
+import {VirImageDiff} from './vir-image-diff.element.js';
 
 /** Pixel height of one editor line, for sizing a file before its editor exists. */
 const estimatedLineHeight = 14;
@@ -59,6 +44,7 @@ export const VirDiffReviewFile = defineAppElement<{
     hideWhitespace: boolean;
     unified: boolean;
     collapseUnchanged: boolean;
+    softWrap: boolean;
     isDark: boolean;
     isMobile: boolean;
     /** This file's comments only. */
@@ -133,79 +119,6 @@ export const VirDiffReviewFile = defineAppElement<{
         }
 
         /*
-         * Sticky so the file a hunk belongs to is still named after scrolling a few hundred lines
-         * into it, which is the one thing a stacked review loses over a per-file pane.
-         */
-        .file-header {
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 4px 10px;
-            border-bottom: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            background: ${viraThemeByKeys.grey['behind-fg'].body.background.value};
-        }
-
-        .file-open {
-            display: flex;
-            flex-grow: 1;
-            align-items: center;
-            gap: 8px;
-            min-width: 0;
-            padding: 2px 0;
-            appearance: none;
-            border: none;
-            cursor: pointer;
-            font: inherit;
-            text-align: left;
-            background: none;
-            color: inherit;
-
-            &:hover .file-path {
-                color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
-            }
-        }
-
-        .file-icon {
-            flex-grow: 0;
-            flex-shrink: 0;
-            width: 16px;
-            height: 16px;
-        }
-
-        .file-path {
-            flex-grow: 1;
-            min-width: 0;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-            font-family: 'MesloLGS NF', Menlo, monospace;
-            font-size: 11px;
-
-            &[data-deleted] {
-                text-decoration: line-through;
-            }
-        }
-
-        .file-stats {
-            flex-grow: 0;
-            flex-shrink: 0;
-            font-size: 11px;
-            font-family: 'MesloLGS NF', Menlo, monospace;
-        }
-
-        .insertions {
-            color: ${viraThemeByKeys.green.foreground.body.foreground.value};
-        }
-
-        .deletions {
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
-        }
-
-        /*
          * The editor's own theme fills its parent, which in a stack of files would be nothing:
          * here it grows to its content and the review around it does the scrolling. Isolated so
          * CodeMirror's sticky gutters can't stack over the sticky file header.
@@ -227,8 +140,6 @@ export const VirDiffReviewFile = defineAppElement<{
         .error {
             color: ${viraThemeByKeys.red.foreground.body.foreground.value};
         }
-
-        ${imageDiffStyles}
     `,
     cleanup({state}) {
         state.observer?.disconnect();
@@ -266,31 +177,31 @@ export const VirDiffReviewFile = defineAppElement<{
             updateState({
                 loadedFile: file,
             });
-            void fetchApi(gitDiffFileEndpoint, HttpMethod.Post, {
-                requestData: {
+            void createPluginApiClient(diffApi)
+                .call('readFile', {
                     folder: inputs.folder,
                     path: file.path,
                     oldPath: file.oldPath ?? undefined,
                     side: inputs.side,
                     allowLarge: false,
-                },
-            }).then(
-                (content) => {
-                    if (state.loadedFile === file) {
-                        updateState({
-                            content,
-                            loadError: undefined,
-                        });
-                    }
-                },
-                (error: unknown) => {
-                    if (state.loadedFile === file) {
-                        updateState({
-                            loadError: extractErrorMessage(error),
-                        });
-                    }
-                },
-            );
+                })
+                .then(
+                    (content) => {
+                        if (state.loadedFile === file) {
+                            updateState({
+                                content,
+                                loadError: undefined,
+                            });
+                        }
+                    },
+                    (error: unknown) => {
+                        if (state.loadedFile === file) {
+                            updateState({
+                                loadError: extractErrorMessage(error),
+                            });
+                        }
+                    },
+                );
         }
 
         if (state.isNear && state.syntaxPath !== inputs.file.path && !state.syntaxLoading) {
@@ -332,6 +243,7 @@ export const VirDiffReviewFile = defineAppElement<{
                     newContent: content.newContent,
                     unified: inputs.unified,
                     collapseUnchanged: inputs.collapseUnchanged,
+                    softWrap: inputs.softWrap,
                     isDark: inputs.isDark,
                     isMobile: inputs.isMobile,
                     syntaxExtensions: state.syntaxExtensions,
@@ -446,9 +358,9 @@ export const VirDiffReviewFile = defineAppElement<{
             } else if (content.isImage) {
                 return html`
                     ${renderFileComments()}
-                    ${renderImageDiff({
+                    <${VirImageDiff.assign({
                         content,
-                    })}
+                    })}></${VirImageDiff}>
                 `;
             } else if (content.tooLargeOrBinary) {
                 return html`
@@ -473,45 +385,26 @@ export const VirDiffReviewFile = defineAppElement<{
         }
 
         return html`
-            <div class="file-header">
-                <button
-                    type="button"
-                    class="file-open"
-                    title=${`Open ${inputs.file.path}`}
-                    ${listen('click', () => {
-                        dispatch(
-                            new events.fileSelected({
-                                detail: inputs.file.path,
-                            }),
-                        );
-                    })}
-                >
-                    <img class="file-icon" src=${toFileIconUrl(inputs.file.path)} alt="" />
-                    <span
-                        class="file-path"
-                        ?data-deleted=${inputs.file.change === GitFileChange.Deleted}
-                    >
-                        ${inputs.file.path}
-                    </span>
-                    <span class="file-stats">
-                        <span class="insertions">+${inputs.file.insertions}</span>
-                        <span class="deletions">−${inputs.file.deletions}</span>
-                    </span>
-                </button>
-                <${ViraButton.assign({
-                    text: stageActionLabels[inputs.side],
-                    buttonSize: ViraSize.Small,
-                    color: ViraColorVariant.Neutral,
+            <${VirDiffFileHeader.assign({
+                file: inputs.file,
+                side: inputs.side,
+                isOpenable: true,
+            })}
+                ${listen(VirDiffFileHeader.events.fileSelected, (event) => {
+                    dispatch(
+                        new events.fileSelected({
+                            detail: event.detail,
+                        }),
+                    );
                 })}
-                    ${listen('click', () => {
-                        dispatch(
-                            new events.stageFile({
-                                detail: inputs.file,
-                            }),
-                        );
-                    })}
-                ></${ViraButton}>
-            </div>
+                ${listen(VirDiffFileHeader.events.stageFile, (event) => {
+                    dispatch(
+                        new events.stageFile({
+                            detail: event.detail,
+                        }),
+                    );
+                })}
+            ></${VirDiffFileHeader}>
             ${renderNote()}
             <div
                 class="editor"

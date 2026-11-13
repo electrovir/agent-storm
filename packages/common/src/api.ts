@@ -22,9 +22,7 @@ import {
     DiffView,
     ForgeType,
     GitDiffSide,
-    GitFileChange,
     GitHubCheckState,
-    GitHubCommentTarget,
     GitHubPrState,
     GitHubReaction,
     GitHubReviewState,
@@ -37,6 +35,12 @@ import {
     SplitDirection,
     WatchModeStatus,
 } from './enums.js';
+import {
+    FolderSettingsApproval,
+    PluginDecision,
+    pluginsResponseShape,
+    pluginTurnedOffShape,
+} from './plugins.js';
 
 const stringMessageShape = defineShape('');
 
@@ -181,6 +185,32 @@ const aiDefinitionJsonSchema = {
 export const aiDefinitionShape = mapSchemaToShape(aiDefinitionJsonSchema);
 
 /**
+ * One font role's font. An empty family or a size of 0 leaves that part at the app's own font for
+ * the role.
+ */
+const fontRoleJsonSchema = {
+    type: 'object',
+    additionalProperties: false,
+    title: 'Font',
+    properties: {
+        family: {
+            type: 'string',
+            default: '',
+            title: 'Font family',
+        },
+        size: {
+            type: 'number',
+            default: 0,
+            title: 'Font size',
+        },
+    },
+    required: [
+        'family',
+        'size',
+    ],
+} as const satisfies JSONSchema;
+
+/**
  * Single source of truth for the user's settings, saved to `~/.agent-storm/settings.json`. Defined
  * as a JSON Schema so:
  *
@@ -304,6 +334,40 @@ export const settingsJsonSchema = {
             ],
         },
         /**
+         * Fonts for each of the four font roles (`interface`, `prompt`, `code`, `terminal`), set
+         * from the Settings modal's Typography section. While `separateFonts` is off, the prompt
+         * follows the interface font and the terminal follows the code font.
+         */
+        typography: {
+            type: 'object',
+            additionalProperties: false,
+            title: 'Typography',
+            properties: {
+                separateFonts: {
+                    type: 'boolean',
+                    default: false,
+                    title: 'Separate fonts',
+                },
+                fontSmoothing: {
+                    type: 'boolean',
+                    default: false,
+                    title: 'Font smoothing',
+                },
+                interface: fontRoleJsonSchema,
+                prompt: fontRoleJsonSchema,
+                code: fontRoleJsonSchema,
+                terminal: fontRoleJsonSchema,
+            },
+            required: [
+                'separateFonts',
+                'fontSmoothing',
+                'interface',
+                'prompt',
+                'code',
+                'terminal',
+            ],
+        },
+        /**
          * Per-folder AI choice, set from the "Change AI" modal. A worktree with no entry inherits
          * its worktree-root's entry, and a folder with neither falls back to its folder settings
          * files' `defaultAiId`, then to this file's.
@@ -358,12 +422,20 @@ export const settingsJsonSchema = {
             description:
                 "When on, the in-app terminal uses xterm's WebGL renderer (faster on most machines). Turn off to fall back to the DOM renderer on machines without WebGL2 or with flaky GPU drivers. Reloads the page when changed so existing terminals pick up the new renderer.",
         },
-        terminalClickableLinks: {
-            type: 'boolean',
-            default: true,
-            title: 'Clickable terminal links',
-            description:
-                "When on, URLs that appear in terminal output are auto-detected and clicking them opens the link in a new browser tab. Turn off if accidental link clicks (e.g. from terminal selections or stray taps) are opening pages you didn't intend.",
+        /**
+         * Each plugin's own typed settings, by plugin id and then setting key. The server never
+         * runs an external plugin's code, so it can't check these against the plugin's settings
+         * definition. The frontend does that when it reads them, and a missing or invalid value is
+         * the setting's default. Absent from `required` so older configs load.
+         */
+        pluginSettings: {
+            type: 'object',
+            default: {},
+            title: 'Plugin settings',
+            additionalProperties: {
+                type: 'object',
+                additionalProperties: true,
+            },
         },
         sidebarGrouping: {
             type: 'string',
@@ -425,6 +497,17 @@ export const settingsJsonSchema = {
                 'When on, the Diff pane folds long runs of unchanged lines between changes. Toggled by the collapse button in the Diff pane toolbar.',
         },
         /**
+         * Sticky companion to `diffLayout`, written by the Diff pane's wrap button. Unset wraps
+         * everywhere but on a phone.
+         */
+        diffSoftWrap: {
+            type: 'boolean',
+            default: true,
+            title: 'Wrap long lines',
+            description:
+                "When on, the Diff pane wraps long lines. When off, each file's diff scrolls sideways instead. Toggled by the wrap button in the Diff pane toolbar.",
+        },
+        /**
          * When on, the sidebar hides standalone repos that haven't been activated within the last 7
          * days (and have no running panes). Worktree-roots and their children are always shown
          * regardless of recency. Toggled from the filter icon's dropdown in the sidebar.
@@ -452,6 +535,14 @@ export const settingsJsonSchema = {
             title: 'Disable update checks',
             description:
                 "When on, agent-storm stops checking GitHub for new commits on the dev branch and hides the sidebar's update banner.",
+        },
+        /** Intentionally absent from `required` so configs written by older builds still load. */
+        enableDebugLogs: {
+            type: 'boolean',
+            default: false,
+            title: 'Debug logging',
+            description:
+                "When on, the app records detailed traces of UI behavior (such as tab selection) to the server's debug log, under `agent-storm-debug-logs` in the system temp directory. Entries older than a day are deleted.",
         },
         /** Intentionally absent from `required` so configs written by older builds still load. */
         disableAutoWatchMode: {
@@ -490,10 +581,10 @@ export const settingsJsonSchema = {
         'postWorktreeCmd',
         'folderPostWorktreeCmds',
         'review',
+        'typography',
         'folderAiIds',
         'forges',
         'useWebgl',
-        'terminalClickableLinks',
         'sidebarGrouping',
     ],
 } as const satisfies JSONSchema;
@@ -506,8 +597,10 @@ export const customSettingKeys = [
     'defaultAiId',
     'folderPostWorktreeCmds',
     'review',
+    'typography',
     'folderAiIds',
     'forges',
+    'pluginSettings',
 ] as const satisfies ReadonlyArray<keyof typeof settingsJsonSchema.properties>;
 
 type CustomSettingKey = (typeof customSettingKeys)[number];
@@ -659,6 +752,8 @@ const foldersResponseShape = defineShape({
     folderActivation: nullableShape(folderActivationShape),
     /** Changes whenever the stored UI layout does, so a poller only fetches `/ui-layout` then. */
     uiLayoutRevision: 0,
+    /** Changes whenever `/plugins` would answer differently, so a poller only fetches it then. */
+    pluginsRevision: '',
 });
 
 const folderActionRequestShape = defineShape({
@@ -772,10 +867,6 @@ const uploadRequestShape = defineShape({
     dataBase64: '',
 });
 
-const uploadResponseShape = defineShape({
-    path: '',
-});
-
 const aiAvatarUploadResponseShape = defineShape({
     /** Bare filename to store in the AI definition's `avatarFile`. */
     avatarFile: '',
@@ -829,6 +920,15 @@ const updateStatusResponseShape = defineShape({
     canInstall: false,
     /** A release version that failed to install or to start. It isn't installed again. */
     failedVersion: nullableShape(''),
+    /**
+     * The latest release once it's installed beside the running one, ready for
+     * `switchUpdateEndpoint`. `null` until then.
+     */
+    preparedVersion: nullableShape(''),
+    /** The `@agent-storm/core` version of `preparedVersion`. */
+    preparedCoreVersion: nullableShape(''),
+    /** Running plugins that switching to `preparedVersion` would turn off. */
+    pluginsToTurnOff: [pluginTurnedOffShape],
 });
 
 const repoTouchRequestShape = defineShape({
@@ -838,119 +938,6 @@ const repoTouchRequestShape = defineShape({
      * list (e.g. stale paths, freshly-deleted worktrees) are silently no-op'd.
      */
     folder: '',
-});
-
-/**
- * One changed file in the Diff pane's file list. `insertions` / `deletions` come from `git diff
- * --numstat` and are both `0` for untracked files (git has nothing to compare against) and for
- * binary files.
- */
-const gitDiffFileShape = defineShape({
-    /** Repo-relative path, always the current (post-rename) path. */
-    path: '',
-    change: enumShape(GitFileChange),
-    /** Previous path, only set when `change` is {@link GitFileChange.Renamed}. */
-    oldPath: nullableShape(''),
-    insertions: 0,
-    deletions: 0,
-});
-
-/**
- * The two halves of `git status`, kept separate rather than merged. A partially-staged file is in
- * both lists at once, with different content on each side.
- */
-const gitDiffStatusResponseShape = defineShape({
-    staged: [gitDiffFileShape],
-    unstaged: [gitDiffFileShape],
-});
-
-const gitDiffFileRequestShape = defineShape({
-    folder: '',
-    /** Repo-relative path, exactly as it came back from {@link gitDiffStatusEndpoint}. */
-    path: '',
-    /**
-     * The file's pre-rename path, when it has one. Without it a renamed file has no `HEAD:<path>`
-     * to read and would render as an all-new file instead of a diff.
-     */
-    oldPath: nullableShape(''),
-    side: enumShape(GitDiffSide),
-    /**
-     * Set by the placeholder's "Show diff anyway" button to send the content of a file past
-     * {@link maxDiffFileBytes} or {@link maxDiffFileLines}. Binary files ignore it — there is nothing
-     * useful to render.
-     */
-    allowLarge: false,
-});
-
-/** Both sides of one file's diff as plain text, for the requested {@link GitDiffSide}. */
-const gitDiffFileResponseShape = defineShape({
-    /** Contents at `HEAD` (staged side) or in the index (unstaged side). */
-    oldContent: '',
-    /** Contents in the index (staged side) or the working tree (unstaged side). */
-    newContent: '',
-    /**
-     * True for a file in one of the raster image formats the pane renders as a picture instead of
-     * as text. Both content fields are empty and the image fields carry the two sides. SVG is not
-     * one of them: it is text, and its diff says more than a re-render would.
-     */
-    isImage: false,
-    /**
-     * The two sides as `data:` URLs, only set when `isImage` is true, and each only when that side
-     * exists — an added image has no old side and a deleted one has no new side. Inlined rather
-     * than served from a URL because the old side is a git blob with no path to fetch it from.
-     */
-    oldImage: nullableShape(''),
-    newImage: nullableShape(''),
-    /**
-     * True when either side is binary or past {@link maxDiffFileBytes} / {@link maxDiffFileLines}.
-     * Both content fields are empty in that case and the pane shows a placeholder instead of a
-     * diff.
-     */
-    tooLargeOrBinary: false,
-    /**
-     * True when the only thing stopping the diff is size, so re-requesting with `allowLarge` would
-     * return real content. False for binary files, where the placeholder is the final answer.
-     */
-    canShowAnyway: false,
-});
-
-const gitFileRequestShape = defineShape({
-    folder: '',
-    path: '',
-});
-
-const gitStageFileRequestShape = defineShape({
-    folder: '',
-    path: '',
-    /**
-     * Which direction to move the whole file. `Unstaged` means "this file is currently on the
-     * unstaged side", so the operation stages it; `Staged` unstages it.
-     */
-    side: enumShape(GitDiffSide),
-});
-
-const gitStageAllRequestShape = defineShape({
-    folder: '',
-    /** Same meaning as {@link gitStageFileRequestShape}'s `side`, applied to every file on it. */
-    side: enumShape(GitDiffSide),
-});
-
-/**
- * One contiguous change to move across the index, addressed by the line ranges the client is
- * already displaying. Ranges are 0-based and half-open, into the `oldContent` / `newContent` the
- * client got from {@link gitDiffFileEndpoint} for this same `side`. The server rebuilds those two
- * documents and turns the ranges into a real patch, so a stale range fails the `git apply` instead
- * of silently staging the wrong lines.
- */
-const gitStageHunkRequestShape = defineShape({
-    folder: '',
-    path: '',
-    oldPath: nullableShape(''),
-    side: enumShape(GitDiffSide),
-    fromOldLine: 0,
-    toOldLine: 0,
-    fromNewLine: 0,
-    toNewLine: 0,
 });
 
 /**
@@ -1044,7 +1031,7 @@ const gitHubCheckShape = defineShape({
     description: '',
 });
 
-const gitHubPrShape = defineShape({
+export const gitHubPrShape = defineShape({
     /** GraphQL node id of the PR itself — the subject a new conversation comment attaches to. */
     id: '',
     /** The base repository's owner. */
@@ -1075,24 +1062,6 @@ const gitHubPrShape = defineShape({
     comments: [gitHubCommentShape],
 });
 
-/**
- * Null `pr` means "no GitHub tab for this folder": no PR on the branch, no github.com `origin`, or
- * `gh` isn't installed / authenticated. Callers can't tell those apart, and don't need to — all
- * four mean the same thing to the UI.
- */
-const gitHubPrResponseShape = defineShape({
-    pr: nullableShape(gitHubPrShape),
-});
-
-const gitHubPrRequestShape = defineShape({
-    folder: '',
-    /**
-     * True skips the server's per-folder cache and queries GitHub. Used by the refresh button and
-     * after posting anything, where the point is to see what actually landed.
-     */
-    forceRefresh: false,
-});
-
 /** Names one PR. `owner` is the base repository's owner. */
 export const pullRequestRefShape = defineShape({
     owner: '',
@@ -1117,7 +1086,7 @@ const pullRequestTextShape = defineShape({
 });
 
 /** One queued PR as the Review tab shows it. */
-const reviewQueuePrShape = defineShape({
+export const reviewQueuePrShape = defineShape({
     ...pullRequestRefShape.default,
     ...pullRequestTextShape.default,
     /** The head branch. */
@@ -1177,14 +1146,6 @@ export const reviewQueueResponseShape = defineShape({
     error: '',
 });
 
-const reviewPrRequestShape = defineShape({
-    ...pullRequestRefShape.default,
-    /** The server caches each PR by its repo and head branch, which the Build tab shares. */
-    branchName: '',
-    /** True skips the server's cache and queries GitHub. Used by the Review tab's refresh button. */
-    forceRefresh: false,
-});
-
 /** Someone asking for the `gh` account's review. Empty `requester` for a deleted account. */
 const reviewRequestEventShape = defineShape({
     id: '',
@@ -1193,6 +1154,14 @@ const reviewRequestEventShape = defineShape({
     createdAt: '',
     /** Whether an earlier request for the same account came first. */
     isReRequest: false,
+});
+
+const pushEventShape = defineShape({
+    id: '',
+    pusher: '',
+    pusherAvatarUrl: '',
+    createdAt: '',
+    isForcePush: false,
 });
 
 /**
@@ -1206,7 +1175,7 @@ const reviewPrReviewerShape = defineShape({
     state: enumShape(GitHubReviewState),
 });
 
-const reviewPrShape = defineShape({
+export const reviewPrShape = defineShape({
     /** Every reviewer, not only the `gh` account, sorted by login. */
     reviewers: [reviewPrReviewerShape],
     /** The `gh` account. */
@@ -1225,6 +1194,11 @@ const reviewPrShape = defineShape({
     reviews: [gitHubReviewShape],
     /** Only requests for the `gh` account's review, oldest first. */
     reviewRequests: [reviewRequestEventShape],
+    /**
+     * One entry per commit, dated and attributed by the commit since GitHub doesn't record when it
+     * was pushed, plus one per force push, oldest first.
+     */
+    pushes: [pushEventShape],
     /** Unix milliseconds of the GitHub fetch this came from. */
     fetchedAt: 0,
 });
@@ -1246,392 +1220,14 @@ export const manualReviewStateShape = defineShape({
 
 export type ManualReviewState = typeof manualReviewStateShape.runtimeType;
 
-const manualReviewStateResponseShape = defineShape({
-    /** Null when the skill has never recorded a review of the branch. */
-    review: nullableShape(manualReviewStateShape),
-});
-
-const reviewFolderRequestShape = defineShape({
-    ...pullRequestRefShape.default,
-    /** False only resolves the path, so selecting a PR leaves no folder behind. */
-    createFolder: false,
-});
-
-const reviewFolderResponseShape = defineShape({
-    folder: '',
-    pullRequest: reviewQueuePrShape,
-    /** Null when the skill has never recorded a review of the PR's branch. */
-    review: nullableShape(manualReviewStateShape),
-});
-
 const paneInputRequestShape = defineShape({
     folder: '',
     kind: enumShape(PaneKind),
-    sessionId: '',
+    /** Omitted types into the folder's first tab of `kind`, creating one if it has none. */
+    sessionId: optionalShape('', {
+        alsoUndefined: true,
+    }),
     text: '',
-});
-
-const gitHubCommentRequestShape = defineShape({
-    target: enumShape(GitHubCommentTarget),
-    subjectId: '',
-    body: '',
-});
-
-const gitHubReactionRequestShape = defineShape({
-    /** Node id of the comment being reacted to. */
-    subjectId: '',
-    reaction: enumShape(GitHubReaction),
-    /** True adds the viewer's reaction, false removes it. */
-    add: false,
-});
-
-const gitHubResolveThreadRequestShape = defineShape({
-    threadId: '',
-    /** True resolves the thread, false reopens it. */
-    resolved: false,
-});
-
-export const gitDiffStatusEndpoint = defineEndpoint({
-    path: '/git/diff/status',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: folderActionRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: gitDiffStatusResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const gitDiffFileEndpoint = defineEndpoint({
-    path: '/git/diff/file',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitDiffFileRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: gitDiffFileResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const gitStageFileEndpoint = defineEndpoint({
-    path: '/git/stage/file',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitStageFileRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Throws away every change to one file, on both sides of the index at once: the index entry goes
- * back to `HEAD` and the working tree copy follows. An untracked file is deleted, since it has no
- * `HEAD` state to return to. Irreversible, so the frontend confirms before calling it.
- */
-export const gitDiscardFileEndpoint = defineEndpoint({
-    path: '/git/discard/file',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitFileRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * {@link gitStageFileEndpoint} for every file on one side at once. The server walks what `git
- * status` currently reports rather than running a repo-wide `git add`, so a file that appeared
- * since the client's last status fetch is left alone instead of being staged unseen.
- */
-export const gitStageAllEndpoint = defineEndpoint({
-    path: '/git/stage/all',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitStageAllRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Throws away every unstaged change in the repo: each tracked file's working tree copy goes back to
- * whatever its index entry holds, and untracked files are deleted. Staged changes survive, which is
- * what separates this from {@link gitDiscardFileEndpoint}. Scoped to the reported status for the
- * same reason {@link gitStageAllEndpoint} is, and irreversible, so the frontend confirms before
- * calling it.
- */
-export const gitDiscardUnstagedEndpoint = defineEndpoint({
-    path: '/git/discard/unstaged',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: folderActionRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const gitStageHunkEndpoint = defineEndpoint({
-    path: '/git/stage/hunk',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitStageHunkRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Throws away one hunk instead of moving it across the index. Addressed exactly like
- * {@link gitStageHunkEndpoint}, and irreversible for the same reason {@link gitDiscardFileEndpoint}
- * is, so the frontend confirms before calling it.
- */
-export const gitDiscardHunkEndpoint = defineEndpoint({
-    path: '/git/discard/hunk',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitStageHunkRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Everything the GitHub pane shows, in one call: the PR itself, each reviewer's verdict, every
- * inline review thread, and the main conversation. One round trip because it's one GraphQL query —
- * splitting it per section would multiply the rate-limit cost for no benefit.
- */
-export const gitHubPrEndpoint = defineEndpoint({
-    path: '/github/pr',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitHubPrRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: gitHubPrResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Open PRs from any repo still waiting on the `gh` account's review, in review-vir's Reviewer-list
- * order. PRs assigned to that account, and PRs review-vir greys out, are left out.
- *
- * GET answers from the server's cache, starting its auto-refresh on the first call. POST fetches
- * from GitHub first and answers once that lands.
- */
-export const gitHubReviewQueueEndpoint = defineEndpoint({
-    path: '/github/review-queue',
-    requests: {
-        [HttpMethod.Get]: {
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewQueueResponseShape,
-                },
-            },
-        },
-        [HttpMethod.Post]: {
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewQueueResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Open PRs, drafts included, assigned to the `gh` account (or authored by it with no assignees), in
- * review-vir's Assignee-list order. Cached and refreshed separately from the review queue, with the
- * same GET and POST behavior as {@link gitHubReviewQueueEndpoint}.
- */
-export const gitHubAssigneeQueueEndpoint = defineEndpoint({
-    path: '/github/assignee-queue',
-    requests: {
-        [HttpMethod.Get]: {
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewQueueResponseShape,
-                },
-            },
-        },
-        [HttpMethod.Post]: {
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewQueueResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Answers with the folder one queued PR is reviewed in, `~/.agent-storm/manual-review/<owner>/<repo
- * name>/<PR number>`, creating it when asked, plus where the manual-review skill says its review
- * stands. The PR is looked up in the server's cached queue, so a client never names the path.
- * Errors when the PR isn't in the queue.
- */
-export const gitHubReviewFolderEndpoint = defineEndpoint({
-    path: '/github/review-folder',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: reviewFolderRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewFolderResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * Types the Review tab's init command for the PR's repo into its review folder's default Shell
- * session, spawning that session if it isn't running. Does nothing when no command is set.
- */
-export const reviewInitEndpoint = defineEndpoint({
-    path: '/review/init',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: pullRequestRefShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/**
- * One PR's title, description, and the review threads the `gh` account started (plus all unresolved
- * threads when it's assigned to the PR). The server caches each PR until a request sets
- * `forceRefresh`.
- */
-export const gitHubReviewPrEndpoint = defineEndpoint({
-    path: '/github/review-pr',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: reviewPrRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewPrShape,
-                },
-            },
-        },
-    },
-});
-
-const manualReviewCopyResponseShape = defineShape({
-    /** Null until `/manual-review here` has made a copy of the folder's branch. */
-    folder: nullableShape(''),
-});
-
-/**
- * Finds the folder the PR of a folder's branch is reviewed in, whether `/manual-review here` or the
- * Review tab made it.
- */
-export const manualReviewCopyEndpoint = defineEndpoint({
-    path: '/git/manual-review-copy',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: folderActionRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: manualReviewCopyResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/** Reads where the manual-review skill says the review of one PR branch stands. */
-export const manualReviewStateEndpoint = defineEndpoint({
-    path: '/review/state',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: pullRequestBranchShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: manualReviewStateResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/** Posts a reply into a review thread, or a new top-level comment on the PR. */
-export const gitHubCommentEndpoint = defineEndpoint({
-    path: '/github/comment',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitHubCommentRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const gitHubReactionEndpoint = defineEndpoint({
-    path: '/github/reaction',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitHubReactionRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const gitHubResolveThreadEndpoint = defineEndpoint({
-    path: '/github/thread/resolve',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: gitHubResolveThreadRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
 });
 
 /**
@@ -1692,12 +1288,11 @@ export const folderSettingsEndpoint = defineEndpoint({
                         files: [
                             {
                                 path: '',
-                                /**
-                                 * The settings the file applies, as formatted JSON. Empty when it
-                                 * applies none.
-                                 */
+                                /** The file's text, which approving it approves. */
                                 contents: '',
-                                /** Why the file is ignored. Empty when it applies. */
+                                contentHash: '',
+                                approval: enumShape(FolderSettingsApproval),
+                                /** Why the file, or part of it, is ignored. Empty when it applies. */
                                 problem: '',
                             },
                         ],
@@ -1706,6 +1301,135 @@ export const folderSettingsEndpoint = defineEndpoint({
             },
         },
     },
+});
+
+/**
+ * Approves a folder settings file's text, so its commands and code apply, or withdraws that
+ * approval. Approving text other than the file's current text approves nothing.
+ */
+export const folderSettingsApprovalEndpoint = defineEndpoint({
+    path: '/settings/folder/approval',
+    requests: {
+        [HttpMethod.Put]: {
+            requestData: defineShape({
+                path: '',
+                /** The `contentHash` of the text the user saw. */
+                contentHash: '',
+                isApproved: false,
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        ok: true,
+                    }),
+                },
+            },
+        },
+    },
+});
+
+/** Every external plugin, and what the user chose for each plugin. */
+export const pluginsEndpoint = defineEndpoint({
+    path: '/plugins',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: pluginsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** Stores what the user chose for a plugin. A null `decision` forgets the choice. */
+export const pluginDecisionEndpoint = defineEndpoint({
+    path: '/plugins/decision',
+    requests: {
+        [HttpMethod.Put]: {
+            requestData: defineShape({
+                pluginId: '',
+                decision: nullableShape(enumShape(PluginDecision)),
+                /**
+                 * The `contentHash` of the version the user saw. Approving fails when the plugin's
+                 * files no longer match it.
+                 */
+                contentHash: '',
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: pluginsResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * An active plugin's browser code, as text. Fails for any plugin that isn't active, so no plugin's
+ * code reaches the browser before the user approves it.
+ */
+export const pluginCodeEndpoint = defineEndpoint({
+    path: '/plugins/code',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                pluginId: '',
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        code: '',
+                        /** Which version of the plugin `code` is. */
+                        contentHash: '',
+                    }),
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Answers one call of a running plugin's API with its server part. The plugin's `definePluginApi`
+ * shapes validate `request` on the server and `response` in the browser.
+ */
+export const pluginCallEndpoint = defineEndpoint({
+    path: '/plugins/call',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                pluginId: '',
+                call: '',
+                request: unknownShape(),
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    /** A failed call carries its error's message, for the plugin to show. */
+                    responseData: unionShape(
+                        defineShape({
+                            response: unknownShape(),
+                        }),
+                        defineShape({
+                            errorMessage: '',
+                        }),
+                    ),
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Carries every running plugin's events from its server part to each open window. One socket for
+ * all plugins, so a window holds one connection however many plugins it runs.
+ */
+export const pluginEventsWebSocket = defineWebSocket({
+    path: '/plugins/events',
+    hostMessage: defineShape({
+        pluginId: '',
+        event: '',
+        data: unknownShape(),
+    }),
 });
 
 /** The side a diff list reads as one stacked review, or `false` for a single-file diff. */
@@ -1958,12 +1682,29 @@ export const updateCheckEndpoint = defineEndpoint({
 });
 
 /**
- * Starts installing the latest release in the background, then switches to it. The update check's
- * `currentVersion` becomes the new version once it runs, or its `failedVersion` does when it
- * fails.
+ * Starts installing the latest release in the background, without switching to it. The update
+ * check's `preparedVersion` becomes the new version once it's ready, or its `failedVersion` does
+ * when it fails.
  */
 export const installUpdateEndpoint = defineEndpoint({
     path: '/update-install',
+    requests: {
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * Switches to the prepared release. The update check's `currentVersion` becomes the new version
+ * once it runs, or its `failedVersion` does when it fails to start.
+ */
+export const switchUpdateEndpoint = defineEndpoint({
+    path: '/update-switch',
     requests: {
         [HttpMethod.Post]: {
             responses: {
@@ -2087,7 +1828,7 @@ export const restartPaneEndpoint = defineEndpoint({
 });
 
 /**
- * Types `text` into a running pane and presses Enter. Errors rather than spawn a session that isn't
+ * Types `text` into a pane and presses Enter, starting the pane's process first if it isn't
  * running.
  */
 export const paneInputEndpoint = defineEndpoint({
@@ -2227,6 +1968,127 @@ export const clientErrorEndpoint = defineEndpoint({
     },
 });
 
+export const clientDebugLogRequestShape = defineShape({
+    /** Random per page load, to tell apart windows writing at the same time. */
+    windowId: '',
+    pageUrl: '',
+    entries: [
+        {
+            at: '',
+            event: '',
+            details: unknownShape(),
+        },
+    ],
+});
+
+/**
+ * Diagnostic entries from one window, batched. Unlike {@link clientErrorEndpoint}, nothing is
+ * deduplicated or capped, so a bug can be traced through code paths that run often.
+ */
+export const clientDebugLogEndpoint = defineEndpoint({
+    path: '/client-debug-log',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: clientDebugLogRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/** Timings of one named thing (an element's renders, an endpoint's requests) over one window. */
+export const perfTimingShape = defineShape({
+    /** A tag name, or a request's method and path. */
+    name: '',
+    count: 0,
+    totalMilliseconds: 0,
+    maxMilliseconds: 0,
+});
+
+export type PerfTiming = typeof perfTimingShape.runtimeType;
+
+/**
+ * One window of the frontend's performance, summed by `installClientPerfLog`. Each list holds only
+ * the entries that took the most time.
+ */
+export const clientPerfRequestShape = defineShape({
+    windowMilliseconds: 0,
+    /** Times the main thread was blocked long enough to drop input, each counted once. */
+    stalls: perfTimingShape,
+    /** Every element's render calls, by tag name, including the ones not listed in `renders`. */
+    totalRenderCount: 0,
+    renders: [
+        perfTimingShape,
+    ],
+    requests: [
+        perfTimingShape,
+    ],
+    /** Elements in the document, which climbs over a session when something leaks DOM. */
+    domNodeCount: 0,
+    /** Seconds since the page loaded. */
+    pageAgeSeconds: 0,
+    pageUrl: '',
+});
+
+/**
+ * Frontend performance sink. The app runs as an installed PWA with no devtools to profile in, so
+ * the browser ships windows where it was slow here and the backend appends them to the perf log.
+ */
+export const clientPerfEndpoint = defineEndpoint({
+    path: '/client-perf',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: clientPerfRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
+ * A freeze of the frontend's main thread, sent by a worker thread because the frozen page can't
+ * send anything itself. The activity lists hold what the page did in the seconds before it froze.
+ */
+export const clientFreezeRequestShape = defineShape({
+    /** How long the page has gone without answering, so far or in total. */
+    frozenSeconds: 0,
+    /** True while the page is still frozen. The last report of a freeze has it false. */
+    isOngoing: false,
+    totalRenderCount: 0,
+    renders: [
+        perfTimingShape,
+    ],
+    requests: [
+        perfTimingShape,
+    ],
+    /** Seconds since the page loaded, at its last answer. */
+    pageAgeSeconds: 0,
+    pageUrl: '',
+});
+
+export type ClientFreezeRequest = typeof clientFreezeRequestShape.runtimeType;
+
+/** Frontend freeze sink. The backend appends each report to the perf log. */
+export const clientFreezeEndpoint = defineEndpoint({
+    path: '/client-freeze',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: clientFreezeRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const restartDaemonEndpoint = defineEndpoint({
     path: '/daemon/restart',
     requests: {
@@ -2314,43 +2176,6 @@ export const hideRepoEndpoint = defineEndpoint({
     },
 });
 
-const watchModeRequestShape = defineShape({
-    folder: '',
-    isEnabled: false,
-});
-
-export const watchModeEndpoint = defineEndpoint({
-    path: '/watch-mode',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: watchModeRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const closeEditorWindowEndpoint = defineEndpoint({
-    path: '/editor-window/close',
-    requests: {
-        [HttpMethod.Post]: {
-            /**
-             * Closes the window the manual-review skill recorded for the branch's review. Does
-             * nothing when no window is open on it, or on an unsupported OS.
-             */
-            requestData: pullRequestBranchShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
 /**
  * A comment the reviewer wrote on a diff line, stored in the manual-review skill's state file so
  * its verdict commands post it alongside the comments typed into the code.
@@ -2369,84 +2194,6 @@ export const reviewCommentShape = defineShape({
 });
 
 export type ReviewComment = typeof reviewCommentShape.runtimeType;
-
-const reviewCommentsResponseShape = defineShape({
-    comments: [reviewCommentShape],
-});
-
-const addReviewCommentRequestShape = defineShape({
-    folder: '',
-    path: '',
-    line: 0,
-    body: '',
-});
-
-const updateReviewCommentRequestShape = defineShape({
-    folder: '',
-    id: '',
-    body: '',
-});
-
-const deleteReviewCommentRequestShape = defineShape({
-    folder: '',
-    id: '',
-});
-
-export const readReviewCommentsEndpoint = defineEndpoint({
-    path: '/review-comments/read',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: folderActionRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewCommentsResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const addReviewCommentEndpoint = defineEndpoint({
-    path: '/review-comments/add',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: addReviewCommentRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewCommentsResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const updateReviewCommentEndpoint = defineEndpoint({
-    path: '/review-comments/update',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: updateReviewCommentRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewCommentsResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const deleteReviewCommentEndpoint = defineEndpoint({
-    path: '/review-comments/delete',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: deleteReviewCommentRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: reviewCommentsResponseShape,
-                },
-            },
-        },
-    },
-});
 
 export const checkPathEndpoint = defineEndpoint({
     path: '/paths/check',
@@ -2476,23 +2223,9 @@ export const createPathEndpoint = defineEndpoint({
     },
 });
 
-export const uploadEndpoint = defineEndpoint({
-    path: '/uploads/create',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: uploadRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: uploadResponseShape,
-                },
-            },
-        },
-    },
-});
-
 /**
  * Stores an avatar image dropped onto the Settings modal's AI editor and hands back the filename to
- * record in the definition. Separate from {@link uploadEndpoint} because those uploads are throwaway
+ * record in the definition. Separate from the terminal plugin's uploads because those are throwaway
  * files pasted into a terminal, while these have to outlive a reboot alongside the config.
  */
 export const aiAvatarUploadEndpoint = defineEndpoint({
@@ -2561,12 +2294,18 @@ export const agentStormService = defineApi({
     endpoints: [
         settingsEndpoint,
         folderSettingsEndpoint,
+        folderSettingsApprovalEndpoint,
+        pluginsEndpoint,
+        pluginDecisionEndpoint,
+        pluginCodeEndpoint,
+        pluginCallEndpoint,
         uiLayoutEndpoint,
         tabLayoutSaveEndpoint,
         activityBarSaveEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
         installUpdateEndpoint,
+        switchUpdateEndpoint,
         onboardingEndpoint,
         claudeHooksInstallEndpoint,
         startAtLoginEndpoint,
@@ -2583,41 +2322,21 @@ export const agentStormService = defineApi({
         aiAvatarUploadEndpoint,
         aiAvatarEndpoint,
         clientErrorEndpoint,
+        clientDebugLogEndpoint,
+        clientPerfEndpoint,
+        clientFreezeEndpoint,
         restartDaemonEndpoint,
         touchRepoEndpoint,
         addRepoEndpoint,
         removeRepoEndpoint,
         hideRepoEndpoint,
-        watchModeEndpoint,
-        closeEditorWindowEndpoint,
-        readReviewCommentsEndpoint,
-        addReviewCommentEndpoint,
-        updateReviewCommentEndpoint,
-        deleteReviewCommentEndpoint,
         checkPathEndpoint,
         createPathEndpoint,
-        uploadEndpoint,
-        gitDiffStatusEndpoint,
-        gitDiffFileEndpoint,
-        gitStageFileEndpoint,
-        gitStageAllEndpoint,
-        gitStageHunkEndpoint,
-        gitDiscardFileEndpoint,
-        gitDiscardUnstagedEndpoint,
-        gitDiscardHunkEndpoint,
-        gitHubPrEndpoint,
-        gitHubCommentEndpoint,
-        gitHubReactionEndpoint,
-        gitHubResolveThreadEndpoint,
-        gitHubReviewQueueEndpoint,
-        gitHubAssigneeQueueEndpoint,
-        gitHubReviewFolderEndpoint,
-        reviewInitEndpoint,
-        gitHubReviewPrEndpoint,
-        manualReviewStateEndpoint,
-        manualReviewCopyEndpoint,
     ],
-    webSockets: [ptyWebSocket],
+    webSockets: [
+        ptyWebSocket,
+        pluginEventsWebSocket,
+    ],
 });
 
 export const defaultSettings = settingsShape.default;
@@ -2643,9 +2362,6 @@ export type FolderSessions = typeof folderSessionsShape.runtimeType;
 export type PaneStatuses = typeof paneStatusesShape.runtimeType;
 export type PullRequestRef = typeof pullRequestRefShape.runtimeType;
 export type PullRequestBranch = typeof pullRequestBranchShape.runtimeType;
-export type GitDiffFile = typeof gitDiffFileShape.runtimeType;
-export type GitDiffFileContents = typeof gitDiffFileResponseShape.runtimeType;
-export type GitDiffStatus = typeof gitDiffStatusResponseShape.runtimeType;
 export type GitHubPr = typeof gitHubPrShape.runtimeType;
 export type GitHubComment = typeof gitHubCommentShape.runtimeType;
 export type GitHubReviewThread = typeof gitHubReviewThreadShape.runtimeType;
@@ -2657,3 +2373,4 @@ export type ReviewQueuePr = typeof reviewQueuePrShape.runtimeType;
 export type ReviewQueue = typeof reviewQueueResponseShape.runtimeType;
 export type ReviewPr = typeof reviewPrShape.runtimeType;
 export type ReviewRequestEvent = typeof reviewRequestEventShape.runtimeType;
+export type PushEvent = typeof pushEventShape.runtimeType;

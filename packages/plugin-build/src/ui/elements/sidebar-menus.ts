@@ -5,7 +5,7 @@ import {
     WatchModeStatus,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {log} from '@augment-vir/common';
+import {log, type MaybePromise} from '@augment-vir/common';
 import {html} from 'element-vir';
 import {parseUrl} from 'url-vir';
 import {
@@ -230,13 +230,13 @@ export function buildRowMenuEntries({
 
 /** The menu on a worktree root's header, which acts on the repo as a whole. */
 export function buildRepoMenuEntries(
-    onSelect: (action: SidebarFolderAction) => void,
+    onSelect: (action: SidebarFolderAction) => MaybePromise<void>,
 ): ReadonlyArray<ViraMenuItemEntry> {
     return [
         {
             content: 'Add worktree',
             onClick() {
-                onSelect(SidebarFolderAction.AddWorktree);
+                return onSelect(SidebarFolderAction.AddWorktree);
             },
         },
         {
@@ -246,13 +246,13 @@ export function buildRepoMenuEntries(
              */
             content: 'Change AI',
             onClick() {
-                onSelect(SidebarFolderAction.ChangeAi);
+                return onSelect(SidebarFolderAction.ChangeAi);
             },
         },
         {
             content: 'Settings',
             onClick() {
-                onSelect(SidebarFolderAction.OpenSettings);
+                return onSelect(SidebarFolderAction.OpenSettings);
             },
         },
         {
@@ -261,7 +261,7 @@ export function buildRepoMenuEntries(
             `,
             iconOverride: LucideXIcon,
             onClick() {
-                onSelect(SidebarFolderAction.RemoveRepo);
+                return onSelect(SidebarFolderAction.RemoveRepo);
             },
         },
     ];

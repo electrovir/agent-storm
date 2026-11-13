@@ -11,6 +11,7 @@ import {
 } from '@rest-vir/api';
 import {clearStoredSecret, ensureSecret} from './auth.js';
 import {notifyBackendFailure, notifyBackendSuccess} from './backend-watchdog.js';
+import {PerfCategory, recordPerf} from './perf-stats.js';
 import {getBackendBaseUrl} from './service-origin.js';
 
 /**
@@ -63,10 +64,19 @@ export async function fetchApi<
         any,
         Promise<unknown>
     > as (...fetchParams: typeof params) => Promise<EndpointFetchOutput<any, any, true>>;
-    const result = await runFetch(...params).catch((error: unknown) => {
-        notifyBackendFailure();
-        throw error;
-    });
+    const startedAt = performance.now();
+    const result = await runFetch(...params)
+        .catch((error: unknown) => {
+            notifyBackendFailure();
+            throw error;
+        })
+        .finally(() => {
+            recordPerf({
+                category: PerfCategory.Request,
+                name: `${method} ${endpoint.path}`,
+                milliseconds: performance.now() - startedAt,
+            });
+        });
     notifyBackendSuccess();
     if (result.Ok) {
         return result.Ok.responseData;

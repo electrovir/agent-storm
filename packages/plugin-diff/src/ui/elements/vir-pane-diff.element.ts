@@ -3,6 +3,7 @@ import {ScreenSize, defineAppElement} from '@agent-storm/core/frontend';
 import {ReviewVerdict, canPostVerdict, type PaneReviewObservable} from '@agent-storm/plugin-review';
 import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {ViraButton, ViraColorVariant, ViraSize} from 'vira';
+import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
 import {VirDiffPane} from './vir-diff-pane.element.js';
 
 /**
@@ -21,6 +22,8 @@ export const VirPaneDiff = defineAppElement<{
     /** A review folder's own diff carries the verdict buttons and accepts comments. */
     isReviewFolder: boolean;
     screenSize: ScreenSize;
+    /** Draws the open file's diff instead of the built-in CodeMirror view. */
+    renderCodeView?: RenderDiffCodeView | undefined;
     /** Picks which diff shows. Kept reachable while the manual review is starting. */
     sourcePicker?: HtmlInterpolation | undefined;
 }>()({
@@ -105,6 +108,7 @@ export const VirPaneDiff = defineAppElement<{
                     folder: inputs.folder,
                     active: isSourceShown,
                     screenSize: inputs.screenSize,
+                    renderCodeView: inputs.renderCodeView,
                     sidebarHeader: inputs.isReviewFolder ? verdictButtons : undefined,
                     toolbarTrailing: inputs.sourcePicker,
                     enableComments: inputs.isReviewFolder,
@@ -132,6 +136,7 @@ export const VirPaneDiff = defineAppElement<{
                               folder: reviewCopyFolder,
                               active: isManualReviewChosen,
                               screenSize: inputs.screenSize,
+                              renderCodeView: inputs.renderCodeView,
                               sidebarHeader: verdictButtons,
                               toolbarTrailing: inputs.sourcePicker,
                               enableComments: true,

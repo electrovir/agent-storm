@@ -2,7 +2,8 @@
 
 import {type OnboardingStatus} from '@agent-storm/common';
 import {getEnumValues} from '@augment-vir/common';
-import {InstanceEnvVar, instanceName, launcherLogPath, PortEnvVar} from 'agent-storm';
+import {PortEnvVar} from 'agent-storm';
+import {InstanceEnvVar, instanceName, launcherLogPath} from 'agent-storm-util';
 import {delimiter, dirname} from 'node:path';
 import {parseUrl} from 'url-vir';
 import {loadAppState, updateAppState} from './app-state.js';

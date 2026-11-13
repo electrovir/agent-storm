@@ -26,20 +26,23 @@ export const VirBuildStage = defineAppElement<{
     context: AppContext;
 }>()({
     tagName: 'vir-build-stage',
-    state() {
+    state({inputs}) {
+        const rememberedFolders = inputs.context.isInActivityTab
+            ? []
+            : buildMemory.openedFolders.read();
         return {
             /**
              * Folders the user has opened, by absolute path. Kept around so each pane keeps its
              * terminal scrollback when the user switches folders. Folders that leave the folder
              * list are dropped, and only come back once selected again.
              */
-            openedFolders: [] as ReadonlyArray<string>,
+            openedFolders: rememberedFolders,
             /**
              * The same folders, least recently active first, so the oldest can be unmounted. Kept
              * apart from `openedFolders` because reordering that would make `repeat` move the pane
              * slots, which remounts their terminals.
              */
-            recentFolders: [] as ReadonlyArray<string>,
+            recentFolders: rememberedFolders,
         };
     },
     styles: css`
@@ -84,14 +87,22 @@ export const VirBuildStage = defineAppElement<{
             ...state.openedFolders.filter((folder) => recentFolders.includes(folder)),
             ...recentFolders.filter((folder) => !state.openedFolders.includes(folder)),
         ];
+        /**
+         * Until the first folder list arrives, `folderInfo` is empty, and the filters above would
+         * drop every folder remembered from the last launch.
+         */
         if (
-            !check.deepEquals(state.openedFolders, openedFolders) ||
-            !check.deepEquals(state.recentFolders, recentFolders)
+            inputs.context.folderData.value.live &&
+            (!check.deepEquals(state.openedFolders, openedFolders) ||
+                !check.deepEquals(state.recentFolders, recentFolders))
         ) {
             updateState({
                 openedFolders,
                 recentFolders,
             });
+            if (!inputs.context.isInActivityTab) {
+                buildMemory.openedFolders.write(recentFolders);
+            }
         }
 
         if (

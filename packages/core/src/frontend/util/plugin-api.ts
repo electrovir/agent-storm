@@ -14,6 +14,12 @@ import {type FolderDataObservable} from './folder-data.js';
 import {type FolderSessionsObservable} from './folder-sessions.js';
 import {type Setting} from './local-storage-client.js';
 import {type PaneRestartsObservable} from './pane-restarts.js';
+import {type PluginRegistryObservable} from './plugin-registry.js';
+import {
+    type PluginSettingFields,
+    type PluginSettingsDefinition,
+    type PluginSettingValues,
+} from './plugin-settings.js';
 import {type ScreenSize} from './screen-size.js';
 import {type TabLayout} from './tab-layout.js';
 import {type UiLayoutObservable} from './ui-layout.js';
@@ -24,9 +30,10 @@ export type ValueUpdate<Value> = (current: Readonly<Value>) => Value;
 /** One of core's own pages of the Settings modal. Its tabs list in this order. */
 export enum SettingsSection {
     General = 'general',
+    Typography = 'typography',
     Terminal = 'terminal',
-    Sidebar = 'sidebar',
     Activities = 'activities',
+    Plugins = 'plugins',
     Ai = 'ai',
     Folders = 'folders',
     Forges = 'forges',
@@ -34,27 +41,35 @@ export enum SettingsSection {
 }
 
 /**
- * A page of the Settings modal that a plugin adds. `Details` is whatever the page's opener passes
+ * A page of the Settings modal that a plugin adds. It shows in the Plugins section once its plugin
+ * is picked there, beside the plugin's other pages. `Details` is whatever the page's opener passes
  * through {@link createSettingsTarget}.
  */
 export type SettingsSectionContribution<Details = undefined> = Readonly<{
     /** Prefixed by the owning plugin's id, so no two plugins' sections can collide. */
     id: string;
+    pluginId: string;
     label: string;
-    group: string;
     /** Matched by the nav search, beside the section's label and its rows' text. */
     searchTerms: ReadonlyArray<string>;
     /** Titles the card of the section's schema settings, for a section with more cards. */
     schemaCardTitle: string | undefined;
     /** The settings shown as rows built from their schemas, in order. */
     schemaKeys: ReadonlyArray<SchemaSettingKey>;
-    /** The core section whose tab this one follows. */
-    listAfter: SettingsSection;
 }> &
     PartialWithUndefined<{
+        /**
+         * What the page's "Restore defaults" button checks and does. Omitted, it restores
+         * `schemaKeys`.
+         */
+        defaults: Readonly<{
+            isModified(settings: Readonly<Settings>): boolean;
+            restore: ValueUpdate<Settings>;
+        }>;
         /** Replaces the section's schema rows. */
         render(
             params: Readonly<{
+                context: AppContext;
                 settings: Readonly<Settings>;
                 details: Details | undefined;
                 changeSettings(update: ValueUpdate<Settings>): void;
@@ -67,18 +82,16 @@ export type AnySettingsSectionContribution = SettingsSectionContribution<any>;
 
 /** Types a plugin's settings section and prefixes its id with the plugin's. */
 export function defineSettingsSection<Details = undefined>({
-    pluginId,
     name,
     ...section
 }: Readonly<
     Omit<SettingsSectionContribution<Details>, 'id'> & {
-        pluginId: string;
         name: string;
     }
 >): SettingsSectionContribution<Details> {
     return {
         ...section,
-        id: `${pluginId}:${name}`,
+        id: `${section.pluginId}:${name}`,
     };
 }
 
@@ -92,6 +105,8 @@ export type SettingsTarget = Readonly<{
     PartialWithUndefined<{
         /** The folder the Folders section edits. */
         folder: string;
+        /** The id of the plugin the Plugins section shows. */
+        plugin: string;
         /** Handed to the plugin section's `render`. */
         details: unknown;
     }>;
@@ -150,6 +165,18 @@ export type AppContext = Readonly<{
     uiLayout: UiLayoutObservable;
     /** Opens Settings at `target`, or where this window last left it when `target` is undefined. */
     openSettings(target: SettingsTarget | undefined): void;
+    /** Every plugin, running or not, and the user's choices for them. */
+    plugins: PluginRegistryObservable;
+    /**
+     * The values of the plugin's `settings`, each the user's stored value or its default. They
+     * follow the user's settings, so an element given this context re-renders when one changes.
+     */
+    readPluginSettings<Fields extends PluginSettingFields>(
+        plugin: Readonly<{
+            id: string;
+            settings?: PluginSettingsDefinition<Fields> | undefined;
+        }>,
+    ): PluginSettingValues<Fields>;
 }>;
 
 /** The parts of the context that are the same objects for the app's whole life. */
@@ -346,8 +373,8 @@ export type PaneGroupExtension<
             displayedTabIds: ReadonlyArray<string>;
             /** The tabs that had been displayed before this render. */
             shownTabIds: ReadonlyArray<string>;
-            /** Whether the folder's branch has a PR. */
-            hasPr: boolean;
+            /** The folder branch's PR, as the folder list last saw it. */
+            prUrl: string | undefined;
         }>,
     ): void;
 }>;
@@ -443,3 +470,38 @@ export type PaneDefinition<TabStateShape extends Shape = typeof noTabStateShape>
 
 /** Any pane definition, as registries hold them. */
 export type AnyPaneDefinition = PaneDefinition<any>;
+
+/**
+ * One plugin: everything it adds to the app. A built-in plugin is listed by the frontend host. An
+ * external plugin's browser entry default-exports one, whose ids must match its manifest's.
+ */
+export type PluginDefinition<Fields extends PluginSettingFields = PluginSettingFields> = Readonly<{
+    /**
+     * Unique across every plugin. The user's choices for the plugin, and its settings' values, are
+     * stored by it.
+     */
+    id: string;
+    name: string;
+    description: string;
+}> &
+    PartialWithUndefined<{
+        activities: ReadonlyArray<AnyActivityDefinition>;
+        panes: ReadonlyArray<AnyPaneDefinition>;
+        paneGroupExtensions: ReadonlyArray<AnyPaneGroupExtension>;
+        settingsSections: ReadonlyArray<AnySettingsSectionContribution>;
+        /**
+         * Typed settings the Settings modal renders a form for, in a page of the plugin's own. Read
+         * them with the context's `readPluginSettings`.
+         */
+        settings: PluginSettingsDefinition<Fields>;
+    }>;
+
+/**
+ * Types a plugin, inferring the types of its settings' values. Plugins are registered by the
+ * frontend host or the plugins folder, not this call.
+ */
+export function definePlugin<Fields extends PluginSettingFields = PluginSettingFields>(
+    definition: PluginDefinition<Fields>,
+) {
+    return definition;
+}

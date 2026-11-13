@@ -154,7 +154,7 @@ describe(getShownPrQueues.name, () => {
 });
 
 describe(getReviewablePrs.name, () => {
-    it('leaves out the viewer-authored Assignee PRs', () => {
+    it('includes reviewed and viewer-authored PRs', () => {
         assert.deepEquals(
             getReviewablePrs(
                 createPrQueues({
@@ -162,7 +162,11 @@ describe(getReviewablePrs.name, () => {
                         pullRequests: [
                             createPr({
                                 number: 1,
-                                isViewerAuthor: true,
+                            }),
+                        ],
+                        reviewedPullRequests: [
+                            createPr({
+                                number: 4,
                             }),
                         ],
                     }),
@@ -181,6 +185,8 @@ describe(getReviewablePrs.name, () => {
             )?.map((pr) => pr.number),
             [
                 1,
+                4,
+                2,
                 3,
             ],
         );

@@ -26,10 +26,13 @@
         "test": "exit 0;"
     },
     "dependencies": {
+        "@agent-storm/common": "*",
+        "@agent-storm/core": "*",
         "@agent-storm/server": "*",
         "@augment-vir/common": "^32.7.0",
         "@augment-vir/node": "^32.7.0",
         "agent-storm": "*",
+        "agent-storm-util": "*",
         "esbuild": "^0.28.2",
         "object-shape-tester": "^6.15.3",
         "portfinder": "^1.0.38"

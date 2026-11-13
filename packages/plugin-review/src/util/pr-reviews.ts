@@ -1,17 +1,15 @@
 import {
-    closeEditorWindowEndpoint,
-    gitHubReviewPrEndpoint,
     GitHubReviewState,
     PrStatus,
     type FolderInfo,
     type ReviewPr,
     type ReviewQueuePr,
 } from '@agent-storm/common';
-import {fetchApi, reportClientError} from '@agent-storm/core/frontend';
+import {reportClientError} from '@agent-storm/core/frontend';
 import {extractErrorMessage, omitObjectKeys, typedObjectFromEntries} from '@augment-vir/common';
-import {HttpMethod} from '@rest-vir/api';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {Observable} from 'element-vir';
+import {reviewClient} from './review-client.js';
 
 export enum ReviewVerdict {
     Approve = 'approve',
@@ -221,6 +219,14 @@ export function createPrReviews() {
      */
     const latestReviewPrRequests = new Map<string, number>();
 
+    function clearVerdict(url: string) {
+        update({
+            verdicts: omitObjectKeys(observable.value.verdicts, [
+                url,
+            ]),
+        });
+    }
+
     async function recordVerdict({
         pullRequest,
         verdict,
@@ -239,12 +245,10 @@ export function createPrReviews() {
             },
         });
         try {
-            await fetchApi(closeEditorWindowEndpoint, HttpMethod.Post, {
-                requestData: {
-                    owner: pullRequest.owner,
-                    repoName: pullRequest.repoName,
-                    branchName: pullRequest.branchName,
-                },
+            await reviewClient.call('closeEditorWindow', {
+                owner: pullRequest.owner,
+                repoName: pullRequest.repoName,
+                branchName: pullRequest.branchName,
             });
         } catch (error) {
             reportClientError({
@@ -278,12 +282,10 @@ export function createPrReviews() {
                 loadError: '',
             });
             try {
-                const fetchedDetails = await fetchApi(gitHubReviewPrEndpoint, HttpMethod.Post, {
-                    requestData: {
-                        ...branch,
-                        number,
-                        forceRefresh,
-                    },
+                const fetchedDetails = await reviewClient.call('readReviewPr', {
+                    ...branch,
+                    number,
+                    forceRefresh,
                 });
                 if (latestReviewPrRequests.get(key) !== requestId) {
                     return;
@@ -312,28 +314,30 @@ export function createPrReviews() {
          * Hands the verdict's prompt to `sendPrompt`, which types it into the PR's AI pane for the
          * manual-review skill to post. Meanwhile shows the verdict's status everywhere the PR is
          * listed, and closes the editor window the review was read in, without waiting for the
-         * skill.
+         * skill. A prompt that fails to send clears the verdict again. Resolves to whether the
+         * prompt was sent.
          */
         async requestVerdict({
             sendPrompt,
             ...verdictRequest
         }: Readonly<
             Parameters<typeof recordVerdict>[0] & {
-                sendPrompt: (prompt: string) => Promise<void>;
+                sendPrompt: (prompt: string) => Promise<boolean>;
             }
         >) {
-            await Promise.all([
+            const [
+                ,
+                isSent,
+            ] = await Promise.all([
                 recordVerdict(verdictRequest),
                 sendPrompt(reviewVerdicts[verdictRequest.verdict].prompt),
             ]);
+            if (!isSent) {
+                clearVerdict(verdictRequest.pullRequest.url);
+            }
+            return isSent;
         },
         /** For a verdict the skill failed to post. */
-        clearVerdict(url: string) {
-            update({
-                verdicts: omitObjectKeys(observable.value.verdicts, [
-                    url,
-                ]),
-            });
-        },
+        clearVerdict,
     });
 }

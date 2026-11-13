@@ -1,0 +1,22 @@
+{
+    "activities": [
+        {
+            "id": "review",
+            "isEnabledByDefault": true,
+            "label": "Review"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "description": "PR review queues and review tabs.",
+    "id": "review",
+    "name": "Review",
+    "panes": [
+        {
+            "icon": "LucideScanEyeIcon",
+            "id": "review",
+            "label": "Review"
+        }
+    ],
+    "serverEntry": "server.js"
+}

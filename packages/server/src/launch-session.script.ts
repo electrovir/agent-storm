@@ -7,9 +7,10 @@ import {join} from 'node:path';
 import {parseArgs} from 'node:util';
 
 /**
- * Asks the running agent-storm to type `--prompt` into `--folder`'s first AI tab without moving any
- * window's focus to it. Only works inside an agent-storm AI tab, whose environment holds the key
- * that signs the request.
+ * Asks the running agent-storm to activate `--folder` without moving any window's focus to it: its
+ * tabs start, and `--prompt`, when given, is typed into its first AI tab. Only works inside an
+ * agent-storm tab, or a process started from one, whose environment holds the key that signs the
+ * request.
  *
  * Exits 0 once agent-storm accepts the request, 1 when it refuses (printing why), and 2 when
  * nothing picks the request up, which means agent-storm is not running or predates signed
@@ -17,8 +18,8 @@ import {parseArgs} from 'node:util';
  */
 
 /**
- * AI tabs run this with plain `node`, which cannot resolve this package's `.js` imports to their
- * `.ts` sources, so `agentLaunchRequestsDir` from `file-paths.ts` is restated rather than imported.
+ * Tabs run this with plain `node`, which cannot resolve this package's `.js` imports to their `.ts`
+ * sources, so `agentLaunchRequestsDir` from `file-paths.ts` is restated rather than imported.
  * Agent-storm gives every tab its instance's data dir as `AGENT_STORM_DATA_DIR`.
  */
 const requestsDir = join(
@@ -45,15 +46,15 @@ const {values} = parseArgs({
         },
     },
 });
-const conversationId = process.env.AGENT_STORM_CONVERSATION_ID;
+const launchId = process.env.AGENT_STORM_LAUNCH_ID;
 const launchKey = process.env.AGENT_STORM_LAUNCH_KEY;
 
-if (!values.folder || !values.prompt) {
-    log.error('Pass both --folder and --prompt.');
+if (!values.folder) {
+    log.error('Pass --folder.');
     process.exit(1);
 }
-if (!conversationId || !launchKey) {
-    log.error('Not running inside an agent-storm AI tab that can launch sessions.');
+if (!launchId || !launchKey) {
+    log.error('Not running inside an agent-storm tab that can launch sessions.');
     process.exit(2);
 }
 if (!(await exists(requestsDir))) {
@@ -63,9 +64,9 @@ if (!(await exists(requestsDir))) {
 
 const requestId = randomUUID();
 const payload = JSON.stringify({
-    conversationId,
+    launchId,
     folder: values.folder,
-    prompt: values.prompt,
+    prompt: values.prompt || '',
     requestId,
     createdAtMs: Date.now(),
 });
@@ -125,4 +126,4 @@ if (await exists(errorPath)) {
     log.error(refusal);
     process.exit(1);
 }
-log.success(`agent-storm is launching a session in ${values.folder}.`);
+log.success(`agent-storm is activating ${values.folder}.`);

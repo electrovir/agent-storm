@@ -1,23 +1,24 @@
-import {gitHubReviewFolderEndpoint, type ReviewQueuePr} from '@agent-storm/common';
+import {type ReviewQueuePr} from '@agent-storm/common';
 import {
     createSettingsTarget,
     defineAppElement,
-    fetchApi,
     restartFolderPanes,
+    VirSidebarRepoHeader,
+    VirSidebarSearch,
     type PaneRestartedEvent,
     type SettingsTarget,
 } from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
-import {HttpMethod} from '@rest-vir/api';
 import {css, defineElementEvent, html, listen, nothing, repeat} from 'element-vir';
 import {ViraCollapsibleCard, viraThemeByKeys} from 'vira';
 import {PrQueueKind, pullRequestRouteKey} from '../../util/pr-queues.js';
 import {type ReviewedRepo} from '../../util/pr-reviews.js';
+import {reviewClient} from '../../util/review-client.js';
 import {reviewSettingsSection} from './review-settings-section.js';
 import {
+    filterPullRequestsBySearch,
     groupByRepo,
-    openOnGitHub,
     prQueueTabs,
     type ReviewSidebarQueues,
 } from './review-sidebar-display.js';
@@ -56,6 +57,8 @@ export const VirReviewSidebar = defineAppElement<{
         return {
             isReviewedExpanded: false,
             actionError: undefined as string | undefined,
+            searchQuery: '',
+            openMenuRepo: undefined as string | undefined,
         };
     },
     styles: css`
@@ -85,20 +88,6 @@ export const VirReviewSidebar = defineAppElement<{
             font-size: 13px;
             font-weight: 300;
             letter-spacing: 0.01em;
-        }
-
-        .repo-header {
-            padding: 6px 5px 2px;
-            font-weight: 600;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 6px;
-
-            /* The menu pops up inside the header, so it would inherit the repo name's bold. */
-            & ${VirReviewSidebarSettingsMenu} {
-                font-weight: 300;
-            }
         }
 
         .count {
@@ -133,10 +122,6 @@ export const VirReviewSidebar = defineAppElement<{
         :host([data-mobile-modal]) .list {
             font-size: 16px;
         }
-
-        :host([data-mobile-modal]) .repo-header {
-            padding: 10px 16px 4px;
-        }
     `,
     render({inputs, state, updateState, host, dispatch, events}) {
         if (inputs.hideBorder) {
@@ -159,19 +144,20 @@ export const VirReviewSidebar = defineAppElement<{
                 }),
             );
         }
-        const rowClickHandlers: Record<PrQueueKind, (pr: ReviewQueuePr) => void> = {
-            [PrQueueKind.Review]: activatePullRequest,
-            [PrQueueKind.Assignee](pr) {
-                if (pr.isViewerAuthor) {
-                    openOnGitHub(pr);
-                } else {
-                    activatePullRequest(pr);
-                }
-            },
-        };
-
-        const reviewedPullRequests =
-            (selectedQueue === PrQueueKind.Review && shownQueue?.queue?.reviewedPullRequests) || [];
+        const isSearching = !!state.searchQuery.trim();
+        const pullRequests = filterPullRequestsBySearch(
+            shownQueue?.queue?.pullRequests || [],
+            state.searchQuery,
+        );
+        const reviewedPullRequests = filterPullRequestsBySearch(
+            (selectedQueue === PrQueueKind.Review && shownQueue?.queue?.reviewedPullRequests) || [],
+            state.searchQuery,
+        );
+        /** Enter opens the top row as rendered, so it follows the repo grouping. */
+        const firstSearchResult = isSearching
+            ? (groupByRepo(pullRequests)[0]?.pullRequests[0] ??
+              groupByRepo(reviewedPullRequests)[0]?.pullRequests[0])
+            : undefined;
 
         const errorMessage = state.actionError || shownQueue?.loadError || shownQueue?.queue?.error;
 
@@ -199,13 +185,11 @@ export const VirReviewSidebar = defineAppElement<{
                 });
             }
             try {
-                const reviewFolder = await fetchApi(gitHubReviewFolderEndpoint, HttpMethod.Post, {
-                    requestData: {
-                        owner: pr.owner,
-                        repoName: pr.repoName,
-                        number: pr.number,
-                        createFolder: false,
-                    },
+                const reviewFolder = await reviewClient.call('resolveReviewFolder', {
+                    owner: pr.owner,
+                    repoName: pr.repoName,
+                    number: pr.number,
+                    createFolder: false,
                 });
                 await restartFolderPanes({
                     folder: reviewFolder.folder,
@@ -223,38 +207,32 @@ export const VirReviewSidebar = defineAppElement<{
             }
         }
 
-        function renderRepoGroups({
-            pullRequests,
-            openRow,
-            canRestartPanes,
-        }: Readonly<{
-            pullRequests: ReadonlyArray<ReviewQueuePr>;
-            openRow: (pr: ReviewQueuePr) => void;
-            canRestartPanes: boolean;
-        }>) {
+        function renderRepoGroups(pullRequests: ReadonlyArray<ReviewQueuePr>) {
             return repeat(
                 groupByRepo(pullRequests),
                 (group) => group.repo,
                 (group) => {
                     return html`
-                        <div class="repo-header">
-                            <span>
-                                ${group.repo}
-                                <span class="count">(${group.pullRequests.length})</span>
-                            </span>
-                            <${VirReviewSidebarSettingsMenu.assign({
-                                menuTitle: 'Repo actions',
-                                repo: group,
-                                mobileModal: inputs.mobileModal,
-                            })}
-                                ${listen(
-                                    VirReviewSidebarSettingsMenu.events.settingsRequested,
-                                    (event) => {
-                                        openInitCmdSettings(event.detail);
+                        <${VirSidebarRepoHeader.assign({
+                            name: group.repo,
+                            count: group.pullRequests.length,
+                            isMenuOpen: state.openMenuRepo === group.repo,
+                            mobileModal: inputs.mobileModal,
+                            menuEntries: [
+                                {
+                                    content: 'Settings',
+                                    onClick() {
+                                        openInitCmdSettings(group);
                                     },
-                                )}
-                            ></${VirReviewSidebarSettingsMenu}>
-                        </div>
+                                },
+                            ],
+                        })}
+                            ${listen(VirSidebarRepoHeader.events.menuOpenChange, (event) => {
+                                updateState({
+                                    openMenuRepo: event.detail ? group.repo : undefined,
+                                });
+                            })}
+                        ></${VirSidebarRepoHeader}>
                         ${repeat(
                             group.pullRequests,
                             (pr) => pullRequestRouteKey(pr),
@@ -265,11 +243,11 @@ export const VirReviewSidebar = defineAppElement<{
                                         queueKind: selectedQueue,
                                         isActive:
                                             pullRequestRouteKey(pr) === inputs.activePullRequest,
-                                        canRestartPanes,
                                         mobileModal: inputs.mobileModal,
                                     })}
+                                        data-sidebar-search-result
                                         ${listen(VirReviewSidebarRow.events.rowClicked, (event) => {
-                                            openRow(event.detail);
+                                            activatePullRequest(event.detail);
                                         })}
                                         ${listen(
                                             VirReviewSidebarRow.events.restartPanesRequested,
@@ -288,20 +266,21 @@ export const VirReviewSidebar = defineAppElement<{
 
         const listContents = shownQueue?.queue?.updatedAt
             ? html`
-                  ${shownQueue.queue.pullRequests.length
-                      ? renderRepoGroups({
-                            pullRequests: shownQueue.queue.pullRequests,
-                            openRow: rowClickHandlers[selectedQueue],
-                            canRestartPanes: true,
-                        })
+                  ${pullRequests.length
+                      ? renderRepoGroups(pullRequests)
                       : html`
-                            <div class="empty">${prQueueTabs[selectedQueue].emptyMessage}</div>
+                            <div class="empty">
+                                ${isSearching
+                                    ? 'No matching pull requests.'
+                                    : prQueueTabs[selectedQueue].emptyMessage}
+                            </div>
                         `}
                   ${reviewedPullRequests.length
                       ? html`
                             <${ViraCollapsibleCard.assign({
                                 rawCollapsible: true,
-                                startExpanded: state.isReviewedExpanded,
+                                /** A match hidden in a collapsed section reads as no match. */
+                                startExpanded: state.isReviewedExpanded || isSearching,
                             })}
                                 class="reviewed"
                                 ${listen(ViraCollapsibleCard.events.expandToggle, (event) => {
@@ -319,12 +298,7 @@ export const VirReviewSidebar = defineAppElement<{
                                     Already reviewed
                                     <span class="count">(${reviewedPullRequests.length})</span>
                                 </div>
-                                ${renderRepoGroups({
-                                    pullRequests: reviewedPullRequests,
-                                    /** The app only opens PRs still waiting on the viewer's review. */
-                                    openRow: openOnGitHub,
-                                    canRestartPanes: false,
-                                })}
+                                ${renderRepoGroups(reviewedPullRequests)}
                             </${ViraCollapsibleCard}>
                         `
                       : nothing}
@@ -341,7 +315,19 @@ export const VirReviewSidebar = defineAppElement<{
                 selectedQueue,
                 fixedQueue: inputs.fixedQueue,
                 mobileModal: inputs.mobileModal,
+                searchQuery: state.searchQuery,
+                hasSearchResult: !!firstSearchResult,
             })}
+                ${listen(VirSidebarSearch.events.searchQueryChange, (event) => {
+                    updateState({
+                        searchQuery: event.detail,
+                    });
+                })}
+                ${listen(VirSidebarSearch.events.searchSubmit, () => {
+                    if (firstSearchResult) {
+                        activatePullRequest(firstSearchResult);
+                    }
+                })}
                 ${listen(VirReviewSidebarHeader.events.refreshRequested, (event) => {
                     event.stopImmediatePropagation();
                     dispatch(

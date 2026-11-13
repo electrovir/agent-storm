@@ -1,4 +1,5 @@
-import {defineAppElement} from '@agent-storm/core/frontend';
+import {FontRole} from '@agent-storm/common';
+import {defineAppElement, fontFamilyVar, fontSizeVar} from '@agent-storm/core/frontend';
 import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
@@ -57,6 +58,14 @@ export const VirDiffCommentComposer = defineAppElement<{
 
             & ${ViraTextArea} {
                 width: 100%;
+                font-family: ${fontFamilyVar({
+                    role: FontRole.Prompt,
+                    fallback: 'inherit',
+                })};
+                font-size: ${fontSizeVar({
+                    role: FontRole.Prompt,
+                    fallback: 'inherit',
+                })};
             }
         }
 

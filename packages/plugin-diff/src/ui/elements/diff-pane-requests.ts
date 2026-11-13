@@ -1,26 +1,14 @@
-import {
-    addReviewCommentEndpoint,
-    deleteReviewCommentEndpoint,
-    gitDiffFileEndpoint,
-    gitDiffStatusEndpoint,
-    gitDiscardFileEndpoint,
-    gitDiscardHunkEndpoint,
-    gitDiscardUnstagedEndpoint,
-    gitStageAllEndpoint,
-    gitStageFileEndpoint,
-    gitStageHunkEndpoint,
-    readReviewCommentsEndpoint,
-    settingsEndpoint,
-    updateReviewCommentEndpoint,
-    type DiffLayout,
-    type GitDiffSide,
-} from '@agent-storm/common';
-import {fetchApi} from '@agent-storm/core/frontend';
+import {settingsEndpoint, type DiffLayout, type GitDiffSide} from '@agent-storm/common';
+import {createPluginApiClient, fetchApi} from '@agent-storm/core/frontend';
+import {reviewClient} from '@agent-storm/plugin-review';
 import {awaitedForEach, extractErrorMessage} from '@augment-vir/common';
 import {type Text} from '@codemirror/state';
 import {HttpMethod} from '@rest-vir/api';
+import {diffApi} from '../../diff-api.js';
 import {type SelectedFile} from '../../util/diff-status.js';
 import {toLineRange, type SelectedChunk} from './diff-selection.js';
+
+const diffClient = createPluginApiClient(diffApi);
 
 /**
  * An open right-click menu: where the pointer was, in viewport coordinates, what the selection
@@ -40,10 +28,8 @@ export type HunkMenu = Readonly<{
 export async function readStatus(folder: string) {
     try {
         return {
-            status: await fetchApi(gitDiffStatusEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder,
-                },
+            status: await diffClient.call('readStatus', {
+                folder,
             }),
         };
     } catch (error) {
@@ -60,10 +46,8 @@ export async function readStatus(folder: string) {
 export async function readReviewComments(folder: string) {
     try {
         return (
-            await fetchApi(readReviewCommentsEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder,
-                },
+            await reviewClient.call('readReviewComments', {
+                folder,
             })
         ).comments;
     } catch {
@@ -83,14 +67,12 @@ export async function readDiffFile({
 }>) {
     try {
         return {
-            diffContent: await fetchApi(gitDiffFileEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder,
-                    path: selected.file.path,
-                    oldPath: selected.file.oldPath ?? undefined,
-                    side: selected.side,
-                    allowLarge,
-                },
+            diffContent: await diffClient.call('readFile', {
+                folder,
+                path: selected.file.path,
+                oldPath: selected.file.oldPath ?? undefined,
+                side: selected.side,
+                allowLarge,
             }),
         };
     } catch (error) {
@@ -106,6 +88,7 @@ export async function writeDiffSettings(
         diffLayout: DiffLayout;
         hideWhitespace: boolean;
         collapseUnchanged: boolean;
+        softWrap: boolean | undefined;
     }>,
 ) {
     const currentSettings = await fetchApi(settingsEndpoint, HttpMethod.Get);
@@ -115,6 +98,7 @@ export async function writeDiffSettings(
             diffLayout: settings.diffLayout,
             diffHideWhitespace: settings.hideWhitespace,
             diffCollapseUnchanged: settings.collapseUnchanged,
+            diffSoftWrap: settings.softWrap,
         },
     });
 }
@@ -129,30 +113,24 @@ export async function stageFiles({
 }>) {
     /** Sequential because git takes `index.lock` for each write. */
     await awaitedForEach(targets, async (target) => {
-        await fetchApi(gitStageFileEndpoint, HttpMethod.Post, {
-            requestData: {
-                folder,
-                path: target.file.path,
-                side: target.side,
-            },
+        await diffClient.call('stageFile', {
+            folder,
+            path: target.file.path,
+            side: target.side,
         });
     });
 }
 
 export async function stageSide({folder, side}: Readonly<{folder: string; side: GitDiffSide}>) {
-    await fetchApi(gitStageAllEndpoint, HttpMethod.Post, {
-        requestData: {
-            folder,
-            side,
-        },
+    await diffClient.call('stageAll', {
+        folder,
+        side,
     });
 }
 
 export async function discardUnstaged(folder: string) {
-    await fetchApi(gitDiscardUnstagedEndpoint, HttpMethod.Post, {
-        requestData: {
-            folder,
-        },
+    await diffClient.call('discardUnstaged', {
+        folder,
     });
 }
 
@@ -166,11 +144,9 @@ export async function discardFiles({
 }>) {
     /** Sequential because git takes `index.lock` for each write. */
     await awaitedForEach(paths, async (path) => {
-        await fetchApi(gitDiscardFileEndpoint, HttpMethod.Post, {
-            requestData: {
-                folder,
-                path,
-            },
+        await diffClient.call('discardFile', {
+            folder,
+            path,
         });
     });
 }
@@ -274,13 +250,7 @@ export async function writeHunks({
     shouldDiscard: boolean;
 }>) {
     await awaitedForEach(requests, async (request) => {
-        await fetchApi(
-            shouldDiscard ? gitDiscardHunkEndpoint : gitStageHunkEndpoint,
-            HttpMethod.Post,
-            {
-                requestData: request,
-            },
-        );
+        await diffClient.call(shouldDiscard ? 'discardHunk' : 'stageHunk', request);
     });
 }
 
@@ -303,23 +273,19 @@ export async function saveReviewComment({
 }>) {
     if (draft.commentId) {
         return (
-            await fetchApi(updateReviewCommentEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder,
-                    id: draft.commentId,
-                    body: draft.body.trim(),
-                },
+            await reviewClient.call('updateReviewComment', {
+                folder,
+                id: draft.commentId,
+                body: draft.body.trim(),
             })
         ).comments;
     }
     return (
-        await fetchApi(addReviewCommentEndpoint, HttpMethod.Post, {
-            requestData: {
-                folder,
-                path: draft.path,
-                line: draft.line,
-                body: draft.body.trim(),
-            },
+        await reviewClient.call('addReviewComment', {
+            folder,
+            path: draft.path,
+            line: draft.line,
+            body: draft.body.trim(),
         })
     ).comments;
 }
@@ -327,11 +293,9 @@ export async function saveReviewComment({
 /** @returns The folder's whole comment list after the delete. */
 export async function deleteReviewComment({folder, id}: Readonly<{folder: string; id: string}>) {
     return (
-        await fetchApi(deleteReviewCommentEndpoint, HttpMethod.Post, {
-            requestData: {
-                folder,
-                id,
-            },
+        await reviewClient.call('deleteReviewComment', {
+            folder,
+            id,
         })
     ).comments;
 }

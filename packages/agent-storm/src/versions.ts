@@ -1,15 +1,14 @@
 import {createCuid2} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem, readFileIfExists} from '@augment-vir/node';
+import {runCommand, writeFileAtomically} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {createHash} from 'node:crypto';
 import {access, mkdir, rename, rm, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {defineShape, nullableShape, optionalShape, parseJsonWithShape} from 'object-shape-tester';
 import {buildUrl} from 'url-vir';
-import {releaseAssetName} from './release-layout.js';
-import {runCommand} from './run-command.js';
+import {releaseAssetName, releaseCoreVersionFileName} from './release-layout.js';
 import {makeSpawnHelpersExecutable} from './spawn-helper.js';
-import {writeFileAtomically} from './write-file-atomically.js';
 
 /** Release tags double as folder names, so anything else is refused before it touches a path. */
 const versionPattern = /^v\d+\.\d+\.\d+$/;
@@ -45,6 +44,44 @@ export function isNewerVersion({version, than}: Readonly<{version: string; than:
         .map((part, index) => part - (thanParts[index] ?? 0))
         .find((partDifference) => partDifference !== 0);
     return (difference ?? 0) > 0;
+}
+
+const releaseCoreVersionShape = defineShape({
+    version: '',
+});
+
+/**
+ * Records the `@agent-storm/core` version a release in `releaseDir` was built with.
+ *
+ * @category Util
+ */
+export async function writeReleaseCoreVersion({
+    releaseDir,
+    coreVersion,
+}: Readonly<{releaseDir: string; coreVersion: string}>) {
+    await writeFileAtomically({
+        path: resolve(releaseDir, releaseCoreVersionFileName),
+        contents: `${JSON.stringify(
+            {
+                version: coreVersion,
+            } satisfies typeof releaseCoreVersionShape.runtimeType,
+            undefined,
+            4,
+        )}\n`,
+    });
+}
+
+/**
+ * The `@agent-storm/core` version of the release in `releaseDir`. `undefined` when it has no
+ * recorded version, which is how a release that isn't installed reads.
+ *
+ * @category Util
+ */
+export async function readReleaseCoreVersion(releaseDir: string) {
+    const contents = await readFileIfExists(resolve(releaseDir, releaseCoreVersionFileName));
+    return contents == undefined
+        ? undefined
+        : parseJsonWithShape(contents, releaseCoreVersionShape).version;
 }
 
 /**

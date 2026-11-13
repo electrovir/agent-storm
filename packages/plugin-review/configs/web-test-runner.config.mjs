@@ -11,6 +11,18 @@ const baseConfig = defineConfig({
 /** @type {import('@web/test-runner').TestRunnerConfig} */
 const webTestRunnerConfig = {
     ...baseConfig,
+    /** `src/server/` runs in Node, so its tests run there through `virmator test node`. */
+    files: [
+        baseConfig.files,
+        '!src/server/**',
+    ].flat(),
+    coverageConfig: {
+        ...baseConfig.coverageConfig,
+        exclude: [
+            ...baseConfig.coverageConfig.exclude,
+            'src/server/**',
+        ],
+    },
 };
 
 export default webTestRunnerConfig;

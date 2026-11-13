@@ -46,6 +46,7 @@ export const VirDashboard = defineAppElement<{
         `;
     },
     render({inputs: {context}}) {
+        context.plugins.requestContributions(context.activities.map((activity) => activity.id));
         return context.activities.flatMap((activity) => {
             return (
                 activity

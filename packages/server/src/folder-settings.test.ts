@@ -1,6 +1,8 @@
-import {ForgeType} from '@agent-storm/common';
+import {FolderSettingsApproval, ForgeType} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
+import {type PartialWithUndefined} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
+import {createHash} from 'node:crypto';
 import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -9,18 +11,40 @@ import {readFolderSettingsFiles} from './folder-settings.js';
 async function readSettingsFile({
     fileName,
     contents,
+    isApproved,
 }: Readonly<{
     fileName: string;
     contents: string;
-}>) {
+}> &
+    PartialWithUndefined<{
+        isApproved: boolean;
+    }>) {
     const folder = await mkdtemp(join(tmpdir(), 'agent-storm-folder-settings-'));
     try {
         await mkdir(join(folder, '.agent-storm'));
-        await writeFile(join(folder, '.agent-storm', fileName), contents);
-        const files = await readFolderSettingsFiles(folder);
+        await writeFile(
+            join(folder, 'package.json'),
+            JSON.stringify({
+                type: 'module',
+            }),
+        );
+        const path = join(folder, '.agent-storm', fileName);
+        await writeFile(path, contents);
+        const files = await readFolderSettingsFiles({
+            folder,
+            approvals: isApproved
+                ? [
+                      {
+                          path,
+                          contentHash: createHash('sha256').update(contents).digest('hex'),
+                      },
+                  ]
+                : [],
+        });
         return files.map((file) => {
             return {
                 folderSettings: file.folderSettings,
+                approval: file.approval,
                 hasProblem: !!file.problem,
             };
         });
@@ -43,6 +67,21 @@ const dataFields = {
     },
 };
 
+const commandFields = {
+    postWorktreeCmd: 'npm ci',
+    review: {
+        initCmd: 'npm ci',
+    },
+    aiDefinitions: [
+        {
+            id: 'repo-ai',
+            name: 'Repo AI',
+            newSessionCommand: 'repo-ai',
+            resumeSessionCommand: 'repo-ai --continue',
+        },
+    ],
+};
+
 describe(readFolderSettingsFiles.name, () => {
     it('reads data fields without a problem', async () => {
         assert.deepEquals(
@@ -53,6 +92,7 @@ describe(readFolderSettingsFiles.name, () => {
             [
                 {
                     folderSettings: dataFields,
+                    approval: FolderSettingsApproval.NotNeeded,
                     hasProblem: false,
                 },
             ],
@@ -64,24 +104,36 @@ describe(readFolderSettingsFiles.name, () => {
                 fileName: 'settings.json',
                 contents: JSON.stringify({
                     ...dataFields,
-                    postWorktreeCmd: 'npm ci',
-                    review: {
-                        initCmd: 'npm ci',
-                    },
-                    aiDefinitions: [
-                        {
-                            id: 'repo-ai',
-                            name: 'Repo AI',
-                            newSessionCommand: 'repo-ai',
-                            resumeSessionCommand: 'repo-ai --continue',
-                        },
-                    ],
+                    ...commandFields,
                 }),
             }),
             [
                 {
                     folderSettings: dataFields,
+                    approval: FolderSettingsApproval.NeedsApproval,
                     hasProblem: true,
+                },
+            ],
+        );
+    });
+    it('applies fields that run commands once approved', async () => {
+        assert.deepEquals(
+            await readSettingsFile({
+                fileName: 'settings.json',
+                contents: JSON.stringify({
+                    ...dataFields,
+                    ...commandFields,
+                }),
+                isApproved: true,
+            }),
+            [
+                {
+                    folderSettings: {
+                        ...dataFields,
+                        ...commandFields,
+                    },
+                    approval: FolderSettingsApproval.Approved,
+                    hasProblem: false,
                 },
             ],
         );
@@ -95,7 +147,24 @@ describe(readFolderSettingsFiles.name, () => {
             [
                 {
                     folderSettings: undefined,
+                    approval: FolderSettingsApproval.NeedsApproval,
                     hasProblem: true,
+                },
+            ],
+        );
+    });
+    it('runs an approved TS settings file', async () => {
+        assert.deepEquals(
+            await readSettingsFile({
+                fileName: 'settings.ts',
+                contents: `export default ${JSON.stringify(dataFields)};`,
+                isApproved: true,
+            }),
+            [
+                {
+                    folderSettings: dataFields,
+                    approval: FolderSettingsApproval.Approved,
+                    hasProblem: false,
                 },
             ],
         );
@@ -111,6 +180,7 @@ describe(readFolderSettingsFiles.name, () => {
             [
                 {
                     folderSettings: undefined,
+                    approval: FolderSettingsApproval.NotNeeded,
                     hasProblem: true,
                 },
             ],

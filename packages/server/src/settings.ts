@@ -1,6 +1,7 @@
 import {
     defaultSettings,
     settingsShape,
+    terminalPluginId,
     type AiDefinition,
     type FolderSettings,
     type Settings,
@@ -12,11 +13,12 @@ import {
     getObjectTypedKeys,
     log,
     mapObjectValues,
+    omitObjectKeys,
     removeDuplicates,
     typedObjectFromEntries,
     type UnknownObject,
 } from '@augment-vir/common';
-import {normalizePath, userDataDir, writeFileAtomically} from 'agent-storm';
+import {normalizePath, userDataDir, writeFileAtomically} from 'agent-storm-util';
 import {findConfigFile, parseConfigContents} from 'config-vir';
 import {mkdir, rename, stat} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -24,6 +26,33 @@ import {assertValidShape} from 'object-shape-tester';
 import {pruneAiAvatars} from './ai-avatar.js';
 import {configBackupDir, settingsJsonPath} from './file-paths.js';
 import {createQueuedFile} from './queued-file.js';
+
+/**
+ * Moves the top-level `terminalClickableLinks` to the terminal plugin's `clickableLinks` setting. A
+ * value the file already has under the plugin wins. Returns `undefined` when the settings have no
+ * `terminalClickableLinks`.
+ */
+export function migrateTerminalClickableLinks(
+    parsed: Readonly<UnknownObject>,
+): UnknownObject | undefined {
+    if (!check.hasKey(parsed, 'terminalClickableLinks')) {
+        return undefined;
+    }
+    const pluginSettings = check.isObject(parsed.pluginSettings) ? parsed.pluginSettings : {};
+    const terminalSettings = check.isObject(pluginSettings[terminalPluginId])
+        ? pluginSettings[terminalPluginId]
+        : {};
+    return {
+        ...omitObjectKeys(parsed, ['terminalClickableLinks']),
+        pluginSettings: {
+            ...pluginSettings,
+            [terminalPluginId]: {
+                clickableLinks: parsed.terminalClickableLinks,
+                ...terminalSettings,
+            },
+        },
+    };
+}
 
 /**
  * The user's settings file, whichever format it's in. Undefined when there's none, and throws when
@@ -287,7 +316,7 @@ export function parseSettings({
 }>): Settings {
     const merged = withSettingsDefaults({
         defaults: defaultSettings,
-        saved: rawSettings,
+        saved: migrateTerminalClickableLinks(rawSettings) || rawSettings,
     });
     assertValidShape(merged, settingsShape, {}, `Settings from ${source} are invalid.`);
     return normalizeSettings(withFallbackAi(merged));

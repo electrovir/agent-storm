@@ -5,6 +5,18 @@ export enum PaneKind {
     Shell = 'shell',
 }
 
+/** The parts of the UI that each get their own font family and size in Settings. */
+export enum FontRole {
+    /** The app's labels and controls. */
+    Interface = 'interface',
+    /** Text the user types to talk to an AI or comment on code. */
+    Prompt = 'prompt',
+    /** The Diff and Review panes. */
+    Code = 'code',
+    /** The AI and Shell tabs. */
+    Terminal = 'terminal',
+}
+
 /**
  * Whether a pane kind runs an AI. Only those tabs hold a conversation, which can be resumed or
  * started over.
@@ -18,6 +30,29 @@ export const paneKindRunsAi: Readonly<Record<PaneKind, boolean>> = {
 export const diffPaneId = 'diff';
 /** The kind, and default tab id, of the Review pane. Stored in every folder's tab layout. */
 export const reviewPaneId = 'review';
+/** The kind of the Viewer pane. Stored in every Viewer tab of a folder's tab layout. */
+export const viewerPaneId = 'viewer';
+
+/** How the Viewer pane shows a file. */
+export enum ViewerFileType {
+    Html = 'html',
+    Markdown = 'markdown',
+    Image = 'image',
+}
+
+/** What reading a file for the Viewer pane found. */
+export enum ViewerFileStatus {
+    Loaded = 'loaded',
+    /** The file's modified time is the one the caller already has, so no content is sent. */
+    Unchanged = 'unchanged',
+    NotFound = 'notFound',
+    NotAFile = 'notAFile',
+    UnsupportedType = 'unsupportedType',
+    TooLarge = 'tooLarge',
+}
+
+/** The terminal plugin's id, which keys its settings in the user's settings file. */
+export const terminalPluginId = 'terminal';
 
 /** Which checkout a Diff tab shows. */
 export enum DiffView {

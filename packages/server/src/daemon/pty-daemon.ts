@@ -171,7 +171,7 @@ const handshakeHandlers: {[Action in DaemonAction]: HandshakeHandler<Action>} = 
         reply(socket, {
             ok: true,
             isValid: verifyLaunchSignature({
-                conversationId: handshake.conversationId,
+                launchId: handshake.launchId,
                 payload: handshake.payload,
                 signature: handshake.signature,
             }),

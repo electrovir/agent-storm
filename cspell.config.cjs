@@ -4,6 +4,10 @@ module.exports = {
     ...baseConfig,
     ignorePaths: [
         ...baseConfig.ignorePaths,
+        /** Prisma clients that `prisma generate` writes. */
+        'packages/*/src/server/generated/',
+        /** Migrations that `prisma migrate` writes. */
+        'packages/*/prisma/migrations/',
         /**
          * Both are copied verbatim out of the Vir Icons VS Code extension by
          * `generate-file-icons.script.ts`: hundreds of third-party tool names as map keys, and svg

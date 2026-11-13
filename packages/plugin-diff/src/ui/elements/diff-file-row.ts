@@ -1,9 +1,10 @@
 // cspell:words meslo menlo
 
-import {GitDiffSide, GitFileChange, type GitDiffFile} from '@agent-storm/common';
+import {GitDiffSide, GitFileChange} from '@agent-storm/common';
 import {extractExtension} from '@augment-vir/common';
 import {css, html, type CSSResult} from 'element-vir';
 import {LucideFileStackIcon, createSizedIcon, viraThemeByKeys} from 'vira';
+import {type GitDiffFile} from '../../diff-api.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
 
 /** Single-letter badge on each file row, matching git's own status letters. */

@@ -1,4 +1,10 @@
-import {type FolderInfo, PrStatus, reviewPaneId, WatchModeStatus} from '@agent-storm/common';
+import {
+    type FolderInfo,
+    PaneStatus,
+    PrStatus,
+    reviewPaneId,
+    WatchModeStatus,
+} from '@agent-storm/common';
 import {
     defineAppElement,
     localChangesIcon,
@@ -239,7 +245,19 @@ export const VirSidebarRow = defineAppElement<{
                         );
                     })}
                 >
-                    <span class="chips">${renderPaneChip('AI', inputs.folder.panes.ai)}</span>
+                    <span class="chips">
+                        ${inputs.folder.panes.ai === PaneStatus.None
+                            ? renderPaneChip(
+                                  'Shell',
+                                  [
+                                      PaneStatus.None,
+                                      PaneStatus.Exited,
+                                  ].includes(inputs.folder.panes.shell)
+                                      ? PaneStatus.None
+                                      : PaneStatus.Idle,
+                              )
+                            : renderPaneChip('AI', inputs.folder.panes.ai)}
+                    </span>
                     <span
                         class="name"
                         ?data-pr-open=${hasPr && !isPrFinished}

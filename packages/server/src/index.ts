@@ -3,51 +3,37 @@
 import {
     activityBarSaveEndpoint,
     addRepoEndpoint,
-    addReviewCommentEndpoint,
     agentStormService,
     aiAvatarEndpoint,
     aiAvatarUploadEndpoint,
     checkPathEndpoint,
     claudeHooksInstallEndpoint,
+    clientDebugLogEndpoint,
     clientErrorEndpoint,
-    closeEditorWindowEndpoint,
+    clientFreezeEndpoint,
+    clientPerfEndpoint,
     createPathEndpoint,
     createWorktreeEndpoint,
-    deleteReviewCommentEndpoint,
     deleteWorktreeEndpoint,
     foldersEndpoint,
+    folderSettingsApprovalEndpoint,
     folderSettingsEndpoint,
-    gitDiffFileEndpoint,
-    gitDiffStatusEndpoint,
-    gitDiscardFileEndpoint,
-    gitDiscardHunkEndpoint,
-    gitDiscardUnstagedEndpoint,
-    gitHubAssigneeQueueEndpoint,
-    gitHubCommentEndpoint,
-    gitHubPrEndpoint,
-    gitHubReactionEndpoint,
-    gitHubResolveThreadEndpoint,
-    gitHubReviewFolderEndpoint,
-    gitHubReviewPrEndpoint,
-    gitHubReviewQueueEndpoint,
-    gitStageAllEndpoint,
-    gitStageFileEndpoint,
-    gitStageHunkEndpoint,
     hideRepoEndpoint,
     installUpdateEndpoint,
     killPanesEndpoint,
-    manualReviewCopyEndpoint,
-    manualReviewStateEndpoint,
     onboardingEndpoint,
     paneInputEndpoint,
     PaneKind,
     paneKindRunsAi,
+    pluginCallEndpoint,
+    pluginCodeEndpoint,
+    pluginDecisionEndpoint,
+    pluginEventsWebSocket,
+    pluginsEndpoint,
     ptyWebSocket,
-    readReviewCommentsEndpoint,
     removeRepoEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
-    reviewInitEndpoint,
     sessionCloseEndpoint,
     sessionCreateEndpoint,
     sessionListEndpoint,
@@ -55,18 +41,17 @@ import {
     sessionSetAiEndpoint,
     settingsEndpoint,
     startAtLoginEndpoint,
+    switchUpdateEndpoint,
     tabLayoutSaveEndpoint,
     touchRepoEndpoint,
     uiLayoutEndpoint,
     updateCheckEndpoint,
-    updateReviewCommentEndpoint,
-    uploadEndpoint,
-    watchModeEndpoint,
     type SavedRepo,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
     convertByteSize,
+    extractErrorMessage,
     HttpMethod,
     HttpStatus,
     log,
@@ -75,12 +60,13 @@ import {
     wait,
 } from '@augment-vir/common';
 import fastifyStatic from '@fastify/static';
-import {type OriginRequirement} from '@rest-vir/api';
+import {type OriginRequirement, type WebSocketHostMessageType} from '@rest-vir/api';
 import {attachApi, createApiImplementor, implementApi, silentServerLogger} from '@rest-vir/host';
-import {defaultPorts, instanceName, normalizePath, PortEnvVar, readEnvPort} from 'agent-storm';
+import {defaultPorts, PortEnvVar, readEnvPort} from 'agent-storm';
+import {manualReviewSkillDir, normalizePath} from 'agent-storm-util';
 import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
-import fastify from 'fastify';
-import {appendFileSync, writeFileSync} from 'node:fs';
+import fastify, {type FastifyInstance} from 'fastify';
+import {appendFileSync, renameSync, statSync} from 'node:fs';
 import {appendFile, mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
 import {getFolderActivation, startLaunchRequestWatch, type LaunchRequest} from './agent-launch.js';
@@ -98,49 +84,28 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
+import {appendDebugLog, pruneDebugLogs} from './debug-log.js';
 import {
     clientErrorLogPath,
+    failedPaneInputsPath,
     folderActivityPath,
     legacyFolderActivityPath,
     legacyReviewsDir,
     legacySessionStorePath,
-    manualReviewSkillDir,
     releaseFrontendDir,
     serverLogPath,
     sessionStorePath,
 } from './file-paths.js';
 import {forgetFolderActivity, loadFolderActivity, recordFolderActivity} from './folder-activity.js';
 import {getCachedFolders, refreshFolderInfoNow, startFolderInfoRefreshLoop} from './folder-info.js';
-import {readFolderSettingsFiles} from './folder-settings.js';
 import {
-    discardFileChanges,
-    discardHunkChanges,
-    discardUnstagedChanges,
-    getDiffFileContents,
-    getDiffStatus,
-    moveHunkAcrossIndex,
-    setFileStaged,
-    setSideStaged,
-} from './git-diff.js';
-import {
-    addWorktree,
-    findManualReviewCopy,
-    removeWorktree,
-    sweepDeletingReviewFolders,
-} from './git.js';
-import {fetchFolderPr, postComment, setReaction, setThreadResolved} from './github-pr.js';
-import {
-    closeReviewWindow,
-    readAssigneeQueue,
-    readReviewPr,
-    readReviewQueue,
-    refreshAssigneeQueue,
-    refreshReviewQueue,
-    resolveReviewFolder,
-    startPostedVerdictWatch,
-} from './github-review-queue.js';
+    loadFolderSettingsApprovals,
+    readFolderSettingsFiles,
+    saveFolderSettingsApproval,
+} from './folder-settings.js';
+import {addWorktree, removeWorktree} from './git.js';
 import {installClaudeHooks, updateInstalledClaudeHooks} from './install-claude-hooks.js';
-import {readManualReviewState} from './manual-review-state.js';
+import {startLivePaneTracking} from './live-panes.js';
 import {migrateReviewFolders} from './migrate-review-folders.js';
 import {finishOnboarding, readOnboardingStatus, setStartAtLogin} from './onboarding.js';
 import {
@@ -148,21 +113,23 @@ import {
     resolveAiForSession,
     resolvePaneLaunch,
     runPostWorktreeCmd,
-    runReviewInitCmd,
     sendPaneText,
     spawnPane,
 } from './pane-launch.js';
+import {appendPerfLog, logServerStartup, startServerPerfLog} from './perf-log.js';
+import {readPluginWatchMode} from './plugin-folder-hooks.js';
+import {callPluginServer, startPluginServers} from './plugin-servers.js';
+import {
+    readActivePluginCode,
+    readPlugins,
+    readPluginsRevision,
+    savePluginDecision,
+} from './plugins.js';
 import {getLivePaneSessionIds, invalidatePaneStatuses} from './pty.js';
 import {launcherOriginEnvVar, releaseBuild} from './release-build.js';
-import {startReviewAutoStart} from './review-auto-start.js';
-import {
-    addReviewComment,
-    deleteReviewComment,
-    readReviewComments,
-    updateReviewComment,
-} from './review-comments.js';
 import {
     createFolderSession,
+    findOrCreateFirstSession,
     forgetFolderSessions,
     pruneSessionAiIds,
     reconcileFolderSessions,
@@ -190,20 +157,33 @@ import {
     saveActivityBar,
     saveTabLayout,
 } from './ui-layout.js';
-import {getUpdateStatus, startUpdateInstall} from './update-check.js';
-import {saveUpload} from './uploads.js';
-import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
+import {getUpdateStatus, startUpdateInstall, switchToPreparedUpdate} from './update-check.js';
+
+/** Past this size the server log is moved to a `.old` copy, so a long session can't fill the disk. */
+const maxServerLogBytes = 20_000_000;
 
 /**
  * Mirror stdout/stderr to `serverLogPath` so the assistant can tail the backend output instead of
- * asking the user to copy/paste console lines. Truncate on startup so each `npm start` begins with
- * a clean file. The original streams keep going to the terminal — we just `appendFileSync` a copy
- * of each chunk. Wrapped in try/catch so a transient FS error never crashes the backend.
+ * asking the user to copy/paste console lines. Each start appends after a marker line rather than
+ * truncating: `npm start` restarts the server on every file change, which would erase the run being
+ * debugged. The original streams keep going to the terminal — we just `appendFileSync` a
+ * timestamped copy of each chunk. Wrapped in try/catch so a transient FS error never crashes the
+ * backend.
  */
 try {
-    writeFileSync(serverLogPath, '');
+    if (
+        (statSync(serverLogPath, {
+            throwIfNoEntry: false,
+        })?.size || 0) > maxServerLogBytes
+    ) {
+        renameSync(serverLogPath, `${serverLogPath}.old`);
+    }
+    appendFileSync(
+        serverLogPath,
+        `\n=== server started ${toUtcIsoString(getNowInUtcTimezone())} ===\n`,
+    );
 } catch {
-    /* ignore truncate errors */
+    /* ignore log rotation errors */
 }
 function mirrorWriteTo<Stream extends NodeJS.WriteStream>(
     original: Stream['write'],
@@ -212,7 +192,10 @@ function mirrorWriteTo<Stream extends NodeJS.WriteStream>(
     return ((chunk: unknown, ...rest: unknown[]) => {
         try {
             if (check.isString(chunk) || chunk instanceof Buffer) {
-                appendFileSync(serverLogPath, chunk);
+                appendFileSync(
+                    serverLogPath,
+                    `[${toUtcIsoString(getNowInUtcTimezone())}] ${check.isString(chunk) ? chunk : chunk.toString()}`,
+                );
             }
         } catch {
             /* ignore mirror-write errors */
@@ -272,6 +255,10 @@ await updateInstalledClaudeHooks();
 await migrateLegacyConfigFiles();
 
 await migrateReviewFolders({
+    /**
+     * Stays in the app rather than the review plugin: it renames the keys of the pane sessions and
+     * folder activity files, so it has to finish before those load below.
+     */
     reviewsDir: manualReviewSkillDir,
     legacyReviewsDir,
     folderKeyedFiles: [
@@ -285,7 +272,6 @@ await migrateReviewFolders({
         },
     ],
 });
-void sweepDeletingReviewFolders();
 void pruneFolderStates();
 
 await ensureDaemon();
@@ -296,25 +282,11 @@ await startFolderInfoRefreshLoop();
 
 startConfigBackupLoop();
 
-startPostedVerdictWatch();
-
-await startWatchMode({
-    listFolders: getCachedFolders,
-    spawnPane,
-    sendPaneText,
-});
-/**
- * A named instance is a debug copy using the user's own GitHub login, so auto-started reviews would
- * act on the user's real PRs.
- */
-if (!instanceName) {
-    startReviewAutoStart({
-        launchFolderSession,
-        runReviewInitCmd,
-    });
-}
-
 await initAuth();
+
+await startPluginServers((message) => {
+    pluginEventSockets.forEach((socket) => socket.send(message));
+});
 
 const implementor = createApiImplementor<undefined>()(agentStormService);
 
@@ -329,9 +301,13 @@ const settingsImplementation = implementor.implementEndpoint(settingsEndpoint, {
     async [HttpMethod.Put]({requestData}) {
         await saveSettings(requestData);
         const settings = await loadSettings();
+        const approvals = await loadFolderSettingsApprovals();
         await pruneSessionAiIds({
             async findValidAiIds(folder) {
-                const files = await readFolderSettingsFiles(normalizePath(folder));
+                const files = await readFolderSettingsFiles({
+                    folder: normalizePath(folder),
+                    approvals,
+                });
                 /** A file that's unreadable or held back may define AIs that tabs still use. */
                 if (files.some((file) => file.problem)) {
                     return undefined;
@@ -354,22 +330,109 @@ const settingsImplementation = implementor.implementEndpoint(settingsEndpoint, {
 
 const folderSettingsImplementation = implementor.implementEndpoint(folderSettingsEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        const files = await readFolderSettingsFiles(normalizePath(requestData.folder));
+        const files = await readFolderSettingsFiles({
+            folder: normalizePath(requestData.folder),
+            approvals: await loadFolderSettingsApprovals(),
+        });
         return {
             [HttpStatus.Ok]: {
                 responseData: {
                     files: files.map((file) => {
                         return {
                             path: file.path,
-                            contents: file.folderSettings
-                                ? JSON.stringify(file.folderSettings, undefined, 4)
-                                : '',
+                            contents: file.text,
+                            contentHash: file.contentHash,
+                            approval: file.approval,
                             problem: file.problem,
                         };
                     }),
                 },
             },
         };
+    },
+});
+
+const folderSettingsApprovalImplementation = implementor.implementEndpoint(
+    folderSettingsApprovalEndpoint,
+    {
+        async [HttpMethod.Put]({requestData}) {
+            await saveFolderSettingsApproval(requestData);
+            /** Approved commands and AIs have to reach `/folders` before the frontend's next poll. */
+            await refreshFolderInfoNow();
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        ok: true,
+                    },
+                },
+            };
+        },
+    },
+);
+
+const pluginsImplementation = implementor.implementEndpoint(pluginsEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readPlugins(),
+            },
+        };
+    },
+});
+
+const pluginDecisionImplementation = implementor.implementEndpoint(pluginDecisionEndpoint, {
+    async [HttpMethod.Put]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await savePluginDecision(requestData),
+            },
+        };
+    },
+});
+
+const pluginCodeImplementation = implementor.implementEndpoint(pluginCodeEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: await readActivePluginCode(requestData.pluginId),
+            },
+        };
+    },
+});
+
+const pluginCallImplementation = implementor.implementEndpoint(pluginCallEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        try {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        response: await callPluginServer(requestData),
+                    },
+                },
+            };
+        } catch (error) {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: {
+                        errorMessage: extractErrorMessage(error),
+                    },
+                },
+            };
+        }
+    },
+});
+
+/** Every open plugin events socket, which each plugin event goes to. */
+const pluginEventSockets = new Set<{
+    send(message: WebSocketHostMessageType<typeof pluginEventsWebSocket>): void;
+}>();
+
+const pluginEventsImplementation = implementor.implementWebSocket(pluginEventsWebSocket, {
+    open({webSocket}) {
+        pluginEventSockets.add(webSocket);
+    },
+    close({webSocket}) {
+        pluginEventSockets.delete(webSocket);
     },
 });
 
@@ -475,13 +538,17 @@ const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
                     folders: (await getCachedFolders()).map((folder) => {
                         return {
                             ...folder,
-                            watchMode: getWatchModeInfo(folder.path),
+                            watchMode: readPluginWatchMode({
+                                folder: folder.path,
+                                fallback: folder.watchMode,
+                            }),
                         };
                     }),
                     folderActivation: getFolderActivation(),
                     settingsRevision: await readSettingsRevision(),
                     repos: (await loadAppState()).repos,
                     uiLayoutRevision: readUiLayoutRevision(),
+                    pluginsRevision: await readPluginsRevision(),
                 },
             },
         };
@@ -501,6 +568,19 @@ const updateCheckImplementation = implementor.implementEndpoint(updateCheckEndpo
 const installUpdateImplementation = implementor.implementEndpoint(installUpdateEndpoint, {
     async [HttpMethod.Post]() {
         await startUpdateInstall();
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const switchUpdateImplementation = implementor.implementEndpoint(switchUpdateEndpoint, {
+    async [HttpMethod.Post]() {
+        await switchToPreparedUpdate();
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -801,7 +881,29 @@ const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpo
 
 const paneInputImplementation = implementor.implementEndpoint(paneInputEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        await sendPaneText(requestData);
+        try {
+            await sendPaneText({
+                ...requestData,
+                sessionId:
+                    requestData.sessionId ||
+                    (await findOrCreateFirstSession({
+                        folder: requestData.folder,
+                        kind: requestData.kind,
+                    })),
+            });
+        } catch (error) {
+            await appendFile(
+                failedPaneInputsPath,
+                `${JSON.stringify({
+                    at: toUtcIsoString(getNowInUtcTimezone()),
+                    error: extractErrorMessage(error),
+                    ...requestData,
+                })}\n`,
+            ).catch(() => {
+                /* ignore append errors */
+            });
+            throw error;
+        }
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -812,7 +914,11 @@ const paneInputImplementation = implementor.implementEndpoint(paneInputEndpoint,
     },
 });
 
-/** Switches every open frontend to the requested folder, then launches its session. */
+/**
+ * Activates the requested folder the way selecting it in the sidebar does, except that no open
+ * frontend switches to it: its repo counts as recently used, its shell and AI tabs start, and a
+ * non-empty `prompt` is typed into the AI tab.
+ */
 async function launchRequestedSession({folder: requestedFolder, prompt}: Readonly<LaunchRequest>) {
     /** The requester usually just created this folder, so the cached listing may predate it. */
     await refreshFolderInfoNow();
@@ -823,28 +929,44 @@ async function launchRequestedSession({folder: requestedFolder, prompt}: Readonl
     if (!isKnownFolder) {
         return `"${folder}" is not a folder agent-storm shows. Create it inside a repo agent-storm already lists, then retry.`;
     }
-    /** Starting a fresh AI can take longer than the requester should wait for an answer. */
-    launchFolderSession({
+    await updateOwningRepo({
         folder,
-        prompt,
+        update(repo) {
+            return {
+                ...repo,
+                lastInteractedAtMs: Date.now(),
+            };
+        },
+    });
+    spawnPane({
+        folder,
+        kind: PaneKind.Shell,
+        sessionId: await findOrCreateFirstSession({
+            folder,
+            kind: PaneKind.Shell,
+        }),
     }).catch((error: unknown) => {
+        log.error(`Failed to start the shell tab in "${folder}": ${String(error)}`);
+    });
+    /** Starting a fresh AI can take longer than the requester should wait for an answer. */
+    (prompt
+        ? launchFolderSession({
+              folder,
+              prompt,
+          })
+        : spawnPane({
+              folder,
+              kind: PaneKind.Ai,
+              sessionId: await findOrCreateFirstSession({
+                  folder,
+                  kind: PaneKind.Ai,
+              }),
+          })
+    ).catch((error: unknown) => {
         log.error(`Failed to launch an AI session in "${folder}": ${String(error)}`);
     });
     return undefined;
 }
-
-const watchModeImplementation = implementor.implementEndpoint(watchModeEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await setWatchMode(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
 
 const killPanesImplementation = implementor.implementEndpoint(killPanesEndpoint, {
     async [HttpMethod.Post]({requestData}) {
@@ -878,6 +1000,53 @@ const clientErrorImplementation = implementor.implementEndpoint(clientErrorEndpo
             })}\n`,
         ).catch(() => {
             /* ignore append errors */
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const clientFreezeImplementation = implementor.implementEndpoint(clientFreezeEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await appendPerfLog({
+            side: 'client',
+            event: 'freeze',
+            ...requestData,
+        });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const clientDebugLogImplementation = implementor.implementEndpoint(clientDebugLogEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await appendDebugLog(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const clientPerfImplementation = implementor.implementEndpoint(clientPerfEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await appendPerfLog({
+            side: 'client',
+            event: 'window',
+            ...requestData,
         });
         return {
             [HttpStatus.Ok]: {
@@ -956,75 +1125,6 @@ const touchRepoImplementation = implementor.implementEndpoint(touchRepoEndpoint,
     },
 });
 
-const closeEditorWindowImplementation = implementor.implementEndpoint(closeEditorWindowEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await closeReviewWindow(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const readReviewCommentsImplementation = implementor.implementEndpoint(readReviewCommentsEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    comments: await readReviewComments({
-                        folder: requestData.folder,
-                    }),
-                },
-            },
-        };
-    },
-});
-
-const addReviewCommentImplementation = implementor.implementEndpoint(addReviewCommentEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    comments: await addReviewComment(requestData),
-                },
-            },
-        };
-    },
-});
-
-const updateReviewCommentImplementation = implementor.implementEndpoint(
-    updateReviewCommentEndpoint,
-    {
-        async [HttpMethod.Post]({requestData}) {
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: {
-                        comments: await updateReviewComment(requestData),
-                    },
-                },
-            };
-        },
-    },
-);
-
-const deleteReviewCommentImplementation = implementor.implementEndpoint(
-    deleteReviewCommentEndpoint,
-    {
-        async [HttpMethod.Post]({requestData}) {
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: {
-                        comments: await deleteReviewComment(requestData),
-                    },
-                },
-            };
-        },
-    },
-);
-
 const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         /** The sidebar's recency filter treats a repo with no timestamp as hidden. */
@@ -1081,286 +1181,6 @@ const createPathImplementation = implementor.implementEndpoint(createPathEndpoin
         };
     },
 });
-
-const uploadImplementation = implementor.implementEndpoint(uploadEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        const path = await saveUpload(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    path,
-                },
-            },
-        };
-    },
-});
-
-const gitDiffStatusImplementation = implementor.implementEndpoint(gitDiffStatusEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await getDiffStatus(normalizePath(requestData.folder)),
-            },
-        };
-    },
-});
-
-const gitDiffFileImplementation = implementor.implementEndpoint(gitDiffFileEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await getDiffFileContents({
-                    ...requestData,
-                    folder: normalizePath(requestData.folder),
-                }),
-            },
-        };
-    },
-});
-
-const gitStageFileImplementation = implementor.implementEndpoint(gitStageFileEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await setFileStaged({
-            ...requestData,
-            folder: normalizePath(requestData.folder),
-        });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitStageAllImplementation = implementor.implementEndpoint(gitStageAllEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await setSideStaged({
-            ...requestData,
-            folder: normalizePath(requestData.folder),
-        });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitStageHunkImplementation = implementor.implementEndpoint(gitStageHunkEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await moveHunkAcrossIndex({
-            ...requestData,
-            folder: normalizePath(requestData.folder),
-        });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitDiscardHunkImplementation = implementor.implementEndpoint(gitDiscardHunkEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await discardHunkChanges({
-            ...requestData,
-            folder: normalizePath(requestData.folder),
-        });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitDiscardFileImplementation = implementor.implementEndpoint(gitDiscardFileEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await discardFileChanges({
-            ...requestData,
-            folder: normalizePath(requestData.folder),
-        });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitDiscardUnstagedImplementation = implementor.implementEndpoint(gitDiscardUnstagedEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await discardUnstagedChanges(normalizePath(requestData.folder));
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitHubPrImplementation = implementor.implementEndpoint(gitHubPrEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    pr: await fetchFolderPr({
-                        folder: normalizePath(requestData.folder),
-                        forceRefresh: requestData.forceRefresh,
-                    }),
-                },
-            },
-        };
-    },
-});
-
-const gitHubReviewQueueImplementation = implementor.implementEndpoint(gitHubReviewQueueEndpoint, {
-    async [HttpMethod.Get]() {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await readReviewQueue(),
-            },
-        };
-    },
-    async [HttpMethod.Post]() {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await refreshReviewQueue(),
-            },
-        };
-    },
-});
-
-const gitHubAssigneeQueueImplementation = implementor.implementEndpoint(
-    gitHubAssigneeQueueEndpoint,
-    {
-        async [HttpMethod.Get]() {
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: await readAssigneeQueue(),
-                },
-            };
-        },
-        async [HttpMethod.Post]() {
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: await refreshAssigneeQueue(),
-                },
-            };
-        },
-    },
-);
-
-const gitHubReviewFolderImplementation = implementor.implementEndpoint(gitHubReviewFolderEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await resolveReviewFolder(requestData),
-            },
-        };
-    },
-});
-
-const reviewInitImplementation = implementor.implementEndpoint(reviewInitEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await runReviewInitCmd(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitHubReviewPrImplementation = implementor.implementEndpoint(gitHubReviewPrEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await readReviewPr(requestData),
-            },
-        };
-    },
-});
-
-const manualReviewCopyImplementation = implementor.implementEndpoint(manualReviewCopyEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    folder: await findManualReviewCopy(normalizePath(requestData.folder)),
-                },
-            },
-        };
-    },
-});
-
-const manualReviewStateImplementation = implementor.implementEndpoint(manualReviewStateEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    review: await readManualReviewState(requestData),
-                },
-            },
-        };
-    },
-});
-
-const gitHubCommentImplementation = implementor.implementEndpoint(gitHubCommentEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await postComment(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitHubReactionImplementation = implementor.implementEndpoint(gitHubReactionEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await setReaction(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const gitHubResolveThreadImplementation = implementor.implementEndpoint(
-    gitHubResolveThreadEndpoint,
-    {
-        async [HttpMethod.Post]({requestData}) {
-            await setThreadResolved(requestData);
-            return {
-                [HttpStatus.Ok]: {
-                    responseData: {
-                        ok: true,
-                    },
-                },
-            };
-        },
-    },
-);
 
 const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
     async open({webSocket, searchParams}) {
@@ -1483,6 +1303,11 @@ const implementation = implementApi<undefined>()(agentStormService, {
     endpoints: [
         settingsImplementation,
         folderSettingsImplementation,
+        folderSettingsApprovalImplementation,
+        pluginsImplementation,
+        pluginDecisionImplementation,
+        pluginCodeImplementation,
+        pluginCallImplementation,
         addRepoImplementation,
         removeRepoImplementation,
         uiLayoutImplementation,
@@ -1491,6 +1316,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         foldersImplementation,
         updateCheckImplementation,
         installUpdateImplementation,
+        switchUpdateImplementation,
         onboardingImplementation,
         claudeHooksInstallImplementation,
         startAtLoginImplementation,
@@ -1499,7 +1325,6 @@ const implementation = implementApi<undefined>()(agentStormService, {
         restartPaneImplementation,
         killPanesImplementation,
         paneInputImplementation,
-        watchModeImplementation,
         sessionListImplementation,
         sessionCreateImplementation,
         sessionRenameImplementation,
@@ -1508,38 +1333,19 @@ const implementation = implementApi<undefined>()(agentStormService, {
         aiAvatarUploadImplementation,
         aiAvatarImplementation,
         clientErrorImplementation,
+        clientDebugLogImplementation,
+        clientPerfImplementation,
+        clientFreezeImplementation,
         restartDaemonImplementation,
         touchRepoImplementation,
         hideRepoImplementation,
-        closeEditorWindowImplementation,
-        readReviewCommentsImplementation,
-        addReviewCommentImplementation,
-        updateReviewCommentImplementation,
-        deleteReviewCommentImplementation,
         checkPathImplementation,
         createPathImplementation,
-        uploadImplementation,
-        gitDiffStatusImplementation,
-        gitDiffFileImplementation,
-        gitStageFileImplementation,
-        gitStageAllImplementation,
-        gitStageHunkImplementation,
-        gitDiscardFileImplementation,
-        gitDiscardUnstagedImplementation,
-        gitDiscardHunkImplementation,
-        gitHubPrImplementation,
-        gitHubCommentImplementation,
-        gitHubReactionImplementation,
-        gitHubResolveThreadImplementation,
-        gitHubReviewQueueImplementation,
-        gitHubAssigneeQueueImplementation,
-        manualReviewStateImplementation,
-        manualReviewCopyImplementation,
-        gitHubReviewFolderImplementation,
-        reviewInitImplementation,
-        gitHubReviewPrImplementation,
     ],
-    webSockets: [ptyImplementation],
+    webSockets: [
+        ptyImplementation,
+        pluginEventsImplementation,
+    ],
 });
 
 /** Set when a release's launcher started this server, to the origin the launcher serves. */
@@ -1553,7 +1359,7 @@ const tlsOptions = launcherOrigin ? undefined : await readTlsOptions();
  * (screenshots dragged into a terminal) get base64-encoded inside a JSON body and that runs past
  * the default in a hurry.
  */
-const server = fastify({
+const serverOptions = {
     bodyLimit: convertByteSize(
         {
             megabytes: 25,
@@ -1562,12 +1368,24 @@ const server = fastify({
             bytes: true,
         },
     ).bytes,
-    ...(tlsOptions
-        ? {
-              https: tlsOptions,
-          }
-        : {}),
-});
+};
+/**
+ * HTTP/2 over TLS because browsers cap HTTP/1.1 at six connections per origin: over a slow link (a
+ * phone on Tailscale) the app's polls queue behind each other for seconds. `allowHTTP1` keeps
+ * WebSockets working, since browsers open those over HTTP/1.1. The cast is because `@rest-vir/host`
+ * only types the HTTP/1 server; it runs fine on fastify's HTTP/2 request and reply.
+ */
+const server = tlsOptions
+    ? (fastify({
+          ...serverOptions,
+          http2: true,
+          https: {
+              ...tlsOptions,
+              allowHTTP1: true,
+          },
+      }) satisfies FastifyInstance<any, any, any> as FastifyInstance)
+    : fastify(serverOptions);
+startServerPerfLog(server);
 await attachApi(server, implementation, {
     externalOrigin: launcherOrigin || `${tlsOptions ? 'https' : 'http'}://localhost:${port}`,
 });
@@ -1595,5 +1413,11 @@ const listenAddress = await server.listen({
 });
 
 await startLaunchRequestWatch(launchRequestedSession);
+/** Resuming every tab can take a while, and the server is already usable without them. */
+startLivePaneTracking().catch((error: unknown) => {
+    log.warning(`Failed to restore tabs: ${extractErrorMessage(error)}`);
+});
+await logServerStartup();
+await pruneDebugLogs();
 
 log.success(`agent-storm server listening on ${listenAddress}`);

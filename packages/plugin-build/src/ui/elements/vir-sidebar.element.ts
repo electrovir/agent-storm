@@ -6,6 +6,8 @@ import {
     SettingsSection,
     type SettingsTarget,
     sidebarTooltipOptions,
+    VirSidebarRepoHeader,
+    VirSidebarSearch,
 } from '@agent-storm/core/frontend';
 import {colorCss} from '@electrovir/color';
 import {getNowInUtcTimezone, toTimestamp} from 'date-vir';
@@ -15,19 +17,19 @@ import {VirSidebarAddRepoModal} from './vir-sidebar-add-repo-modal.element.js';
 import {VirSidebarAddWorktreeModal} from './vir-sidebar-add-worktree-modal.element.js';
 import {VirSidebarChangeAiModal} from './vir-sidebar-change-ai-modal.element.js';
 import {VirSidebarHeader} from './vir-sidebar-header.element.js';
-import {VirSidebarRepoHeader} from './vir-sidebar-repo-header.element.js';
 import {VirSidebarRow} from './vir-sidebar-row.element.js';
 
 import {
     folderActionHandlers,
-    installUpdate,
     openAddRepoModal,
+    prepareUpdate,
     setSidebarGrouping,
     setSidebarSorting,
+    switchUpdate,
     toggleHideInactive,
 } from './sidebar-actions.js';
 import {filterByRecency, filterBySearch, folderComparators} from './sidebar-folder-filter.js';
-import {type SidebarFolderAction} from './sidebar-menus.js';
+import {buildRepoMenuEntries, type SidebarFolderAction} from './sidebar-menus.js';
 import {
     folderDataState,
     pendingWorktreeDeletions,
@@ -39,13 +41,14 @@ function renderUpdateBanner({
     state,
     updateState,
 }: Readonly<{
-    state: Readonly<Pick<SidebarState, 'updateStatus' | 'isUpdating'>>;
+    state: Readonly<Pick<SidebarState, 'updateStatus' | 'preparedUpdateStatus' | 'isUpdating'>>;
     updateState: SidebarUpdate;
 }>) {
-    const latestVersion = state.updateStatus?.latestVersion;
-    if (state.updateStatus?.isUpToDate !== false || !latestVersion) {
+    const updateStatus = state.preparedUpdateStatus || state.updateStatus;
+    const latestVersion = updateStatus?.latestVersion;
+    if (updateStatus?.isUpToDate !== false || !latestVersion) {
         return nothing;
-    } else if (!state.updateStatus.canInstall) {
+    } else if (!updateStatus.canInstall) {
         return html`
             <div
                 class="update-banner"
@@ -54,7 +57,7 @@ function renderUpdateBanner({
                 pull from github to update
             </div>
         `;
-    } else if (state.updateStatus.failedVersion === latestVersion) {
+    } else if (updateStatus.failedVersion === latestVersion) {
         return html`
             <div
                 class="update-banner"
@@ -66,6 +69,43 @@ function renderUpdateBanner({
                 update to ${latestVersion} failed
             </div>
         `;
+    } else if (updateStatus.preparedVersion === latestVersion) {
+        return html`
+            <div class="update-banner prepared">
+                <span>${latestVersion} is ready.</span>
+                ${updateStatus.pluginsToTurnOff.length
+                    ? html`
+                          <span>This version turns off these plugins:</span>
+                          <ul>
+                              ${updateStatus.pluginsToTurnOff.map((plugin) => {
+                                  return html`
+                                      <li>
+                                          ${plugin.name} works with core ${plugin.coreVersionRange},
+                                          and ${latestVersion} has core
+                                          ${updateStatus.preparedCoreVersion}.
+                                      </li>
+                                  `;
+                              })}
+                          </ul>
+                      `
+                    : nothing}
+                <button
+                    class="switch-button"
+                    ?disabled=${state.isUpdating}
+                    ${listen('click', async () => {
+                        if (state.isUpdating) {
+                            return;
+                        }
+                        await switchUpdate({
+                            version: latestVersion,
+                            updateState,
+                        });
+                    })}
+                >
+                    ${state.isUpdating ? `switching to ${latestVersion}…` : 'Switch now'}
+                </button>
+            </div>
+        `;
     } else {
         return html`
             <button
@@ -75,7 +115,7 @@ function renderUpdateBanner({
                     if (state.isUpdating) {
                         return;
                     }
-                    await installUpdate({
+                    await prepareUpdate({
                         version: latestVersion,
                         updateState,
                     });
@@ -149,6 +189,7 @@ export const VirSidebar = defineAppElement<{
             searchQuery: '',
             repos: [],
             updateStatus: undefined,
+            preparedUpdateStatus: undefined,
             isUpdating: false,
         };
     },
@@ -213,6 +254,28 @@ export const VirSidebar = defineAppElement<{
 
             &:disabled {
                 cursor: default;
+            }
+        }
+
+        .update-banner.prepared {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+
+            & ul {
+                margin: 0;
+                padding-left: 16px;
+                text-align: left;
+            }
+
+            & .switch-button {
+                font: inherit;
+                cursor: pointer;
+
+                &:disabled {
+                    cursor: default;
+                }
             }
         }
 
@@ -331,11 +394,6 @@ export const VirSidebar = defineAppElement<{
             const owningRepoPath = folder?.parentRepoPath ?? folder?.path ?? path;
             const now = toTimestamp(getNowInUtcTimezone());
             updateState({
-                /**
-                 * Clear the active search once the user picks a folder — they've found what they
-                 * were looking for, so the sidebar reverts to its normal (hide-inactive) view.
-                 */
-                searchQuery: '',
                 repos: state.repos.map((repo) => {
                     return repo.path === owningRepoPath
                         ? {
@@ -403,6 +461,7 @@ export const VirSidebar = defineAppElement<{
                     isMenuOpen: state.openMenuKey === rowMenuKey,
                     mobileModal: inputs.mobileModal,
                 })}
+                    data-sidebar-search-result
                     ${listen(VirSidebarRow.events.activate, (event) => {
                         event.stopImmediatePropagation();
                         emitFolderActivated(folder.path);
@@ -445,12 +504,12 @@ export const VirSidebar = defineAppElement<{
                 onlyShowRecent: state.onlyShowRecent,
                 themeClient: inputs.themeClient,
             })}
-                ${listen(VirSidebarHeader.events.searchQueryChange, (event) => {
+                ${listen(VirSidebarSearch.events.searchQueryChange, (event) => {
                     updateState({
                         searchQuery: event.detail,
                     });
                 })}
-                ${listen(VirSidebarHeader.events.searchSubmit, () => {
+                ${listen(VirSidebarSearch.events.searchSubmit, () => {
                     if (firstSearchResult) {
                         emitFolderActivated(firstSearchResult.path);
                     }
@@ -506,32 +565,29 @@ export const VirSidebar = defineAppElement<{
                         const repoMenuKey = `repo:${root.path}`;
                         return html`
                             <${VirSidebarRepoHeader.assign({
-                                root,
+                                name: root.name,
                                 /**
                                  * Counted from the unfiltered list so the number is the repo's real
                                  * worktree count, not however many survived the current filters.
                                  */
-                                worktreeCount: state.folders.filter(
+                                count: state.folders.filter(
                                     (folder) => folder.parentRepoPath === root.path,
                                 ).length,
                                 isMenuOpen: state.openMenuKey === repoMenuKey,
                                 mobileModal: inputs.mobileModal,
+                                menuEntries: buildRepoMenuEntries(async (action) => {
+                                    await runFolderAction({
+                                        folder: root,
+                                        childPaths: children.map((child) => child.path),
+                                        action,
+                                    });
+                                }),
                             })}
                                 ${listen(VirSidebarRepoHeader.events.menuOpenChange, (event) => {
                                     updateState({
                                         openMenuKey: event.detail ? repoMenuKey : undefined,
                                     });
                                 })}
-                                ${listen(
-                                    VirSidebarRepoHeader.events.actionSelect,
-                                    async (event) => {
-                                        await runFolderAction({
-                                            folder: root,
-                                            childPaths: children.map((child) => child.path),
-                                            action: event.detail,
-                                        });
-                                    },
-                                )}
                             ></${VirSidebarRepoHeader}>
                             ${repeat(
                                 children,

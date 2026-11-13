@@ -20,24 +20,6 @@
         },
         {
             "path": "../core"
-        },
-        {
-            "path": "../plugin-terminal"
-        },
-        {
-            "path": "../plugin-diff"
-        },
-        {
-            "path": "../plugin-review"
-        },
-        {
-            "path": "../plugin-build"
-        },
-        {
-            "path": "../plugin-dashboard"
-        },
-        {
-            "path": "../plugin-debug"
         }
     ]
 }

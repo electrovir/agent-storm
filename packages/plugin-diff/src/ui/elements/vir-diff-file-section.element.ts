@@ -1,6 +1,6 @@
 // cspell:words unstaging
 
-import {GitDiffSide, type GitDiffStatus} from '@agent-storm/common';
+import {GitDiffSide} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {colorCss} from '@electrovir/color';
@@ -15,6 +15,7 @@ import {
     viraThemeByKeys,
     type ViraIconSvg,
 } from 'vira';
+import {type GitDiffStatus} from '../../diff-api.js';
 import {
     canDiscardSide,
     findSelected,
@@ -29,7 +30,7 @@ import {
     reviewIcon,
     sideLabels,
 } from './diff-file-row.js';
-import {stageActionLabels} from './vir-diff-review-file.element.js';
+import {stageActionLabels} from './vir-diff-file-header.element.js';
 
 const revertIcon = createSizedIcon(LucideUndo2Icon, 14);
 

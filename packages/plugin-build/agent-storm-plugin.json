@@ -1,0 +1,18 @@
+{
+    "activities": [
+        {
+            "id": "build",
+            "isEnabledByDefault": true,
+            "label": "Build"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "dependencies": [
+        "review"
+    ],
+    "description": "Folders and their AI and terminal tabs.",
+    "id": "build",
+    "name": "Build",
+    "panes": []
+}

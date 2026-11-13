@@ -1,0 +1,19 @@
+{
+    "activities": [],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "dependencies": [
+        "review"
+    ],
+    "description": "Diff tabs showing a folder's changes.",
+    "id": "diff",
+    "name": "Diff",
+    "panes": [
+        {
+            "icon": "LucideFileDiffIcon",
+            "id": "diff",
+            "label": "Diff"
+        }
+    ],
+    "serverEntry": "server.js"
+}

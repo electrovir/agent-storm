@@ -9,6 +9,18 @@ const baseConfig = defineConfig({
                 'src/(frontend/)?index\\.ts$',
             ],
         },
+        'no-circular': {
+            /**
+             * Lazily imports core's own frontend index to hand plugins the app's copy of it, which
+             * a static import couldn't do.
+             */
+            from: [
+                '^packages/core/src/frontend/util/plugin-registry\\.ts$',
+            ],
+            to: [
+                '^packages/core/src/frontend/util/plugin-registry\\.ts$',
+            ],
+        },
     },
     omitRules: [
         // enter rule names here to omit
@@ -36,7 +48,7 @@ const depCruiserConfig: IConfiguration = {
         {
             name: 'plugin-only-to-plugins',
             comment:
-                'A plugin builds on core, common, and other plugins, never on the host that registers it.',
+                'A plugin builds on core, common, agent-storm-util, and other plugins, never on the host that registers it.',
             severity: 'error',
             from: {
                 path: '^packages/plugin-[^/]+/',
@@ -44,7 +56,7 @@ const depCruiserConfig: IConfiguration = {
             to: {
                 path: '^packages/',
                 pathNot: [
-                    '^packages/(common|core|plugin-[^/]+)/',
+                    '^packages/(agent-storm-util|common|core|plugin-[^/]+)/',
                 ],
             },
         },

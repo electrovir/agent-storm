@@ -1,0 +1,15 @@
+{
+    "activities": [
+        {
+            "id": "dashboard",
+            "isEnabledByDefault": true,
+            "label": "Dashboard"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "description": "Every other activity's columns on one page.",
+    "id": "dashboard",
+    "name": "Dashboard",
+    "panes": []
+}

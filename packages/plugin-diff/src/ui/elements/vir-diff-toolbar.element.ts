@@ -1,6 +1,6 @@
 // cspell:words pilcrow
 
-import {DiffLayout, type GitDiffSide, type GitDiffStatus} from '@agent-storm/common';
+import {DiffLayout, type GitDiffSide} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {
@@ -12,6 +12,7 @@ import {
     LucideFoldVerticalIcon,
     LucidePilcrowIcon,
     LucideRows2Icon,
+    LucideTextWrapIcon,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
@@ -19,27 +20,29 @@ import {
     createSizedIcon,
     viraThemeByKeys,
 } from 'vira';
-import {allSelectValues, findSelected} from '../../util/diff-status.js';
+import {type GitDiffStatus} from '../../diff-api.js';
+import {allSelectValues} from '../../util/diff-status.js';
 import {VirDiffFileMenu} from './vir-diff-file-menu.element.js';
-import {stageActionLabels} from './vir-diff-review-file.element.js';
 
 /** Toolbar toggles read as settings rather than actions, so they sit a size below the nav arrows. */
 const splitLayoutIcon = createSizedIcon(LucideColumns2Icon, 12);
 const inlineLayoutIcon = createSizedIcon(LucideRows2Icon, 12);
 const whitespaceIcon = createSizedIcon(LucidePilcrowIcon, 12);
 const collapseUnchangedIcon = createSizedIcon(LucideFoldVerticalIcon, 12);
+const softWrapIcon = createSizedIcon(LucideTextWrapIcon, 12);
 
 /** The diff pane's display choices, which the pane keeps in the server settings. */
 export type DiffSettings = Readonly<{
     diffLayout: DiffLayout;
     hideWhitespace: boolean;
     collapseUnchanged: boolean;
+    /** Undefined wraps everywhere but on a phone. */
+    softWrap: boolean | undefined;
 }>;
 
 /**
- * The diff pane's top bar: file and change navigation, the display toggles, and the open file's
- * stage button. On mobile it also holds the file picker ({@link VirDiffFileMenu}), whose events
- * bubble out of this element.
+ * The diff pane's top bar: file and change navigation and the display toggles. On mobile it also
+ * holds the file picker ({@link VirDiffFileMenu}), whose events bubble out of this element.
  */
 export const VirDiffToolbar = defineAppElement<{
     isMobile: boolean;
@@ -50,6 +53,8 @@ export const VirDiffToolbar = defineAppElement<{
     hasChunks: boolean;
     /** Whether the diff currently shows inline, which `diffSettings.diffLayout` alone can't say. */
     unified: boolean;
+    /** Whether long lines currently wrap, which `diffSettings.softWrap` alone can't say. */
+    softWrap: boolean;
     diffSettings: DiffSettings;
     /** Shown after the other buttons. */
     trailing?: HtmlInterpolation | undefined;
@@ -59,8 +64,6 @@ export const VirDiffToolbar = defineAppElement<{
         fileStep: defineElementEvent<number>(),
         chunkStep: defineElementEvent<number>(),
         settingsChange: defineElementEvent<Partial<DiffSettings>>(),
-        /** The stage button was clicked: the pane moves the open file across the index. */
-        selectedFileStage: defineElementEvent<undefined>(),
     },
     hostClasses: {
         'vir-diff-toolbar-mobile'({inputs}) {
@@ -128,7 +131,6 @@ export const VirDiffToolbar = defineAppElement<{
         `;
     },
     render({inputs, dispatch, events}) {
-        const selected = findSelected(inputs.status, inputs.selectedValue);
         const hasFiles = allSelectValues(inputs.status).length > 0;
         /** Touch targets need the room; a mouse pointer does not. */
         const buttonSize = inputs.isMobile ? ViraSize.Large : ViraSize.Small;
@@ -245,6 +247,22 @@ export const VirDiffToolbar = defineAppElement<{
                 })}
             ></${ViraButton}>
             <${ViraButton.assign({
+                icon: softWrapIcon,
+                buttonSize,
+                buttonEmphasis: ViraEmphasis.Subtle,
+                /** Lit up while long lines wrap. */
+                color: inputs.softWrap ? ViraColorVariant.Info : ViraColorVariant.Plain,
+            })}
+                title=${inputs.softWrap
+                    ? 'Long lines wrap. Click to scroll them sideways instead.'
+                    : 'Long lines scroll sideways. Click to wrap them.'}
+                ${listen('click', () => {
+                    changeSettings({
+                        softWrap: !inputs.softWrap,
+                    });
+                })}
+            ></${ViraButton}>
+            <${ViraButton.assign({
                 icon: collapseUnchangedIcon,
                 buttonSize,
                 buttonEmphasis: ViraEmphasis.Subtle,
@@ -264,29 +282,6 @@ export const VirDiffToolbar = defineAppElement<{
             ></${ViraButton}>
         `;
 
-        const stageTemplate = inputs.reviewSide
-            ? nothing
-            : html`
-                  <${ViraButton.assign({
-                      text: selected ? stageActionLabels[selected.side] : 'Stage',
-                      buttonSize,
-                      color: ViraColorVariant.Neutral,
-                      isDisabled: !selected,
-                  })}
-                      title="Move the whole file across the index"
-                      ${listen('click', () => {
-                          if (!selected) {
-                              return;
-                          }
-                          dispatch(
-                              new events.selectedFileStage({
-                                  detail: undefined,
-                              }),
-                          );
-                      })}
-                  ></${ViraButton}>
-              `;
-
         return html`
             ${inputs.isMobile
                 ? html`
@@ -297,9 +292,7 @@ export const VirDiffToolbar = defineAppElement<{
                       })}></${VirDiffFileMenu}>
                   `
                 : nothing}
-            <div class="toolbar-actions">
-                ${navigationTemplate} ${settingsTemplate} ${stageTemplate}
-            </div>
+            <div class="toolbar-actions">${navigationTemplate} ${settingsTemplate}</div>
             ${inputs.trailing
                 ? html`
                       <div class="toolbar-trailing">${inputs.trailing}</div>

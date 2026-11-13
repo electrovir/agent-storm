@@ -54,6 +54,7 @@ import {
     ViraButton,
     ViraCheckbox,
     ViraColorVariant,
+    ViraDropdown,
     ViraEmphasis,
     ViraInput,
     ViraInputType,
@@ -67,13 +68,17 @@ import {
 } from 'vira';
 import {createBatchedWriter} from '../../util/batched-writer.js';
 import {
+    coreSettingsSectionPages,
     findSettingsSection,
+    groupPluginSettingsSections,
     listSettingsSections,
     type SettingsSectionPage,
 } from '../../util/settings-sections.js';
 import {VirSettingsAi} from './vir-settings-ai.element.js';
 import {VirSettingsFolders} from './vir-settings-folders.element.js';
+import {VirSettingsPlugins} from './vir-settings-plugins.element.js';
 import {VirSettingsSchemaRow, type SettingSchema} from './vir-settings-schema-row.element.js';
+import {VirSettingsTypography} from './vir-settings-typography.element.js';
 
 /** Each forge with settings to show. A forge with none gets no card. */
 const forgeCards = getEnumValues(ForgeType)
@@ -158,6 +163,29 @@ function createSchemaDefaults({
 
 /** Sections whose settings don't all come from their schema keys. */
 const customSectionDefaults: Readonly<Record<string, SectionDefaults | undefined>> = {
+    [SettingsSection.Typography]: {
+        isModified(settings) {
+            return (
+                !isDefault({
+                    value: settings.typography,
+                    defaultValue: defaultSettings.typography,
+                }) ||
+                !isDefault({
+                    value: settings.diffSoftWrap,
+                    defaultValue: defaultSettings.diffSoftWrap,
+                })
+            );
+        },
+        restore(settings) {
+            return {
+                ...settings,
+                ...pickObjectKeys(defaultSettings, [
+                    'typography',
+                    'diffSoftWrap',
+                ]),
+            };
+        },
+    },
     [SettingsSection.Forges]: {
         isModified(settings) {
             return forgeCards.some((card) => {
@@ -246,8 +274,10 @@ export const VirSettingsModal = defineAppElement<{
         .body {
             display: flex;
             gap: 24px;
+            box-sizing: border-box;
             width: min(960px, calc(100dvw - 48px));
-            height: min(640px, calc(100dvh - 140px));
+            height: min(664px, calc(100dvh - 116px));
+            padding-left: 20px;
         }
 
         .body.mobile {
@@ -255,6 +285,12 @@ export const VirSettingsModal = defineAppElement<{
             gap: 12px;
             width: 100%;
             height: auto;
+            padding: 10px 12px;
+
+            & .nav,
+            & .content {
+                padding: 0;
+            }
         }
 
         .nav {
@@ -263,6 +299,7 @@ export const VirSettingsModal = defineAppElement<{
             flex-shrink: 0;
             gap: 12px;
             width: 200px;
+            padding-block: 12px;
             overflow-y: auto;
 
             & ${ViraInput} {
@@ -280,7 +317,11 @@ export const VirSettingsModal = defineAppElement<{
             flex-grow: 1;
             gap: 16px;
             min-width: 0;
+            /** The modal's own padding is off so this scrollbar sits on the modal's right edge. */
+            padding: 12px 20px 12px 0;
             overflow-y: auto;
+            /** Without this, the scrollbar can be drawn over the right padding when the page opens. */
+            scrollbar-gutter: stable;
         }
 
         .header {
@@ -330,6 +371,10 @@ export const VirSettingsModal = defineAppElement<{
     render({inputs, state, updateState, host}) {
         const target = inputs.settingsTarget.value;
         const sections = listSettingsSections(inputs.context.settingsSections);
+        const pluginGroups = groupPluginSettingsSections({
+            plugins: inputs.context.plugins.value.runningPlugins,
+            sections: inputs.context.settingsSections,
+        });
         const isOpen = inputs.isSettingsOpen.value;
         if (isOpen !== state.wasOpen) {
             updateState({
@@ -555,7 +600,11 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        const enabledActivityCount = inputs.context.activities.filter((activity) => {
+        /** Stand-ins for a pending plugin's activities, which the user can't turn on or off. */
+        const switchableActivities = inputs.context.activities.filter((activity) => {
+            return !inputs.context.plugins.value.pendingActivityIds.includes(activity.id);
+        });
+        const enabledActivityCount = switchableActivities.filter((activity) => {
             return isActivityEnabled(inputs.context, activity);
         }).length;
 
@@ -644,14 +693,15 @@ export const VirSettingsModal = defineAppElement<{
                         </${VirSettingsRow}>
                     `,
                 },
-                ...inputs.context.activities.map((activity): SettingsEntry => {
+                ...switchableActivities.map((activity): SettingsEntry => {
                     const rowTitle = activity.label;
                     const isEnabled = isActivityEnabled(inputs.context, activity);
                     /** With every activity off, the app would have nothing to show. */
                     const isLastEnabled = isEnabled && enabledActivityCount === 1;
                     return {
                         section: SettingsSection.Activities,
-                        cardTitle: undefined,
+                        cardTitle:
+                            "Which activities get a tab in the vertical tab bar. Hiding a tab doesn't turn its plugin off.",
                         searchText: [
                             rowTitle,
                         ],
@@ -897,14 +947,26 @@ export const VirSettingsModal = defineAppElement<{
             [SettingsSection.General]({entries}) {
                 return renderEntries(entries);
             },
-            [SettingsSection.Terminal]({entries}) {
-                return renderEntries(entries);
+            [SettingsSection.Typography]({settings, entries}) {
+                return html`
+                    <${VirSettingsTypography.assign({
+                        settings,
+                    })}
+                        ${listen(VirSettingsTypography.events.settingsChange, (event) => {
+                            changeSettings(event.detail);
+                        })}
+                    ></${VirSettingsTypography}>
+                    ${renderEntries(entries)}
+                `;
             },
-            [SettingsSection.Sidebar]({entries}) {
+            [SettingsSection.Terminal]({entries}) {
                 return renderEntries(entries);
             },
             [SettingsSection.Activities]({entries}) {
                 return renderEntries(entries);
+            },
+            [SettingsSection.Plugins](params) {
+                return renderPluginsPage(params);
             },
             [SettingsSection.Ai]({settings}) {
                 return html`
@@ -983,7 +1045,7 @@ export const VirSettingsModal = defineAppElement<{
                 return html`
                     <div class="result-section">
                         <div class="result-header">
-                            <h3>${section.label}</h3>
+                            <h3>${labelSection(section)}</h3>
                             <${ViraButton.assign({
                                 text: 'Open',
                                 buttonSize: ViraSize.Small,
@@ -1001,36 +1063,171 @@ export const VirSettingsModal = defineAppElement<{
             });
         }
 
-        function renderContent(section: SettingsSectionPage) {
-            if (!state.settings) {
+        /** A plugin's section is titled by its plugin, plus its own label when the plugin has more. */
+        function labelSection(section: SettingsSectionPage) {
+            const group = pluginGroups.find((entry) => entry.plugin.id === section.pluginId);
+            if (!group) {
+                return section.label;
+            }
+            return group.sections.length > 1
+                ? `${group.plugin.name}: ${section.label}`
+                : group.plugin.name;
+        }
+
+        function renderPluginPicker() {
+            return html`
+                <div class="card">
+                    <${VirSettingsRow.assign({
+                        rowTitle: 'Plugin',
+                        description:
+                            'Pick a plugin to block it or change its settings, or All plugins to see every plugin.',
+                    })}>
+                        <${ViraDropdown.assign({
+                            options: [
+                                {
+                                    value: '',
+                                    label: 'All plugins',
+                                },
+                                ...listedPlugins.map((plugin) => {
+                                    return {
+                                        value: plugin.id,
+                                        label: plugin.name,
+                                    };
+                                }),
+                            ],
+                            selected: [
+                                pickedPluginId || '',
+                            ],
+                        })}
+                            ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
+                                const pluginId = event.detail[0] || '';
+                                const group = pluginGroups.find((entry) => {
+                                    return entry.plugin.id === pluginId;
+                                });
+                                scrollToTop();
+                                inputs.settingsTarget.setValue({
+                                    section: group?.sections[0]?.id || SettingsSection.Plugins,
+                                    plugin: pluginId || undefined,
+                                });
+                            })}
+                        ></${ViraDropdown}>
+                    </${VirSettingsRow}>
+                </div>
+            `;
+        }
+
+        function renderSectionContent({
+            section,
+            settings,
+            entries,
+        }: Readonly<{
+            section: SettingsSectionPage;
+            settings: Readonly<Settings>;
+            entries: ReadonlyArray<SettingsEntry>;
+        }>) {
+            const sectionEntries = entries.filter((entry) => entry.section === section.id);
+            return section.render
+                ? section.render({
+                      context: inputs.context,
+                      settings,
+                      details: section.id === target.section ? target.details : undefined,
+                      changeSettings,
+                  })
+                : check.isEnumValue(section.id, SettingsSection)
+                  ? sectionContent[section.id]({
+                        settings,
+                        entries: sectionEntries,
+                    })
+                  : renderEntries(sectionEntries);
+        }
+
+        /** The picker, then every plugin or the picked one, then the picked one's settings. */
+        function renderPluginsPage({
+            settings,
+            entries,
+        }: Readonly<{
+            settings: Readonly<Settings>;
+            entries: ReadonlyArray<SettingsEntry>;
+        }>) {
+            const pluginSections = shownGroup?.sections || [];
+            return html`
+                ${renderPluginPicker()}
+                <${VirSettingsPlugins.assign({
+                    context: inputs.context,
+                    pluginId: pickedPluginId,
+                })}></${VirSettingsPlugins}>
+                ${pluginSections.map((section) => {
+                    const content = renderSectionContent({
+                        section,
+                        settings,
+                        entries,
+                    });
+                    return pluginSections.length > 1
+                        ? html`
+                              <div class="result-section">
+                                  <div class="result-header">
+                                      <h3>${section.label}</h3>
+                                  </div>
+                                  ${content}
+                              </div>
+                          `
+                        : content;
+                })}
+            `;
+        }
+
+        function renderContent() {
+            const settings = state.settings;
+            if (!settings) {
                 return state.loadError
                     ? nothing
                     : html`
                           <span class="muted">Loading...</span>
                       `;
             }
-            const entries = buildEntries(state.settings);
-            const sectionEntries = entries.filter((entry) => entry.section === section.id);
-            return isSearching
-                ? renderSearchResults(entries)
-                : section.render
-                  ? section.render({
-                        settings: state.settings,
-                        details: target.details,
-                        changeSettings,
-                    })
-                  : check.isEnumValue(section.id, SettingsSection)
-                    ? sectionContent[section.id]({
-                          settings: state.settings,
-                          entries: sectionEntries,
-                      })
-                    : renderEntries(sectionEntries);
+            const entries = buildEntries(settings);
+            if (isSearching) {
+                return renderSearchResults(entries);
+            } else if (shownGroup) {
+                return renderPluginsPage({
+                    settings,
+                    entries,
+                });
+            } else {
+                return renderSectionContent({
+                    section: shownSection,
+                    settings,
+                    entries,
+                });
+            }
         }
 
-        function renderBody(section: SettingsSectionPage) {
-            const defaults = isSearching
-                ? undefined
-                : customSectionDefaults[section.id] || createSchemaDefaults(section);
+        function renderBody() {
+            const shownSections: ReadonlyArray<SettingsSectionPage> = shownGroup?.sections || [
+                shownSection,
+            ];
+            const sectionDefaults = shownSections
+                .map((section) => {
+                    return (
+                        section.defaults ||
+                        customSectionDefaults[section.id] ||
+                        createSchemaDefaults(section)
+                    );
+                })
+                .filter(check.isTruthy);
+            const defaults: SectionDefaults | undefined =
+                isSearching || !sectionDefaults.length
+                    ? undefined
+                    : {
+                          isModified(settings) {
+                              return sectionDefaults.some((entry) => entry.isModified(settings));
+                          },
+                          restore(settings) {
+                              return sectionDefaults.reduce((current, entry) => {
+                                  return entry.restore(current);
+                              }, settings);
+                          },
+                      };
             const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
 
             return html`
@@ -1050,7 +1247,7 @@ export const VirSettingsModal = defineAppElement<{
                             })}
                         ></${ViraInput}>
                         <${ViraTabs.assign({
-                            tabs: sections.map((tabSection) => {
+                            tabs: coreSettingsSectionPages.map((tabSection) => {
                                 return {
                                     label: tabSection.label,
                                     group: tabSection.group,
@@ -1066,7 +1263,7 @@ export const VirSettingsModal = defineAppElement<{
                                 };
                             }),
                             router: staticTabRouter,
-                            currentRoute: toStaticTabRoute(isSearching ? undefined : section.id),
+                            currentRoute: toStaticTabRoute(isSearching ? undefined : navPage.id),
                             barDirection: isMobile
                                 ? ViraTabsBarDirection.Bottom
                                 : ViraTabsBarDirection.Right,
@@ -1095,7 +1292,7 @@ export const VirSettingsModal = defineAppElement<{
                         })}
                     >
                         <div class="header">
-                            <h2>${isSearching ? 'Search results' : section.label}</h2>
+                            <h2>${isSearching ? 'Search results' : navPage.label}</h2>
                             ${defaults && state.settings && defaults.isModified(state.settings)
                                 ? html`
                                       <${ViraButton.assign({
@@ -1121,7 +1318,7 @@ export const VirSettingsModal = defineAppElement<{
                                     <div class="error">${message}</div>
                                 `;
                             })}
-                        ${renderContent(section)}
+                        ${renderContent()}
                     </div>
                 </div>
             `;
@@ -1131,6 +1328,28 @@ export const VirSettingsModal = defineAppElement<{
             findSettingsSection({
                 sections,
                 id: target.section,
+            }),
+        );
+        /** Set while a plugin's settings show, inside the Plugins section. */
+        const shownGroup = pluginGroups.find((group) => group.plugin.id === shownSection.pluginId);
+        /** Every plugin, running or not, so a blocked one can be picked and unblocked. */
+        const listedPlugins = (inputs.context.plugins.value.response?.plugins || []).map(
+            (plugin) => {
+                return {
+                    id: plugin.id,
+                    name: plugin.manifest?.name || plugin.folderName,
+                };
+            },
+        );
+        const pickedPluginId =
+            shownSection.pluginId ||
+            (shownSection.id === SettingsSection.Plugins &&
+            listedPlugins.some((plugin) => plugin.id === target.plugin)
+                ? target.plugin
+                : undefined);
+        const navPage = assertWrap.isDefined(
+            coreSettingsSectionPages.find((page) => {
+                return page.id === (shownGroup ? SettingsSection.Plugins : shownSection.id);
             }),
         );
         const searchText = state.search.trim().toLowerCase();
@@ -1145,10 +1364,11 @@ export const VirSettingsModal = defineAppElement<{
                 open: isOpen,
                 modalTitle: 'Settings',
                 isMobileSize: inputs.context.screenSize === ScreenSize.Mobile,
+                noContentPadding: true,
             })}
                 ${listen(ViraModal.events.modalClose, close)}
             >
-                ${isOpen || state.closedTarget ? renderBody(shownSection) : nothing}
+                ${isOpen || state.closedTarget ? renderBody() : nothing}
             </${ViraModal}>
         `;
     },

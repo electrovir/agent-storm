@@ -5,6 +5,26 @@ import {getObjectTypedEntries, getObjectTypedValues, groupArrayBy} from '@augmen
 import {PrQueueKind} from '../../util/pr-queues.js';
 import {toRepoKey} from '../../util/pr-reviews.js';
 
+/** Matches a PR whose title, repo, number, author, or branch contains the query, ignoring case. */
+export function filterPullRequestsBySearch(
+    pullRequests: ReadonlyArray<ReviewQueuePr>,
+    query: string,
+) {
+    const needle = query.trim().toLowerCase();
+    if (!needle) {
+        return [...pullRequests];
+    }
+    return pullRequests.filter((pr) => {
+        return [
+            pr.title,
+            `${pr.owner}/${pr.repoName}`,
+            `#${pr.number}`,
+            pr.author,
+            pr.branchName,
+        ].some((text) => text.toLowerCase().includes(needle));
+    });
+}
+
 export type ReviewSidebarQueues = Readonly<
     Record<
         PrQueueKind,
@@ -99,8 +119,4 @@ export function groupByRepo(pullRequests: ReadonlyArray<ReviewQueuePr>) {
             },
         )
         .toSorted((first, second) => first.repo.localeCompare(second.repo));
-}
-
-export function openOnGitHub(pr: Readonly<ReviewQueuePr>) {
-    globalThis.open(pr.url, '_blank', 'noopener');
 }

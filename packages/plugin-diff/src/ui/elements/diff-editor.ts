@@ -1,6 +1,7 @@
 // cspell:words keymap menlo
 
-import {type ReviewComment} from '@agent-storm/common';
+import {FontRole, type ReviewComment} from '@agent-storm/common';
+import {fontFamilyVar, fontSizeVar} from '@agent-storm/core/frontend';
 import {assertWrap} from '@augment-vir/assert';
 import {createArray, getObjectTypedKeys} from '@augment-vir/common';
 import {defaultKeymap, history, historyKeymap} from '@codemirror/commands';
@@ -39,7 +40,7 @@ const hangingIndentColumns = 4;
  * Shared read-only editor extensions. Deliberately minimal: the point of replacing the embedded VS
  * Code is that a phone shouldn't pay for an IDE to read a diff.
  */
-function baseExtensions({isDark, isMobile}: Readonly<{isDark: boolean; isMobile: boolean}>) {
+function baseExtensions({isDark, softWrap}: Readonly<{isDark: boolean; softWrap: boolean}>) {
     return [
         lineNumbers(),
         highlightActiveLineGutter(),
@@ -50,12 +51,7 @@ function baseExtensions({isDark, isMobile}: Readonly<{isDark: boolean; isMobile:
             ...defaultKeymap,
             ...historyKeymap,
         ]),
-        /*
-         * Touch reads code by scrolling the pane sideways instead of wrapping it: a wrapped diff on
-         * a narrow screen turns every long line into a paragraph, and the change that matters is
-         * usually at the end of it.
-         */
-        ...(isMobile ? [] : [EditorView.lineWrapping]),
+        ...(softWrap ? [EditorView.lineWrapping] : []),
         EditorState.readOnly.of(true),
         /*
          * The `dark` flag is what switches CodeMirror's own base theme — gutter background, active
@@ -68,12 +64,18 @@ function baseExtensions({isDark, isMobile}: Readonly<{isDark: boolean; isMobile:
                 /* Font and colors are the user's VS Code editor settings + Vir Colors theme. */
                 '&': {
                     height: '100%',
-                    fontSize: '10px',
+                    fontSize: fontSizeVar({
+                        role: FontRole.Code,
+                        fallback: '10px',
+                    }).cssText,
                     backgroundColor: editorSurfaceColors(isDark).background,
                     color: editorSurfaceColors(isDark).foreground,
                 },
                 '.cm-scroller': {
-                    fontFamily: 'Menlo, monospace',
+                    fontFamily: fontFamilyVar({
+                        role: FontRole.Code,
+                        fallback: 'Menlo, monospace',
+                    }).cssText,
                 },
                 /*
                  * VS Code draws line numbers straight onto the editor background with no divider,
@@ -93,10 +95,9 @@ function baseExtensions({isDark, isMobile}: Readonly<{isDark: boolean; isMobile:
                 '.cm-deletedChunk': {
                     paddingLeft: '0',
                 },
-                /* A hanging indent is only visible on a line that wraps, which touch lines don't. */
-                ...(isMobile
-                    ? {}
-                    : {
+                /* A hanging indent is only visible on a line that wraps. */
+                ...(softWrap
+                    ? {
                           /*
                            * The hanging indent is one flat amount for every line, applied in CSS.
                            * Matching each line's own indent instead would take a per-line
@@ -118,7 +119,8 @@ function baseExtensions({isDark, isMobile}: Readonly<{isDark: boolean; isMobile:
                               paddingLeft: `${hangingIndentColumns}ch`,
                               textIndent: `-${hangingIndentColumns}ch`,
                           },
-                      }),
+                      }
+                    : {}),
             },
             {
                 dark: isDark,
@@ -363,6 +365,7 @@ function mountDiffEditor({
     newContent,
     unified,
     collapseUnchanged,
+    softWrap,
     chunks,
     oldText,
     newText,
@@ -383,6 +386,8 @@ function mountDiffEditor({
     unified: boolean;
     /** Fold long unchanged runs between chunks behind a bar with expand buttons. */
     collapseUnchanged: boolean;
+    /** Wrap long lines, rather than scrolling the code pane sideways. */
+    softWrap: boolean;
     chunks: ReadonlyArray<Chunk>;
     /** Both sides as {@link Text}, which the caller already built to diff them. */
     oldText: Text;
@@ -395,10 +400,7 @@ function mountDiffEditor({
      * as the user changes their mind about it.
      */
     isDark: boolean;
-    /**
-     * Touch layout: bigger comment buttons, and a horizontally scrolling code pane instead of
-     * wrapped lines. Independent of `unified`, which the user can force on either screen size.
-     */
+    /** Touch layout: bigger comment buttons. */
     isMobile: boolean;
     /** Omitted for a diff that takes no review comments: no comment buttons, no comments drawn. */
     commentHandlers?: DiffCommentHandlers | undefined;
@@ -429,7 +431,7 @@ function mountDiffEditor({
             extensions: [
                 ...baseExtensions({
                     isDark,
-                    isMobile,
+                    softWrap,
                 }),
                 ...syntaxExtensions,
                 unifiedColorTheme(isDark),
@@ -465,7 +467,7 @@ function mountDiffEditor({
             extensions: [
                 ...baseExtensions({
                     isDark,
-                    isMobile,
+                    softWrap,
                 }),
                 ...syntaxExtensions,
                 deletionColorTheme(isDark),
@@ -482,7 +484,7 @@ function mountDiffEditor({
             extensions: [
                 ...baseExtensions({
                     isDark,
-                    isMobile,
+                    softWrap,
                 }),
                 ...syntaxExtensions,
                 insertionColorTheme(isDark),
@@ -521,6 +523,7 @@ export type DiffEditorDisplay = Readonly<{
     newContent: string;
     unified: boolean;
     collapseUnchanged: boolean;
+    softWrap: boolean;
     isDark: boolean;
     isMobile: boolean;
     syntaxExtensions: ReadonlyArray<Extension>;
@@ -591,6 +594,7 @@ export function remountChangedDiffEditor({
                       newContent: display.newContent,
                       unified: display.unified,
                       collapseUnchanged: display.collapseUnchanged,
+                      softWrap: display.softWrap,
                       chunks,
                       oldText,
                       newText,

@@ -1,7 +1,8 @@
-import {GitDiffSide, type GitDiffStatus} from '@agent-storm/common';
+import {GitDiffSide} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
+import {type GitDiffStatus} from '../../diff-api.js';
 import {diffMemory, diffSidebarWidth} from '../../util/diff-memory.js';
 import {statusFilesKeys} from '../../util/diff-status.js';
 import {VirDiffFileSection} from './vir-diff-file-section.element.js';

@@ -1,5 +1,13 @@
 import {diffReviewSideShape} from '@agent-storm/common';
-import {defineFolderSetting, defineNumberSetting} from '@agent-storm/core/frontend';
+import {defineFolderSetting, defineNumberSetting, defineSetting} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
+
+/** GitHub's ways of comparing two versions of an image. */
+export enum ImageDiffMode {
+    TwoUp = 'two-up',
+    Swipe = 'swipe',
+    OnionSkin = 'onion-skin',
+}
 
 export const diffSidebarWidth = {
     min: 140,
@@ -30,5 +38,16 @@ export const diffMemory = {
     reviewSideByFolder: defineFolderSetting({
         key: 'agent-storm:diff-review-side-by-folder',
         valueShape: diffReviewSideShape,
+    }),
+    /** How every image diff is compared, whichever was last chosen. */
+    imageDiffMode: defineSetting<ImageDiffMode>({
+        key: 'agent-storm:diff-image-mode',
+        defaultValue: ImageDiffMode.TwoUp,
+        parse(raw) {
+            return check.isEnumValue(raw, ImageDiffMode) ? raw : ImageDiffMode.TwoUp;
+        },
+        serialize(value) {
+            return value;
+        },
     }),
 };

@@ -186,7 +186,8 @@ export type SessionKillHandshake = {
 
 export type VerifyLaunchHandshake = {
     action: DaemonAction.VerifyLaunch;
-    conversationId: string;
+    /** The requesting tab's `AGENT_STORM_LAUNCH_ID`, which picks the key to verify with. */
+    launchId: string;
     /** The exact text that was signed. */
     payload: string;
     /** Hex HMAC-SHA256 of `payload`, keyed by the tab's `AGENT_STORM_LAUNCH_KEY`. */
@@ -246,7 +247,7 @@ export type SimpleResponse = {
 
 export type VerifyLaunchResponse = {
     ok: true;
-    /** False when the signature is wrong or no running AI tab has that conversation id. */
+    /** False when the signature is wrong or no running tab has that launch id. */
     isValid: boolean;
 };
 

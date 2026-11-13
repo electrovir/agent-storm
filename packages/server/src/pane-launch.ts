@@ -1,13 +1,21 @@
-import {PaneKind, paneKindRunsAi, type AiDefinition} from '@agent-storm/common';
+import {
+    findNearestFolderSetting,
+    PaneKind,
+    paneKindRunsAi,
+    type AiDefinition,
+} from '@agent-storm/common';
 import {waitUntil} from '@augment-vir/assert';
 import {log, wait} from '@augment-vir/common';
-import {normalizePath} from 'agent-storm';
-import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
+import {normalizePath} from 'agent-storm-util';
+import {
+    hasClaudeTurnStartedSince,
+    isClaudeAwaitingPermission,
+    isClaudeReady,
+} from './claude-activity.js';
 import {attachPane, fetchPaneStatuses} from './daemon/daemon-client.js';
 import {defaultSessionId} from './daemon/protocol.js';
 import {findParentRepoPath} from './folder-info.js';
-import {findNearestFolderSetting, loadFolderSettings} from './folder-settings.js';
-import {resolveReviewFolder} from './github-review-queue.js';
+import {loadFolderSettings} from './folder-settings.js';
 import {getLivePaneSessionIds} from './pty.js';
 import {
     findFolderSession,
@@ -133,7 +141,7 @@ export async function spawnPane({
     attachment.close();
 }
 
-/** Types `text` into a tab and submits it, waiting for a tab that is still starting up. */
+/** Types `text` into a tab and submits it, starting the tab first if it isn't running. */
 export async function sendPaneText({
     folder: folderPath,
     kind,
@@ -146,21 +154,13 @@ export async function sendPaneText({
     text: string;
 }>) {
     const folder = normalizePath(folderPath);
-    /** A pane opened just before this request has no PTY until its terminal attaches. */
-    await waitUntil.isTrue(
-        async () => {
-            return (await getLivePaneSessionIds(folder, kind)).includes(sessionId);
-        },
-        {
-            interval: {
-                milliseconds: 200,
-            },
-            timeout: {
-                seconds: 30,
-            },
-        },
-        'That session is not running. Open its pane first.',
-    );
+    if (!(await getLivePaneSessionIds(folder, kind)).includes(sessionId)) {
+        await spawnPane({
+            folder,
+            kind,
+            sessionId,
+        });
+    }
     const conversationId = paneKindRunsAi[kind]
         ? (
               await findFolderSession({
@@ -196,18 +196,54 @@ export async function sendPaneText({
         onData() {},
         onExit() {},
     });
+    const sentAt = Date.now();
     attachment.write(text);
     /** Enter goes on its own, after a pause, so it reads as a keypress rather than typed text. */
     await wait({
         milliseconds: 200,
     });
     attachment.write('\r');
-    /**
-     * Some runs leave the text sitting unsent in Claude's input box after the first Enter. A second
-     * Enter sends it then, and does nothing when the first already went through, since Claude
-     * ignores Enter on an empty input.
-     */
-    if (paneKindRunsAi[kind]) {
+    if (conversationId) {
+        /**
+         * Text that lands before a just-started Claude reads its input is taken in later as one
+         * paste with the Enters stripped out ("Removed 1 invisible character · review and press
+         * Enter to send"), and sits unsent. Claude ignores Enter on an empty input, so Enter is
+         * repeated until Claude's hook reports the prompt.
+         */
+        await wait({
+            seconds: 1,
+        });
+        await waitUntil
+            .isTrue(
+                async () => {
+                    if (
+                        await hasClaudeTurnStartedSince({
+                            conversationId,
+                            since: sentAt,
+                        })
+                    ) {
+                        return true;
+                    }
+                    attachment.write('\r');
+                    return false;
+                },
+                {
+                    interval: {
+                        seconds: 2,
+                    },
+                    timeout: {
+                        seconds: 20,
+                    },
+                },
+            )
+            .catch(() => {
+                log.warning(`Claude in ${folder} never reported the prompt sent to it.`);
+            });
+    } else if (paneKindRunsAi[kind]) {
+        /**
+         * Some runs leave the text sitting unsent in the AI's input box after the first Enter. A
+         * second Enter sends it then.
+         */
         await wait({
             seconds: 1,
         });
@@ -224,21 +260,13 @@ export async function launchFolderSession({
     folder: string;
     prompt: string;
 }>) {
-    const sessionId = await findOrCreateFirstSession({
-        folder,
-        kind: PaneKind.Ai,
-    });
-    if (!(await getLivePaneSessionIds(folder, PaneKind.Ai)).includes(sessionId)) {
-        await spawnPane({
-            folder,
-            kind: PaneKind.Ai,
-            sessionId,
-        });
-    }
     await sendPaneText({
         folder,
         kind: PaneKind.Ai,
-        sessionId,
+        sessionId: await findOrCreateFirstSession({
+            folder,
+            kind: PaneKind.Ai,
+        }),
         /**
          * A newline would submit the prompt partway through, and an escape sequence would read as
          * key presses.
@@ -306,66 +334,39 @@ export async function runPostWorktreeCmd({
 }
 
 /**
- * Runs the first review init command found in a PR's review folder: the user's command for the PR's
- * repo, then the nearest folder settings file's, then the user's global one.
+ * Types `command` into the folder's first shell tab, making one when it has none. False, without
+ * typing anything, while that tab is running something.
  */
-export async function runReviewInitCmd({
-    owner,
-    repoName,
-    number,
-}: Readonly<{owner: string; repoName: string; number: number}>) {
-    const [
-        reviewFolder,
-        settings,
-    ] = await Promise.all([
-        resolveReviewFolder({
-            owner,
-            repoName,
-            number,
-            createFolder: false,
-        }),
-        loadSettings().catch(() => undefined),
-    ]);
-    if (!settings) {
-        return;
-    }
-    const command =
-        settings.review.repos.find((repo) => {
-            return repo.owner === owner && repo.repoName === repoName;
-        })?.initCmd ||
-        findNearestFolderSetting(
-            await loadFolderSettings(reviewFolder.folder),
-            (folderSettings) => folderSettings.review?.initCmd,
-        ) ||
-        settings.review.initCmd;
-    if (!command) {
-        return;
-    }
+export async function runInIdleFolderShell({
+    folder,
+    command,
+}: Readonly<{
+    folder: string;
+    command: string;
+}>) {
     /**
      * The shell's foreground process is also something other than the shell when the user's shell
      * starts tmux or similar, so this errs on the side of not typing.
      */
     const shellSessionId = await findOrCreateFirstSession({
-        folder: reviewFolder.folder,
+        folder,
         kind: PaneKind.Shell,
     });
     const isShellBusy = (await fetchPaneStatuses()).some((entry) => {
         return (
-            entry.folder === reviewFolder.folder &&
+            entry.folder === folder &&
             entry.kind === PaneKind.Shell &&
             (entry.sessionId || defaultSessionId) === shellSessionId &&
             entry.isRunningCommand
         );
     });
     if (isShellBusy) {
-        log.warning(
-            `Not running the review init command in ${reviewFolder.folder}: its shell tab is running something.`,
-        );
-        return;
+        return false;
     }
     await runInShellPane({
-        folder: reviewFolder.folder,
+        folder,
         command,
         sessionId: shellSessionId,
     });
+    return true;
 }

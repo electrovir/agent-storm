@@ -1,15 +1,11 @@
 import {
-    gitHubCommentEndpoint,
     GitHubCommentTarget,
-    gitHubReactionEndpoint,
-    gitHubResolveThreadEndpoint,
     type GitHubComment,
     type GitHubReaction,
     type GitHubReviewThread,
 } from '@agent-storm/common';
-import {fetchApi} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
-import {HttpMethod} from '@rest-vir/api';
+import {reviewClient} from '../../util/review-client.js';
 import {
     hasViewerReacted,
     type PendingReactions,
@@ -88,12 +84,10 @@ export function createConversationActions({
         add: boolean;
     }>) {
         try {
-            await fetchApi(gitHubReactionEndpoint, HttpMethod.Post, {
-                requestData: {
-                    subjectId: commentId,
-                    reaction,
-                    add,
-                },
+            await reviewClient.call('setGitHubReaction', {
+                subjectId: commentId,
+                reaction,
+                add,
             });
         } catch (error) {
             if (state.pendingReactions[commentId]?.[reaction] === add) {
@@ -160,12 +154,10 @@ export function createConversationActions({
             replyError: undefined,
         });
         try {
-            await fetchApi(gitHubCommentEndpoint, HttpMethod.Post, {
-                requestData: {
-                    target: GitHubCommentTarget.Thread,
-                    subjectId: threadId,
-                    body,
-                },
+            await reviewClient.call('postGitHubComment', {
+                target: GitHubCommentTarget.Thread,
+                subjectId: threadId,
+                body,
             });
             updateState({
                 replyDrafts: {
@@ -200,11 +192,9 @@ export function createConversationActions({
         resolved: boolean;
     }>) {
         try {
-            await fetchApi(gitHubResolveThreadEndpoint, HttpMethod.Post, {
-                requestData: {
-                    threadId,
-                    resolved,
-                },
+            await reviewClient.call('setGitHubThreadResolved', {
+                threadId,
+                resolved,
             });
         } catch (error) {
             if (state.pendingResolved[threadId] === resolved) {

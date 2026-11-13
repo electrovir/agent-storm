@@ -1,5 +1,5 @@
 import {PaneStatus, type PaneKind, type PaneSessionStatus} from '@agent-storm/common';
-import {groupArrayBy, mapObjectValues} from '@augment-vir/common';
+import {getObjectTypedEntries, groupArrayBy, mapObjectValues} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {applyClaudeActivity} from './claude-activity.js';
 import {fetchPaneStatuses} from './daemon/daemon-client.js';
@@ -166,4 +166,22 @@ export async function getLivePaneSessionIds(
 ): Promise<ReadonlyArray<string>> {
     await ensureFresh();
     return cacheState.sessionIds[statusKey(folder, kind)] || [];
+}
+
+/** Every session's own status in every folder, from the same snapshot as the lookups above. */
+export async function getAllPaneSessionStatuses() {
+    await ensureFresh();
+    return getObjectTypedEntries(cacheState.sessionStatuses).flatMap(
+        ([
+            folder,
+            statuses,
+        ]) => {
+            return statuses.map((status) => {
+                return {
+                    ...status,
+                    folder,
+                };
+            });
+        },
+    );
 }

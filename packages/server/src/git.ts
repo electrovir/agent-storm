@@ -1,15 +1,32 @@
-import {GitHubPollingDisableReason, PrStatus} from '@agent-storm/common';
+import {
+    GitHubPollingDisableReason,
+    openPrNodeShape,
+    PrStatus,
+    RawPrState,
+    toOpenPrStatus,
+    type OpenPrNode,
+} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
-    convertByteSize,
+    awaitedBlockingMap,
     extractErrorMessage,
     log,
-    removeDuplicates,
+    mapObjectValuesSync,
     wait,
-    type AnyByteSize,
-    type Overwrite,
 } from '@augment-vir/common';
-import {normalizePath, runCommand} from 'agent-storm';
+import {
+    deleteMovedFolder,
+    extractCommandStderr,
+    ghTimeout,
+    gitTimeout,
+    looksRateLimited,
+    moveAside,
+    normalizePath,
+    packGraphqlParts,
+    runCommand,
+    runGh,
+    tryGit,
+} from 'agent-storm-util';
 import {
     calculateRelativeDate,
     convertDuration,
@@ -19,25 +36,17 @@ import {
     utcTimezone,
     type AnyDuration,
 } from 'date-vir';
-import {lstat, mkdir, readdir, realpath, rename, rm, stat} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {lstat, readdir, realpath, stat} from 'node:fs/promises';
 import {basename, dirname, join} from 'node:path';
 import {
     defineShape,
     enumShape,
     nullableShape,
-    optionalShape,
     parseJsonWithShape,
+    recordShape,
 } from 'object-shape-tester';
-import {deletingReviewFoldersDir} from './file-paths.js';
-import {
-    failedCheckResults,
-    RawCheckResult,
-    RawMergeState,
-    RawPrState,
-    RawReviewDecision,
-    RawReviewState,
-} from './github-raw-enums.js';
-import {readManualReviewEntry, reviewBranchPrefix, toReviewFolder} from './manual-review-state.js';
+import {repoCacheKey} from './branch-prs.js';
 
 type GitInfo = {
     branch: string | null;
@@ -85,10 +94,13 @@ const gitInfoListeners = new Set<(change: Readonly<GitInfoChange>) => void>();
 
 /**
  * Calls `listener` whenever a read finds a folder's git state changed, whichever feature did the
- * read. A folder's first read doesn't count.
+ * read. A folder's first read doesn't count. Returns a function that stops listening.
  */
 export function listenToGitInfoChanges(listener: (change: Readonly<GitInfoChange>) => void) {
     gitInfoListeners.add(listener);
+    return () => {
+        gitInfoListeners.delete(listener);
+    };
 }
 
 /** Drops a folder that's no longer shown from the git state and slug stores. */
@@ -188,103 +200,6 @@ async function readGitInfoFromGit(folder: string): Promise<GitInfo> {
     };
 }
 
-/**
- * Environment for git calls that only read. `git status` otherwise takes `index.lock` to save the
- * stat info it refreshed, and while it holds it every write to the index in that checkout fails,
- * including the user staging a file and an agent committing. Required locks are unaffected.
- */
-export const readOnlyGitEnv = {
-    ...process.env,
-    GIT_OPTIONAL_LOCKS: '0',
-};
-
-/**
- * Deadline for a git call that isn't expected to take long, including a `fetch`. Generous, because
- * it only exists so a network stall or a credential prompt can't hold a caller forever.
- */
-export const gitTimeout: AnyDuration = {
-    minutes: 2,
-};
-
-/**
- * The stderr of a failed {@link runCommand}, or the error's message when there's none (git missing,
- * a timeout).
- */
-export function extractCommandStderr(error: unknown) {
-    return (
-        (check.isObject(error) && check.hasKey(error, 'stderr')
-            ? String(error.stderr).trim()
-            : '') || extractErrorMessage(error)
-    );
-}
-
-/** Runs a read-only git command in `cwd`. Its stdout, or undefined when git fails for any reason. */
-export async function tryGit(cwd: string, args: ReadonlyArray<string>) {
-    const result = await runCommand('git', [...args], {
-        cwd,
-        env: readOnlyGitEnv,
-        timeout: gitTimeout,
-    }).catch(() => undefined);
-    return result?.stdout;
-}
-
-/**
- * The checkout the PR of the folder's branch is being reviewed in, made by `/manual-review here` or
- * by the Review tab. Null when the folder isn't on a branch, the skill has no PR recorded for that
- * branch, or the review folder isn't a checkout yet.
- */
-export async function findManualReviewCopy(folder: string) {
-    const [
-        branch,
-        slug,
-    ] = await Promise.all([
-        getCurrentBranch(folder),
-        getRepoSlug(folder),
-    ]);
-    if (!branch || !slug) {
-        return null;
-    }
-    const prNumber = (
-        await readManualReviewEntry({
-            owner: slug.owner,
-            repoName: slug.name,
-            branchName: branch,
-        })
-    )?.prNumber;
-    if (!prNumber) {
-        return null;
-    }
-    const copy = toReviewFolder({
-        owner: slug.owner,
-        repoName: slug.name,
-        number: prNumber,
-    });
-    return (await tryGit(copy, [
-        'rev-parse',
-        '--git-dir',
-    ])) == undefined
-        ? null
-        : copy;
-}
-
-/**
- * Whether the folder is a copy `/manual-review here` made, which `run-here.sh` marks with a
- * `<reviewer name>-review-pr` note in the copy's git dir. A review the Review tab started lives at
- * the same kind of path but has no note.
- */
-export async function isManualReviewHereCopy(folder: string) {
-    const gitDir = (
-        await tryGit(folder, [
-            'rev-parse',
-            '--absolute-git-dir',
-        ])
-    )?.trim();
-    return (
-        !!gitDir &&
-        (await readdir(gitDir).catch(() => [])).some((name) => name.endsWith('-review-pr'))
-    );
-}
-
 /** The folder's visible subfolders that hold a `.git`, file or folder alike. */
 async function findChildCheckouts(folder: string) {
     const entries = await readdir(folder).catch(() => []);
@@ -352,26 +267,29 @@ async function isBareGitRepo(folder: string): Promise<boolean> {
 }
 
 /**
- * Create `name` as a sibling of the repo's existing worktrees. A worktree left behind by an earlier
- * attempt (the server restarted mid-checkout, say) is adopted instead of failing on "already
- * exists".
+ * Create `name` as a sibling of the repo's existing worktrees, branched from `baseCheckout` when
+ * given, else from any of them. A worktree left behind by an earlier attempt (the server restarted
+ * mid-checkout, say) is adopted instead of failing on "already exists".
  */
 export async function addWorktree({
     repoPath,
     name,
+    baseCheckout,
 }: Readonly<{
     repoPath: string;
     name: string;
+    baseCheckout?: string | undefined;
 }>): Promise<{worktreePath: string}> {
-    const children = await listWorktreeChildren(repoPath);
     /** Skip the target itself, which an earlier attempt may have already created. */
-    const anyChild = children.find((child) => basename(child) !== name);
-    if (!anyChild) {
+    const sourceCheckout =
+        baseCheckout ||
+        (await listWorktreeChildren(repoPath)).find((child) => basename(child) !== name);
+    if (!sourceCheckout) {
         throw new Error(`No existing worktree found in ${repoPath} to base a new worktree on.`);
     }
-    const worktreePath = join(dirname(anyChild), name);
+    const worktreePath = join(dirname(sourceCheckout), name);
     const existing = await findRegisteredWorktree({
-        cwd: anyChild,
+        cwd: sourceCheckout,
         worktreePath,
     });
     if (existing?.isInitializing) {
@@ -387,7 +305,7 @@ export async function addWorktree({
                 `../${name}`,
             ],
             {
-                cwd: anyChild,
+                cwd: sourceCheckout,
                 /** Checks out the whole tree, which takes a while in a big repo. */
                 timeout: {
                     minutes: 10,
@@ -476,45 +394,6 @@ export async function removeWorktree({
     ).catch(() => undefined);
 }
 
-/**
- * Deleting a checkout file by file (`git worktree remove` or `rm -rf`) takes several seconds for a
- * big `node_modules`, and the folder keeps showing up until it finishes. A rename is instant, so
- * the folder gets moved out of sight first and git only drops its record of the missing folder.
- *
- * Undefined when the move fails, such as across volumes.
- */
-async function moveAside({folder, deletingDir}: Readonly<{folder: string; deletingDir: string}>) {
-    const movedPath = join(deletingDir, `${basename(folder)}-${Date.now()}`);
-    return await mkdir(deletingDir, {
-        recursive: true,
-    })
-        .then(async () => await rename(folder, movedPath))
-        .then(
-            () => movedPath,
-            () => undefined,
-        );
-}
-
-/** Deletes a folder moved by {@link moveAside} in the background, or `folder` in place otherwise. */
-async function deleteMovedFolder({
-    folder,
-    movedPath,
-}: Readonly<{folder: string; movedPath: string | undefined}>) {
-    const deletion = rm(movedPath || folder, {
-        recursive: true,
-        force: true,
-        maxRetries: 3,
-        retryDelay: 250,
-    });
-    if (movedPath) {
-        void deletion.catch((error: unknown) => {
-            log.warning(`Failed to delete ${movedPath}: ${extractErrorMessage(error)}`);
-        });
-    } else {
-        await deletion;
-    }
-}
-
 async function runRemoveWorktree({
     cwd,
     worktreePath,
@@ -564,90 +443,6 @@ async function runRemoveWorktree({
             `git worktree remove failed for ${worktreePath}: ${extractCommandStderr(error)}`,
         );
     });
-}
-
-/**
- * Deletes a review folder along with its `review__` branch. Unlike {@link removeWorktree}, it also
- * handles a folder that's a full clone, the last worktree of its repo, or no checkout at all.
- */
-export async function deleteReviewFolder(folder: string) {
-    const isCheckout = !!(await lstat(join(folder, '.git')).catch(() => undefined));
-    const [
-        commonDir,
-        branch,
-    ] = isCheckout
-        ? await Promise.all([
-              tryGit(folder, [
-                  'rev-parse',
-                  '--path-format=absolute',
-                  '--git-common-dir',
-              ]),
-              tryGit(folder, [
-                  'branch',
-                  '--show-current',
-              ]),
-          ])
-        : [];
-    const gitDir = commonDir?.trim();
-    const movedPath = await moveAside({
-        folder,
-        deletingDir: deletingReviewFoldersDir,
-    });
-    if (gitDir) {
-        await tryGit(gitDir, [
-            '--git-dir',
-            gitDir,
-            'worktree',
-            'remove',
-            '--force',
-            '--force',
-            folder,
-        ]);
-    }
-    await deleteMovedFolder({
-        folder,
-        movedPath,
-    });
-    if (!gitDir) {
-        return;
-    }
-    await tryGit(gitDir, [
-        '--git-dir',
-        gitDir,
-        'worktree',
-        'prune',
-    ]);
-    const reviewBranch = branch?.trim();
-    if (reviewBranch?.startsWith(reviewBranchPrefix)) {
-        await tryGit(gitDir, [
-            '--git-dir',
-            gitDir,
-            'branch',
-            '-D',
-            reviewBranch,
-        ]);
-    }
-}
-
-/**
- * Deletes what {@link deleteReviewFolder} moved aside but didn't finish deleting before the server
- * stopped.
- */
-export async function sweepDeletingReviewFolders() {
-    const names = await readdir(deletingReviewFoldersDir).catch(() => []);
-    await Promise.all(
-        names.map(async (name) => {
-            const path = join(deletingReviewFoldersDir, name);
-            await rm(path, {
-                recursive: true,
-                force: true,
-                maxRetries: 3,
-                retryDelay: 250,
-            }).catch((error: unknown) => {
-                log.warning(`Failed to delete ${path}: ${extractErrorMessage(error)}`);
-            });
-        }),
-    );
 }
 
 /** Only a positive answer is kept, so running `gh auth login` after startup is noticed. */
@@ -708,31 +503,6 @@ export class GitHubPollingError extends Error {
 }
 
 /**
- * Rate-limit detection on `gh`'s stderr.
- *
- * GitHub itself authoritatively signals rate limits three ways.
- *
- * 1. HTTP `429 Too Many Requests`.
- * 2. HTTP `403 Forbidden` with `x-ratelimit-remaining: 0` (primary rate limit hit).
- * 3. A GraphQL error body with `type: "RATE_LIMIT"` or `code: "graphql_rate_limit"` (secondary /
- *    GraphQL-specific limits).
- *
- * `gh` only surfaces the HTTP status line and the API's `message` field on stderr — never the
- * response headers — so the `x-ratelimit-remaining: 0` signal isn't visible to us. We instead match
- * on what `gh` actually prints: the literal `HTTP 429` / `HTTP 403` status, the API's "API rate
- * limit exceeded" message, secondary-limit phrasing, and the GraphQL `RATE_LIMIT` error type that
- * bleeds through when the error gets printed verbatim.
- */
-function looksRateLimited(stderr: string): boolean {
-    return (
-        /rate[\s_-]?limit/i.test(stderr) ||
-        /HTTP\s+429\b/i.test(stderr) ||
-        /\bRATE_LIMIT(?:ED)?\b/.test(stderr) ||
-        /graphql_rate_limit/i.test(stderr)
-    );
-}
-
-/**
  * Auth-failure detection on `gh`'s stderr. GitHub returns HTTP 401 for bad/expired tokens and HTTP
  * 403 with messages like "Bad credentials" or "Resource not accessible by ..." for scope issues.
  * `gh` itself bails out with hints like "gh auth login" when it can't find a token at all. Catch
@@ -753,35 +523,58 @@ const secondaryRateLimitWait: AnyDuration = {
 };
 
 /**
- * When GitHub's GraphQL budget refills, read from `gh api rate_limit`, which doesn't spend any of
- * that budget. A rate-limit error with points still remaining is a secondary limit, which has no
- * reset time to read. Undefined when the budget can't be read.
+ * When GitHub's GraphQL budget refills, read from the headers of the response that turned the
+ * request away: `gh api rate_limit` can report a different GraphQL budget than the one that did. A
+ * rate-limit error with points still remaining is a secondary limit, which has no reset time to
+ * read. Undefined when the headers don't say.
  */
-async function readRateLimitResumeAtMs(): Promise<number | undefined> {
+function readRateLimitResumeAtMs(headers: string) {
+    const remaining = /^x-ratelimit-remaining:\s*(\d+)/im.exec(headers)?.[1];
+    const reset = /^x-ratelimit-reset:\s*(\d+)/im.exec(headers)?.[1];
+    if (remaining == undefined || reset == undefined) {
+        return undefined;
+    }
+    return Number(remaining)
+        ? toTimestamp(calculateRelativeDate(getNowInUtcTimezone(), secondaryRateLimitWait))
+        : Number(reset) * 1000;
+}
+
+/**
+ * When GitHub's used-up budgets refill, read from `gh api rate_limit`, which spends no budget. With
+ * no budget used up the limit was a secondary one, which has no reset time to read. Undefined when
+ * GitHub can't be asked.
+ */
+export async function fetchRateLimitResumeAtMs() {
     const result = await runGh([
         'api',
         'rate_limit',
         '--jq',
-        '.resources.graphql',
+        '[.resources.core, .resources.graphql] | map(select(.remaining == 0) | .reset) | max',
     ]);
     if (result.exitCode !== 0) {
         return undefined;
     }
-    try {
-        const graphql = parseJsonWithShape(
-            result.stdout,
-            defineShape({
-                remaining: 0,
-                /** Unix seconds. */
-                reset: 0,
-            }),
-        );
-        return graphql.remaining
-            ? toTimestamp(calculateRelativeDate(getNowInUtcTimezone(), secondaryRateLimitWait))
-            : graphql.reset * 1000;
-    } catch {
-        return undefined;
-    }
+    const latestReset = Number(result.stdout.trim());
+    return latestReset
+        ? latestReset * 1000
+        : toTimestamp(calculateRelativeDate(getNowInUtcTimezone(), secondaryRateLimitWait));
+}
+
+/**
+ * Splits what `gh api --include` printed into the response headers and the body. Output without a
+ * status line, as when `gh` fails before reaching GitHub, is all body.
+ */
+function splitIncludedHeaders(stdout: string) {
+    const headerEnd = /\r?\n\r?\n/.exec(stdout);
+    return stdout.startsWith('HTTP/') && headerEnd
+        ? {
+              headers: stdout.slice(0, headerEnd.index),
+              body: stdout.slice(headerEnd.index + headerEnd[0].length),
+          }
+        : {
+              headers: '',
+              body: stdout,
+          };
 }
 
 /** How long a merged or closed PR keeps its branch's "this branch had a PR" marker. */
@@ -882,6 +675,17 @@ export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
 const openPrsBatchSize = 70;
 /** Terminal PRs only feed the "recently merged" marker, so a short list is plenty. */
 const terminalPrsBatchSize = 20;
+/**
+ * Room in a repo's open-PR list, past its count at the last lookup, for PRs opened since. A repo
+ * that outgrows it anyway is asked again with the full list.
+ */
+const newOpenPrAllowance = 5;
+
+/**
+ * Each repo's open PR count at its last lookup, by {@link repoCacheKey}. A shorter open-PR list
+ * costs fewer requests, which leaves room for more repos in the same 1-point call.
+ */
+const openPrCountByRepo = new Map<string, number>();
 
 const terminalPrNodeFields = [
     '      nodes {',
@@ -896,6 +700,8 @@ const openPrNodeFields = [
     '      nodes {',
     '        url',
     '        headRefName',
+    '        headRefOid',
+    '        updatedAt',
     '        state',
     '        mergeStateStatus',
     '        reviewDecision',
@@ -910,18 +716,28 @@ const openPrNodeFields = [
     '      }',
 ].join('\n');
 
-const repoPrsGraphqlQuery = [
-    'query($owner: String!, $name: String!) {',
-    '  repository(owner: $owner, name: $name) {',
-    `    open: pullRequests(states: [OPEN], first: ${openPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
-    openPrNodeFields,
-    '    }',
-    `    terminal: pullRequests(states: [CLOSED, MERGED], first: ${terminalPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
-    terminalPrNodeFields,
-    '    }',
-    '  }',
-    '}',
-].join('\n');
+/** One aliased `repository`, `repo<index>`, per open-PR limit, so a group of repos shares one call. */
+function buildRepoPrsQuery(openPrLimits: ReadonlyArray<number>) {
+    return [
+        `query(${openPrLimits
+            .map((_openPrLimit, index) => `$owner${index}: String!, $name${index}: String!`)
+            .join(', ')}) {`,
+        ...openPrLimits.flatMap((openPrLimit, index) => {
+            return [
+                `  repo${index}: repository(owner: $owner${index}, name: $name${index}) {`,
+                `    open: pullRequests(states: [OPEN], first: ${openPrLimit}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
+                '      pageInfo { hasNextPage }',
+                openPrNodeFields,
+                '    }',
+                `    terminal: pullRequests(states: [CLOSED, MERGED], first: ${terminalPrsBatchSize}, orderBy: {field: UPDATED_AT, direction: DESC}) {`,
+                terminalPrNodeFields,
+                '    }',
+                '  }',
+            ];
+        }),
+        '}',
+    ].join('\n');
+}
 
 /** One node of {@link terminalPrNodeFields}. */
 const terminalPrNodeShape = defineShape({
@@ -931,311 +747,197 @@ const terminalPrNodeShape = defineShape({
     closedAt: nullableShape(''),
 });
 
-/** One node of {@link openPrNodeFields}. */
-const openPrNodeShape = defineShape({
-    url: '',
-    headRefName: '',
-    state: enumShape(RawPrState),
-    mergeStateStatus: '',
-    reviewDecision: nullableShape(''),
-    body: '',
-    author: nullableShape({
-        login: '',
-    }),
-    headRef: nullableShape({
-        /** Empty when the branch points at something other than a commit. */
-        target: nullableShape({
-            statusCheckRollup: optionalShape(
-                nullableShape({
-                    state: '',
-                }),
-            ),
-        }),
-    }),
-    latestOpinionatedReviews: {
-        nodes: [
-            {
-                state: '',
-                viewerDidAuthor: false,
-                author: nullableShape({
-                    login: '',
-                }),
-            },
-        ],
-    },
-    viewerLatestReviewRequest: nullableShape({
-        id: '',
-    }),
-    viewerDidAuthor: false,
-    reviewThreads: {
-        nodes: [
-            {
-                isResolved: false,
-            },
-        ],
-    },
-});
-
-export type OpenPrNode = typeof openPrNodeShape.runtimeType;
-
 const repoPrsResponseShape = defineShape({
-    data: {
-        /** Null when GitHub has no such repository, or the viewer can't see it. */
-        repository: nullableShape({
-            open: {
-                nodes: [
-                    openPrNodeShape,
-                ],
-            },
-            terminal: {
-                nodes: [
-                    terminalPrNodeShape,
-                ],
-            },
+    /** Keyed by the query's `repo<index>` aliases. Missing when GitHub answered none of them. */
+    data: nullableShape(
+        recordShape({
+            keys: '',
+            /** Null when GitHub has no such repository, or the viewer can't see it. */
+            values: nullableShape({
+                open: {
+                    pageInfo: {
+                        hasNextPage: false,
+                    },
+                    nodes: [
+                        openPrNodeShape,
+                    ],
+                },
+                terminal: {
+                    nodes: [
+                        terminalPrNodeShape,
+                    ],
+                },
+            }),
         }),
-    },
+    ),
 });
 
-/** The verdict each review state gives. Undefined still awaits one. */
-const viewerReviewPrStatuses: Readonly<Record<RawReviewState, PrStatus | undefined>> = {
-    [RawReviewState.Approved]: PrStatus.Approved,
-    [RawReviewState.ChangesRequested]: PrStatus.ChangesRequested,
-    [RawReviewState.Commented]: undefined,
-    [RawReviewState.Dismissed]: undefined,
-    [RawReviewState.Pending]: undefined,
+type RepoPrsRequest = {
+    slug: Readonly<RepoSlug>;
+    openPrLimit: number;
 };
 
 /**
- * Review-vir's `parseInsertedCodeOwners`: the logins pull-request-vir lists in the code owners
- * block it writes into a PR's raw markdown body. `undefined` when there's no block.
- */
-export function parseInsertedCodeOwners(body: string) {
-    const block = /<!-- code owners start -->([\S\s]*?)<!-- code owners end -->/i.exec(body)?.[1];
-    if (block == undefined) {
-        return undefined;
-    }
-    /** Owned-file link lines are dropped so scoped paths (`@types/...`) aren't read as owners. */
-    const ownerLines = block
-        .split('\n')
-        .filter((line) => !/^\s*-\s/.test(line))
-        .join('\n');
-    return removeDuplicates(
-        Array.from(ownerLines.matchAll(/@[\w-]+/g)).map((tag) => tag[0].slice(1)),
-    );
-}
-
-/**
- * GitHub drops the viewer's review request once they submit a review, so a request that exists
- * means they never reviewed it or were asked to look again.
- *
- * Reads `latestOpinionatedReviews` rather than `viewerLatestReview`: replying to a review thread
- * files a comment-only review, which `viewerLatestReview` would return in place of an approval.
- */
-export function toOpenPrStatus({
-    mergeStateStatus,
-    reviewDecision,
-    body,
-    author,
-    headRef,
-    latestOpinionatedReviews,
-    viewerLatestReviewRequest,
-    viewerDidAuthor,
-    reviewThreads,
-}: Readonly<
-    Overwrite<
-        Pick<
-            OpenPrNode,
-            | 'mergeStateStatus'
-            | 'reviewDecision'
-            | 'body'
-            | 'author'
-            | 'headRef'
-            | 'viewerLatestReviewRequest'
-            | 'viewerDidAuthor'
-        >,
-        {
-            latestOpinionatedReviews: Readonly<{
-                nodes: ReadonlyArray<OpenPrNode['latestOpinionatedReviews']['nodes'][number]>;
-            }>;
-            reviewThreads: Readonly<{
-                nodes: ReadonlyArray<OpenPrNode['reviewThreads']['nodes'][number]>;
-            }>;
-        }
-    >
->) {
-    const reviews = latestOpinionatedReviews.nodes;
-    const viewerReviewState = reviews.find((review) => review.viewerDidAuthor)?.state;
-    /** GitHub doesn't let a PR's author approve or request changes on it. */
-    const viewerVerdict =
-        !viewerDidAuthor && check.isEnumValue(viewerReviewState, RawReviewState)
-            ? viewerReviewPrStatuses[viewerReviewState]
-            : undefined;
-    const rollupState = headRef?.target?.statusCheckRollup?.state;
-    const hasUnresolvedThread = reviewThreads.nodes.some((thread) => !thread.isResolved);
-    const isViewerSignedOff = viewerDidAuthor || viewerVerdict === PrStatus.Approved;
-    const isViewerDone = isViewerSignedOff && !hasUnresolvedThread;
-    /** Pull-request-vir skips the author's own rules and counts only approvals. */
-    const hasUnapprovedCodeOwner = (parseInsertedCodeOwners(body) || []).some((owner) => {
-        return (
-            owner.toLowerCase() !== author?.login.toLowerCase() &&
-            !reviews.some((review) => {
-                return (
-                    review.state === RawReviewState.Approved &&
-                    review.author?.login.toLowerCase() === owner.toLowerCase()
-                );
-            })
-        );
-    });
-    /**
-     * `CLEAN` only means GitHub would allow the merge, which it does with the viewer's review
-     * request still open when the repo doesn't require reviews.
-     */
-    if (viewerLatestReviewRequest) {
-        return viewerVerdict === PrStatus.ChangesRequested
-            ? PrStatus.ReReviewRequested
-            : PrStatus.AwaitingReview;
-    } else if (mergeStateStatus === RawMergeState.Clean) {
-        return PrStatus.ReadyToMerge;
-    } else if (
-        isViewerSignedOff &&
-        reviews.some((review) => {
-            return !review.viewerDidAuthor && review.state === RawReviewState.ChangesRequested;
-        })
-    ) {
-        return PrStatus.OthersRequestedChanges;
-    } else if (
-        isViewerDone &&
-        /**
-         * Pull-request-vir enforces code-owner review with a CI check rather than GitHub's own
-         * rule, which leaves `reviewDecision` at `APPROVED` while a code owner still hasn't.
-         */
-        (reviewDecision === RawReviewDecision.ReviewRequired || hasUnapprovedCodeOwner)
-    ) {
-        return PrStatus.AwaitingOtherReviews;
-    } else if (
-        isViewerDone &&
-        check.isEnumValue(rollupState, RawCheckResult) &&
-        failedCheckResults[rollupState]
-    ) {
-        return PrStatus.ChecksFailed;
-    } else if (viewerVerdict === PrStatus.ChangesRequested) {
-        return viewerVerdict;
-    } else {
-        return hasUnresolvedThread
-            ? PrStatus.UnresolvedComments
-            : viewerVerdict || PrStatus.AwaitingReview;
-    }
-}
-
-export type GhExecResult = {
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-};
-
-/** Deadline for one `gh` call. A timed-out call fails like any other. */
-const ghTimeout: AnyDuration = {
-    minutes: 1,
-};
-
-/**
- * Node's 1 MB default cuts off big GraphQL answers, such as a PR with many long review threads,
- * which then fail as unparsable JSON.
- */
-const ghMaxBuffer: AnyByteSize = {
-    megabytes: 50,
-};
-
-export async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
-    try {
-        const result = await runCommand('gh', [...args], {
-            maxBuffer: convertByteSize(ghMaxBuffer, {
-                bytes: true,
-            }).bytes,
-            timeout: ghTimeout,
-        });
-        return {
-            exitCode: 0,
-            stdout: result.stdout,
-            stderr: result.stderr,
-        };
-    } catch (error) {
-        return {
-            exitCode:
-                check.isObject(error) && check.hasKey(error, 'code') && check.isNumber(error.code)
-                    ? error.code
-                    : 1,
-            stdout:
-                check.isObject(error) && check.hasKey(error, 'stdout') ? String(error.stdout) : '',
-            stderr: extractCommandStderr(error),
-        };
-    }
-}
-
-/**
- * Fetch a single repo's open PRs, plus the terminal ones within {@link terminalPrDisplayWindow}, in
- * one GraphQL call. Returns a `Map<headRefName, PrInfo>` so callers can resolve a folder's branch
- * to its PR with an O(1) lookup, no further API traffic. Older terminal-state PRs (closed/merged)
- * are dropped from the returned map so they don't show stale "this branch had a PR" markers in the
- * UI.
+ * Fetch repos' open PRs, plus the terminal ones within {@link terminalPrDisplayWindow}, in as few
+ * GraphQL calls as fit in a point each. Answers each repo's `Map<headRefName, PrInfo>` by
+ * {@link repoCacheKey}, so callers can resolve a folder's branch to its PR with no further API
+ * traffic. Older terminal-state PRs (closed/merged) are dropped from the returned maps so they
+ * don't show stale "this branch had a PR" markers in the UI.
  *
  * Throws {@link GitHubPollingError} on rate-limit or auth failure so the caller can flip the polling
- * kill-switch instead of retrying immediately. Other failures (no `gh`, repo not on GitHub, network
- * blip, a timeout, an answer that doesn't match the query) return `undefined`, so the caller keeps
- * what it already knows instead of treating the repo as having no PRs.
+ * kill-switch instead of retrying immediately. A repo that fails any other way (no `gh`, repo not
+ * on GitHub, network blip, a timeout, an answer that doesn't match the query) is left out, so the
+ * caller keeps what it already knows instead of treating the repo as having no PRs.
  */
-export async function fetchRepoPrs(
-    slug: Readonly<RepoSlug>,
-): Promise<Map<string, PrInfo> | undefined> {
+export async function fetchRepoPrs(slugs: ReadonlyArray<Readonly<RepoSlug>>) {
     if (!(await isGhAvailable())) {
-        return undefined;
+        return new Map<string, RepoPrsAnswer>();
     }
+    const requests = slugs.map((slug) => {
+        return {
+            slug,
+            openPrLimit: Math.min(
+                openPrsBatchSize,
+                (openPrCountByRepo.get(repoCacheKey(slug)) ?? openPrsBatchSize) +
+                    newOpenPrAllowance,
+            ),
+        };
+    });
+    const trimmedAnswers = await fetchRepoPrGroups(requests);
+    const fullAnswers = await fetchRepoPrGroups(
+        requests
+            .filter((request) => {
+                return (
+                    request.openPrLimit < openPrsBatchSize &&
+                    trimmedAnswers.get(repoCacheKey(request.slug))?.hasMoreOpenPrs
+                );
+            })
+            .map((request) => {
+                return {
+                    ...request,
+                    openPrLimit: openPrsBatchSize,
+                };
+            }),
+    );
+    const answers = new Map([
+        ...trimmedAnswers,
+        ...fullAnswers,
+    ]);
+    answers.forEach((answer, key) => {
+        openPrCountByRepo.set(key, answer.openPrCount);
+    });
+    return answers;
+}
+
+/** Each answered repo by {@link repoCacheKey}, one call per group at a time. */
+async function fetchRepoPrGroups(requests: ReadonlyArray<Readonly<RepoPrsRequest>>) {
+    const groupAnswers = await awaitedBlockingMap(
+        packGraphqlParts({
+            parts: requests,
+            /** The open and terminal lists, plus the two lists inside each open PR. */
+            countRequests(request) {
+                return 2 + 2 * request.openPrLimit;
+            },
+        }),
+        fetchRepoPrGroup,
+    );
+    return new Map(groupAnswers.flat());
+}
+
+async function fetchRepoPrGroup(group: ReadonlyArray<Readonly<RepoPrsRequest>>) {
     const result = await runGh([
         'api',
         'graphql',
+        '--include',
         '-f',
-        `query=${repoPrsGraphqlQuery}`,
-        '-f',
-        `owner=${slug.owner}`,
-        '-f',
-        `name=${slug.name}`,
+        `query=${buildRepoPrsQuery(group.map((request) => request.openPrLimit))}`,
+        ...group.flatMap((request, index) => {
+            return [
+                '-f',
+                `owner${index}=${request.slug.owner}`,
+                '-f',
+                `name${index}=${request.slug.name}`,
+            ];
+        }),
     ]);
-    if (result.exitCode !== 0) {
-        if (looksRateLimited(result.stderr)) {
-            throw new GitHubPollingError(
-                GitHubPollingDisableReason.RateLimited,
-                `GitHub API rate limit hit: ${result.stderr.trim()}`,
-                await readRateLimitResumeAtMs(),
-            );
-        } else if (looksUnauthenticated(result.stderr)) {
-            throw new GitHubPollingError(
-                GitHubPollingDisableReason.Unauthenticated,
-                `GitHub authentication failed: ${result.stderr.trim()}`,
-            );
-        } else {
-            return undefined;
-        }
+    const response = splitIncludedHeaders(result.stdout);
+    if (result.exitCode !== 0 && looksRateLimited(result.stderr)) {
+        throw new GitHubPollingError(
+            GitHubPollingDisableReason.RateLimited,
+            `GitHub API rate limit hit: ${result.stderr.trim()}`,
+            readRateLimitResumeAtMs(response.headers),
+        );
+    } else if (result.exitCode !== 0 && looksUnauthenticated(result.stderr)) {
+        throw new GitHubPollingError(
+            GitHubPollingDisableReason.Unauthenticated,
+            `GitHub authentication failed: ${result.stderr.trim()}`,
+        );
     }
     try {
-        return parsePrsByBranch(result.stdout);
+        /**
+         * `gh` exits non-zero when GitHub fails any one repo, such as one deleted since, but still
+         * prints GitHub's answers for the rest.
+         */
+        const answers = parseRepoPrsAnswer(response.body);
+        return group.flatMap((request, index) => {
+            const answer = answers[`repo${index}`];
+            return answer
+                ? [
+                      [
+                          repoCacheKey(request.slug),
+                          answer,
+                      ] satisfies [
+                          string,
+                          RepoPrsAnswer,
+                      ],
+                  ]
+                : [];
+        });
     } catch (error) {
-        log.warning(
-            `Unreadable PR list for ${slug.owner}/${slug.name}: ${extractErrorMessage(error)}`,
-        );
-        return undefined;
+        if (result.exitCode === 0) {
+            log.warning(
+                `Unreadable PR list for ${group.map((request) => repoCacheKey(request.slug)).join(', ')}: ${extractErrorMessage(error)}`,
+            );
+        }
+        return [];
     }
 }
 
+type RepoPrsAnswer = NonNullable<ReturnType<typeof parseRepoPrsAnswer>[string]>;
+
 /**
- * {@link buildPrsByBranch} over the raw answer to {@link repoPrsGraphqlQuery}. Throws when the answer
- * doesn't match the query.
+ * Each `repo<index>` alias's answer to {@link buildRepoPrsQuery}, undefined for a repository GitHub
+ * didn't answer. Throws when the answer doesn't match the query.
+ *
+ * Exported for tests — everything above it in {@link fetchRepoPrs} needs a live `gh`.
  */
-export function parsePrsByBranch(graphqlOutput: string) {
-    const repository = parseJsonWithShape(graphqlOutput, repoPrsResponseShape).data.repository;
-    return buildPrsByBranch({
-        openNodes: repository?.open.nodes || [],
-        terminalNodes: repository?.terminal.nodes || [],
-    });
+export function parseRepoPrsAnswer(graphqlOutput: string) {
+    return mapObjectValuesSync(
+        parseJsonWithShape(graphqlOutput, repoPrsResponseShape).data || {},
+        (_alias, repository) => {
+            return repository
+                ? {
+                      prsByBranch: buildPrsByBranch({
+                          openNodes: repository.open.nodes,
+                          terminalNodes: repository.terminal.nodes,
+                      }),
+                      openPrCount: repository.open.nodes.length,
+                      hasMoreOpenPrs: repository.open.pageInfo.hasNextPage,
+                      changeKeysByBranch: new Map(
+                          repository.open.nodes.map((node) => {
+                              return [
+                                  node.headRefName,
+                                  createHash('sha256').update(JSON.stringify(node)).digest('hex'),
+                              ] satisfies [
+                                  string,
+                                  string,
+                              ];
+                          }),
+                      ),
+                  }
+                : undefined;
+        },
+    );
 }
 
 /**

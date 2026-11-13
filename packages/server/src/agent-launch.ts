@@ -64,11 +64,14 @@ const signedLaunchRequestShape = defineShape({
 });
 
 const launchPayloadShape = defineShape({
-    /** The requesting tab's `AGENT_STORM_CONVERSATION_ID`, which picks the key to verify with. */
-    conversationId: '',
+    /** The requesting tab's `AGENT_STORM_LAUNCH_ID`, which picks the key to verify with. */
+    launchId: '',
     /** Must already be one of the sidebar's folders. */
     folder: '',
-    /** Typed into the folder's first AI tab as one line, so newlines are sent as spaces. */
+    /**
+     * Typed into the folder's first AI tab as one line, so newlines are sent as spaces. Empty only
+     * activates the folder, typing nothing.
+     */
     prompt: '',
     /** Accepted once. */
     requestId: '',
@@ -118,17 +121,17 @@ async function parseLaunchRequest(
     if (!payload) {
         return {
             refusal:
-                'Expected "payload" to hold string "conversationId", "folder", "prompt", and "requestId" properties and a number "createdAtMs".',
+                'Expected "payload" to hold string "launchId", "folder", "prompt", and "requestId" properties and a number "createdAtMs".',
         };
     }
     const isSigned = await verifyLaunchSignature({
-        conversationId: payload.conversationId,
+        launchId: payload.launchId,
         payload: request.payload,
         signature: request.signature,
     });
     if (!isSigned) {
         return {
-            refusal: 'The signature does not match any running agent-storm AI tab.',
+            refusal: 'The signature does not match any running agent-storm tab.',
         };
     }
     const nowMs = Date.now();

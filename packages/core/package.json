@@ -20,7 +20,9 @@
     "sideEffects": false,
     "type": "module",
     "exports": {
-        "./frontend": "./src/frontend/index.ts"
+        "./build": "./src/build/index.ts",
+        "./frontend": "./src/frontend/index.ts",
+        "./server": "./src/server/index.ts"
     },
     "scripts": {
         "compile": "virmator compile",

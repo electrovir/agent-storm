@@ -10,7 +10,9 @@ import {
     installVersion,
     isNewerVersion,
     readActiveVersions,
+    readReleaseCoreVersion,
     rejectVersion,
+    writeReleaseCoreVersion,
 } from './versions.js';
 
 /** A release tarball with no dependencies, so installing it needs no network. */
@@ -234,5 +236,22 @@ describe(rejectVersion.name, () => {
             active: 'v1.1.0',
             previous: 'v1.0.0',
         });
+    });
+});
+
+describe(readReleaseCoreVersion.name, () => {
+    it('reads what writeReleaseCoreVersion recorded', async () => {
+        const releaseDir = await mkdtemp(join(tmpdir(), 'agent-storm-core-version-'));
+        await writeReleaseCoreVersion({
+            releaseDir,
+            coreVersion: '1.2.3',
+        });
+
+        assert.strictEquals(await readReleaseCoreVersion(releaseDir), '1.2.3');
+    });
+    it('is undefined for a folder with no recorded version', async () => {
+        assert.isUndefined(
+            await readReleaseCoreVersion(await mkdtemp(join(tmpdir(), 'agent-storm-empty-'))),
+        );
     });
 });

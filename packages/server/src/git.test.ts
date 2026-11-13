@@ -1,6 +1,6 @@
 // cspell:words gitdir
 
-import {PrStatus} from '@agent-storm/common';
+import {PrStatus, RawPrState, type OpenPrNode} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {createArray} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
@@ -15,11 +15,9 @@ import {
     getGitInfo,
     listenToGitInfoChanges,
     listWorktreeChildren,
-    parsePrsByBranch,
+    parseRepoPrsAnswer,
     removeWorktree,
-    type OpenPrNode,
 } from './git.js';
-import {RawPrState} from './github-raw-enums.js';
 
 const exec = promisify(execFile);
 
@@ -37,6 +35,8 @@ function openPrNodes(nodes: ReadonlyArray<Readonly<Partial<OpenPrNode>>>): OpenP
         return {
             url: '',
             headRefName: '',
+            headRefOid: '',
+            updatedAt: '',
             state: RawPrState.Open,
             mergeStateStatus: '',
             body: '',
@@ -447,12 +447,15 @@ describe(buildPrsByBranch.name, () => {
     });
 });
 
-describe(parsePrsByBranch.name, () => {
+describe(parseRepoPrsAnswer.name, () => {
     function graphqlOutput(state: string) {
         return JSON.stringify({
             data: {
-                repository: {
+                repo0: {
                     open: {
+                        pageInfo: {
+                            hasNextPage: false,
+                        },
                         nodes: [],
                     },
                     terminal: {
@@ -471,24 +474,26 @@ describe(parsePrsByBranch.name, () => {
     }
 
     it('reads a well-formed answer', () => {
-        assert.deepEquals(parsePrsByBranch(graphqlOutput(RawPrState.Merged)).get('feature'), {
-            url: 'https://github.com/owner/name/pull/1',
-            status: PrStatus.Merged,
-        });
+        assert.deepEquals(
+            parseRepoPrsAnswer(graphqlOutput(RawPrState.Merged)).repo0?.prsByBranch.get('feature'),
+            {
+                url: 'https://github.com/owner/name/pull/1',
+                status: PrStatus.Merged,
+            },
+        );
     });
     it('rejects a PR state the query never returns', () => {
-        assert.throws(() => parsePrsByBranch(graphqlOutput('DRAFT')));
+        assert.throws(() => parseRepoPrsAnswer(graphqlOutput('DRAFT')));
     });
-    it('reads a missing repository as no PRs', () => {
-        assert.strictEquals(
-            parsePrsByBranch(
+    it('leaves a missing repository unanswered', () => {
+        assert.isUndefined(
+            parseRepoPrsAnswer(
                 JSON.stringify({
                     data: {
-                        repository: null,
+                        repo0: null,
                     },
                 }),
-            ).size,
-            0,
+            ).repo0,
         );
     });
 });

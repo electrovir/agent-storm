@@ -41,7 +41,11 @@
         "@xterm/xterm": "^6.0.0",
         "date-vir": "^9.4.1",
         "element-vir": "^27.0.2",
+        "object-shape-tester": "^6.15.3",
         "vira": "^33.17.1"
+    },
+    "devDependencies": {
+        "@types/node": "^26.6.6"
     },
     "engines": {
         "node": ">=22"

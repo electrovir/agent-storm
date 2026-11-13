@@ -1,17 +1,19 @@
 import {SettingsSection, defineSettingsSection} from '@agent-storm/core/frontend';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {findSettingsSection, listSettingsSections} from './settings-sections.js';
+import {
+    findSettingsSection,
+    groupPluginSettingsSections,
+    listSettingsSections,
+} from './settings-sections.js';
 
 const pluginSection = defineSettingsSection({
     pluginId: 'example',
     name: 'settings',
     label: 'Example',
-    group: 'App',
     searchTerms: [],
     schemaCardTitle: undefined,
     schemaKeys: [],
-    listAfter: SettingsSection.Sidebar,
 });
 
 const sections = listSettingsSections([
@@ -19,19 +21,61 @@ const sections = listSettingsSections([
 ]);
 
 describe(listSettingsSections.name, () => {
-    it('lists a plugin section right after the core section it names', () => {
+    it('lists plugin sections right after the Plugins section', () => {
         assert.deepEquals(
             sections.map((section) => section.id),
             [
                 SettingsSection.General,
+                SettingsSection.Typography,
                 SettingsSection.Terminal,
-                SettingsSection.Sidebar,
-                'example:settings',
                 SettingsSection.Activities,
+                SettingsSection.Plugins,
+                'example:settings',
                 SettingsSection.Ai,
                 SettingsSection.Folders,
                 SettingsSection.Forges,
                 SettingsSection.Maintenance,
+            ],
+        );
+    });
+});
+
+describe(groupPluginSettingsSections.name, () => {
+    it('groups sections by plugin and skips plugins without any', () => {
+        const otherSection = defineSettingsSection({
+            ...pluginSection,
+            name: 'other',
+        });
+        assert.deepEquals(
+            groupPluginSettingsSections({
+                plugins: [
+                    {
+                        id: 'empty',
+                        name: 'Empty',
+                    },
+                    {
+                        id: 'example',
+                        name: 'Example',
+                    },
+                ],
+                sections: [
+                    pluginSection,
+                    otherSection,
+                ],
+            }).map((group) => {
+                return [
+                    group.plugin.id,
+                    group.sections.map((section) => section.id),
+                ];
+            }),
+            [
+                [
+                    'example',
+                    [
+                        'example:settings',
+                        'example:other',
+                    ],
+                ],
             ],
         );
     });

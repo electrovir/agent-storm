@@ -1,19 +1,23 @@
 // cspell:words meslo menlo keymap toggleable
 
-import {ptyWebSocket, settingsEndpoint, type PaneKind} from '@agent-storm/common';
+import {ptyWebSocket, settingsEndpoint, terminalPluginId, type PaneKind} from '@agent-storm/common';
 import {
     client,
     ensureSecret,
     fetchApi,
+    getResolvedFonts,
     isDarkMode,
     listenToDarkMode,
+    listenToTypography,
     localStorageClient,
+    resolvePluginSettings,
 } from '@agent-storm/core/frontend';
 import {HttpMethod} from '@rest-vir/api';
 import {FitAddon} from '@xterm/addon-fit';
 import {WebLinksAddon} from '@xterm/addon-web-links';
 import {WebglAddon} from '@xterm/addon-webgl';
 import {Terminal} from '@xterm/xterm';
+import {terminalSettings} from '../../terminal-settings.js';
 import {createTerminalFitter, stableFitFrames} from './terminal-fit.js';
 import {attachTerminalInput} from './terminal-input.js';
 import {terminalColors, terminalTheme} from './terminal-theme.js';
@@ -34,6 +38,9 @@ type TerminalSessionInputs = Readonly<{
 export function toControlByte(input: string): string {
     return String.fromCodePoint((input.toUpperCase().codePointAt(0) ?? 0) & 0x1f);
 }
+
+const terminalDefaultFontFamily = '"MesloLGS NF", Menlo, monospace';
+const terminalDefaultFontSize = 13;
 
 async function createTerminal({
     element,
@@ -60,7 +67,13 @@ async function createTerminal({
     ]);
     // optionalShape default is true; treat undefined as on.
     const useWebgl = settings?.useWebgl !== false;
-    const clickableLinks = settings?.terminalClickableLinks !== false;
+    const clickableLinks = resolvePluginSettings({
+        plugin: {
+            id: terminalPluginId,
+            settings: terminalSettings,
+        },
+        settings,
+    }).clickableLinks;
 
     /**
      * User-controlled cap on how many scrollback lines this pane retains. Read once here (not
@@ -70,8 +83,8 @@ async function createTerminal({
     const scrollbackLimit = localStorageClient.scrollbackLimit.read();
 
     const terminal = new Terminal({
-        fontFamily: '"MesloLGS NF", Menlo, monospace',
-        fontSize: 13,
+        fontFamily: getResolvedFonts().terminal.familyCss || terminalDefaultFontFamily,
+        fontSize: getResolvedFonts().terminal.sizePx ?? terminalDefaultFontSize,
         cursorBlink: true,
         cursorStyle: 'bar',
         cursorWidth: 3,
@@ -378,6 +391,14 @@ export async function connectTerminalSession({
         });
     });
 
+    /** Changing the cell size changes how many columns fit, so the pty needs the new size too. */
+    const stopTypographyListener = listenToTypography((fonts) => {
+        terminal.options.fontFamily = fonts.terminal.familyCss || terminalDefaultFontFamily;
+        terminal.options.fontSize = fonts.terminal.sizePx ?? terminalDefaultFontSize;
+        fitter.repaintGlyphs();
+        fitter.fitAndResend(0);
+    });
+
     return {
         terminal,
         resizeObserver,
@@ -390,6 +411,7 @@ export async function connectTerminalSession({
             fitter.fitAndResend(stableFitFrames);
         },
         stopThemeListener,
+        stopTypographyListener,
         sendBytes(bytes: string) {
             socket.send(bytes);
         },

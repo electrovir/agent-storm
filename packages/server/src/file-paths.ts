@@ -1,6 +1,7 @@
 import {replaceExtension} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
-import {instanceName, instanceSuffix, ReleaseDir, userDataDir} from 'agent-storm';
+import {builtInPluginBuildDirName, ReleaseDir} from 'agent-storm';
+import {instanceName, instanceSuffix, userDataDir} from 'agent-storm-util';
 import {homedir, tmpdir} from 'node:os';
 import {basename, resolve} from 'node:path';
 import {releaseBuild} from './release-build.js';
@@ -21,6 +22,9 @@ export const runstormCliPath = resolve(
 );
 
 export const nodePtyPrebuildsDir = resolve(monorepoRoot, 'node_modules', 'node-pty', 'prebuilds');
+
+/** The top folder of a release, which holds its `server/` and `frontend/` folders. */
+export const releaseRootDir = resolve(import.meta.dirname, '..');
 
 /** The launcher bundled beside a release's server. Only a release has it. */
 export const releaseLauncherPath = resolve(import.meta.dirname, 'launcher.js');
@@ -74,6 +78,8 @@ export const githubCachePath = resolve(serverStateDir, 'github-cache.json');
  * regenerated the way git or PR state can.
  */
 export const sessionStorePath = resolve(userDataDir, 'folder-state', 'pane-sessions.json');
+/** The AI tabs that were in the middle of a task when last checked, to resume after a reboot. */
+export const livePanesPath = resolve(userDataDir, 'folder-state', 'live-panes.json');
 /** Where {@link sessionStorePath} was kept before it moved, read only to migrate it. */
 export const legacySessionStorePath = resolve(checkoutStateDir, 'pane-sessions.json');
 
@@ -149,6 +155,20 @@ export const clientErrorLogPath = resolve(
 );
 
 /**
+ * Debug entries shipped by the frontend, one JSON object per line, in one file per UTC hour. Files
+ * older than a day are deleted, so search them all with `cat <dir>/*.jsonl | jq ...` and never
+ * clean up by hand.
+ */
+export const debugLogDir = resolve(tmpdir(), `agent-storm${instanceSuffix}-debug-logs`);
+
+/**
+ * One JSON object per line from both sides: the browser's slow windows (`side: 'client'`) and the
+ * server's slow windows and startups (`side: 'server'`). The PWA has no devtools to profile in, so
+ * this file is where a slowdown gets diagnosed.
+ */
+export const perfLogPath = resolve(tmpdir(), `agent-storm${instanceSuffix}-perf.log`);
+
+/**
  * A script the server spawns, from its source path. A release bundles each one into a `.js` file of
  * the same name beside the server's own bundle.
  */
@@ -169,28 +189,11 @@ export const daemonScriptPath = toSpawnedScriptPath(
     resolve(import.meta.dirname, 'daemon', 'pty-daemon.ts'),
 );
 
-/** Where review folders were kept before they moved into {@link manualReviewSkillDir}. */
-export const legacyReviewsDir = resolve(userDataDir, 'reviews');
-/** Review folders get moved here to be deleted in the background. */
-export const deletingReviewFoldersDir = resolve(userDataDir, 'deleting');
 /**
- * The manual-review skill's folder. It holds the skill's {@link manualReviewStatePath}, the folder
- * each PR is reviewed in at `<owner>/<repo>/<PR number>` (made by the Review tab or by
- * `/manual-review here`), and the copies `/manual-review local` makes at `<main checkout's folder
- * name>/<branch>`.
+ * Where review folders were kept before they moved into the manual-review skill's folder,
+ * `manualReviewSkillDir`.
  */
-export const manualReviewSkillDir = resolve(userDataDir, 'manual-review');
-/** Written by the manual-review skill, keyed by `<owner>/<repo>` then head branch. */
-export const manualReviewStatePath = resolve(manualReviewSkillDir, 'state.json');
-
-/** Which folders watch mode is on in, and where each one's watch stands. */
-export const watchModeStatePath = resolve(userDataDir, 'watch-mode.json');
-
-/** What watch mode's AI passes follow, pointed at from each pass's prompt. */
-export const watchModeInstructionsPath = resolve(import.meta.dirname, 'watch-mode-instructions.md');
-
-/** Each watched folder's latest pass: its tasks and PR check, for the AI to read. */
-export const watchModePassDir = resolve(userDataDir, 'watch-mode');
+export const legacyReviewsDir = resolve(userDataDir, 'reviews');
 
 /**
  * The user's settings file, managed via the settings modal. It may also be YAML, TOML, or TS until
@@ -201,8 +204,18 @@ export const settingsJsonPath = resolve(userDataDir, 'settings.json');
 /** The app's own state, such as the repo list, kept apart from the user's settings. */
 export const appStatePath = resolve(userDataDir, 'state.json');
 
+/** Each folder (or symlink to one) in here is an external plugin. */
+export const pluginsDir = resolve(userDataDir, 'plugins');
+
 /** Held both settings and app state before they were split. Migrated once on startup. */
 export const legacyConfigPath = resolve(userDataDir, 'config.json');
+
+/**
+ * Text that failed to reach a pane, such as a review verdict, one JSON object per line, so it can
+ * be sent again by hand. Kept in {@link userDataDir} since the server log is wiped on every
+ * restart.
+ */
+export const failedPaneInputsPath = resolve(userDataDir, 'failed-pane-inputs.jsonl');
 
 /**
  * An AI running in a tab launches a session in another folder by moving a signed `<id>.json`
@@ -212,7 +225,7 @@ export const legacyConfigPath = resolve(userDataDir, 'config.json');
 export const agentLaunchRequestsDir = resolve(userDataDir, 'launch-requests');
 
 /**
- * Signs and submits a launch request. Its path is given to every AI tab as
+ * Signs and submits a launch request. Its path is given to every tab as
  * `AGENT_STORM_LAUNCH_SCRIPT`.
  */
 export const agentLaunchScriptPath = toSpawnedScriptPath(
@@ -221,6 +234,19 @@ export const agentLaunchScriptPath = toSpawnedScriptPath(
 
 /** A release's built frontend, which its server serves. */
 export const releaseFrontendDir = resolve(import.meta.dirname, '..', ReleaseDir.Frontend);
+
+/** The folder a built-in plugin's manifest and bundles are in. */
+export function findBuiltInPluginDir(pluginId: string) {
+    return releaseBuild
+        ? resolve(import.meta.dirname, '..', ReleaseDir.Plugins, pluginId)
+        : resolve(monorepoRoot, 'packages', `plugin-${pluginId}`, builtInPluginBuildDirName);
+}
+
+/** Each plugin's own folder of files it keeps, by plugin id. */
+export const pluginDataDir = resolve(userDataDir, 'plugin-data');
+
+/** Each plugin's own folder of throwaway files, by plugin id. */
+export const pluginTempDir = resolve(tmpdir(), `agent-storm${instanceSuffix}-plugins`);
 
 /** Held the Review tab's settings before they moved into the settings file. */
 export const legacyReviewConfigPath = resolve(userDataDir, 'review-config.json');
@@ -237,12 +263,9 @@ export const folderStatesDir = resolve(userDataDir, 'folders');
  */
 export const configBackupDir = resolve(userDataDir, 'config-backups');
 
-/** Directory where dragged-in screenshot uploads land before being attached to a pane. */
-export const uploadsDir = resolve(tmpdir(), `agent-storm${instanceSuffix}-uploads`);
-
 /**
  * Avatar images for the user's AI definitions. Lives next to {@link settingsJsonPath} rather than in
- * `tmpdir()` like {@link uploadsDir}: these are referenced by the config and have to survive a
+ * `tmpdir()` like terminal uploads: these are referenced by the config and have to survive a
  * reboot, while uploads are throwaway files handed to a terminal once.
  */
 export const avatarsDir = resolve(userDataDir, 'avatars');

@@ -6,10 +6,16 @@ import {
     type UiLayout,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {omitObjectKeys, PromiseQueue, type PartialWithUndefined} from '@augment-vir/common';
+import {
+    omitObjectKeys,
+    PromiseQueue,
+    removeDuplicates,
+    type PartialWithUndefined,
+} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
+import {logDebug} from './debug-log.js';
 import {type FolderDataObservable} from './folder-data.js';
 import {localStorageClient} from './local-storage-client.js';
 import {joinTabLayout, showTabKind, splitTabLayout, type TabLayout} from './tab-layout.js';
@@ -56,8 +62,43 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         storedSelections: {},
     };
 
-    function setLayout(layout: Readonly<UiLayout>) {
+    /** Traces tab selections that revert, while debug logging is on. */
+    function describeChangedFolders(
+        previous: Readonly<UiLayout> | undefined,
+        next: Readonly<UiLayout>,
+    ) {
+        return removeDuplicates([
+            ...Object.keys(previous?.tabLayouts || {}),
+            ...Object.keys(next.tabLayouts),
+            ...Object.keys(next.tabSelections),
+        ])
+            .filter((folder) => {
+                return (
+                    !check.deepEquals(previous?.tabLayouts[folder], next.tabLayouts[folder]) ||
+                    !check.deepEquals(previous?.tabSelections[folder], next.tabSelections[folder])
+                );
+            })
+            .map((folder) => {
+                return {
+                    folder,
+                    isSharedChanged: !check.deepEquals(
+                        previous?.tabLayouts[folder],
+                        next.tabLayouts[folder],
+                    ),
+                    groupIds: Object.keys(next.tabLayouts[folder]?.groups || {}),
+                    previousServerSelection: previous?.tabSelections[folder],
+                    serverSelection: next.tabSelections[folder],
+                    windowSelection: observable.value.selections[folder],
+                };
+            });
+    }
+
+    function setLayout(layout: Readonly<UiLayout>, source: string) {
         if (!check.deepEquals(observable.value.layout, layout)) {
+            logDebug('uiLayout.setLayout', {
+                source,
+                changedFolders: describeChangedFolders(observable.value.layout, layout),
+            });
             observable.setValue({
                 ...observable.value,
                 layout,
@@ -85,19 +126,33 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         try {
             const layout = await fetchApi(uiLayoutEndpoint, HttpMethod.Get);
             /** A save started since this load asked is newer than its answer. */
-            if (generation === tracking.writeGeneration && !tracking.pendingWrites) {
-                setLayout(layout);
+            const isApplied = generation === tracking.writeGeneration && !tracking.pendingWrites;
+            logDebug('uiLayout.load', {
+                revision,
+                isApplied,
+                pendingWrites: tracking.pendingWrites,
+                isGenerationStale: generation !== tracking.writeGeneration,
+            });
+            if (isApplied) {
+                setLayout(layout, `load revision ${revision}`);
             }
-        } catch {
+        } catch (error) {
+            logDebug('uiLayout.load failed', {
+                revision,
+                error: String(error),
+            });
             tracking.fetchedRevision = undefined;
             if (!observable.value.layout) {
                 /** Leaves the panes usable with default layouts while the server can't answer. */
-                setLayout({
-                    tabLayouts: {},
-                    tabSelections: {},
-                    mainTabOrder: [],
-                    enabledActivities: {},
-                });
+                setLayout(
+                    {
+                        tabLayouts: {},
+                        tabSelections: {},
+                        mainTabOrder: [],
+                        enabledActivities: {},
+                    },
+                    'load fallback',
+                );
             }
         }
     }
@@ -108,10 +163,17 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         try {
             const saved = await writeQueue.add(request);
             tracking.pendingWrites--;
+            logDebug('uiLayout.save', {
+                isApplied: !tracking.pendingWrites,
+                pendingWrites: tracking.pendingWrites,
+            });
             if (!tracking.pendingWrites) {
-                setLayout(saved);
+                setLayout(saved, 'save');
             }
-        } catch {
+        } catch (error) {
+            logDebug('uiLayout.save failed', {
+                error: String(error),
+            });
             tracking.pendingWrites--;
             /** Reloads on the next poll, putting back whatever the server kept. */
             tracking.fetchedRevision = undefined;
@@ -150,6 +212,11 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         const existing = getTabLayout(folder);
         const updated = current && update(existing);
         if (!current || !updated) {
+            logDebug('uiLayout.updateTabLayout skipped', {
+                folder,
+                hasLayout: !!current,
+                caller: new Error('caller').stack?.split('\n').slice(2, 6),
+            });
             return;
         }
         const {shared, selection} = splitTabLayout(updated);
@@ -165,6 +232,14 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         if (!isSharedChanged && !isSelectionChanged) {
             return;
         }
+        logDebug('uiLayout.updateTabLayout', {
+            folder,
+            isSharedChanged,
+            isSelectionChanged,
+            existingSelection: existing && splitTabLayout(existing).selection,
+            selection,
+            caller: new Error('caller').stack?.split('\n').slice(2, 6),
+        });
         if (isSelectionChanged) {
             localStorageClient.tabSelectionByFolder.writeFolder({
                 folder,
@@ -191,6 +266,15 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
                       [folder]: selection,
                   }
                 : observable.value.selections,
+        });
+        const joinedAfter = getTabLayout(folder);
+        logDebug('uiLayout.updateTabLayout applied', {
+            folder,
+            windowSelection: observable.value.selections[folder],
+            serverSelection: observable.value.layout?.tabSelections[folder],
+            joinedSelection: joinedAfter && splitTabLayout(joinedAfter).selection,
+            sharedGroups: observable.value.layout?.tabLayouts[folder]?.groups,
+            sharedRootId: observable.value.layout?.tabLayouts[folder]?.rootId,
         });
         void save(() => {
             return fetchApi(tabLayoutSaveEndpoint, HttpMethod.Put, {
@@ -235,7 +319,7 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
             ) {
                 return;
             }
-            setLayout(next);
+            setLayout(next, 'setActivityBar');
             void save(() => {
                 return fetchApi(activityBarSaveEndpoint, HttpMethod.Put, {
                     requestData: {

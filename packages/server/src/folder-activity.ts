@@ -7,7 +7,7 @@ import {
     PromiseQueue,
     wrapInTry,
 } from '@augment-vir/common';
-import {normalizePath, writeFileAtomically} from 'agent-storm';
+import {normalizePath, writeFileAtomically} from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
 import {folderActivityPath} from './file-paths.js';

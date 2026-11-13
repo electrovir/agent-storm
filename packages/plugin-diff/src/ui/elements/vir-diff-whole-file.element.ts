@@ -1,9 +1,10 @@
-import {maxDiffFileLines, type GitDiffFileContents, type ReviewComment} from '@agent-storm/common';
+import {maxDiffFileLines, type ReviewComment} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {ViraButton, ViraColorVariant, ViraSize, viraThemeByKeys} from 'vira';
-import {imageDiffStyles, renderImageDiff} from './image-diff.js';
+import {type GitDiffFileContents} from '../../diff-api.js';
 import {VirFileComments} from './vir-file-comments.element.js';
+import {VirImageDiff} from './vir-image-diff.element.js';
 
 /** A centered note filling the space a diff would take. */
 export const diffPlaceholderStyles = css`
@@ -47,7 +48,6 @@ export const VirDiffWholeFile = defineAppElement<{
             min-height: 0;
         }
 
-        ${imageDiffStyles}
         ${diffPlaceholderStyles}
     `,
     render({inputs, dispatch, events}) {
@@ -63,9 +63,9 @@ export const VirDiffWholeFile = defineAppElement<{
         if (!inputs.content.tooLargeOrBinary) {
             return html`
                 ${commentsTemplate}
-                ${renderImageDiff({
+                <${VirImageDiff.assign({
                     content: inputs.content,
-                })}
+                })}></${VirImageDiff}>
             `;
         }
 

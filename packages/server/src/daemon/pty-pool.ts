@@ -4,10 +4,10 @@ import {PaneKind, PaneStatus} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, omitObjectKeys} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
-import {defaultUserDataDir, InstanceEnvVar, userDataDir} from 'agent-storm';
+import {defaultUserDataDir, InstanceEnvVar, userDataDir} from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {spawn, type IPty} from 'node-pty';
-import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
+import {createHmac, randomBytes, randomUUID, timingSafeEqual} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {basename, delimiter, dirname, join, resolve, sep} from 'node:path';
@@ -171,6 +171,12 @@ type PaneEntry = {
     /** The running pty's `AGENT_STORM_CONVERSATION_ID`. No other process is given it. */
     conversationId: string | undefined;
     /**
+     * The running pty's `AGENT_STORM_LAUNCH_ID`, which names the key its launch requests are signed
+     * with. Every pane kind gets one, unlike `conversationId`, so a shell tab can sign requests
+     * without Claude's hooks attributing its processes to a conversation.
+     */
+    launchId: string | undefined;
+    /**
      * Signs the running pty's launch requests. Held only in the daemon's memory and that pty's
      * environment, and replaced on every spawn.
      */
@@ -301,6 +307,7 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
         scrollbackBytes: 0,
         colors: undefined,
         conversationId: undefined,
+        launchId: undefined,
         launchKey: undefined,
     };
     panes.set(key, entry);
@@ -334,15 +341,18 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
  *   the install. A real terminal started from the OS has none of these, so neither should ours.
  */
 const conversationIdEnvKey = 'AGENT_STORM_CONVERSATION_ID';
+const launchIdEnvKey = 'AGENT_STORM_LAUNCH_ID';
 const launchKeyEnvKey = 'AGENT_STORM_LAUNCH_KEY';
 const launchScriptEnvKey = 'AGENT_STORM_LAUNCH_SCRIPT';
 
 function spawnEnv({
     conversationId,
+    launchId,
     launchKey,
 }: Readonly<{
     conversationId: string | undefined;
-    launchKey: string | undefined;
+    launchId: string;
+    launchKey: string;
 }>): NodeJS.ProcessEnv {
     const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) => {
         return String(key).toLowerCase().startsWith('npm_');
@@ -357,6 +367,7 @@ function spawnEnv({
          * otherwise leak into every pane spawned without one.
          */
         conversationIdEnvKey,
+        launchIdEnvKey,
         launchKeyEnvKey,
         launchScriptEnvKey,
         /**
@@ -393,12 +404,9 @@ function spawnEnv({
                   [conversationIdEnvKey]: conversationId,
               }
             : {}),
-        ...(launchKey
-            ? {
-                  [launchKeyEnvKey]: launchKey,
-                  [launchScriptEnvKey]: agentLaunchScriptPath,
-              }
-            : {}),
+        [launchIdEnvKey]: launchId,
+        [launchKeyEnvKey]: launchKey,
+        [launchScriptEnvKey]: agentLaunchScriptPath,
         /**
          * Tells the Claude hooks, `launch-session.script.ts`, the manual-review skill, and the
          * `claude` shell wrapper which instance's files to use. Left unset for the default folder,
@@ -415,19 +423,19 @@ function spawnEnv({
 
 /**
  * Whether `signature` is the hex HMAC-SHA256 of `payload` under the launch key of the running pty
- * whose conversation id is `conversationId`.
+ * whose launch id is `launchId`.
  */
 export function verifyLaunchSignature({
-    conversationId,
+    launchId,
     payload,
     signature,
 }: Readonly<{
-    conversationId: string;
+    launchId: string;
     payload: string;
     signature: string;
 }>) {
     const launchKey = Array.from(panes.values()).find((entry) => {
-        return !!entry.pty && !!conversationId && entry.conversationId === conversationId;
+        return !!entry.pty && !!launchId && entry.launchId === launchId;
     })?.launchKey;
     if (!launchKey) {
         return false;
@@ -669,7 +677,10 @@ function startPty({
     const spawnGeneration = entry.spawnGeneration;
     const cwd = normalizePath(folder);
     entry.conversationId = conversationId;
-    entry.launchKey = conversationId ? randomBytes(32).toString('hex') : undefined;
+    const launchId = randomUUID();
+    const launchKey = randomBytes(32).toString('hex');
+    entry.launchId = launchId;
+    entry.launchKey = launchKey;
     try {
         if (livePtys.size >= maxLivePtys) {
             /**
@@ -685,7 +696,8 @@ function startPty({
             cwd,
             env: spawnEnv({
                 conversationId,
-                launchKey: entry.launchKey,
+                launchId,
+                launchKey,
             }),
         });
         livePtys.add(pty);

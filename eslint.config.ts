@@ -12,6 +12,7 @@ export default [
     {
         ignores: [
             /** Add file globs that should be ignored. */
+            'packages/*/src/server/generated/',
         ],
     },
     {

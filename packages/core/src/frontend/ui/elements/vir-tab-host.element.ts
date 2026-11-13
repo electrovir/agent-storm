@@ -22,6 +22,7 @@ import {
     type ViraMenuItemEntry,
     type ViraTab,
 } from 'vira';
+import {logDebug} from '../../util/debug-log.js';
 import {type NewTabRequest} from '../../util/plugin-api.js';
 import {staticTabRouter, toStaticTabRoute} from '../../util/static-tab-router.js';
 import {
@@ -38,6 +39,7 @@ import {
     resizeSplit,
     selectTab,
     splitTab,
+    splitTabLayout,
     type TabLayout,
 } from '../../util/tab-layout.js';
 import {defineAppElement} from '../define-app-element.js';
@@ -60,7 +62,56 @@ export type TabHostNewTabOption = {
     kind: string;
     /** The new tab's own state. */
     state: Readonly<TabState> | undefined;
-};
+} & PartialWithUndefined<{
+    /** Runs instead of opening a tab, for an entry that can't open one yet. */
+    openInstead(): void;
+}>;
+
+/** Traces tab clicks that don't select, while debug logging is on. */
+function logTabDebug(event: string, details: Readonly<Record<string, unknown>>) {
+    logDebug(`tabHost.${event}`, details);
+}
+
+function describeElement(target: EventTarget | undefined) {
+    if (!(target instanceof Element)) {
+        return target ? target.constructor.name : 'none';
+    }
+    return [
+        target.tagName.toLowerCase(),
+        target.className ? `.${target.className}` : '',
+        ` "${(target.textContent || '').trim().slice(0, 30)}"`,
+    ].join('');
+}
+
+const debugTabHosts = new Set<HTMLElement>();
+globalThis.addEventListener(
+    'pointerdown',
+    (event) => {
+        const path = event.composedPath();
+        debugTabHosts.forEach((tabHost) => {
+            if (!tabHost.isConnected) {
+                debugTabHosts.delete(tabHost);
+                return;
+            }
+            tabHost.shadowRoot?.querySelectorAll('.strip-tabs').forEach((strip) => {
+                const rect = strip.getBoundingClientRect();
+                const isInside =
+                    event.clientX >= rect.left &&
+                    event.clientX <= rect.right &&
+                    event.clientY >= rect.top &&
+                    event.clientY <= rect.bottom;
+                if (isInside && !path.includes(strip)) {
+                    logTabDebug('strip covered', {
+                        path: path.slice(0, 6).map((target) => describeElement(target)),
+                    });
+                }
+            });
+        });
+    },
+    {
+        capture: true,
+    },
+);
 
 type PixelRect = Readonly<{
     left: number;
@@ -291,6 +342,7 @@ export const VirTabHost = defineAppElement<{
     `,
     render({inputs, state, updateState, dispatch, events, host}) {
         const layout = inputs.layout;
+        debugTabHosts.add(host);
 
         function isAvailable(tabId: string) {
             return !!host.instanceInputs.tabs[tabId]?.isAvailable;
@@ -299,6 +351,10 @@ export const VirTabHost = defineAppElement<{
         function changeLayout(update: (current: Readonly<TabLayout>) => Readonly<TabLayout>) {
             const current = host.instanceInputs.layout;
             const updated = update(current);
+            logTabDebug('changeLayout', {
+                isChanged: updated !== current,
+                selection: splitTabLayout(updated).selection,
+            });
             if (updated !== current) {
                 dispatch(
                     new events.layoutChanged({
@@ -508,6 +564,12 @@ export const VirTabHost = defineAppElement<{
                 clientY: event.clientY,
             });
             const tabId = stripTabIds[tabIndex];
+            logTabDebug('strip pointerdown', {
+                tabIndex,
+                tabId,
+                stripTabIds,
+                target: describeElement(event.composedPath()[0]),
+            });
             if (!tabId || !isDraggable) {
                 return;
             }
@@ -570,6 +632,10 @@ export const VirTabHost = defineAppElement<{
                 return {
                     content: option.label,
                     onClick() {
+                        if (option.openInstead) {
+                            option.openInstead();
+                            return;
+                        }
                         dispatch(
                             new events.newTabRequested({
                                 detail: {
@@ -644,8 +710,29 @@ export const VirTabHost = defineAppElement<{
                                 })}
                                 ${listen(ViraTabs.events.tabSelect, (event) => {
                                     const tabId = event.detail.paths.fullPaths[0];
+                                    logTabDebug('tabSelect', {
+                                        tabId,
+                                        groupId,
+                                        displayedTabId,
+                                        isAvailable: tabId ? isAvailable(tabId) : undefined,
+                                        activeGroupId: host.instanceInputs.layout.activeGroupId,
+                                    });
                                     if (tabId) {
                                         changeLayout((current) => selectTab(current, tabId));
+                                        setTimeout(() => {
+                                            const afterLayout = host.instanceInputs.layout;
+                                            logTabDebug('after select', {
+                                                tabId,
+                                                activeGroupId: afterLayout.activeGroupId,
+                                                groups: afterLayout.groups,
+                                                displayed: groupId
+                                                    ? findDisplayedTabId(afterLayout, {
+                                                          groupId,
+                                                          isAvailable,
+                                                      })
+                                                    : undefined,
+                                            });
+                                        }, 500);
                                     }
                                 })}
                             ></${ViraTabs}>

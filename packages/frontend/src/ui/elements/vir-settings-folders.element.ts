@@ -1,4 +1,10 @@
-import {folderSettingsEndpoint, type FolderInfo, type Settings} from '@agent-storm/common';
+import {
+    FolderSettingsApproval,
+    folderSettingsApprovalEndpoint,
+    folderSettingsEndpoint,
+    type FolderInfo,
+    type Settings,
+} from '@agent-storm/common';
 import {
     defineAppElement,
     fetchApi,
@@ -7,9 +13,17 @@ import {
     type ValueUpdate,
 } from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
+import {extractErrorMessage} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {asyncProp, css, defineElementEvent, html, listen, nothing} from 'element-vir';
-import {ViraDropdown, ViraInput} from 'vira';
+import {ViraButton, ViraColorVariant, ViraDropdown, ViraEmphasis, ViraInput, ViraSize} from 'vira';
+
+const approvalLabels: Readonly<Record<FolderSettingsApproval, string>> = {
+    [FolderSettingsApproval.NotNeeded]: '',
+    [FolderSettingsApproval.NeedsApproval]: 'Needs approval.',
+    [FolderSettingsApproval.Changed]: 'Changed since you approved it.',
+    [FolderSettingsApproval.Approved]: 'Approved.',
+};
 
 function toFolderLabel(folder: Readonly<FolderInfo>, folderInfo: ReadonlyMap<string, FolderInfo>) {
     const parentName = folder.parentRepoPath && folderInfo.get(folder.parentRepoPath)?.name;
@@ -45,6 +59,8 @@ export const VirSettingsFolders = defineAppElement<{
                     ).files;
                 },
             }),
+            approvalError: '',
+            isSavingApproval: false,
         };
     },
     styles: css`
@@ -71,13 +87,20 @@ export const VirSettingsFolders = defineAppElement<{
             }
         }
 
+        .file-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+        }
+
         .file-path {
             font-family: ui-monospace, monospace;
             font-size: 12px;
             overflow-wrap: anywhere;
         }
     `,
-    render({inputs, state, dispatch, events}) {
+    render({inputs, state, dispatch, events, updateState}) {
         function changeSettings(update: ValueUpdate<Settings>) {
             dispatch(
                 new events.settingsChange({
@@ -110,21 +133,108 @@ export const VirSettingsFolders = defineAppElement<{
                       `
                     : nothing;
             }
+            async function saveApproval(
+                params: Readonly<{
+                    path: string;
+                    contentHash: string;
+                    isApproved: boolean;
+                    folder: string;
+                }>,
+            ) {
+                updateState({
+                    isSavingApproval: true,
+                    approvalError: '',
+                });
+                try {
+                    await fetchApi(folderSettingsApprovalEndpoint, HttpMethod.Put, {
+                        requestData: {
+                            path: params.path,
+                            contentHash: params.contentHash,
+                            isApproved: params.isApproved,
+                        },
+                    });
+                    state.folderFiles.forceUpdate({
+                        folder: params.folder,
+                    });
+                    updateState({
+                        isSavingApproval: false,
+                    });
+                } catch (error) {
+                    updateState({
+                        isSavingApproval: false,
+                        approvalError: extractErrorMessage(error),
+                    });
+                }
+            }
+
+            const folder = inputs.folder;
             return files.length
-                ? files.map((file) => {
-                      return html`
-                          <div class="settings-file">
-                              <span class="file-path">${file.path}</span>
-                              ${file.problem
-                                  ? html`
-                                        <span class="card-hint">${file.problem}</span>
-                                    `
-                                  : html`
-                                        <pre>${file.contents}</pre>
-                                    `}
-                          </div>
-                      `;
-                  })
+                ? html`
+                      ${state.approvalError
+                          ? html`
+                                <div class="card-hint">${state.approvalError}</div>
+                            `
+                          : nothing}
+                      ${files.map((file) => {
+                          const isApproved = file.approval === FolderSettingsApproval.Approved;
+                          const canApprove =
+                              !!folder &&
+                              !!file.contentHash &&
+                              file.approval !== FolderSettingsApproval.NotNeeded;
+                          return html`
+                              <div class="settings-file">
+                                  <div class="file-header">
+                                      <span class="file-path">${file.path}</span>
+                                      <span class="card-hint">
+                                          ${approvalLabels[file.approval]}
+                                      </span>
+                                      ${canApprove && folder
+                                          ? html`
+                                                <${ViraButton.assign({
+                                                    text: isApproved ? 'Revoke' : 'Approve',
+                                                    buttonSize: ViraSize.Small,
+                                                    buttonEmphasis: ViraEmphasis.Subtle,
+                                                    color: ViraColorVariant.Neutral,
+                                                    isDisabled: state.isSavingApproval,
+                                                })}
+                                                    ${listen('click', async () => {
+                                                        if (state.isSavingApproval) {
+                                                            return;
+                                                        }
+                                                        await saveApproval({
+                                                            path: file.path,
+                                                            contentHash: file.contentHash,
+                                                            isApproved: !isApproved,
+                                                            folder,
+                                                        });
+                                                    })}
+                                                ></${ViraButton}>
+                                            `
+                                          : nothing}
+                                  </div>
+                                  ${file.problem
+                                      ? html`
+                                            <span class="card-hint">${file.problem}</span>
+                                        `
+                                      : nothing}
+                                  ${canApprove && !isApproved
+                                      ? html`
+                                            <span class="card-hint">
+                                                Approving lets this file run commands and code. It
+                                                covers this file's text as it is now, not files it
+                                                imports.
+                                            </span>
+                                        `
+                                      : nothing}
+                                  ${file.contents
+                                      ? html`
+                                            <pre>${file.contents}</pre>
+                                        `
+                                      : nothing}
+                              </div>
+                          `;
+                      })}
+                  `
                 : html`
                       <div class="card-hint">
                           No settings files. A repo can set its defaults in

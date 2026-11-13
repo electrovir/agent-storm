@@ -12,6 +12,7 @@ import {check} from '@augment-vir/assert';
 import {getEnumValues} from '@augment-vir/common';
 import {html, listen} from 'element-vir';
 import {createSizedIcon, LucideFileDiffIcon, ViraDropdown} from 'vira';
+import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
 import {findDiffPlacement} from '../../util/diff-placement.js';
 import {resolveDiffView} from '../../util/diff-view.js';
 import {VirPaneDiff} from './vir-pane-diff.element.js';
@@ -21,7 +22,10 @@ const diffViewLabels: Readonly<Record<DiffView, string>> = {
     [DiffView.ManualReview]: 'Manual review',
 };
 
-function renderDiff(params: PaneRenderParams<typeof diffTabStateShape>) {
+function renderDiff(
+    params: PaneRenderParams<typeof diffTabStateShape>,
+    renderCodeView: RenderDiffCodeView | undefined,
+) {
     const paneReview = findExtensionRun(params, reviewExtension);
     const info = params.context.folderData.value.folderInfo.get(params.folder);
     const diff = resolveDiffView({
@@ -38,6 +42,7 @@ function renderDiff(params: PaneRenderParams<typeof diffTabStateShape>) {
         [DiffView.Source]: diff.isAvailable[DiffView.Source],
         [DiffView.ManualReview]: diff.isManualReviewSelectable,
     };
+    const isReview = isReviewFolder(params);
 
     return html`
         <${VirPaneDiff.assign({
@@ -47,37 +52,41 @@ function renderDiff(params: PaneRenderParams<typeof diffTabStateShape>) {
             diffSelections: params.tabState.diffSelections,
             paneReview,
             isReviewCopyReady: diff.isAvailable[DiffView.ManualReview],
-            isReviewFolder: isReviewFolder(params),
+            isReviewFolder: isReview,
             screenSize: params.context.screenSize,
-            sourcePicker: html`
-                <${ViraDropdown.assign({
-                    options: getEnumValues(DiffView).map((view) => {
-                        return {
-                            value: view,
-                            label: diffViewLabels[view],
-                            disabled: !isViewSelectable[view],
-                        };
-                    }),
-                    selected: [
-                        diff.diffView,
-                    ],
-                })}
-                    ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
-                        const view = event.detail[0];
-                        if (check.isEnumValue(view, DiffView)) {
-                            params.writeLayout((current) => {
-                                return updateTabState(current, {
-                                    tabId: params.tabId,
-                                    state: {
-                                        diffView: view,
-                                    } satisfies Partial<DiffTabState>,
-                                });
-                            });
-                            paneReview.setManualReviewStarting(false);
-                        }
-                    })}
-                ></${ViraDropdown}>
-            `,
+            renderCodeView,
+            /** A review folder's own checkout is the manual review, with no other diff to pick. */
+            sourcePicker: isReview
+                ? undefined
+                : html`
+                      <${ViraDropdown.assign({
+                          options: getEnumValues(DiffView).map((view) => {
+                              return {
+                                  value: view,
+                                  label: diffViewLabels[view],
+                                  disabled: !isViewSelectable[view],
+                              };
+                          }),
+                          selected: [
+                              diff.diffView,
+                          ],
+                      })}
+                          ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
+                              const view = event.detail[0];
+                              if (check.isEnumValue(view, DiffView)) {
+                                  params.writeLayout((current) => {
+                                      return updateTabState(current, {
+                                          tabId: params.tabId,
+                                          state: {
+                                              diffView: view,
+                                          } satisfies Partial<DiffTabState>,
+                                      });
+                                  });
+                                  paneReview.setManualReviewStarting(false);
+                              }
+                          })}
+                      ></${ViraDropdown}>
+                  `,
         })}
             ${listen(VirPaneDiff.events.diffSelectionChange, (event) => {
                 params.writeLayout((current) => {
@@ -103,28 +112,53 @@ function renderDiff(params: PaneRenderParams<typeof diffTabStateShape>) {
     `;
 }
 
-/** A tab showing the folder's changes, or its manual review's. */
-export const diffPane: PaneDefinition<typeof diffTabStateShape> = {
+/**
+ * A tab showing the folder's changes, or its manual review's. Another plugin defines its own Diff
+ * tab with this, drawing the open file's diff its own way.
+ */
+export function defineDiffPane({
+    id,
+    label,
+    renderCodeView,
+    defaultPlacement,
+}: Readonly<{
+    id: string;
+    label: string;
+    /** Draws the open file's diff instead of the built-in CodeMirror view. */
+    renderCodeView?: RenderDiffCodeView | undefined;
+    /** Omitted for a pane that opens only from the new-tab menu. */
+    defaultPlacement?: PaneDefinition<typeof diffTabStateShape>['defaultPlacement'] | undefined;
+}>): PaneDefinition<typeof diffTabStateShape> {
+    return {
+        id,
+        tabStateShape: diffTabStateShape,
+        label() {
+            return label;
+        },
+        newTabEntries() {
+            return [
+                {
+                    label,
+                    state: undefined,
+                },
+            ];
+        },
+        icon: createSizedIcon(LucideFileDiffIcon, 14),
+        hasAi: false,
+        /** The diff costs nothing while hidden (no socket, no subprocess). */
+        mounting: PaneMounting.OnceDisplayed,
+        isAvailable() {
+            return true;
+        },
+        defaultPlacement,
+        render(params) {
+            return renderDiff(params, renderCodeView);
+        },
+    };
+}
+
+export const diffPane = defineDiffPane({
     id: diffPaneId,
-    tabStateShape: diffTabStateShape,
-    label() {
-        return 'Diff';
-    },
-    newTabEntries() {
-        return [
-            {
-                label: 'Diff',
-                state: undefined,
-            },
-        ];
-    },
-    icon: createSizedIcon(LucideFileDiffIcon, 14),
-    hasAi: false,
-    /** The diff costs nothing while hidden (no socket, no subprocess). */
-    mounting: PaneMounting.OnceDisplayed,
-    isAvailable() {
-        return true;
-    },
+    label: 'Diff',
     defaultPlacement: findDiffPlacement,
-    render: renderDiff,
-};
+});

@@ -2,7 +2,7 @@
 
 import {paneKindRunsAi, PaneStatus} from '@agent-storm/common';
 import {filterMap} from '@augment-vir/common';
-import {runCommand} from 'agent-storm';
+import {runCommand} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -84,9 +84,9 @@ function isClaudeCommand(command: string) {
 
 /**
  * True once Claude's SessionStart hook has run in the tab, that Claude is still alive, and it isn't
- * showing a permission prompt. Input typed into the pane from then on gets submitted as a prompt;
- * input typed while Claude is still starting is lost, and input typed into a permission prompt
- * answers it.
+ * showing a permission prompt. The hook can run before Claude reads its input, so text typed right
+ * after this turns true may still need another Enter (see {@link hasClaudeTurnStartedSince}). Input
+ * typed into a permission prompt answers it.
  */
 export async function isClaudeReady(conversationId: string) {
     const activity = await readClaudeActivity(conversationId);
@@ -111,6 +111,18 @@ export async function isClaudeReady(conversationId: string) {
         .then(({stdout}) => stdout.trim())
         .catch(() => '');
     return isClaudeCommand(command);
+}
+
+/** Whether the tab's Claude has reported a running turn, such as a submitted prompt, since `since`. */
+export async function hasClaudeTurnStartedSince({
+    conversationId,
+    since,
+}: Readonly<{
+    conversationId: string;
+    since: number;
+}>) {
+    const activity = await readClaudeActivity(conversationId);
+    return !!activity?.turnActive && activity.updatedAt >= since;
 }
 
 /** Whether the tab's Claude last reported a permission prompt or question it is waiting on. */

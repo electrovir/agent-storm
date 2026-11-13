@@ -1,13 +1,11 @@
 import {
     diffPaneId,
-    gitHubReviewFolderEndpoint,
     ManualReviewStatus,
     reviewPaneId,
     type ReviewQueuePr,
 } from '@agent-storm/common';
 import {
     defineAppElement,
-    fetchApi,
     ScreenSize,
     VirPaneGroup,
     type AppContext,
@@ -15,10 +13,10 @@ import {
 import {check} from '@augment-vir/assert';
 import {extractErrorMessage, omitObjectKeys} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
-import {HttpMethod} from '@rest-vir/api';
 import {css, html, nothing, repeat, type Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, viraThemeByKeys} from 'vira';
+import {reviewClient} from '../../util/review-client.js';
 import {createReviewExtensionInputs} from '../../util/review-extension.js';
 import {reviewMemory} from '../../util/review-memory.js';
 
@@ -149,22 +147,16 @@ export const VirReviewStage = defineAppElement<{
                     ],
                 });
                 try {
-                    const reviewFolder = await fetchApi(
-                        gitHubReviewFolderEndpoint,
-                        HttpMethod.Post,
-                        {
-                            requestData: {
-                                owner,
-                                repoName,
-                                number: Number(prNumber),
-                                /**
-                                 * The folder is only a `mkdir` here, and its pane group's AI tab
-                                 * opens into it.
-                                 */
-                                createFolder: true,
-                            },
-                        },
-                    );
+                    const reviewFolder = await reviewClient.call('resolveReviewFolder', {
+                        owner,
+                        repoName,
+                        number: Number(prNumber),
+                        /**
+                         * The folder is only a `mkdir` here, and its pane group's AI tab opens into
+                         * it.
+                         */
+                        createFolder: true,
+                    });
                     const isStarted =
                         !!reviewFolder.review &&
                         reviewFolder.review.status !== ManualReviewStatus.Aborted;

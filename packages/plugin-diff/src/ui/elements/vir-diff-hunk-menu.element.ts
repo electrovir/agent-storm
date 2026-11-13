@@ -5,7 +5,7 @@ import {viraShadows, viraThemeByKeys} from 'vira';
 import {canDiscardSide} from '../../util/diff-status.js';
 import {type HunkMenu} from './diff-pane-requests.js';
 import {stageScopeLabel} from './diff-selection.js';
-import {stageActionLabels} from './vir-diff-review-file.element.js';
+import {stageActionLabels} from './vir-diff-file-header.element.js';
 
 /**
  * The diff pane's right-click menu for the chunks under a selection, with a full-screen backdrop

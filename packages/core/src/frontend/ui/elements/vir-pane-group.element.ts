@@ -17,16 +17,19 @@ import {css, html, listen, nothing, repeat} from 'element-vir';
 import {
     createSizedIcon,
     LucideCircleQuestionMarkIcon,
+    LucideTriangleAlertIcon,
     tooltip,
     viraThemeByKeys,
     type ViraMenuItemEntry,
 } from 'vira';
 import {fetchApi} from '../../util/api-client.js';
+import {logDebug} from '../../util/debug-log.js';
 import {createFolderSessions, type FolderSessionsObservable} from '../../util/folder-sessions.js';
 import {resolveTabState} from '../../util/pane-layout.js';
 import {paneRestartKey} from '../../util/pane-restarts.js';
 import {
     PaneMounting,
+    SettingsSection,
     type AnyPaneDefinition,
     type AppContext,
     type NewTabRequest,
@@ -45,6 +48,7 @@ import {
     listDisplayedTabIds,
     renameTab,
     showTabKind,
+    splitTabLayout,
     syncSessionTabs,
     toSessionTabId,
     type TabLayout,
@@ -53,6 +57,9 @@ import {defineAppElement} from '../define-app-element.js';
 import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirPaneTabLabel} from './vir-pane-tab-label.element.js';
 import {VirTabHost, type TabHostNewTabOption, type TabHostTab} from './vir-tab-host.element.js';
+
+/** The last selection logged per folder, so each render doesn't log an unchanged one. */
+const loggedSelections = new Map<string, string>();
 
 /** Names a renamed tab's kind, which its name hides. An unnamed tab already shows its kind. */
 function renderKindTooltip({
@@ -200,7 +207,6 @@ export const VirPaneGroup = defineAppElement<{
         const info = inputs.context.folderData.value.folderInfo.get(inputs.folder);
         const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
         const extensionInputs = inputs.extensionInputs || {};
-        const hasPr = !!info?.prUrl;
         const sessions = folderSessions.value.sessions;
         const sessionError = folderSessions.value.error;
 
@@ -251,6 +257,16 @@ export const VirPaneGroup = defineAppElement<{
             sharedLayout && isTabLayoutConsistent(sharedLayout)
                 ? uiLayout.getTabLayout(inputs.folder)
                 : undefined;
+        const unloadedPaneIds = inputs.context.panes
+            .map((pane) => pane.id)
+            .filter((paneId) => inputs.context.plugins.value.unloadedIds.includes(paneId));
+        /** A pane's `defaultPlacement` is in its plugin's code, so a first layout waits on it. */
+        if (!baseLayout && unloadedPaneIds.length) {
+            inputs.context.plugins.requestContributions(unloadedPaneIds);
+            return html`
+                ${folderNameBar} ${errorLine}
+            `;
+        }
         const initialLayout =
             baseLayout ||
             [
@@ -264,6 +280,11 @@ export const VirPaneGroup = defineAppElement<{
                 }),
             );
         if (!baseLayout) {
+            logDebug('paneGroup.render without base layout', {
+                folder: inputs.folder,
+                hasSharedLayout: !!sharedLayout,
+                isConsistent: sharedLayout ? isTabLayoutConsistent(sharedLayout) : undefined,
+            });
             uiLayout.updateTabLayout({
                 folder: inputs.folder,
                 update() {
@@ -272,6 +293,18 @@ export const VirPaneGroup = defineAppElement<{
             });
         }
         const layout = syncAllSessionTabs(initialLayout);
+        /** Traces tab selections that revert, while debug logging is on. */
+        const renderedSelection = JSON.stringify(splitTabLayout(layout).selection);
+        if (loggedSelections.get(inputs.folder) !== renderedSelection) {
+            loggedSelections.set(inputs.folder, renderedSelection);
+            logDebug('paneGroup.render selection', {
+                folder: inputs.folder,
+                isActive: inputs.active,
+                selection: splitTabLayout(layout).selection,
+                windowSelection: uiLayout.value.selections[inputs.folder],
+                serverSelection: uiLayout.value.layout.tabSelections[inputs.folder],
+            });
+        }
         /**
          * Only the window the user is in writes session changes back, so a window still holding an
          * older session list can't close the tab of a session another window just opened.
@@ -355,7 +388,7 @@ export const VirPaneGroup = defineAppElement<{
                 view,
                 displayedTabIds,
                 shownTabIds: state.shownTabIds,
-                hasPr,
+                prUrl: info?.prUrl || undefined,
             });
         });
 
@@ -405,6 +438,7 @@ export const VirPaneGroup = defineAppElement<{
                     sessionId,
                 },
             });
+            await folderSessions?.reload();
             updateState({
                 restartKeys: {
                     ...state.restartKeys,
@@ -687,6 +721,29 @@ export const VirPaneGroup = defineAppElement<{
                     };
                 });
             });
+        const pendingPaneOptions = inputs.context.plugins.value.pendingPanes.map(
+            (pane): TabHostNewTabOption => {
+                return {
+                    label: html`
+                        <${VirPaneTabLabel.assign({
+                            label: `${pane.label} (needs approval)`,
+                            icon: createSizedIcon(LucideTriangleAlertIcon, 14),
+                        })}
+                            style=${css`
+                                opacity: 0.6;
+                            `}
+                        ></${VirPaneTabLabel}>
+                    `,
+                    kind: pane.id,
+                    state: undefined,
+                    openInstead() {
+                        inputs.context.openSettings({
+                            section: SettingsSection.Plugins,
+                        });
+                    },
+                };
+            },
+        );
 
         const mountedTabs = getObjectTypedValues(layout.tabs)
             .filter((tab) => {
@@ -738,10 +795,17 @@ export const VirPaneGroup = defineAppElement<{
                         ];
                     }),
                 ),
-                newTabOptions,
+                newTabOptions: [
+                    ...newTabOptions,
+                    ...pendingPaneOptions,
+                ],
                 isMobile,
             })}
                 ${listen(VirTabHost.events.layoutChanged, (event) => {
+                    logDebug('paneGroup.layoutChanged', {
+                        folder: inputs.folder,
+                        selection: splitTabLayout(event.detail).selection,
+                    });
                     uiLayout.updateTabLayout({
                         folder: inputs.folder,
                         update() {

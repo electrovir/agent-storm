@@ -1,11 +1,5 @@
-import {
-    gitHubAssigneeQueueEndpoint,
-    gitHubReviewQueueEndpoint,
-    reviewQueueResponseShape,
-    type ReviewQueue,
-    type ReviewQueuePr,
-} from '@agent-storm/common';
-import {defineSetting, fetchApi} from '@agent-storm/core/frontend';
+import {reviewQueueResponseShape, type ReviewQueue, type ReviewQueuePr} from '@agent-storm/common';
+import {defineSetting} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {
     extractErrorMessage,
@@ -13,11 +7,17 @@ import {
     mapObjectValues,
     type PartialWithUndefined,
 } from '@augment-vir/common';
-import {HttpMethod} from '@rest-vir/api';
 import {convertDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {checkValidShape} from 'object-shape-tester';
-import {getVerdictPrStatus, hasRecentVerdict, type PrReviews} from './pr-reviews.js';
+import {
+    getVerdictPrStatus,
+    hasRecentVerdict,
+    toRepoKey,
+    type PrReviews,
+    type ReviewedRepo,
+} from './pr-reviews.js';
+import {reviewClient} from './review-client.js';
 
 /** The PR lists the Review sidebar switches between. */
 export enum PrQueueKind {
@@ -25,14 +25,14 @@ export enum PrQueueKind {
     Assignee = 'assignee',
 }
 
-/** Each queue's endpoint: `GET` reads the backend's cached copy, `POST` re-fetches it from GitHub. */
-const prQueueEndpoints = {
-    [PrQueueKind.Review]: gitHubReviewQueueEndpoint,
-    [PrQueueKind.Assignee]: gitHubAssigneeQueueEndpoint,
-} satisfies Record<PrQueueKind, unknown>;
+/** The Review plugin's server call that reads each queue. */
+const prQueueCalls: Readonly<Record<PrQueueKind, 'readReviewQueue' | 'readAssigneeQueue'>> = {
+    [PrQueueKind.Review]: 'readReviewQueue',
+    [PrQueueKind.Assignee]: 'readAssigneeQueue',
+};
 
 /** The server's last answer for each queue, shown on startup until it answers again. */
-const prQueueCaches = mapObjectValues(prQueueEndpoints, (kind) => {
+const prQueueCaches = mapObjectValues(prQueueCalls, (kind) => {
     return defineSetting<ReviewQueue | undefined>({
         key: `agent-storm:review:${kind}-queue-cache`,
         defaultValue: undefined,
@@ -140,15 +140,34 @@ export function getShownPrQueues({
  * Review queue first answers.
  */
 export function getReviewablePrs(prQueues: Readonly<PrQueues>) {
-    /** Matches the server's `resolveReviewFolder`: the viewer's own PRs can't be reviewed. */
     return (
         prQueues[PrQueueKind.Review].queue && [
             ...prQueues[PrQueueKind.Review].queue.pullRequests,
-            ...(prQueues[PrQueueKind.Assignee].queue?.pullRequests.filter((pr) => {
-                return !pr.isViewerAuthor;
-            }) || []),
+            ...(prQueues[PrQueueKind.Review].queue.reviewedPullRequests || []),
+            ...(prQueues[PrQueueKind.Assignee].queue?.pullRequests || []),
         ]
     );
+}
+
+/** Every repo with a pull request in any queue, each once, sorted by `owner/repoName`. */
+export function listQueueRepos(prQueues: Readonly<PrQueues>) {
+    const repos = getObjectTypedValues(prQueues).flatMap(({queue, cachedQueue}) => {
+        const shownQueue = queue || cachedQueue;
+        return [
+            ...(shownQueue?.pullRequests || []),
+            ...(shownQueue?.reviewedPullRequests || []),
+        ].map((pullRequest): ReviewedRepo => {
+            return {
+                owner: pullRequest.owner,
+                repoName: pullRequest.repoName,
+            };
+        });
+    });
+    return repos
+        .filter((repo, index) => {
+            return repos.findIndex((other) => toRepoKey(other) === toRepoKey(repo)) === index;
+        })
+        .toSorted((first, second) => toRepoKey(first).localeCompare(toRepoKey(second)));
 }
 
 /** The server's PR queues. Nothing loads until `startPolling`. */
@@ -196,10 +215,9 @@ export function createPrQueues() {
         }>
     >) {
         try {
-            const queue = await fetchApi(
-                prQueueEndpoints[kind],
-                forceRefresh ? HttpMethod.Post : HttpMethod.Get,
-            );
+            const queue = await reviewClient.call(prQueueCalls[kind], {
+                forceRefresh: !!forceRefresh,
+            });
             updatePrQueue({
                 kind,
                 queue,

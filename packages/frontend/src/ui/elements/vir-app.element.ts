@@ -1,56 +1,59 @@
 import {
     applyThemeMode,
+    applyTypography,
     createFolderData,
     createPaneRestarts,
+    createPluginRegistry,
     createUiLayout,
     defineAppElement,
     installClientErrorLog,
+    installClientPerfLog,
     isSettingsShortcut,
     observeScreenSize,
+    resolvePluginSettings,
     ScreenSize,
     SettingsSection,
     VirBook,
     type AppContext,
-    type AppServices,
     type SettingsTarget,
 } from '@agent-storm/core/frontend';
-import {check} from '@augment-vir/assert';
-import {arrayToObject, getObjectTypedValues} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
-import {css, html, isObservableBase, listen, nothing, Observable} from 'element-vir';
+import {css, html, listen, nothing, Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, ViraThemeClient} from 'vira';
 import {resolveActivityRoute} from '../../util/activity-route.js';
-import {bookRouteBase, router, sanitizeActivityPaths} from '../../util/router.js';
+import {bookRouteBase, router} from '../../util/router.js';
 import {trackVisualViewportHeight} from '../../util/visual-viewport.js';
-import {activities} from './activity-definitions.js';
-import {paneGroupExtensions, panes} from './pane-definitions.js';
-import {settingsSections} from './settings-section-definitions.js';
+import {activityPane} from './activity-pane.js';
 import {VirActivityPanel} from './vir-activity-panel.element.js';
 import {VirAppModals} from './vir-app-modals.element.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirMobileSidebar} from './vir-mobile-sidebar.element.js';
 
 installClientErrorLog();
+installClientPerfLog();
 
 export const VirApp = defineAppElement()({
     tagName: 'vir-app',
     state() {
         const folderData = createFolderData();
+        const paneRestarts = createPaneRestarts(folderData);
+        const uiLayout = createUiLayout(folderData);
+        /** The one theme client, so every theme switcher drives the same selection. */
+        const themeClient = new ViraThemeClient({
+            applyTheme: applyThemeMode,
+        });
         return {
             route: router.readCurrentRoute(),
             folderData,
-            paneRestarts: createPaneRestarts(folderData),
-            uiLayout: createUiLayout(folderData),
+            paneRestarts,
+            uiLayout,
             /**
              * Corrected in `init`, once there's a host to measure. Avoids a flash of mobile on
              * desktop.
              */
             screenSize: ScreenSize.Desktop as ScreenSize,
-            /** The one theme client, so every theme switcher drives the same selection. */
-            themeClient: new ViraThemeClient({
-                applyTheme: applyThemeMode,
-            }),
+            themeClient,
             settingsTarget: new Observable<SettingsTarget>({
                 defaultValue: {
                     section: SettingsSection.General,
@@ -59,11 +62,21 @@ export const VirApp = defineAppElement()({
             isSettingsOpen: new Observable<boolean>({
                 defaultValue: false,
             }),
-            activityStates: arrayToObject(activities, (activity) => {
-                return {
-                    key: activity.id,
-                    value: activity.createState?.(),
-                };
+            plugins: createPluginRegistry({
+                hostPanes: [
+                    activityPane,
+                ],
+                services: {
+                    folderData,
+                    paneRestarts,
+                    uiLayout,
+                    themeClient,
+                },
+                navigate(paths) {
+                    router.setRoute({
+                        paths,
+                    });
+                },
             }),
             disposers: [] as ReadonlyArray<() => void>,
         };
@@ -107,22 +120,17 @@ export const VirApp = defineAppElement()({
             state.isSettingsOpen.setValue(true);
         }
         globalThis.addEventListener('keydown', openSettingsOnShortcut, true);
-        const services: AppServices = {
-            folderData: state.folderData,
-            paneRestarts: state.paneRestarts,
-            uiLayout: state.uiLayout,
-            themeClient: state.themeClient,
-        };
-        /**
-         * `/` (and any unrecognized URL) sanitizes to the Dashboard tab on read, but the window's
-         * URL bar only gets corrected when a location change fires. Write it back once on startup
-         * so the address bar agrees with what's rendered.
-         */
-        router.setRoute(router.readCurrentRoute(), {
-            replace: true,
-        });
         updateState({
             disposers: [
+                state.folderData.listen(true, ({snapshot}) => {
+                    applyTypography(snapshot?.settings);
+                }),
+                state.isSettingsOpen.listen(true, (isOpen) => {
+                    /** Settings lists every plugin's sections, which only a loaded plugin has. */
+                    if (isOpen) {
+                        state.plugins.requestAll();
+                    }
+                }),
                 router.listen(true, (route) => {
                     updateState({
                         route,
@@ -137,33 +145,6 @@ export const VirApp = defineAppElement()({
                 () => {
                     globalThis.removeEventListener('keydown', openSettingsOnShortcut, true);
                 },
-                ...getObjectTypedValues(state.activityStates).flatMap((activityState) => {
-                    return check.isObject(activityState)
-                        ? getObjectTypedValues(activityState)
-                              .filter(isObservableBase)
-                              .map((observable) => {
-                                  return observable.listen(false, () => {
-                                      host.requestUpdate();
-                                  });
-                              })
-                        : [];
-                }),
-                ...activities.flatMap((activity) => {
-                    return (
-                        activity.startWithApp?.({
-                            services,
-                            state: state.activityStates[activity.id],
-                            navigate(subPaths) {
-                                router.setRoute({
-                                    paths: [
-                                        activity.id,
-                                        ...subPaths,
-                                    ],
-                                });
-                            },
-                        }) || []
-                    );
-                }),
             ],
         });
     },
@@ -171,6 +152,7 @@ export const VirApp = defineAppElement()({
         state.disposers.forEach((dispose) => dispose());
         state.folderData.destroy();
         state.uiLayout.destroy();
+        state.plugins.destroy();
     },
     render({state}) {
         if (state.route.paths[0] === bookRouteBase) {
@@ -199,11 +181,9 @@ export const VirApp = defineAppElement()({
                     paths,
                 });
             },
-            activities,
-            activityStates: state.activityStates,
-            panes,
-            paneGroupExtensions,
-            settingsSections,
+            ...state.plugins.value.contributions,
+            activityStates: state.plugins.value.activityStates,
+            plugins: state.plugins,
             isInActivityTab: false,
             renderActivityTab({paths, navigate}) {
                 const tabContext: AppContext = {
@@ -212,7 +192,7 @@ export const VirApp = defineAppElement()({
                     isInActivityTab: true,
                 };
                 const tabResolved = resolveActivityRoute({
-                    paths: sanitizeActivityPaths(paths),
+                    paths,
                     context: tabContext,
                 });
                 const tabRedirect = tabResolved.redirect;
@@ -221,15 +201,19 @@ export const VirApp = defineAppElement()({
                         navigate(tabRedirect.paths);
                     });
                 }
+                const tabActivity = tabResolved.activity;
+                if (!tabActivity) {
+                    return nothing;
+                }
                 return html`
                     <${VirActivityPanel.assign({
                         context: tabContext,
-                        activity: tabResolved.activity,
+                        activity: tabActivity,
                         route: {
                             subPaths: tabResolved.subPaths,
                             navigate(subPaths) {
                                 navigate([
-                                    tabResolved.activity.id,
+                                    tabActivity.id,
                                     ...subPaths,
                                 ]);
                             },
@@ -240,6 +224,13 @@ export const VirApp = defineAppElement()({
             },
             paneRestarts: state.paneRestarts,
             uiLayout: state.uiLayout,
+            readPluginSettings(plugin) {
+                return resolvePluginSettings({
+                    plugin,
+                    settings: (state.folderData.value.live || state.folderData.value.snapshot)
+                        ?.settings,
+                });
+            },
             openSettings(target) {
                 if (target) {
                     state.settingsTarget.setValue(target);
@@ -265,13 +256,14 @@ export const VirApp = defineAppElement()({
                 );
             });
         }
-        const title = resolved.activity.findTitle?.({
+        const title = resolved.activity?.findTitle?.({
             context,
             state: resolved.state,
             subPaths: resolved.subPaths,
         });
         document.title = title ? `agent-storm • ${title}` : 'agent-storm';
         const isMobile = state.screenSize === ScreenSize.Mobile;
+        const activityId = resolved.activity?.id || '';
 
         return html`
             ${isMobile
@@ -279,11 +271,11 @@ export const VirApp = defineAppElement()({
                 : html`
                       <${VirMainTabs.assign({
                           context,
-                          activityId: resolved.activity.id,
+                          activityId,
                       })}></${VirMainTabs}>
                   `}
-            ${activities.map((activity) => {
-                const isShown = activity.id === resolved.activity.id;
+            ${context.activities.map((activity) => {
+                const isShown = activity.id === activityId;
                 return html`
                     <${VirActivityPanel.assign({
                         context,
@@ -301,11 +293,11 @@ export const VirApp = defineAppElement()({
                     })}></${VirActivityPanel}>
                 `;
             })}
-            ${isMobile && resolved.activity.mobileMenuTitle != undefined
+            ${isMobile && resolved.activity?.mobileMenuTitle != undefined
                 ? html`
                       <${VirMobileSidebar.assign({
                           context,
-                          activityId: resolved.activity.id,
+                          activityId,
                           subPaths: resolved.subPaths,
                       })}></${VirMobileSidebar}>
                   `

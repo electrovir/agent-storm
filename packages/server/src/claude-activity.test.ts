@@ -2,7 +2,7 @@ import {PaneStatus} from '@agent-storm/common';
 import {assert, check} from '@augment-vir/assert';
 import {awaitedBlockingMap} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
-import {runCommand} from 'agent-storm';
+import {runCommand} from 'agent-storm-util';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';

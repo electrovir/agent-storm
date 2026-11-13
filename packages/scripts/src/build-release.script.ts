@@ -7,17 +7,19 @@ import {
 import {releaseBuildGlobalName} from '@agent-storm/server/src/release-build.js';
 import {extractExtension, log} from '@augment-vir/common';
 import {runShellCommand} from '@augment-vir/node';
-import {releaseAssetName, ReleaseDir} from 'agent-storm';
+import {releaseAssetName, ReleaseDir, writeReleaseCoreVersion} from 'agent-storm';
 import {build} from 'esbuild';
 import {cp, mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {basename, resolve} from 'node:path';
 import {assertValidShape, defineShape} from 'object-shape-tester';
+import {buildBuiltInPlugins} from './built-in-plugin-build.js';
 
 /**
  * Builds a release into `dist-release/`: the frontend, the server and the scripts it spawns bundled
- * into plain JavaScript, and a `package.json` whose only dependency is node-pty, which can't be
- * bundled because it's native. Then packs it into `dist-release-asset/`, ready to attach to a
- * GitHub release.
+ * into plain JavaScript, each built-in plugin's folder, and a `package.json` listing the
+ * dependencies the bundles leave out: the native node-pty and better-sqlite3, and the Claude Agent
+ * SDK, which runs a platform-specific Claude Code binary. Then packs it into `dist-release-asset/`,
+ * ready to attach to a GitHub release.
  */
 
 const releaseDir = resolve(monorepoRoot, 'dist-release');
@@ -62,9 +64,15 @@ async function readReleaseBuild() {
 
 const [
     nodePtyVersion,
+    betterSqliteVersion,
+    claudeAgentSdkVersion,
+    coreVersion,
     releaseBuild,
 ] = await Promise.all([
     readPackageVersion(resolve(monorepoRoot, 'node_modules', 'node-pty')),
+    readPackageVersion(resolve(monorepoRoot, 'node_modules', 'better-sqlite3')),
+    readPackageVersion(resolve(monorepoRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')),
+    readPackageVersion(resolve(monorepoRoot, 'packages', 'core')),
     readReleaseBuild(),
 ]);
 
@@ -130,10 +138,23 @@ await build({
         js: "import {createRequire} from 'node:module'; const require = createRequire(import.meta.url);",
     },
 });
+if (
+    !(await buildBuiltInPlugins({
+        findOutDir(pluginId) {
+            return resolve(releaseDir, ReleaseDir.Plugins, pluginId);
+        },
+    }))
+) {
+    throw new Error('A built-in plugin failed to build. Its errors are logged above.');
+}
 const markdownFileNames = (await readdir(serverSourceDir)).filter(
     (fileName) => extractExtension(fileName).extension === '.md',
 );
 await Promise.all([
+    writeReleaseCoreVersion({
+        releaseDir,
+        coreVersion,
+    }),
     cp(claudeHookSourceDir, resolve(serverOutDir, basename(claudeHookSourceDir)), {
         recursive: true,
     }),
@@ -149,6 +170,8 @@ await Promise.all([
                 type: 'module',
                 dependencies: {
                     'node-pty': nodePtyVersion,
+                    'better-sqlite3': betterSqliteVersion,
+                    '@anthropic-ai/claude-agent-sdk': claudeAgentSdkVersion,
                 },
             },
             undefined,

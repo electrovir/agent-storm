@@ -1,6 +1,6 @@
 import {check} from '@augment-vir/assert';
 import {ensureErrorAndPrependMessage, log} from '@augment-vir/common';
-import {pendingAuthSecretPath} from 'agent-storm';
+import {pendingAuthSecretPath} from 'agent-storm-util';
 import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
 import {randomBytes} from 'node:crypto';
 import {watch, type FSWatcher} from 'node:fs';

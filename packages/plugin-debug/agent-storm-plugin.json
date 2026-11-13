@@ -1,0 +1,15 @@
+{
+    "activities": [
+        {
+            "id": "debug",
+            "isEnabledByDefault": false,
+            "label": "Debug"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "description": "The app's own diagnostics.",
+    "id": "debug",
+    "name": "Debug",
+    "panes": []
+}

@@ -58,7 +58,6 @@ export const VirPaneReview = defineAppElement<{
                         isMobile: inputs.isMobile,
                     });
                     if (!isSent) {
-                        /** Reports that the AI pane has no session to type into yet. */
                         await inputs.paneReview.sendPrompt({
                             prompt: event.detail.prompt,
                             isMobile: inputs.isMobile,

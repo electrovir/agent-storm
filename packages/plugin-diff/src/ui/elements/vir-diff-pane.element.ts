@@ -21,6 +21,7 @@ import {
     type HtmlInterpolation,
 } from 'element-vir';
 import {LucideLoaderIcon, ViraIcon, createSizedIcon, viraThemeByKeys} from 'vira';
+import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
 import {
     allSelectValues,
     findSelected,
@@ -32,6 +33,7 @@ import {createDiffPaneController, createDiffPaneState} from './diff-pane-control
 import {stageSide, writeDiffSettings} from './diff-pane-requests.js';
 import {VirDiffCodeView} from './vir-diff-code-view.element.js';
 import {VirDiffCommentComposer} from './vir-diff-comment-composer.element.js';
+import {VirDiffFileHeader} from './vir-diff-file-header.element.js';
 import {VirDiffFileList} from './vir-diff-file-list.element.js';
 import {VirDiffFileMenu} from './vir-diff-file-menu.element.js';
 import {VirDiffFileSection} from './vir-diff-file-section.element.js';
@@ -52,6 +54,8 @@ export const VirDiffPane = defineAppElement<{
      */
     active: boolean;
     screenSize: ScreenSize;
+    /** Draws the open file's diff instead of the built-in CodeMirror view. */
+    renderCodeView?: RenderDiffCodeView | undefined;
     /** Shown above the desktop file list. */
     sidebarHeader?: HtmlInterpolation | undefined;
     /** Shown at the end of the toolbar. */
@@ -89,6 +93,7 @@ export const VirDiffPane = defineAppElement<{
                          */
                         hideWhitespace: settings.diffHideWhitespace ?? true,
                         collapseUnchanged: settings.diffCollapseUnchanged ?? true,
+                        softWrap: settings.diffSoftWrap,
                     };
                 },
             }),
@@ -104,24 +109,6 @@ export const VirDiffPane = defineAppElement<{
             font-size: 13px;
         }
 
-        /*
-         * The open file's full path, which nothing else in the pane shows any more — the file list
-         * rows and the mobile trigger are both down to the base name.
-         */
-        .selected-path {
-            flex-grow: 0;
-            flex-shrink: 0;
-            padding: 4px 8px;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
-            border-bottom: 1px solid
-                ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            font-family: 'MesloLGS NF', Menlo, monospace;
-            font-size: 11px;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-        }
-
         .body {
             position: relative;
             display: flex;
@@ -129,6 +116,14 @@ export const VirDiffPane = defineAppElement<{
             flex-grow: 1;
             min-height: 0;
             min-width: 0;
+        }
+
+        .main-column {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            min-width: 0;
+            min-height: 0;
         }
 
         ${VirDiffCodeView}[data-hidden] {
@@ -188,7 +183,14 @@ export const VirDiffPane = defineAppElement<{
                   diffLayout: DiffLayout.Auto,
                   hideWhitespace: true,
                   collapseUnchanged: true,
+                  softWrap: undefined,
               };
+        /**
+         * A phone scrolls long lines sideways unless the user chose otherwise: wrapped on a narrow
+         * screen, every long line turns into a paragraph, and the change that matters is usually at
+         * the end of it.
+         */
+        const softWrap = diffSettings.softWrap ?? !isMobile;
         const unifiedByLayout: Readonly<Record<DiffLayout, boolean>> = {
             [DiffLayout.Auto]: isMobile,
             [DiffLayout.Split]: false,
@@ -247,6 +249,7 @@ export const VirDiffPane = defineAppElement<{
                 reviewSide: state.reviewSide,
                 hasChunks: state.chunkCount > 0,
                 unified,
+                softWrap,
                 diffSettings,
                 trailing: inputs.toolbarTrailing,
             })}
@@ -258,9 +261,6 @@ export const VirDiffPane = defineAppElement<{
                 })}
                 ${listen(VirDiffToolbar.events.settingsChange, async (event) => {
                     await saveDiffSettings(event.detail);
-                })}
-                ${listen(VirDiffToolbar.events.selectedFileStage, async () => {
-                    await controller.onStageSelectedFile();
                 })}
                 ${listen(VirDiffFileMenu.events.fileSelect, async (event) => {
                     await controller.selectFile(event.detail);
@@ -281,6 +281,7 @@ export const VirDiffPane = defineAppElement<{
                       hideWhitespace: diffSettings.hideWhitespace,
                       unified,
                       collapseUnchanged: diffSettings.collapseUnchanged,
+                      softWrap,
                       isDark: state.isDark,
                       isMobile,
                       reviewComments: state.reviewComments,
@@ -373,63 +374,81 @@ export const VirDiffPane = defineAppElement<{
                       <div class="placeholder">No changes in this folder.</div>
                   `;
 
-        const codeViewTemplate = html`
-            <${VirDiffCodeView.assign({
-                fileKey: state.selectedValue,
-                path: selectedPath,
-                content,
-                hideWhitespace: diffSettings.hideWhitespace,
-                unified,
-                collapseUnchanged: diffSettings.collapseUnchanged,
-                isDark: state.isDark,
-                isMobile,
-                enableComments: !!inputs.enableComments,
-                comments: state.reviewComments.filter((comment) => {
-                    return comment.path === selectedPath;
-                }),
-                commentingLine:
-                    state.commentDraft?.path === selectedPath
-                        ? state.commentDraft?.line
-                        : undefined,
-                canStage: !state.busy && !!selected,
-                chunkScroll: state.chunkScroll,
-            })}
-                ?data-hidden=${!!state.reviewSide ||
-                !selected ||
-                content?.tooLargeOrBinary ||
-                content?.isImage}
-                ${listen(VirDiffCodeView.events.addCommentRequested, (event) => {
-                    comments.openCommentDraft(event.detail);
-                })}
-                ${listen(VirDiffCodeView.events.editCommentRequested, (event) => {
-                    comments.openEditCommentDraft(event.detail);
-                })}
-                ${listen(VirDiffCodeView.events.deleteCommentRequested, async (event) => {
-                    await comments.onDeleteComment(event.detail);
-                })}
-                ${listen(VirDiffCodeView.events.hunkMenuRequested, (event) => {
-                    const target = findSelected(state.status, state.selectedValue);
-                    if (target) {
-                        updateState({
-                            hunkMenu: {
-                                ...event.detail,
-                                target,
-                            },
-                        });
-                    }
-                })}
-                ${listen(VirDiffCodeView.events.chunkCountChange, (event) => {
-                    updateState({
-                        chunkCount: event.detail,
-                    });
-                })}
-                ${listen(VirDiffCodeView.events.chunkActivate, (event) => {
-                    updateState({
-                        activeChunkIndex: event.detail,
-                    });
-                })}
-            ></${VirDiffCodeView}>
-        `;
+        const isCodeViewHidden =
+            !!state.reviewSide || !selected || !!content?.tooLargeOrBinary || !!content?.isImage;
+        const codeViewTemplate = inputs.renderCodeView
+            ? inputs.renderCodeView({
+                  fileKey: state.selectedValue,
+                  path: selectedPath,
+                  content,
+                  hideWhitespace: diffSettings.hideWhitespace,
+                  unified,
+                  collapseUnchanged: diffSettings.collapseUnchanged,
+                  softWrap,
+                  isDark: state.isDark,
+                  chunkScroll: state.chunkScroll,
+                  isHidden: isCodeViewHidden,
+                  setChunkCount(chunkCount) {
+                      updateState({
+                          chunkCount,
+                      });
+                  },
+              })
+            : html`
+                  <${VirDiffCodeView.assign({
+                      fileKey: state.selectedValue,
+                      path: selectedPath,
+                      content,
+                      hideWhitespace: diffSettings.hideWhitespace,
+                      unified,
+                      collapseUnchanged: diffSettings.collapseUnchanged,
+                      softWrap,
+                      isDark: state.isDark,
+                      isMobile,
+                      enableComments: !!inputs.enableComments,
+                      comments: state.reviewComments.filter((comment) => {
+                          return comment.path === selectedPath;
+                      }),
+                      commentingLine:
+                          state.commentDraft?.path === selectedPath
+                              ? state.commentDraft?.line
+                              : undefined,
+                      canStage: !state.busy && !!selected,
+                      chunkScroll: state.chunkScroll,
+                  })}
+                      ?data-hidden=${isCodeViewHidden}
+                      ${listen(VirDiffCodeView.events.addCommentRequested, (event) => {
+                          comments.openCommentDraft(event.detail);
+                      })}
+                      ${listen(VirDiffCodeView.events.editCommentRequested, (event) => {
+                          comments.openEditCommentDraft(event.detail);
+                      })}
+                      ${listen(VirDiffCodeView.events.deleteCommentRequested, async (event) => {
+                          await comments.onDeleteComment(event.detail);
+                      })}
+                      ${listen(VirDiffCodeView.events.hunkMenuRequested, (event) => {
+                          const target = findSelected(state.status, state.selectedValue);
+                          if (target) {
+                              updateState({
+                                  hunkMenu: {
+                                      ...event.detail,
+                                      target,
+                                  },
+                              });
+                          }
+                      })}
+                      ${listen(VirDiffCodeView.events.chunkCountChange, (event) => {
+                          updateState({
+                              chunkCount: event.detail,
+                          });
+                      })}
+                      ${listen(VirDiffCodeView.events.chunkActivate, (event) => {
+                          updateState({
+                              activeChunkIndex: event.detail,
+                          });
+                      })}
+                  ></${VirDiffCodeView}>
+              `;
 
         const hunkMenuTemplate = state.hunkMenu
             ? html`
@@ -527,15 +546,24 @@ export const VirDiffPane = defineAppElement<{
 
         return html`
             ${toolbarTemplate}
-            ${selected && !state.reviewSide
-                ? html`
-                      <div class="selected-path" title=${selected.file.path}>
-                          ${selected.file.path}
-                      </div>
-                  `
-                : nothing}
             <div class="body">
-                ${mainTemplate} ${codeViewTemplate} ${hunkMenuTemplate} ${commentComposerTemplate}
+                <div class="main-column">
+                    ${selected && !state.reviewSide
+                        ? html`
+                              <${VirDiffFileHeader.assign({
+                                  file: selected.file,
+                                  side: selected.side,
+                                  isOpenable: false,
+                              })}
+                                  ${listen(VirDiffFileHeader.events.stageFile, async () => {
+                                      await controller.onStageSelectedFile();
+                                  })}
+                              ></${VirDiffFileHeader}>
+                          `
+                        : nothing}
+                    ${mainTemplate} ${codeViewTemplate}
+                </div>
+                ${hunkMenuTemplate} ${commentComposerTemplate}
                 ${selected && !content && !state.diffError && !state.reviewSide
                     ? html`
                           <div class="loading-overlay">

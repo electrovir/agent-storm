@@ -16,7 +16,7 @@ import {
     wrapInTry,
     type MaybePromise,
 } from '@augment-vir/common';
-import {normalizePath, writeFileAtomically} from 'agent-storm';
+import {normalizePath, writeFileAtomically} from 'agent-storm-util';
 import {readdir, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
@@ -195,6 +195,21 @@ async function forgetConversationState(conversationIds: ReadonlyArray<string>): 
             });
         }),
     );
+}
+
+/** Unlike {@link findFolderSession}, never creates a folder's default sessions. */
+export async function hasFolderSession({
+    folder,
+    kind,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    kind: PaneKind;
+    sessionId: string;
+}>) {
+    return !!(await loadStore())[normalizePath(folder)]?.[kind].some((session) => {
+        return session.id === sessionId;
+    });
 }
 
 export async function findFolderSession({

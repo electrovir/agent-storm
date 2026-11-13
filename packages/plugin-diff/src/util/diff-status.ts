@@ -1,7 +1,8 @@
 // cspell:words unstaging
 
-import {GitDiffSide, type GitDiffFile, type GitDiffStatus} from '@agent-storm/common';
+import {GitDiffSide} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
+import {type GitDiffFile, type GitDiffStatus} from '../diff-api.js';
 
 /** The status list each side's files are read from. */
 export const statusFilesKeys = {

@@ -12,6 +12,7 @@ import {HttpMethod} from '@rest-vir/api';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
+import {setDebugLogEnabled} from './debug-log.js';
 import {localStorageClient, type SidebarSnapshot} from './local-storage-client.js';
 
 export type FolderData = PartialWithUndefined<{
@@ -105,6 +106,7 @@ export function createFolderData() {
                     : await fetchApi(settingsEndpoint, HttpMethod.Get);
             fetched.settings = settings;
             fetched.settingsRevision = listing.settingsRevision;
+            setDebugLogEnabled(!!settings.enableDebugLogs);
             const snapshot = {
                 folders: listing.folders,
                 repos: listing.repos,
