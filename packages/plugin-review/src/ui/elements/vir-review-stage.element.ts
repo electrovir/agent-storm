@@ -113,9 +113,12 @@ export const VirReviewStage = defineAppElement<{
         if (
             !inputs.context.isInActivityTab &&
             inputs.activePullRequest &&
-            inputs.activePullRequest !== reviewMemory.selectedPullRequest.read()
+            inputs.activePullRequest !== reviewMemory.selectedPullRequest.window.read()
         ) {
-            reviewMemory.selectedPullRequest.write(inputs.activePullRequest);
+            inputs.context.uiLayout.rememberSelection({
+                memory: reviewMemory.selectedPullRequest,
+                value: inputs.activePullRequest,
+            });
         }
 
         const reviewRoutePaths = check.isLengthExactly(inputs.subPaths, 3)

@@ -1,4 +1,9 @@
-import {defineNumberSetting, defineSetting, sidebarWidth} from '@agent-storm/core/frontend';
+import {
+    defineNumberSetting,
+    defineRememberedSelection,
+    defineSetting,
+    sidebarWidth,
+} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {PrQueueKind} from './pr-queues.js';
 
@@ -16,16 +21,7 @@ export const reviewMemory = {
         bounds: sidebarWidth,
     }),
     /** `pullRequestRouteKey` of the last selected pull request. */
-    selectedPullRequest: defineSetting<string | undefined>({
-        key: 'agent-storm:review:selected-pull-request',
-        defaultValue: undefined,
-        parse(raw) {
-            return raw || undefined;
-        },
-        serialize(value) {
-            return value || undefined;
-        },
-    }),
+    selectedPullRequest: defineRememberedSelection('agent-storm:review:selected-pull-request'),
     /** The sidebar list that was showing last. */
     selectedQueue: defineSetting<PrQueueKind | undefined>({
         key: 'agent-storm:review:selected-queue',

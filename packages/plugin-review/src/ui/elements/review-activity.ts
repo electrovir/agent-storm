@@ -1,4 +1,5 @@
 import {defineActivity, type AppContext} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
 import {getObjectTypedValues} from '@augment-vir/common';
 import {html} from 'element-vir';
 import {
@@ -75,13 +76,14 @@ export const reviewActivity = defineActivity({
             prQueues: state.prQueues.value,
         })[PrQueueKind.Review].queue?.pullRequests.length;
     },
-    findRestoredSubPaths({state}) {
-        const rememberedKey = reviewMemory.selectedPullRequest.read();
-        const pullRequest =
-            rememberedKey &&
-            getReviewablePrs(state.prQueues.value)?.find((pr) => {
-                return pullRequestRouteKey(pr) === rememberedKey;
-            });
+    findRestoredSubPaths({context, state}) {
+        const pullRequests = getReviewablePrs(state.prQueues.value);
+        const pullRequest = context.uiLayout
+            .readRemembered(reviewMemory.selectedPullRequest)
+            .map((rememberedKey) => {
+                return pullRequests?.find((pr) => pullRequestRouteKey(pr) === rememberedKey);
+            })
+            .find(check.isDefined);
         return pullRequest ? subPathsForPullRequest(pullRequest) : undefined;
     },
     findRedirect({subPaths}) {

@@ -1590,6 +1590,14 @@ export const uiLayoutShape = defineShape({
         keys: '',
         values: false,
     }),
+    /**
+     * The latest value of each remembered selection (such as the Build tab's selected folder),
+     * keyed by its storage key. A window uses it when neither it nor its browser remembers one.
+     */
+    rememberedSelections: recordShape({
+        keys: '',
+        values: '',
+    }),
 });
 
 export type UiLayout = typeof uiLayoutShape.runtimeType;
@@ -1621,6 +1629,24 @@ export const tabLayoutSaveEndpoint = defineEndpoint({
                 selection: optionalShape(tabSelectionShape, {
                     alsoUndefined: true,
                 }),
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: uiLayoutShape,
+                },
+            },
+        },
+    },
+});
+
+/** Saves one remembered selection. An empty `value` removes it. */
+export const rememberedSelectionSaveEndpoint = defineEndpoint({
+    path: '/ui-layout/remembered-selection',
+    requests: {
+        [HttpMethod.Put]: {
+            requestData: defineShape({
+                key: '',
+                value: '',
             }),
             responses: {
                 [HttpStatus.Ok]: {
@@ -2306,6 +2332,7 @@ export const agentStormService = defineApi({
         uiLayoutEndpoint,
         tabLayoutSaveEndpoint,
         activityBarSaveEndpoint,
+        rememberedSelectionSaveEndpoint,
         foldersEndpoint,
         updateCheckEndpoint,
         installUpdateEndpoint,

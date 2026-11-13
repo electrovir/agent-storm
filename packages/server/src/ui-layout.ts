@@ -6,6 +6,7 @@ import {
     type UiLayout,
 } from '@agent-storm/common';
 import {
+    omitObjectKeys,
     PromiseQueue,
     typedObjectFromEntries,
     wrapInTry,
@@ -25,6 +26,15 @@ const appLayoutShape = defineShape({
         recordShape({
             keys: '',
             values: false,
+        }),
+        {
+            alsoUndefined: true,
+        },
+    ),
+    rememberedSelections: optionalShape(
+        recordShape({
+            keys: '',
+            values: '',
         }),
         {
             alsoUndefined: true,
@@ -118,6 +128,7 @@ export async function loadUiLayout(): Promise<UiLayout> {
         ),
         mainTabOrder: appLayout?.mainTabOrder || [],
         enabledActivities: appLayout?.enabledActivities || {},
+        rememberedSelections: appLayout?.rememberedSelections || {},
     };
 }
 
@@ -172,6 +183,30 @@ export async function saveTabLayout({
     return await loadUiLayout();
 }
 
+/** Rewrites the app layout file with `change`'s fields replacing the stored ones. */
+async function changeAppLayout(
+    change: (existing: Readonly<UiLayout>) => Partial<typeof appLayoutShape.runtimeType>,
+) {
+    await changeUiLayout(async () => {
+        const existing = await loadUiLayout();
+        await writeFileAtomically({
+            path: uiLayoutPath,
+            contents: JSON.stringify(
+                {
+                    ...omitObjectKeys(existing, [
+                        'tabLayouts',
+                        'tabSelections',
+                    ]),
+                    ...change(existing),
+                } satisfies typeof appLayoutShape.runtimeType,
+                undefined,
+                4,
+            ),
+        });
+    });
+    return await loadUiLayout();
+}
+
 /** Saves whichever of `order` and `enabledActivities` is given, keeping the other as stored. */
 export async function saveActivityBar({
     order,
@@ -182,25 +217,38 @@ export async function saveActivityBar({
         enabledActivities: Readonly<Record<string, boolean>>;
     }>
 >) {
-    await changeUiLayout(async () => {
-        const existing = await loadUiLayout();
-        await writeFileAtomically({
-            path: uiLayoutPath,
-            contents: JSON.stringify(
-                {
-                    mainTabOrder: [
-                        ...(order || existing.mainTabOrder),
-                    ],
-                    enabledActivities: {
-                        ...(enabledActivities || existing.enabledActivities),
-                    },
-                } satisfies typeof appLayoutShape.runtimeType,
-                undefined,
-                4,
-            ),
-        });
+    return await changeAppLayout((existing) => {
+        return {
+            mainTabOrder: [
+                ...(order || existing.mainTabOrder),
+            ],
+            enabledActivities: {
+                ...(enabledActivities || existing.enabledActivities),
+            },
+        };
     });
-    return await loadUiLayout();
+}
+
+/** An empty `value` removes `key`'s entry. */
+export async function saveRememberedSelection({
+    key,
+    value,
+}: Readonly<{
+    key: string;
+    value: string;
+}>) {
+    return await changeAppLayout((existing) => {
+        return {
+            rememberedSelections: value
+                ? {
+                      ...existing.rememberedSelections,
+                      [key]: value,
+                  }
+                : omitObjectKeys(existing.rememberedSelections, [
+                      key,
+                  ]),
+        };
+    });
 }
 
 export async function deleteFolderState(folder: string) {

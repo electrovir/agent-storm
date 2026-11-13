@@ -93,7 +93,10 @@ export const VirBuildSidebar = defineAppElement<{
                     inputs.context.folderData.removeFolders(event.detail);
                     if (inputs.activeFolder && event.detail.includes(inputs.activeFolder)) {
                         if (!inputs.context.isInActivityTab) {
-                            buildMemory.selectedFolder.clear();
+                            inputs.context.uiLayout.rememberSelection({
+                                memory: buildMemory.selectedFolder,
+                                value: undefined,
+                            });
                         }
                         inputs.route.navigate([]);
                     }

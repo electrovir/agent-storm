@@ -1,5 +1,6 @@
 import {
     activityBarSaveEndpoint,
+    rememberedSelectionSaveEndpoint,
     tabLayoutSaveEndpoint,
     uiLayoutEndpoint,
     type TabSelection,
@@ -17,7 +18,7 @@ import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
 import {logDebug} from './debug-log.js';
 import {type FolderDataObservable} from './folder-data.js';
-import {localStorageClient} from './local-storage-client.js';
+import {localStorageClient, type RememberedSelection} from './local-storage-client.js';
 import {joinTabLayout, showTabKind, splitTabLayout, type TabLayout} from './tab-layout.js';
 
 export type UiLayoutObservable = ReturnType<typeof createUiLayout>;
@@ -150,6 +151,7 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
                         tabSelections: {},
                         mainTabOrder: [],
                         enabledActivities: {},
+                        rememberedSelections: {},
                     },
                     'load fallback',
                 );
@@ -333,6 +335,56 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
                                   ...enabledActivities,
                               }
                             : undefined,
+                    },
+                });
+            });
+        },
+        /**
+         * `memory`'s remembered values, most specific first: this window's, this browser's latest,
+         * then the server's. The caller uses the first one that still exists.
+         */
+        readRemembered(memory: Readonly<RememberedSelection>) {
+            return [
+                memory.window.read(),
+                memory.browser.read(),
+                observable.value.layout?.rememberedSelections[memory.key],
+            ].filter(check.isTruthy);
+        },
+        /** Remembers `value` at every level of `memory`. `undefined` forgets it at every level. */
+        rememberSelection({
+            memory,
+            value,
+        }: Readonly<{
+            memory: Readonly<RememberedSelection>;
+            value: string | undefined;
+        }>) {
+            memory.window.write(value);
+            memory.browser.write(value);
+            const current = observable.value.layout;
+            if (current?.rememberedSelections[memory.key] === value) {
+                return;
+            }
+            if (current) {
+                setLayout(
+                    {
+                        ...current,
+                        rememberedSelections: value
+                            ? {
+                                  ...current.rememberedSelections,
+                                  [memory.key]: value,
+                              }
+                            : omitObjectKeys(current.rememberedSelections, [
+                                  memory.key,
+                              ]),
+                    },
+                    'rememberSelection',
+                );
+            }
+            void save(() => {
+                return fetchApi(rememberedSelectionSaveEndpoint, HttpMethod.Put, {
+                    requestData: {
+                        key: memory.key,
+                        value: value || '',
                     },
                 });
             });

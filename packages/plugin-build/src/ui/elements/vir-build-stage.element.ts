@@ -108,9 +108,12 @@ export const VirBuildStage = defineAppElement<{
         if (
             !inputs.context.isInActivityTab &&
             inputs.activeFolder &&
-            inputs.activeFolder !== buildMemory.selectedFolder.read()
+            inputs.activeFolder !== buildMemory.selectedFolder.window.read()
         ) {
-            buildMemory.selectedFolder.write(inputs.activeFolder);
+            inputs.context.uiLayout.rememberSelection({
+                memory: buildMemory.selectedFolder,
+                value: inputs.activeFolder,
+            });
         }
 
         /**

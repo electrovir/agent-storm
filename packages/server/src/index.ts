@@ -31,6 +31,7 @@ import {
     pluginEventsWebSocket,
     pluginsEndpoint,
     ptyWebSocket,
+    rememberedSelectionSaveEndpoint,
     removeRepoEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
@@ -155,6 +156,7 @@ import {
     pruneFolderStates,
     readUiLayoutRevision,
     saveActivityBar,
+    saveRememberedSelection,
     saveTabLayout,
 } from './ui-layout.js';
 import {getUpdateStatus, startUpdateInstall, switchToPreparedUpdate} from './update-check.js';
@@ -529,6 +531,19 @@ const activityBarSaveImplementation = implementor.implementEndpoint(activityBarS
         };
     },
 });
+
+const rememberedSelectionSaveImplementation = implementor.implementEndpoint(
+    rememberedSelectionSaveEndpoint,
+    {
+        async [HttpMethod.Put]({requestData}) {
+            return {
+                [HttpStatus.Ok]: {
+                    responseData: await saveRememberedSelection(requestData),
+                },
+            };
+        },
+    },
+);
 
 const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
     async [HttpMethod.Get]() {
@@ -1313,6 +1328,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         uiLayoutImplementation,
         tabLayoutSaveImplementation,
         activityBarSaveImplementation,
+        rememberedSelectionSaveImplementation,
         foldersImplementation,
         updateCheckImplementation,
         installUpdateImplementation,

@@ -14,7 +14,10 @@ export type SettingConfig<T> = {
     defaultValue: T;
     parse: (raw: string) => T;
     serialize: (value: T) => string | undefined;
-};
+} & PartialWithUndefined<{
+    /** Stored in `sessionStorage`, so each window keeps its own value through reloads. */
+    isPerWindow: boolean;
+}>;
 
 export type Setting<T> = {
     readonly key: string;
@@ -29,11 +32,14 @@ export function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
     function notify(value: T) {
         listeners.forEach((fn) => fn(value));
     }
+    function getStorage() {
+        return config.isPerWindow ? globalThis.sessionStorage : globalThis.localStorage;
+    }
     return {
         key: config.key,
         read() {
             try {
-                const raw = globalThis.localStorage.getItem(config.key);
+                const raw = getStorage().getItem(config.key);
                 if (raw == undefined) {
                     return config.defaultValue;
                 }
@@ -47,9 +53,9 @@ export function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
             try {
                 const serialized = config.serialize(value);
                 if (serialized == undefined) {
-                    globalThis.localStorage.removeItem(config.key);
+                    getStorage().removeItem(config.key);
                 } else {
-                    globalThis.localStorage.setItem(config.key, serialized);
+                    getStorage().setItem(config.key, serialized);
                 }
             } catch {
                 // localStorage may throw in private mode / sandboxed contexts.
@@ -58,7 +64,7 @@ export function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
         },
         clear() {
             try {
-                globalThis.localStorage.removeItem(config.key);
+                getStorage().removeItem(config.key);
             } catch {
                 // localStorage may throw in private mode / sandboxed contexts.
             }
@@ -72,6 +78,34 @@ export function defineSetting<T>(config: SettingConfig<T>): Setting<T> {
         },
     };
 }
+
+/**
+ * A selection remembered at three levels: this window's, the latest from any window in this
+ * browser, and the server's, which every browser shares. Read and written through
+ * `UiLayoutObservable`'s `readRemembered` and `rememberSelection`.
+ */
+export function defineRememberedSelection(key: string) {
+    const config: SettingConfig<string | undefined> = {
+        key,
+        defaultValue: undefined,
+        parse(raw) {
+            return raw || undefined;
+        },
+        serialize(value) {
+            return value || undefined;
+        },
+    };
+    return {
+        key,
+        window: defineSetting({
+            ...config,
+            isPerWindow: true,
+        }),
+        browser: defineSetting(config),
+    };
+}
+
+export type RememberedSelection = ReturnType<typeof defineRememberedSelection>;
 
 const sidebarSnapshotShape = defineShape({
     folders: [

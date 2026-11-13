@@ -1,4 +1,5 @@
 import {defineActivity, localStorageClient, type AppContext} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
 import {html} from 'element-vir';
 import {buildMemory} from '../../util/build-memory.js';
 import {
@@ -44,7 +45,10 @@ export const buildActivity = defineActivity({
     },
     findRestoredSubPaths({context}) {
         const folderInfo = context.folderData.value.folderInfo;
-        const folder = folderInfo.get(buildMemory.selectedFolder.read() || '');
+        const folder = context.uiLayout
+            .readRemembered(buildMemory.selectedFolder)
+            .map((path) => folderInfo.get(path))
+            .find(check.isDefined);
         return folder && subPathsForFolder(folder, folderInfo);
     },
     findRedirect({context, subPaths}) {
