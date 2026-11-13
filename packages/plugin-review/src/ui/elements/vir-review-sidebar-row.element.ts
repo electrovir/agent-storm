@@ -33,6 +33,8 @@ export const VirReviewSidebarRow = defineAppElement<{
     /** Decides which statuses get an icon and what their tooltips say. */
     queueKind: PrQueueKind;
     isActive: boolean;
+    /** The PR this one is stacked on is listed too, which draws the connector to it. */
+    isUnderParent: boolean;
     mobileModal?: boolean | undefined;
 }>()({
     tagName: 'vir-review-sidebar-row',
@@ -203,7 +205,7 @@ export const VirReviewSidebarRow = defineAppElement<{
                     })}
                 >
                     <span class="chips">${renderPaneChip('AI', inputs.pr.panes.ai)}</span>
-                    ${inputs.pr.chainDepth
+                    ${inputs.isUnderParent
                         ? html`
                               <span class="chain-connector"></span>
                           `

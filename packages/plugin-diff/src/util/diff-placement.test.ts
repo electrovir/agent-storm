@@ -25,6 +25,7 @@ const pullRequest: ReviewQueuePr = {
     url: 'https://example.com/acme/widgets/pull/1',
     bodyHtml: '',
     branchName: 'feature',
+    baseBranchName: 'dev',
     headSha: 'abc123',
     isDraft: false,
     chainDepth: 0,

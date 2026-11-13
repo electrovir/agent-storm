@@ -243,6 +243,15 @@ export const VirReviewSidebar = defineAppElement<{
                                         queueKind: selectedQueue,
                                         isActive:
                                             pullRequestRouteKey(pr) === inputs.activePullRequest,
+                                        /**
+                                         * The server stacks PRs across the whole queue, so a parent
+                                         * can be filtered out of the shown list.
+                                         */
+                                        isUnderParent:
+                                            !!pr.chainDepth &&
+                                            group.pullRequests.some((other) => {
+                                                return other.branchName === pr.baseBranchName;
+                                            }),
                                         mobileModal: inputs.mobileModal,
                                     })}
                                         data-sidebar-search-result

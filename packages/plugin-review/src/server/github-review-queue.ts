@@ -1783,6 +1783,7 @@ function organizePrs({
                 url: pr.url,
                 bodyHtml: pr.bodyHTML,
                 branchName: pr.headRef?.name || '',
+                baseBranchName: pr.baseRef?.name || '',
                 headSha: pr.headRefOid,
                 isDraft: pr.isDraft,
                 chainDepth,

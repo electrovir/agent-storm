@@ -1093,6 +1093,8 @@ export const reviewQueuePrShape = defineShape({
     ...pullRequestTextShape.default,
     /** The head branch. */
     branchName: '',
+    /** The branch this PR merges into: another listed PR's `branchName` when it's stacked on it. */
+    baseBranchName: '',
     /** The commit the head branch points at. */
     headSha: '',
     isDraft: false,
