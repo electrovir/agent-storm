@@ -6,6 +6,7 @@ import {
     PrStatus,
     RawPrState,
     RawReviewDecision,
+    RawReviewState,
     WatchModeStatus,
     type FolderInfo,
     type PullRequestBranch,
@@ -62,6 +63,7 @@ import {
     PrNeed,
     reviewRequestNoteMarker,
     runGhIn,
+    ThreadStatus,
     type PrCheck,
 } from './watch-pr-check.js';
 
@@ -1221,9 +1223,34 @@ async function checkFolder({
     });
     /** Someone who hasn't reviewed the PR yet will read all of it anyway, pushes included. */
     const hasViewerReviewed = prCheck.reviews.some((review) => review.login === viewerLogin);
-    const isPushToReview =
+    /**
+     * Assignees resolve their own threads, so the all-resolved re-request below never reaches them.
+     * A pass that answered their threads with a code push hands the PR back to them instead. The
+     * viewer is left to `viewerReviewOwed`.
+     */
+    const answeredAssignees =
+        isNewPush && finishedPass.tasks.includes(WatchTask.Comments)
+            ? prCheck.assignees.filter((login) => {
+                  return (
+                      login !== viewerLogin &&
+                      prCheck.reviews.some((review) => {
+                          return (
+                              review.login === login &&
+                              review.state === RawReviewState.ChangesRequested
+                          );
+                      }) &&
+                      prCheck.unresolvedThreads.some((thread) => {
+                          return (
+                              thread.openedBy === login &&
+                              thread.status === ThreadStatus.AwaitingHuman
+                          );
+                      })
+                  );
+              })
+            : [];
+    const isCodePush =
         isNewPush &&
-        hasViewerReviewed &&
+        (hasViewerReviewed || !!answeredAssignees.length) &&
         !(await isRebaseOnlyPush({
             folder,
             baseBranch: prCheck.baseBranch,
@@ -1236,6 +1263,7 @@ async function checkFolder({
             oldHeadSha: finishedPass.headSha,
             newHeadSha: prCheck.headSha,
         }));
+    const isPushToReview = isCodePush && hasViewerReviewed;
     const viewerReviewOwed = isPushToReview
         ? {
               at: prCheck.checkedAt,
@@ -1260,6 +1288,14 @@ async function checkFolder({
             logins: [viewerLogin],
             reason: viewerReviewOwed.reason,
             isRepeat: !isPushToReview,
+        });
+    }
+    if (isCodePush && answeredAssignees.length) {
+        await requestReviews({
+            folder,
+            prCheck,
+            logins: answeredAssignees,
+            reason: `watch mode pushed ${prCheck.headSha.slice(0, 7)} to address your requested changes. Your threads are left open for you to resolve.`,
         });
     }
     if (prCheck.reReviewLogins.length) {
