@@ -40,6 +40,12 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
             layout: undefined,
             selections: {},
         },
+        /**
+         * The default check calls any object it has already visited equal, and a new selection is
+         * one object in both `layout.tabSelections` and `selections`, so a click matching the
+         * server's selection was dropped.
+         */
+        equalityCheck: check.deepEquals,
     });
     const destroyObservable = observable.destroy.bind(observable);
     /** Saves go one at a time, so the server can't store an older layout after a newer one. */
