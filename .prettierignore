@@ -8,6 +8,7 @@
 **/graphics/
 **/node_modules/
 **/package-lock.json
+**/prisma/migrations/migration_lock.toml
 packages/*/src/server/generated/
 **/tsconfig.tsbuildinfo
 /Icon?
