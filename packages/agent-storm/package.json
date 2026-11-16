@@ -1,6 +1,6 @@
 {
     "name": "agent-storm",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Installs and starts agent-storm, a local web app for running AI coding sessions beside a shell in each of your git repos.",
     "keywords": [
         "agent",
@@ -40,7 +40,7 @@
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",
         "@augment-vir/node": "^32.7.1",
-        "agent-storm-util": "^0.1.0",
+        "agent-storm-util": "^0.1.1",
         "date-vir": "^9.4.1",
         "object-shape-tester": "^6.15.3",
         "url-vir": "^2.2.2"

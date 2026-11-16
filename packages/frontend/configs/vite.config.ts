@@ -181,6 +181,14 @@ export default defineConfig(
                  */
                 force: false,
             },
+            worker: {
+                ...baseConfig.worker,
+                /**
+                 * Vite bundles workers as `iife` by default, which can't hold the top-level `await`
+                 * in `@augment-vir/common`. Workers are created with `type: 'module'` anyway.
+                 */
+                format: 'es',
+            },
             plugins: [
                 ...(baseConfig.plugins || []),
                 tlsRestartPlugin(certPath),
