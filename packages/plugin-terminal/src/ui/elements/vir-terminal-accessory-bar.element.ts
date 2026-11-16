@@ -133,6 +133,21 @@ export const VirTerminalAccessoryBar = defineAppElement<{
     init({host}) {
         host.setAttribute('role', 'toolbar');
         host.setAttribute('aria-label', 'Terminal keys');
+        /**
+         * IOS Safari still blurs xterm's textarea, closing the soft keyboard, after a canceled
+         * `pointerdown`: the tap's synthesized mouse events and click move focus. Canceling
+         * `touchstart` stops that synthesis. The keys already acted on `pointerdown`, which fires
+         * first.
+         */
+        host.addEventListener(
+            'touchstart',
+            (event) => {
+                event.preventDefault();
+            },
+            {
+                passive: false,
+            },
+        );
     },
     render({inputs, dispatch, events}) {
         const keysTemplate = accessoryKeys.map((key) => {
