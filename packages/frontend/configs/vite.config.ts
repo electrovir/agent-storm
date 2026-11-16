@@ -1,9 +1,9 @@
 import {type Settings} from '@agent-storm/common';
 import {type InjectedGlobalData} from '@agent-storm/core/frontend';
-import {log, replaceExtension} from '@augment-vir/common';
+import {Debounce, DebounceStyle, log, replaceExtension} from '@augment-vir/common';
 import {defineConfig} from '@virmator/frontend/configs/vite.config.base.js';
 import {findConfigFile, parseConfigContents} from 'config-vir';
-import {mkdirSync, readFileSync, watch} from 'node:fs';
+import {existsSync, mkdirSync, readdirSync, readFileSync, watch} from 'node:fs';
 import {homedir} from 'node:os';
 import {resolve} from 'node:path';
 import {type Plugin} from 'vite';
@@ -89,6 +89,42 @@ function tlsRestartPlugin(certPathAtStartup: string): Plugin {
 }
 
 /**
+ * Reloads the page when a built-in plugin's bundle is rebuilt. The page loads plugin code from the
+ * server at runtime rather than through vite, so vite never sees it change, and a loaded plugin
+ * keeps running its old code until the page reloads.
+ *
+ * The reload waits a moment: one source change rewrites the browser and server bundles in separate
+ * builds, and the server has to notice the new files before the reloaded page asks for them.
+ */
+function pluginReloadPlugin(): Plugin {
+    return {
+        name: 'agent-storm-plugin-reload',
+        configureServer(server) {
+            const packagesDir = resolve(import.meta.dirname, '..', '..');
+            const reload = new Debounce(DebounceStyle.AfterWait, {
+                milliseconds: 300,
+            });
+            const watchers = readdirSync(packagesDir)
+                .filter((packageName) => packageName.startsWith('plugin-'))
+                .map((packageName) => resolve(packagesDir, packageName, 'dist-plugin'))
+                .filter((buildDir) => existsSync(buildDir))
+                .map((buildDir) => {
+                    return watch(buildDir, () => {
+                        reload.execute(() => {
+                            server.ws.send({
+                                type: 'full-reload',
+                            });
+                        });
+                    });
+                });
+            server.httpServer?.once('close', () => {
+                watchers.forEach((watcher) => watcher.close());
+            });
+        },
+    };
+}
+
+/**
  * TLS material for the dev server, or undefined to stay on http. The settings only ask for the
  * certificate, so the key is taken to be the file of the same name beside it.
  */
@@ -148,6 +184,7 @@ export default defineConfig(
             plugins: [
                 ...(baseConfig.plugins || []),
                 tlsRestartPlugin(certPath),
+                pluginReloadPlugin(),
             ],
             server: {
                 ...baseConfig.server,
