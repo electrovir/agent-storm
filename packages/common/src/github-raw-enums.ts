@@ -98,7 +98,7 @@ const builtInTrustedBotLogins: ReadonlyArray<string> = [
     'openai-codex',
 ];
 
-/** GitHub's GraphQL API names an app `flax-bot` where its REST API says `flax-bot[bot]`. */
+/** GitHub's GraphQL API names an app `my-bot` where its REST API says `my-bot[bot]`. */
 function normalizeBotLogin(login: string) {
     return removeSuffix({
         value: login.trim().toLowerCase(),

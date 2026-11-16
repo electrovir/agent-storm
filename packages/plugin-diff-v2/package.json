@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/plugin-diff-v2",
-    "version": "0.0.1",
+    "version": "0.1.0",
     "private": true,
     "description": "",
     "keywords": [],
@@ -30,17 +30,17 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/core": "*",
-        "@agent-storm/plugin-diff": "*",
-        "@augment-vir/assert": "^32.5.0",
+        "@agent-storm/core": "^0.1.0",
+        "@agent-storm/plugin-diff": "^0.1.0",
+        "@augment-vir/assert": "^32.7.1",
         "@pierre/diffs": "^1.6.4",
         "element-vir": "^27.0.2"
     },
     "devDependencies": {
-        "@augment-vir/test": "^32.7.0",
-        "@web/dev-server-esbuild": "^2.0.0",
-        "@web/test-runner": "^1.0.0",
-        "@web/test-runner-playwright": "^1.0.0",
+        "@augment-vir/test": "^32.7.1",
+        "@web/dev-server-esbuild": "^2.0.1",
+        "@web/test-runner": "^1.0.1",
+        "@web/test-runner-playwright": "^1.0.1",
         "istanbul-smart-text-reporter": "^1.1.5"
     },
     "engines": {

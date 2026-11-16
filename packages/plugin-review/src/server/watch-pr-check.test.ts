@@ -520,7 +520,7 @@ describe(classifyThread.name, () => {
 
     it('trusts a bot listed in the config', () => {
         const botComment: TestComment = {
-            login: 'flax-bot',
+            login: 'my-bot',
             body: 'AI: Regenerate this baseline.',
             actorType: RawActorType.Bot,
             association: RawAuthorAssociation.None,
@@ -534,13 +534,13 @@ describe(classifyThread.name, () => {
                 {
                     comment: botComment,
                     trustedBotLogins: [
-                        'flax-bot',
+                        'my-bot',
                     ],
                 },
                 {
                     comment: botComment,
                     trustedBotLogins: [
-                        'Flax-Bot[bot]',
+                        'My-Bot[bot]',
                     ],
                 },
                 {
@@ -549,7 +549,7 @@ describe(classifyThread.name, () => {
                         actorType: RawActorType.User,
                     },
                     trustedBotLogins: [
-                        'flax-bot',
+                        'my-bot',
                     ],
                 },
             ].map((testCase) => {

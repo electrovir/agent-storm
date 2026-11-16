@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/root",
-    "version": "0.0.1",
+    "version": "0.1.0",
     "private": true,
     "homepage": "https://github.com/electrovir/agent-storm",
     "bugs": {
@@ -46,13 +46,13 @@
         "@eslint/js": "10.0.1",
         "@stylistic/eslint-plugin": "^5.10.0",
         "@stylistic/eslint-plugin-ts": "^4.4.1",
-        "@typescript-eslint/eslint-plugin": "^8.72.1",
-        "cspell": "^10.4.0",
+        "@typescript-eslint/eslint-plugin": "^8.72.2",
+        "cspell": "^10.4.1",
         "dependency-cruiser": "^18.7.2",
         "esbuild": "^0.28.2",
         "eslint": "^10.14.0",
         "eslint-config-prettier": "^10.1.8",
-        "eslint-plugin-jsdoc": "^65.4.2",
+        "eslint-plugin-jsdoc": "^65.4.5",
         "eslint-plugin-monorepo-cop": "^1.0.2",
         "eslint-plugin-playwright": "^2.12.2",
         "eslint-plugin-prettier": "^5.5.7",
@@ -70,8 +70,8 @@
         "prettier-plugin-packagejson": "^3.1.0",
         "prettier-plugin-sort-json": "^4.2.0",
         "prettier-plugin-toml": "^4.1.0",
-        "runstorm": "^1.1.0",
-        "typescript-eslint": "8.72.1",
+        "runstorm": "^1.1.1",
+        "typescript-eslint": "8.72.2",
         "virmator": "^14.38.0"
     },
     "engines": {

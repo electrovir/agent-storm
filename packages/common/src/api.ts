@@ -102,7 +102,7 @@ const forgeSettingsJsonSchemas = {
                 default: [],
                 title: 'Trusted bots',
                 description:
-                    'GitHub logins of bots to trust like repo collaborators, as GitHub shows them on a review comment (e.g. "flax-bot"; a trailing "[bot]" is ignored). Watch mode acts on their review threads without your 👍. Copilot, Claude, and Codex are always trusted.',
+                    'GitHub logins of bots to trust like repo collaborators, as GitHub shows them on a review comment (e.g. "my-bot"; a trailing "[bot]" is ignored). Watch mode acts on their review threads without your 👍. Copilot, Claude, and Codex are always trusted.',
                 items: {
                     type: 'string',
                     title: 'Bot login',

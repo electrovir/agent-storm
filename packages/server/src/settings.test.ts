@@ -276,7 +276,7 @@ describe(splitLegacyConfig.name, () => {
                     disabledUntilMs: 1000,
                 },
                 trustedBotLogins: [
-                    'flax-bot',
+                    'my-bot',
                 ],
                 repos: [
                     {
@@ -327,7 +327,7 @@ describe(splitLegacyConfig.name, () => {
                         [ForgeType.Github]: {
                             disabledGitHubPolling: true,
                             trustedBotLogins: [
-                                'flax-bot',
+                                'my-bot',
                             ],
                         },
                     },
@@ -360,7 +360,7 @@ describe(withSettingsDefaults.name, () => {
                 forges: {
                     [ForgeType.Github]: {
                         trustedBotLogins: [
-                            'flax-bot',
+                            'my-bot',
                         ],
                     },
                 },
@@ -373,7 +373,7 @@ describe(withSettingsDefaults.name, () => {
             [ForgeType.Github]: {
                 ...defaultSettings.forges[ForgeType.Github],
                 trustedBotLogins: [
-                    'flax-bot',
+                    'my-bot',
                 ],
             },
         });
@@ -392,7 +392,7 @@ describe(stripSettingsDefaults.name, () => {
                     [ForgeType.Github]: {
                         ...defaultSettings.forges[ForgeType.Github],
                         trustedBotLogins: [
-                            'flax-bot',
+                            'my-bot',
                         ],
                     },
                 },
@@ -404,7 +404,7 @@ describe(stripSettingsDefaults.name, () => {
             forges: {
                 [ForgeType.Github]: {
                     trustedBotLogins: [
-                        'flax-bot',
+                        'my-bot',
                     ],
                 },
             },
