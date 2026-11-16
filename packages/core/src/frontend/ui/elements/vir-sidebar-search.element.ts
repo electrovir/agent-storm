@@ -1,3 +1,4 @@
+import {wait} from '@augment-vir/common';
 import {css, defineElementEvent, html, listen} from 'element-vir';
 import {ViraInput} from 'vira';
 import {defineAppElement} from '../define-app-element.js';
@@ -6,14 +7,20 @@ import {defineAppElement} from '../define-app-element.js';
  * Whether a mouse button or finger is down anywhere on the page. A click on a search result blurs
  * the input on press, and clearing the query right then re-filters the list under the pointer, so
  * the release lands on whatever row slid into that spot.
+ *
+ * Also whether that press was a finger. IOS Safari blurs the input only after the finger lifts,
+ * just before the tap's click, and blurs it with no press at all when the keyboard's Done button is
+ * tapped.
  */
 const pointerState = {
     isDown: false,
+    isTouch: false,
 };
 globalThis.addEventListener(
     'pointerdown',
-    () => {
+    (event) => {
         pointerState.isDown = true;
+        pointerState.isTouch = event.pointerType === 'touch';
     },
     {
         capture: true,
@@ -41,8 +48,8 @@ globalThis.addEventListener(
 /**
  * A sidebar header's search input, stretching across the header's free space. Leaving the input
  * clears the query, except by clicking an element marked with a `data-sidebar-search-result`
- * attribute, so the results stay listed after picking one. Its events bubble, so the sidebar
- * listens for them on its header.
+ * attribute, so the results stay listed after picking one, or, on a touch screen, by closing the
+ * keyboard. Its events bubble, so the sidebar listens for them on its header.
  */
 export const VirSidebarSearch = defineAppElement<{
     query: string;
@@ -115,43 +122,56 @@ export const VirSidebarSearch = defineAppElement<{
                         clearSearch();
                     }
                 })}
-                ${listen('focusout', () => {
-                    if (pointerState.isDown) {
-                        const clickState = {
-                            isOnResult: false,
-                        };
-                        function checkClick(event: Event) {
-                            clickState.isOnResult = event.composedPath().some((target) => {
-                                return (
-                                    target instanceof Element &&
-                                    target.hasAttribute('data-sidebar-search-result')
-                                );
-                            });
-                        }
-                        globalThis.addEventListener('click', checkClick, {
-                            capture: true,
+                ${listen('focusout', async () => {
+                    if (!pointerState.isDown && !pointerState.isTouch) {
+                        clearSearch();
+                        return;
+                    }
+                    const clickState = {
+                        wasSeen: false,
+                        isOnResult: false,
+                    };
+                    function checkClick(event: Event) {
+                        clickState.wasSeen = true;
+                        clickState.isOnResult = event.composedPath().some((target) => {
+                            return (
+                                target instanceof Element &&
+                                target.hasAttribute('data-sidebar-search-result')
+                            );
                         });
+                    }
+                    globalThis.addEventListener('click', checkClick, {
+                        capture: true,
+                    });
+                    if (pointerState.isDown) {
                         /**
                          * A click fires right after the release, in the same task, so a timer
                          * started on release runs after the click has been seen.
                          */
-                        globalThis.addEventListener(
-                            'pointerup',
-                            () => {
-                                setTimeout(() => {
-                                    globalThis.removeEventListener('click', checkClick, {
-                                        capture: true,
-                                    });
-                                    if (!clickState.isOnResult) {
-                                        clearSearch();
-                                    }
-                                });
-                            },
-                            {
-                                once: true,
-                            },
-                        );
+                        await new Promise<void>((resolve) => {
+                            globalThis.addEventListener(
+                                'pointerup',
+                                () => {
+                                    setTimeout(resolve);
+                                },
+                                {
+                                    once: true,
+                                },
+                            );
+                        });
                     } else {
+                        /** A tap's click follows the blur shortly. Done is never followed by one. */
+                        await wait({
+                            milliseconds: 300,
+                        });
+                    }
+                    globalThis.removeEventListener('click', checkClick, {
+                        capture: true,
+                    });
+                    const shouldClear = pointerState.isTouch
+                        ? clickState.wasSeen && !clickState.isOnResult
+                        : !clickState.isOnResult;
+                    if (shouldClear) {
                         clearSearch();
                     }
                 })}
