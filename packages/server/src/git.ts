@@ -540,24 +540,37 @@ function readRateLimitResumeAtMs(headers: string) {
 }
 
 /**
- * When GitHub's used-up budgets refill, read from `gh api rate_limit`, which spends no budget. With
- * no budget used up the limit was a secondary one, which has no reset time to read. Undefined when
- * GitHub can't be asked.
+ * When GitHub's used-up budgets refill. The GraphQL budget is read from the headers of a GraphQL
+ * call, because `gh api rate_limit` can report a GraphQL budget with points left while GraphQL
+ * calls are being turned away. The REST budget is read from `gh api rate_limit`, which spends none.
+ * With no budget used up the limit was a secondary one, which has no reset time to read. Undefined
+ * when GitHub can't be asked.
  */
 export async function fetchRateLimitResumeAtMs() {
-    const result = await runGh([
-        'api',
-        'rate_limit',
-        '--jq',
-        '[.resources.core, .resources.graphql] | map(select(.remaining == 0) | .reset) | max',
+    const [
+        graphqlResult,
+        restResult,
+    ] = await Promise.all([
+        runGh([
+            'api',
+            'graphql',
+            '--include',
+            '-f',
+            'query=query { rateLimit { remaining } }',
+        ]),
+        runGh([
+            'api',
+            'rate_limit',
+            '--jq',
+            '.resources.core | select(.remaining == 0) | .reset',
+        ]),
     ]);
-    if (result.exitCode !== 0) {
-        return undefined;
-    }
-    const latestReset = Number(result.stdout.trim());
-    return latestReset
-        ? latestReset * 1000
-        : toTimestamp(calculateRelativeDate(getNowInUtcTimezone(), secondaryRateLimitWait));
+    const restReset = restResult.exitCode === 0 ? Number(restResult.stdout.trim()) : 0;
+    const resumeTimes = [
+        readRateLimitResumeAtMs(splitIncludedHeaders(graphqlResult.stdout).headers),
+        restReset ? restReset * 1000 : undefined,
+    ].filter(check.isNumber);
+    return resumeTimes.length ? Math.max(...resumeTimes) : undefined;
 }
 
 /**

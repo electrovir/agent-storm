@@ -240,7 +240,14 @@ function markAutoDisabled({
             : Math.max(0, resumeAtMs - Date.now());
     githubPollingState.autoDisable = {
         reason,
-        disabledUntilMs: Date.now() + backoffMs,
+        /**
+         * A pause from a reset time GitHub sent outlasts a later guessed one, so the guess can't
+         * resume polling early only to hit the limit again.
+         */
+        disabledUntilMs: Math.max(
+            Date.now() + backoffMs,
+            (wasDisabled && githubPollingState.autoDisable?.disabledUntilMs) || 0,
+        ),
     };
     if (!wasDisabled) {
         const minutes = Math.max(
