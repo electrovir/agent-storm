@@ -200,6 +200,7 @@ export async function attachPane({
     colors,
     aiCmd,
     conversationId,
+    env,
     scrollbackLimit,
     onData,
     onExit,
@@ -221,6 +222,8 @@ export async function attachPane({
     aiCmd?: string | undefined;
     /** Set as `AGENT_STORM_CONVERSATION_ID` in the PTY's environment if this attach spawns it. */
     conversationId?: string | undefined;
+    /** See `AttachHandshake.env`. */
+    env?: Readonly<Record<string, string>> | undefined;
     /**
      * Client-requested cap on replayed scrollback lines, forwarded to the daemon's attach
      * handshake. The daemon truncates the buffered scrollback to the last N lines before replaying
@@ -242,6 +245,7 @@ export async function attachPane({
             colors,
             aiCmd,
             conversationId,
+            env,
             scrollbackLimit,
         }),
     );

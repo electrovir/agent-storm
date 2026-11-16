@@ -118,10 +118,13 @@ export async function spawnPane({
     folder,
     kind,
     sessionId,
+    env,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     sessionId: string;
+    /** Applied only if this call starts the tab. See `AttachHandshake.env`. */
+    env?: Readonly<Record<string, string>> | undefined;
 }>) {
     const launch = await resolvePaneLaunch({
         folder,
@@ -134,6 +137,7 @@ export async function spawnPane({
         sessionId,
         aiCmd: launch.aiCmd,
         conversationId: launch.conversationId,
+        env,
         onData() {},
         onExit() {},
     });
@@ -147,11 +151,14 @@ export async function sendPaneText({
     kind,
     sessionId,
     text,
+    env,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     sessionId: string;
     text: string;
+    /** Applied only if this call starts the tab. See `AttachHandshake.env`. */
+    env?: Readonly<Record<string, string>> | undefined;
 }>) {
     const folder = normalizePath(folderPath);
     if (!(await getLivePaneSessionIds(folder, kind)).includes(sessionId)) {
@@ -159,6 +166,7 @@ export async function sendPaneText({
             folder,
             kind,
             sessionId,
+            env,
         });
     }
     const conversationId = paneKindRunsAi[kind]
@@ -256,12 +264,16 @@ export async function sendPaneText({
 export async function launchFolderSession({
     folder,
     prompt,
+    env,
 }: Readonly<{
     folder: string;
     prompt: string;
+    /** Applied only if this call starts the tab. See `AttachHandshake.env`. */
+    env?: Readonly<Record<string, string>> | undefined;
 }>) {
     await sendPaneText({
         folder,
+        env,
         kind: PaneKind.Ai,
         sessionId: await findOrCreateFirstSession({
             folder,

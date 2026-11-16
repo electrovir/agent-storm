@@ -181,6 +181,8 @@ type PaneEntry = {
      * environment, and replaced on every spawn.
      */
     launchKey: string | undefined;
+    /** See `AttachHandshake.env`. Kept so a restart spawns with the same environment. */
+    env: Readonly<Record<string, string>> | undefined;
 };
 
 /** Bounded replay buffer per pane for newly attached browser terminals. */
@@ -309,6 +311,7 @@ function ensureEntry(folder: string, kind: PaneKind, sessionId: string | undefin
         conversationId: undefined,
         launchId: undefined,
         launchKey: undefined,
+        env: undefined,
     };
     panes.set(key, entry);
     return entry;
@@ -349,10 +352,12 @@ function spawnEnv({
     conversationId,
     launchId,
     launchKey,
+    env,
 }: Readonly<{
     conversationId: string | undefined;
     launchId: string;
     launchKey: string;
+    env: Readonly<Record<string, string>> | undefined;
 }>): NodeJS.ProcessEnv {
     const npmInjectedKeys = getObjectTypedKeys(process.env).filter((key) => {
         return String(key).toLowerCase().startsWith('npm_');
@@ -399,6 +404,8 @@ function spawnEnv({
                   [pathKey]: cleanedPath,
               }
             : {}),
+        /** Before the `AGENT_STORM_*` keys so a requested environment can't replace them. */
+        ...env,
         ...(conversationId
             ? {
                   [conversationIdEnvKey]: conversationId,
@@ -698,6 +705,7 @@ function startPty({
                 conversationId,
                 launchId,
                 launchKey,
+                env: entry.env,
             }),
         });
         livePtys.add(pty);
@@ -765,6 +773,7 @@ export function attachPane({
     colors,
     aiCmd,
     conversationId,
+    env,
     scrollbackLimit,
     onData,
     onExit,
@@ -787,6 +796,8 @@ export function attachPane({
     aiCmd?: string | undefined;
     /** Like `aiCmd`, only applied when this attach spawns the PTY. */
     conversationId?: string | undefined;
+    /** See `AttachHandshake.env`. Omitted keeps whatever environment the pane was given before. */
+    env?: Readonly<Record<string, string>> | undefined;
     /**
      * Client-requested cap on replayed scrollback lines. Truncates the returned `scrollback` to the
      * last N lines so a client with a small terminal buffer doesn't receive history it will
@@ -811,6 +822,7 @@ export function attachPane({
     entry.colors = parseTerminalColors(colors) ?? entry.colors;
     const isNew = !entry.pty;
     if (!entry.pty) {
+        entry.env = env ?? entry.env;
         startPty({
             folder,
             kind,

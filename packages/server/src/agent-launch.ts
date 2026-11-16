@@ -5,6 +5,7 @@ import {
     extractErrorMessage,
     extractExtension,
     filterObject,
+    getObjectTypedKeys,
     log,
     wrapInTry,
 } from '@augment-vir/common';
@@ -12,7 +13,7 @@ import {convertDuration, type AnyDuration} from 'date-vir';
 import {watch} from 'node:fs';
 import {chmod, mkdir, readdir, readFile, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import {defineShape, parseJsonWithShape} from 'object-shape-tester';
+import {defineShape, parseJsonWithShape, recordShape} from 'object-shape-tester';
 import {verifyLaunchSignature} from './daemon/daemon-client.js';
 import {agentLaunchRequestsDir} from './file-paths.js';
 
@@ -73,12 +74,24 @@ const launchPayloadShape = defineShape({
      * activates the folder, typing nothing.
      */
     prompt: '',
+    /**
+     * Extra environment variables for the tabs this launch starts, which keep them across restarts.
+     * Tabs that are already running can't take them, so a launch with any is refused while one of
+     * the folder's first tabs is running.
+     */
+    env: recordShape({
+        keys: '',
+        values: '',
+    }),
     /** Accepted once. */
     requestId: '',
     createdAtMs: 0,
 });
 
-export type LaunchRequest = Pick<typeof launchPayloadShape.runtimeType, 'folder' | 'prompt'>;
+export type LaunchRequest = Pick<
+    typeof launchPayloadShape.runtimeType,
+    'folder' | 'prompt' | 'env'
+>;
 
 /** Resolves to why the request was refused, or `undefined` when it was accepted. */
 export type LaunchRequestHandler = (
@@ -121,7 +134,15 @@ async function parseLaunchRequest(
     if (!payload) {
         return {
             refusal:
-                'Expected "payload" to hold string "launchId", "folder", "prompt", and "requestId" properties and a number "createdAtMs".',
+                'Expected "payload" to hold string "launchId", "folder", "prompt", and "requestId" properties, an "env" object of strings, and a number "createdAtMs".',
+        };
+    }
+    const reservedEnvKeys = getObjectTypedKeys(payload.env).filter((key) => {
+        return key.startsWith('AGENT_STORM_');
+    });
+    if (reservedEnvKeys.length) {
+        return {
+            refusal: `agent-storm sets its own AGENT_STORM_ variables. Remove ${reservedEnvKeys.join(', ')} from "env".`,
         };
     }
     const isSigned = await verifyLaunchSignature({
@@ -163,6 +184,7 @@ async function parseLaunchRequest(
         request: {
             folder: payload.folder,
             prompt: payload.prompt,
+            env: payload.env,
         },
     };
 }

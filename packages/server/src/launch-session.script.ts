@@ -1,5 +1,5 @@
 import {waitUntil} from '@augment-vir/assert';
-import {log} from '@augment-vir/common';
+import {log, typedObjectFromEntries} from '@augment-vir/common';
 import {createHmac, randomUUID} from 'node:crypto';
 import {access, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
@@ -8,7 +8,9 @@ import {parseArgs} from 'node:util';
 
 /**
  * Asks the running agent-storm to activate `--folder` without moving any window's focus to it: its
- * tabs start, and `--prompt`, when given, is typed into its first AI tab. Only works inside an
+ * tabs start, and `--prompt`, when given, is typed into its first AI tab. Each `--env KEY=VALUE` is
+ * set in the environment of the tabs it starts, and agent-storm refuses the request when one of the
+ * folder's first tabs is already running, since a running tab can't take them. Only works inside an
  * agent-storm tab, or a process started from one, whose environment holds the key that signs the
  * request.
  *
@@ -44,6 +46,10 @@ const {values} = parseArgs({
         prompt: {
             type: 'string',
         },
+        env: {
+            type: 'string',
+            multiple: true,
+        },
     },
 });
 const launchId = process.env.AGENT_STORM_LAUNCH_ID;
@@ -51,6 +57,17 @@ const launchKey = process.env.AGENT_STORM_LAUNCH_KEY;
 
 if (!values.folder) {
     log.error('Pass --folder.');
+    process.exit(1);
+}
+const envEntries = (values.env || []).map((entry) => {
+    const separatorIndex = entry.indexOf('=');
+    return [
+        entry.slice(0, Math.max(separatorIndex, 0)),
+        entry.slice(separatorIndex + 1),
+    ] as const;
+});
+if (envEntries.some(([key]) => !key)) {
+    log.error('Pass each --env as KEY=VALUE.');
     process.exit(1);
 }
 if (!launchId || !launchKey) {
@@ -67,6 +84,7 @@ const payload = JSON.stringify({
     launchId,
     folder: values.folder,
     prompt: values.prompt || '',
+    env: typedObjectFromEntries(envEntries),
     requestId,
     createdAtMs: Date.now(),
 });

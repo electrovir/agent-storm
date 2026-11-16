@@ -425,6 +425,83 @@ describe(attachPane.name, () => {
             });
         }
     });
+    it('spawns with the requested env, keeps it across a restart, and keeps its own launch id', async () => {
+        const folder = await mkdtemp(join(tmpdir(), 'agent-storm-pty-pool-'));
+        try {
+            const output: string[] = [];
+            const attachment = attachPane({
+                folder,
+                kind: PaneKind.Ai,
+                aiCmd: [
+                    paneTestCommands.printEnvLine({
+                        prefix: 'example=',
+                        envKey: 'EXAMPLE_PANE_ENV',
+                    }),
+                    paneTestCommands.printEnvLine({
+                        prefix: 'id=',
+                        envKey: 'AGENT_STORM_LAUNCH_ID',
+                    }),
+                    paneTestCommands.waitForever,
+                ].join('; '),
+                env: {
+                    EXAMPLE_PANE_ENV: 'from-launch',
+                    AGENT_STORM_LAUNCH_ID: 'replaced',
+                },
+                onData(data) {
+                    output.push(data);
+                },
+                onExit() {},
+            });
+            try {
+                await waitUntil(() => /id=\S/.test(output.join('')), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: paneOutputTimeout,
+                });
+                restartPane({
+                    folder,
+                    kind: PaneKind.Ai,
+                    aiCmd: [
+                        paneTestCommands.printEnvLine({
+                            prefix: 'restarted=',
+                            envKey: 'EXAMPLE_PANE_ENV',
+                        }),
+                        paneTestCommands.waitForever,
+                    ].join('; '),
+                });
+                await waitUntil(() => output.join('').includes('restarted='), {
+                    interval: {
+                        milliseconds: 20,
+                    },
+                    timeout: paneOutputTimeout,
+                });
+
+                assert.deepEquals(
+                    [
+                        output.join('').includes('example=from-launch'),
+                        output.join('').includes('id=replaced'),
+                        output.join('').includes('restarted=from-launch'),
+                    ],
+                    [
+                        true,
+                        false,
+                        true,
+                    ],
+                );
+            } finally {
+                attachment.detach();
+                killFolderPanes({
+                    folder,
+                });
+            }
+        } finally {
+            await rm(folder, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
 });
 
 describe(livePtyCount.name, () => {

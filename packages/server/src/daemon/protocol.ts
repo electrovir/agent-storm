@@ -74,13 +74,15 @@ export class FrameDecoder {
  * gray background behind its prompt. Version 3 was that same feature mid-landing — it declared the
  * colors on the wire without answering anything — so the gate has to reject it too. Version 5
  * reports {@link StatusEntry.isRunningCommand}, without which the review init command could be typed
- * into a shell that's busy running something else.
+ * into a shell that's busy running something else. Version 6 applies {@link AttachHandshake.env}; an
+ * earlier daemon ignores it, so a launch that asked for an environment would silently run without
+ * it.
  *
  * The version is reported on {@link StatusResponse} rather than through a dedicated action because
  * `Status` is the only introspection action every historical daemon understands — see
  * {@link DaemonAction.Shutdown} for why probing with a new action would be destructive.
  */
-export const daemonProtocolVersion = 5;
+export const daemonProtocolVersion = 6;
 
 export enum DaemonAction {
     Attach = 'attach',
@@ -147,6 +149,12 @@ export type AttachHandshake = {
      * than this field ignore it, which only means their panes go without the variable.
      */
     conversationId?: string | undefined;
+    /**
+     * Extra environment variables for the PTY, applied only when this attach spawns it. The pane
+     * keeps them for its later restarts. They cannot replace the `AGENT_STORM_*` variables the
+     * daemon sets itself.
+     */
+    env?: Record<string, string> | undefined;
     /**
      * Max scrollback lines to replay to this client on attach. When set, the daemon truncates the
      * pane's buffered scrollback to the last N lines before sending it. Omitted means replay the

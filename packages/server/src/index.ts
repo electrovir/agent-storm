@@ -51,8 +51,10 @@ import {
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
+    awaitedFilter,
     convertByteSize,
     extractErrorMessage,
+    getObjectTypedKeys,
     HttpMethod,
     HttpStatus,
     log,
@@ -931,10 +933,14 @@ const paneInputImplementation = implementor.implementEndpoint(paneInputEndpoint,
 
 /**
  * Activates the requested folder the way selecting it in the sidebar does, except that no open
- * frontend switches to it: its repo counts as recently used, its shell and AI tabs start, and a
- * non-empty `prompt` is typed into the AI tab.
+ * frontend switches to it: its repo counts as recently used, its shell and AI tabs start with `env`
+ * added to their environment, and a non-empty `prompt` is typed into the AI tab.
  */
-async function launchRequestedSession({folder: requestedFolder, prompt}: Readonly<LaunchRequest>) {
+async function launchRequestedSession({
+    folder: requestedFolder,
+    prompt,
+    env,
+}: Readonly<LaunchRequest>) {
     /** The requester usually just created this folder, so the cached listing may predate it. */
     await refreshFolderInfoNow();
     const folder = normalizePath(requestedFolder);
@@ -943,6 +949,27 @@ async function launchRequestedSession({folder: requestedFolder, prompt}: Readonl
     });
     if (!isKnownFolder) {
         return `"${folder}" is not a folder agent-storm shows. Create it inside a repo agent-storm already lists, then retry.`;
+    }
+    const firstSessionIds = {
+        [PaneKind.Ai]: await findOrCreateFirstSession({
+            folder,
+            kind: PaneKind.Ai,
+        }),
+        [PaneKind.Shell]: await findOrCreateFirstSession({
+            folder,
+            kind: PaneKind.Shell,
+        }),
+    } satisfies Record<PaneKind, string>;
+    if (getObjectTypedKeys(env).length) {
+        const runningKinds = await awaitedFilter(
+            getObjectTypedKeys(firstSessionIds),
+            async (kind) => {
+                return (await getLivePaneSessionIds(folder, kind)).includes(firstSessionIds[kind]);
+            },
+        );
+        if (runningKinds.length) {
+            return `"${folder}" can't take "env" while its ${runningKinds.join(' and ')} ${runningKinds.length > 1 ? 'tabs are' : 'tab is'} running. Close ${runningKinds.length > 1 ? 'them' : 'it'}, then retry.`;
+        }
     }
     await updateOwningRepo({
         folder,
@@ -956,10 +983,8 @@ async function launchRequestedSession({folder: requestedFolder, prompt}: Readonl
     spawnPane({
         folder,
         kind: PaneKind.Shell,
-        sessionId: await findOrCreateFirstSession({
-            folder,
-            kind: PaneKind.Shell,
-        }),
+        sessionId: firstSessionIds[PaneKind.Shell],
+        env,
     }).catch((error: unknown) => {
         log.error(`Failed to start the shell tab in "${folder}": ${String(error)}`);
     });
@@ -968,14 +993,13 @@ async function launchRequestedSession({folder: requestedFolder, prompt}: Readonl
         ? launchFolderSession({
               folder,
               prompt,
+              env,
           })
         : spawnPane({
               folder,
               kind: PaneKind.Ai,
-              sessionId: await findOrCreateFirstSession({
-                  folder,
-                  kind: PaneKind.Ai,
-              }),
+              sessionId: firstSessionIds[PaneKind.Ai],
+              env,
           })
     ).catch((error: unknown) => {
         log.error(`Failed to launch an AI session in "${folder}": ${String(error)}`);

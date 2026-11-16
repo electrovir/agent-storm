@@ -48,7 +48,7 @@ if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
 function handleAttach({
     socket,
     decoder,
-    handshake: {folder, kind, sessionId, colors, aiCmd, conversationId, scrollbackLimit},
+    handshake: {folder, kind, sessionId, colors, aiCmd, conversationId, env, scrollbackLimit},
 }: Readonly<{
     socket: Socket;
     decoder: FrameDecoder;
@@ -71,6 +71,7 @@ function handleAttach({
         colors,
         aiCmd,
         conversationId,
+        env,
         scrollbackLimit,
         onData,
         onExit,
