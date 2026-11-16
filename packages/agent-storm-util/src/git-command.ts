@@ -1,5 +1,10 @@
 import {check} from '@augment-vir/assert';
-import {convertByteSize, extractErrorMessage, type AnyByteSize} from '@augment-vir/common';
+import {
+    convertByteSize,
+    extractErrorMessage,
+    type AnyByteSize,
+    type MaybePromise,
+} from '@augment-vir/common';
 import {type AnyDuration} from 'date-vir';
 import {runCommand} from './run-command.js';
 
@@ -109,6 +114,283 @@ const ghMaxBuffer: AnyByteSize = {
 };
 
 /**
+ * What one HTTP request inside a `gh` call drew from GitHub's rate limits, read from the response's
+ * `X-Ratelimit-*` headers.
+ *
+ * @category Internal
+ */
+export type GhRequestCost = {
+    /** The budget the request drew from, such as `graphql`, `core`, or `search`. */
+    resource: string;
+    used: number;
+    remaining: number;
+    /** Unix seconds when the budget resets. */
+    resetAt: number;
+    /**
+     * How far `used` rose since the previous logged request on the same budget and reset time.
+     * GitHub doesn't report a request's own cost, so this also counts concurrent calls and `gh`
+     * calls made outside agent-storm. GitHub answers from more than one counter at once, each with
+     * its own reset time, so `undefined` for the first request seen on a counter.
+     */
+    cost: number | undefined;
+};
+
+/**
+ * One `gh` call, for {@link GhCallLogger}.
+ *
+ * @category Internal
+ */
+export type GhCallLog = {
+    args: string[];
+    cwd: string | undefined;
+    exitCode: number;
+    durationMs: number;
+    requests: GhRequestCost[];
+};
+
+/**
+ * Receives every `gh` call while `isEnabled` resolves true. Those calls run with `GH_DEBUG=api`, so
+ * leave it disabled when not in use.
+ *
+ * @category Internal
+ */
+export type GhCallLogger = {
+    /** Checked before every `gh` call. A rejection counts as disabled. */
+    isEnabled: () => MaybePromise<boolean>;
+    /** Called after each logged `gh` call finishes. A rejection is ignored. */
+    log: (call: GhCallLog) => MaybePromise<void>;
+};
+
+type GhCallLogging = {
+    logger: GhCallLogger | undefined;
+    /** `used` per budget and reset time. */
+    lastUsed: Partial<Record<string, number>>;
+};
+
+/** On `globalThis` because each plugin's server bundle carries its own copy of this module. */
+function getGhCallLogging(): GhCallLogging {
+    const key = Symbol.for('agent-storm.gh-call-logging');
+    const existing: unknown = Reflect.get(globalThis, key);
+    if (existing) {
+        return existing as GhCallLogging;
+    }
+    const created: GhCallLogging = {
+        logger: undefined,
+        lastUsed: {},
+    };
+    Reflect.set(globalThis, key, created);
+    return created;
+}
+
+/**
+ * Sets the logger every `gh` call in this process reports to, including calls from plugin bundles.
+ * `undefined` stops logging.
+ *
+ * @category Util
+ */
+export function setGhCallLogger(logger: GhCallLogger | undefined) {
+    getGhCallLogging().logger = logger;
+}
+
+/**
+ * Splits `gh`'s stderr under `GH_DEBUG=api` into the rate-limit headers of each response and the
+ * stderr `gh` would have printed without it.
+ *
+ * @category Internal
+ */
+export function parseGhDebugOutput(stderr: string) {
+    const parsed = stderr.split('\n').reduce<{
+        stderrLines: string[];
+        /** Lines of the request being read, kept in case its closing line never comes. */
+        openRequest: string[] | undefined;
+        requests: Record<string, string>[];
+    }>(
+        (state, line) => {
+            if (line.startsWith('* Request at ')) {
+                return {
+                    ...state,
+                    openRequest: [
+                        line,
+                    ],
+                };
+            } else if (state.openRequest && line.startsWith('* Request took ')) {
+                const headers = readHeaderLines(state.openRequest);
+                return {
+                    ...state,
+                    openRequest: undefined,
+                    requests: headers['x-ratelimit-resource']
+                        ? [
+                              ...state.requests,
+                              headers,
+                          ]
+                        : state.requests,
+                };
+            } else if (state.openRequest) {
+                return {
+                    ...state,
+                    openRequest: [
+                        ...state.openRequest,
+                        line,
+                    ],
+                };
+            } else {
+                /** `GH_DEBUG` also echoes each git command `gh` runs. */
+                return /^\[git .*\]$/.test(line)
+                    ? state
+                    : {
+                          ...state,
+                          stderrLines: [
+                              ...state.stderrLines,
+                              line,
+                          ],
+                      };
+            }
+        },
+        {
+            stderrLines: [],
+            openRequest: undefined,
+            requests: [],
+        },
+    );
+    return {
+        stderr: [
+            ...parsed.stderrLines,
+            ...(parsed.openRequest || []).filter((line) => !/^[*<>] /.test(line)),
+        ]
+            .join('\n')
+            .trim(),
+        rateLimits: parsed.requests.map((headers) => {
+            return {
+                resource: headers['x-ratelimit-resource'] || '',
+                used: Number(headers['x-ratelimit-used']),
+                remaining: Number(headers['x-ratelimit-remaining']),
+                resetAt: Number(headers['x-ratelimit-reset']),
+            };
+        }),
+    };
+}
+
+function readHeaderLines(lines: ReadonlyArray<string>) {
+    return lines.reduce<Record<string, string>>((headers, line) => {
+        const match = /^< ([\w-]+): (.*)$/.exec(line);
+        return match?.[1] && match[2] != undefined
+            ? {
+                  ...headers,
+                  [match[1].toLowerCase()]: match[2].trim(),
+              }
+            : headers;
+    }, {});
+}
+
+async function logGhCall({
+    logger,
+    args,
+    cwd,
+    exitCode,
+    startedAt,
+    stderr,
+}: Readonly<{
+    logger: GhCallLogger;
+    args: ReadonlyArray<string>;
+    cwd: string | undefined;
+    exitCode: number;
+    startedAt: number;
+    stderr: string;
+}>) {
+    const logging = getGhCallLogging();
+    const parsed = parseGhDebugOutput(stderr);
+    const requests = parsed.rateLimits.map((rateLimit): GhRequestCost => {
+        const counterKey = `${rateLimit.resource} ${rateLimit.resetAt}`;
+        const previousUsed = logging.lastUsed[counterKey];
+        logging.lastUsed[counterKey] = rateLimit.used;
+        return {
+            ...rateLimit,
+            cost: previousUsed == undefined ? undefined : rateLimit.used - previousUsed,
+        };
+    });
+    try {
+        await logger.log({
+            args: [...args],
+            cwd,
+            exitCode,
+            durationMs: Date.now() - startedAt,
+            requests,
+        });
+    } catch {
+        /* a failed log write must not fail the `gh` call */
+    }
+    return parsed.stderr;
+}
+
+/**
+ * Runs the GitHub CLI in `cwd`, rejecting like {@link runCommand} on a nonzero exit. Reports the
+ * call to the {@link setGhCallLogger} logger while it's enabled.
+ *
+ * @category Util
+ */
+export async function runGhCommand({
+    args,
+    cwd,
+}: Readonly<{
+    args: ReadonlyArray<string>;
+    cwd?: string | undefined;
+}>) {
+    const commandOptions = {
+        cwd,
+        maxBuffer: convertByteSize(ghMaxBuffer, {
+            bytes: true,
+        }).bytes,
+        timeout: ghTimeout,
+    };
+    const logger = getGhCallLogging().logger;
+    const isLogging = logger ? await Promise.resolve(logger.isEnabled()).catch(() => false) : false;
+    if (!logger || !isLogging) {
+        return await runCommand('gh', [...args], commandOptions);
+    }
+    const startedAt = Date.now();
+    try {
+        const result = await runCommand('gh', [...args], {
+            ...commandOptions,
+            env: {
+                ...process.env,
+                GH_DEBUG: 'api',
+            },
+        });
+        return {
+            stdout: result.stdout,
+            stderr: await logGhCall({
+                logger,
+                args,
+                cwd,
+                exitCode: 0,
+                startedAt,
+                stderr: result.stderr,
+            }),
+        };
+    } catch (error) {
+        const exitCode =
+            check.isObject(error) && check.hasKey(error, 'code') && check.isNumber(error.code)
+                ? error.code
+                : 1;
+        const stderr = await logGhCall({
+            logger,
+            args,
+            cwd,
+            exitCode,
+            startedAt,
+            stderr:
+                check.isObject(error) && check.hasKey(error, 'stderr') ? String(error.stderr) : '',
+        });
+        throw Object.assign(new Error(stderr || extractErrorMessage(error)), {
+            code: exitCode,
+            stdout:
+                check.isObject(error) && check.hasKey(error, 'stdout') ? String(error.stdout) : '',
+            stderr,
+        });
+    }
+}
+
+/**
  * Runs the GitHub CLI. Never throws: a failed or timed-out call answers with its exit code and
  * stderr instead.
  *
@@ -116,11 +398,8 @@ const ghMaxBuffer: AnyByteSize = {
  */
 export async function runGh(args: ReadonlyArray<string>): Promise<GhExecResult> {
     try {
-        const result = await runCommand('gh', [...args], {
-            maxBuffer: convertByteSize(ghMaxBuffer, {
-                bytes: true,
-            }).bytes,
-            timeout: ghTimeout,
+        const result = await runGhCommand({
+            args,
         });
         return {
             exitCode: 0,

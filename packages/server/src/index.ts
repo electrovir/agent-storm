@@ -85,7 +85,7 @@ import {
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {appendDebugLog, pruneDebugLogs} from './debug-log.js';
+import {appendDebugLog, pruneDebugLogs, startGhCallDebugLog} from './debug-log.js';
 import {
     clientErrorLogPath,
     failedPaneInputsPath,
@@ -1434,6 +1434,7 @@ startLivePaneTracking().catch((error: unknown) => {
     log.warning(`Failed to restore tabs: ${extractErrorMessage(error)}`);
 });
 await logServerStartup();
+startGhCallDebugLog();
 await pruneDebugLogs();
 
 log.success(`agent-storm server listening on ${listenAddress}`);

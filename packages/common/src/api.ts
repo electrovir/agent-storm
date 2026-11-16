@@ -542,7 +542,7 @@ export const settingsJsonSchema = {
             default: false,
             title: 'Debug logging',
             description:
-                "When on, the app records detailed traces of UI behavior (such as tab selection) to the server's debug log, under `agent-storm-debug-logs` in the system temp directory. Entries older than a day are deleted.",
+                "When on, the app records detailed traces of UI behavior (such as tab selection) and the GitHub rate-limit cost of every `gh` call to the server's debug log, under `agent-storm-debug-logs` in the system temp directory. Entries older than a day are deleted.",
         },
         /** Intentionally absent from `required` so configs written by older builds still load. */
         disableAutoWatchMode: {

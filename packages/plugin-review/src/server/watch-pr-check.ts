@@ -18,7 +18,7 @@ import {
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedKeys, removeDuplicates} from '@augment-vir/common';
-import {runCommand} from 'agent-storm-util';
+import {runGhCommand} from 'agent-storm-util';
 import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
 import {
     assertWrapValidShape,
@@ -640,12 +640,9 @@ query($owner: String!, $repo: String!) {
 /** Runs `gh` in `folder`, so commands that default to the current branch's PR find it. */
 export async function runGhIn(folder: string, args: ReadonlyArray<string>) {
     return (
-        await runCommand('gh', [...args], {
+        await runGhCommand({
+            args,
             cwd: folder,
-            maxBuffer: 50 * 1024 * 1024,
-            timeout: {
-                minutes: 1,
-            },
         })
     ).stdout;
 }
