@@ -62,6 +62,7 @@ import {
 import {isSafeBranchName} from './branch-name.js';
 import {closeEditorWindow} from './editor-window.js';
 import {
+    addReactionGroups,
     canReuseForForcedRefresh,
     commentFields,
     mentionsAny,
@@ -1523,32 +1524,35 @@ async function fetchReviewPr({
         url: pullRequest.url,
         bodyHtml: pullRequest.bodyHTML,
         branchName: pullRequest.headRefName,
-        threads: pullRequest.reviewThreads.nodes
-            .filter((rawThread) => {
-                return (
-                    (!rawThread.isResolved &&
-                        (isViewerAssigned ||
-                            rawThread.comments.nodes.some((comment) => {
-                                return mentionsAny({
-                                    body: comment.body,
-                                    logins: [
-                                        page.viewer.login,
-                                    ],
-                                });
-                            }))) ||
-                    rawThread.comments.nodes[0]?.author?.login === page.viewer.login
-                );
+        threads: (
+            await addReactionGroups({
+                threads: pullRequest.reviewThreads.nodes.filter((rawThread) => {
+                    return (
+                        (!rawThread.isResolved &&
+                            (isViewerAssigned ||
+                                rawThread.comments.nodes.some((comment) => {
+                                    return mentionsAny({
+                                        body: comment.body,
+                                        logins: [
+                                            page.viewer.login,
+                                        ],
+                                    });
+                                }))) ||
+                        rawThread.comments.nodes[0]?.author?.login === page.viewer.login
+                    );
+                }),
+                comments: [],
             })
-            .map((rawThread) => {
-                const thread = toThread(rawThread);
-                /** A file-level thread has no line to excerpt, and github.com shows it without one. */
-                return rawThread.subjectType === RawThreadSubjectType.File
-                    ? {
-                          ...thread,
-                          diffHunk: '',
-                      }
-                    : thread;
-            }),
+        ).threads.map((rawThread) => {
+            const thread = toThread(rawThread);
+            /** A file-level thread has no line to excerpt, and github.com shows it without one. */
+            return rawThread.subjectType === RawThreadSubjectType.File
+                ? {
+                      ...thread,
+                      diffHunk: '',
+                  }
+                : thread;
+        }),
         reviews: pullRequest.reviews.nodes
             .filter((rawReview) => {
                 return rawReview.author?.login === page.viewer.login;

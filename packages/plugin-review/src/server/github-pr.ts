@@ -1,4 +1,4 @@
-// cspell:words hooray unresolve
+// cspell:words hooray reactable unresolve
 
 import {
     checkResultStates,
@@ -14,7 +14,7 @@ import {
     RawReviewState,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {getObjectTypedEntries, wrapInTry} from '@augment-vir/common';
+import {chunkArray, getObjectTypedEntries, wrapInTry} from '@augment-vir/common';
 import {normalizePath, runGh} from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {
@@ -56,7 +56,6 @@ export const commentFields = [
     'url',
     'author { login avatarUrl }',
     'viewerDidAuthor viewerCanUpdate',
-    reactionGroupFields,
 ].join(' ');
 
 /**
@@ -278,6 +277,84 @@ const rawCommentFields = {
 };
 
 const rawCommentShape = defineShape(rawCommentFields);
+
+const reactionsResponseShape = defineShape({
+    nodes: [
+        nullableShape({
+            id: '',
+            reactionGroups: nullableShape([
+                rawReactionGroupShape,
+            ]),
+        }),
+    ],
+});
+
+/**
+ * Asked for apart from the PR queries: nested under threads and comments there, `reactors` is
+ * charged once per comment slot every thread could hold, which made reactions nearly all of a
+ * refresh's GitHub rate-limit cost. Listed by id, it is charged once per comment that exists.
+ */
+async function fetchReactionGroups(commentIds: ReadonlyArray<string>) {
+    const pages = await Promise.all(
+        chunkArray(commentIds, {
+            chunkSize: 100,
+        }).map(async (ids) => {
+            return assertWrapValidShape(
+                await runGraphql(
+                    `query { nodes(ids: ${JSON.stringify(ids)}) { ... on Reactable { id ${reactionGroupFields} } } }`,
+                    {},
+                ),
+                reactionsResponseShape,
+            ).nodes;
+        }),
+    );
+    return new Map(
+        pages
+            .flat()
+            .filter(check.isTruthy)
+            .map((node) => {
+                return [
+                    node.id,
+                    node.reactionGroups,
+                ];
+            }),
+    );
+}
+
+/** Fills in the reactions that {@link commentFields} leaves out. */
+export async function addReactionGroups<
+    Thread extends Readonly<typeof rawThreadShape.runtimeType>,
+>({
+    threads,
+    comments,
+}: Readonly<{
+    threads: ReadonlyArray<Thread>;
+    comments: ReadonlyArray<Readonly<typeof rawCommentShape.runtimeType>>;
+}>) {
+    const reactions = await fetchReactionGroups(
+        [
+            ...threads.flatMap((thread) => thread.comments.nodes),
+            ...comments,
+        ].map((comment) => comment.id),
+    );
+    function addTo<Comment extends Readonly<typeof rawCommentShape.runtimeType>>(comment: Comment) {
+        return {
+            ...comment,
+            reactionGroups: reactions.get(comment.id),
+        };
+    }
+    return {
+        threads: threads.map((thread) => {
+            return {
+                ...thread,
+                comments: {
+                    nodes: thread.comments.nodes.map(addTo),
+                },
+            };
+        }),
+        comments: comments.map(addTo),
+    };
+}
 
 /** The fields of a review thread that {@link toThread} reads. */
 export const rawThreadFields = {
@@ -721,7 +798,22 @@ async function queryFolderPr(folder: string) {
         }),
         prQueryResponseShape,
     ).repository?.pullRequests.nodes[0];
-    return node ? toPr(node) : null;
+    if (!node) {
+        return null;
+    }
+    const withReactions = await addReactionGroups({
+        threads: node.reviewThreads.nodes,
+        comments: node.comments.nodes,
+    });
+    return toPr({
+        ...node,
+        reviewThreads: {
+            nodes: withReactions.threads,
+        },
+        comments: {
+            nodes: withReactions.comments,
+        },
+    });
 }
 
 export async function postComment({
