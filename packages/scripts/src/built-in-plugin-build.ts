@@ -79,6 +79,68 @@ function createManifestCopyPlugin({
     };
 }
 
+/**
+ * Keeps a server part's database files current before each server build: regenerates the Prisma
+ * client when the schema changed, and copies the migrations beside the bundle, where the plugin
+ * applies them when it opens its database. No source file imports either, so the entry's load lists
+ * them for esbuild's watch, and a new migration or schema edit reaches the running app without a
+ * restart.
+ */
+function createDatabaseSyncPlugin({
+    packageDir,
+    entryPath,
+    outDir,
+}: Readonly<{
+    packageDir: string;
+    entryPath: string;
+    outDir: string;
+}>): Plugin {
+    const schemaPath = resolve(packageDir, 'prisma', 'schema.prisma');
+    const migrationsDir = resolve(packageDir, 'prisma', 'migrations');
+    const state: {
+        generatedSchema: string | undefined;
+    } = {
+        generatedSchema: undefined,
+    };
+    return {
+        name: 'agent-storm-plugin-database',
+        setup(build) {
+            build.onStart(async () => {
+                const schema = await readFile(schemaPath, 'utf8').catch(() => undefined);
+                if (schema != undefined && schema !== state.generatedSchema) {
+                    await generatePrismaClient(packageDir);
+                    state.generatedSchema = schema;
+                }
+                if (await stat(migrationsDir).catch(() => undefined)) {
+                    await cp(migrationsDir, resolve(outDir, 'migrations'), {
+                        recursive: true,
+                    });
+                }
+            });
+            build.onLoad(
+                {
+                    filter: /-server\.ts$/,
+                },
+                async (args) => {
+                    if (args.path !== entryPath) {
+                        return undefined;
+                    }
+                    return {
+                        contents: await readFile(entryPath, 'utf8'),
+                        loader: 'ts',
+                        watchFiles: [
+                            schemaPath,
+                        ],
+                        watchDirs: [
+                            migrationsDir,
+                        ],
+                    };
+                },
+            );
+        },
+    };
+}
+
 async function createBuiltInPluginBuilds({
     pluginId,
     outDir,
@@ -104,15 +166,8 @@ async function createBuiltInPluginBuilds({
                 await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
             }),
     );
-    /** A server part applies its database migrations from beside its bundle. */
-    const migrationsDir = resolve(packageDir, 'prisma', 'migrations');
-    if (await stat(migrationsDir).catch(() => undefined)) {
-        await cp(migrationsDir, resolve(outDir, 'migrations'), {
-            recursive: true,
-        });
-    }
-    await generatePrismaClient(packageDir);
     const browserEntryPath = resolve(packageDir, 'src', 'index.ts');
+    const serverEntryPath = resolve(packageDir, 'src', 'server', `${pluginId}-server.ts`);
     const shared: BuildOptions = {
         bundle: true,
         format: 'esm',
@@ -159,7 +214,7 @@ async function createBuiltInPluginBuilds({
                       platform: 'node',
                       target: 'node22',
                       entryPoints: [
-                          resolve(packageDir, 'src', 'server', `${pluginId}-server.ts`),
+                          serverEntryPath,
                       ],
                       outfile: resolve(outDir, manifest.serverEntry),
                       external: [
@@ -185,6 +240,13 @@ async function createBuiltInPluginBuilds({
                            */
                           js: "import {createRequire as createBannerRequire} from 'node:module'; const require = createBannerRequire(import.meta.url);",
                       },
+                      plugins: [
+                          createDatabaseSyncPlugin({
+                              packageDir,
+                              entryPath: serverEntryPath,
+                              outDir,
+                          }),
+                      ],
                   }),
               ]
             : []),
