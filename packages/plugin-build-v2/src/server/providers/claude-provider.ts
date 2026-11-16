@@ -3,6 +3,7 @@ import {
     type CanUseTool,
     type EffortLevel,
     type HookCallback,
+    type PermissionMode,
     type PermissionResult,
     type SDKMessage,
     type SDKUserMessage,
@@ -13,6 +14,7 @@ import {extractErrorMessage} from '@augment-vir/common';
 import {
     ApprovalDecision,
     ReasoningEffort,
+    RuntimeMode,
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
@@ -35,6 +37,13 @@ const claudeEfforts: Readonly<Partial<Record<ReasoningEffort, EffortLevel>>> = {
     [ReasoningEffort.High]: 'high',
     [ReasoningEffort.ExtraHigh]: 'xhigh',
     [ReasoningEffort.Max]: 'max',
+};
+
+const claudePermissionModes: Readonly<Record<RuntimeMode, PermissionMode>> = {
+    [RuntimeMode.Supervised]: 'default',
+    [RuntimeMode.AutoAcceptEdits]: 'acceptEdits',
+    [RuntimeMode.Auto]: 'auto',
+    [RuntimeMode.FullAccess]: 'bypassPermissions',
 };
 
 /** The messages a session sends Claude, as the async iterable `query` reads its prompt from. */
@@ -90,7 +99,10 @@ function createApprovalKey(toolName: string, input: Readonly<Record<string, unkn
         : toolName;
 }
 
-/** Runs Claude through the Agent SDK, asking the user before every tool that isn't read-only. */
+/**
+ * Runs Claude through the Agent SDK. The thread's runtime mode decides which tools ask the user
+ * first. Supervised asks before every tool that isn't read-only.
+ */
 export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapter {
     return {
         async listModels({cwd}) {
@@ -119,8 +131,9 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 claudeQuery.close();
             }
         },
-        start({cwd, model, effort, providerSessionId, sink}) {
+        start({cwd, model, effort, runtimeMode, providerSessionId, sink}) {
             const state = {
+                runtimeMode,
                 /** The id of the message the stream events currently belong to. */
                 streamMessageId: '',
                 /** How many content blocks each message's `assistant` messages have carried. */
@@ -135,11 +148,12 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
 
             /**
              * The user's settings can allow tools outright, which would skip `canUseTool`. Asking
-             * here sends every tool that isn't read-only through it.
+             * here sends every tool that isn't read-only through it while Supervised.
              */
             const askBeforeWrites: HookCallback = (input) => {
                 return Promise.resolve(
-                    input.hook_event_name === 'PreToolUse' &&
+                    state.runtimeMode === RuntimeMode.Supervised &&
+                        input.hook_event_name === 'PreToolUse' &&
                         !readOnlyClaudeTools.includes(input.tool_name)
                         ? {
                               hookSpecificOutput: {
@@ -221,8 +235,10 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         : {}),
                     sessionStore,
                     includePartialMessages: true,
-                    /** Overrides a `defaultMode` in the user's settings, such as `auto`. */
-                    permissionMode: 'default',
+                    /** Overrides a `defaultMode` in the user's settings. */
+                    permissionMode: claudePermissionModes[runtimeMode],
+                    /** Lets the thread switch to Full access later without a restart. */
+                    allowDangerouslySkipPermissions: true,
                     canUseTool,
                     hooks: {
                         PreToolUse: [
@@ -400,6 +416,10 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 async interrupt() {
                     state.wasInterrupted = true;
                     await claudeQuery.interrupt();
+                },
+                async setRuntimeMode(newRuntimeMode) {
+                    state.runtimeMode = newRuntimeMode;
+                    await claudeQuery.setPermissionMode(claudePermissionModes[newRuntimeMode]);
                 },
                 stop() {
                     state.isStopped = true;

@@ -6,6 +6,7 @@ import {
     ApprovalDecision,
     ApprovalKind,
     ReasoningEffort,
+    RuntimeMode,
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
@@ -26,6 +27,7 @@ const threadSelect = {
     provider: true,
     model: true,
     effort: true,
+    runtimeMode: true,
     title: true,
     status: true,
 } satisfies Prisma.ThreadSelect;
@@ -63,6 +65,7 @@ export function toThread({
     provider,
     status,
     effort,
+    runtimeMode,
     ...row
 }: Readonly<Prisma.ThreadGetPayload<{select: typeof threadSelect}>>): Thread {
     return {
@@ -73,6 +76,7 @@ export function toThread({
               }
             : {}),
         provider: assertWrap.isEnumValue(provider, AiProvider),
+        runtimeMode: assertWrap.isEnumValue(runtimeMode, RuntimeMode),
         status: assertWrap.isEnumValue(status, ThreadStatus),
         createdAt: createdAt.getTime(),
         updatedAt: updatedAt.getTime(),
@@ -151,6 +155,7 @@ export function createThreadStore({
                 | 'worktreeBranch'
                 | 'model'
                 | 'effort'
+                | 'runtimeMode'
                 | 'title'
                 | 'status'
                 | 'providerSessionId'
@@ -214,7 +219,9 @@ export function createThreadStore({
             ).map(toThread);
         },
         async createThread(
-            data: Readonly<Pick<Thread, 'repoPath' | 'provider' | 'model' | 'effort' | 'title'>>,
+            data: Readonly<
+                Pick<Thread, 'repoPath' | 'provider' | 'model' | 'effort' | 'runtimeMode' | 'title'>
+            >,
         ) {
             const thread = toThread(
                 await prismaClient.thread.create({
@@ -242,6 +249,7 @@ export function createThreadStore({
                     cwd: true,
                     model: true,
                     effort: true,
+                    runtimeMode: true,
                     providerSessionId: true,
                 },
             });
@@ -250,6 +258,7 @@ export function createThreadStore({
                 effort: details.effort
                     ? assertWrap.isEnumValue(details.effort, ReasoningEffort)
                     : undefined,
+                runtimeMode: assertWrap.isEnumValue(details.runtimeMode, RuntimeMode),
                 provider: assertWrap.isEnumValue(provider, AiProvider),
             };
         },

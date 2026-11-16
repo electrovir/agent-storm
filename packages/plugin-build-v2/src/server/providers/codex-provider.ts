@@ -5,7 +5,7 @@ import {
     nullableShape,
     optionalShape,
 } from 'object-shape-tester';
-import {ApprovalKind, ThreadItemKind, ThreadStatus} from '../../build-v2-api.js';
+import {ApprovalKind, RuntimeMode, ThreadItemKind, ThreadStatus} from '../../build-v2-api.js';
 import {parseReasoningEffort, parseReasoningEfforts} from '../../util/reasoning-effort.js';
 import {codexDecisions, describeCodexItem} from './codex-items.js';
 import {startCodexRpc, type CodexRpc} from './codex-rpc.js';
@@ -102,9 +102,56 @@ async function initializeCodexRpc(rpc: Readonly<CodexRpc>) {
     rpc.notify('initialized');
 }
 
+const workspaceWriteSandbox = {
+    type: 'workspaceWrite',
+    writableRoots: [],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+};
+
+/** The approval and sandbox settings `turn/start` takes for each runtime mode. */
+const codexRuntimeModes: Readonly<
+    Record<
+        RuntimeMode,
+        Readonly<{
+            approvalPolicy: string;
+            approvalsReviewer: string;
+            sandboxPolicy: Readonly<Record<string, unknown>>;
+        }>
+    >
+> = {
+    [RuntimeMode.Supervised]: {
+        /** `untrusted` asks even before running `cat`. */
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'user',
+        sandboxPolicy: {
+            type: 'readOnly',
+            networkAccess: false,
+        },
+    },
+    [RuntimeMode.AutoAcceptEdits]: {
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'user',
+        sandboxPolicy: workspaceWriteSandbox,
+    },
+    [RuntimeMode.Auto]: {
+        approvalPolicy: 'on-request',
+        approvalsReviewer: 'auto_review',
+        sandboxPolicy: workspaceWriteSandbox,
+    },
+    [RuntimeMode.FullAccess]: {
+        approvalPolicy: 'never',
+        approvalsReviewer: 'user',
+        sandboxPolicy: {
+            type: 'dangerFullAccess',
+        },
+    },
+};
+
 /**
- * Runs Codex through `codex app-server`. Codex runs commands in a read-only sandbox without asking,
- * and asks before anything that needs to write.
+ * Runs Codex through `codex app-server`. The thread's runtime mode sets Codex's sandbox and when it
+ * asks, from the next turn on.
  */
 export const codexProvider: ProviderAdapter = {
     async listModels({cwd}) {
@@ -140,13 +187,15 @@ export const codexProvider: ProviderAdapter = {
             rpc.stop();
         }
     },
-    async start({cwd, model, effort, providerSessionId, sink}) {
+    async start({cwd, model, effort, runtimeMode, providerSessionId, sink}) {
         const state: {
+            runtimeMode: RuntimeMode;
             turnId: string | undefined;
             isStopped: boolean;
             /** The latest description of each item, which a file change's approval shows. */
             items: Map<string, ProviderItem>;
         } = {
+            runtimeMode,
             turnId: undefined,
             isStopped: false,
             items: new Map(),
@@ -278,10 +327,6 @@ export const codexProvider: ProviderAdapter = {
             const threadOptions = {
                 cwd,
                 model: model || null,
-                /** `untrusted` asks even before running `cat`. */
-                approvalPolicy: 'on-request',
-                approvalsReviewer: 'user',
-                sandbox: 'read-only',
             };
             const threadResponse = await rpc.request(
                 providerSessionId ? 'thread/resume' : 'thread/start',
@@ -300,6 +345,7 @@ export const codexProvider: ProviderAdapter = {
                 async send(text) {
                     const turnResponse = await rpc.request('turn/start', {
                         threadId: codexThreadId,
+                        ...codexRuntimeModes[state.runtimeMode],
                         ...(effort
                             ? {
                                   effort,
@@ -315,6 +361,9 @@ export const codexProvider: ProviderAdapter = {
                     });
                     assertValidShape(turnResponse, turnResponseShape, extraKeys);
                     state.turnId = turnResponse.turn.id;
+                },
+                setRuntimeMode(newRuntimeMode) {
+                    state.runtimeMode = newRuntimeMode;
                 },
                 async interrupt() {
                     if (state.turnId) {

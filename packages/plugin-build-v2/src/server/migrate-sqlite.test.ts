@@ -1,8 +1,8 @@
 import {assert} from '@augment-vir/assert';
-import {getObjectTypedEntries} from '@augment-vir/common';
+import {awaitedForEach, getObjectTypedEntries} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import Database from 'better-sqlite3';
-import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {applySqliteMigrations} from './migrate-sqlite.js';
@@ -28,6 +28,21 @@ async function createMigrationsFixture(migrations: Readonly<Record<string, strin
         migrationsDir,
         databasePath: join(dir, 'test.db'),
     };
+}
+
+function readColumn({
+    databasePath,
+    sql,
+}: Readonly<{
+    databasePath: string;
+    sql: string;
+}>) {
+    const database = new Database(databasePath);
+    try {
+        return database.prepare(sql).pluck().all();
+    } finally {
+        database.close();
+    }
 }
 
 function readTableNames(databasePath: string) {
@@ -80,6 +95,128 @@ describe(applySqliteMigrations.name, () => {
                 '2_second',
             ]);
             assert.deepEquals(await applySqliteMigrations(fixture), []);
+        } finally {
+            await rm(fixture.dir, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+
+    it('keeps rows that cascade from a table a migration redefines', async () => {
+        const fixture = await createMigrationsFixture({
+            '1_init': [
+                'CREATE TABLE "Parent" ("id" TEXT NOT NULL PRIMARY KEY);',
+                'CREATE TABLE "Child" ("id" TEXT NOT NULL PRIMARY KEY, "parentId" TEXT NOT NULL REFERENCES "Parent" ("id") ON DELETE CASCADE);',
+            ].join('\n'),
+            '2_seed': [
+                'INSERT INTO "Parent" ("id") VALUES (\'parent\');',
+                'INSERT INTO "Child" ("id", "parentId") VALUES (\'child\', \'parent\');',
+            ].join('\n'),
+            /** What `prisma migrate dev` writes to add a column SQLite can't add in place. */
+            '3_redefine': [
+                'PRAGMA defer_foreign_keys=ON;',
+                'PRAGMA foreign_keys=OFF;',
+                'CREATE TABLE "new_Parent" ("id" TEXT NOT NULL PRIMARY KEY, "label" TEXT NOT NULL DEFAULT \'\');',
+                'INSERT INTO "new_Parent" ("id") SELECT "id" FROM "Parent";',
+                'DROP TABLE "Parent";',
+                'ALTER TABLE "new_Parent" RENAME TO "Parent";',
+                'PRAGMA foreign_keys=ON;',
+                'PRAGMA defer_foreign_keys=OFF;',
+            ].join('\n'),
+        });
+        try {
+            await applySqliteMigrations(fixture);
+            assert.deepEquals(
+                readColumn({
+                    databasePath: fixture.databasePath,
+                    sql: 'SELECT "id" FROM "Child"',
+                }),
+                [
+                    'child',
+                ],
+            );
+        } finally {
+            await rm(fixture.dir, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+
+    it('rolls back a migration that deletes rows, after backing up the database', async () => {
+        const fixture = await createMigrationsFixture({
+            '1_init': [
+                'CREATE TABLE "First" ("id" TEXT NOT NULL PRIMARY KEY);',
+                'INSERT INTO "First" ("id") VALUES (\'kept\');',
+            ].join('\n'),
+        });
+        try {
+            await applySqliteMigrations(fixture);
+            await mkdir(join(fixture.migrationsDir, '2_delete'));
+            await writeFile(
+                join(fixture.migrationsDir, '2_delete', 'migration.sql'),
+                'DELETE FROM "First";',
+            );
+            await assert.throws(applySqliteMigrations(fixture), {
+                matchMessage: 'deleted rows from First',
+            });
+            assert.deepEquals(
+                readColumn({
+                    databasePath: fixture.databasePath,
+                    sql: 'SELECT "id" FROM "First"',
+                }),
+                [
+                    'kept',
+                ],
+            );
+            assert.deepEquals(
+                readColumn({
+                    databasePath: fixture.databasePath,
+                    sql: 'SELECT "name" FROM "_applied_migrations"',
+                }),
+                [
+                    '1_init',
+                ],
+            );
+            assert.deepEquals(await readdir(join(fixture.dir, 'migration-backups')), [
+                'test.db.before-2_delete.bak',
+            ]);
+        } finally {
+            await rm(fixture.dir, {
+                recursive: true,
+                force: true,
+            });
+        }
+    });
+
+    it('keeps only the newest backups', async () => {
+        const fixture = await createMigrationsFixture({
+            '1_init': 'CREATE TABLE "First" ("id" TEXT NOT NULL PRIMARY KEY);',
+        });
+        try {
+            await applySqliteMigrations(fixture);
+            await awaitedForEach(
+                [
+                    '2_a',
+                    '3_b',
+                    '4_c',
+                    '5_d',
+                ],
+                async (name) => {
+                    await mkdir(join(fixture.migrationsDir, name));
+                    await writeFile(
+                        join(fixture.migrationsDir, name, 'migration.sql'),
+                        `CREATE TABLE "${name}" ("id" TEXT NOT NULL PRIMARY KEY);`,
+                    );
+                    await applySqliteMigrations(fixture);
+                },
+            );
+            assert.deepEquals(await readdir(join(fixture.dir, 'migration-backups')), [
+                'test.db.before-3_b.bak',
+                'test.db.before-4_c.bak',
+                'test.db.before-5_d.bak',
+            ]);
         } finally {
             await rm(fixture.dir, {
                 recursive: true,

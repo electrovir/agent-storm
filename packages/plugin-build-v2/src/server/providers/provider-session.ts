@@ -4,6 +4,7 @@ import {
     type ApprovalRequest,
     type ProviderModel,
     type ReasoningEffort,
+    type RuntimeMode,
     type ThreadItem,
     type ThreadStatus,
 } from '../../build-v2-api.js';
@@ -40,6 +41,7 @@ export type ProviderSink = Readonly<{
 export type ProviderSession = Readonly<{
     send(text: string): MaybePromise<void>;
     interrupt(): Promise<void>;
+    setRuntimeMode(runtimeMode: RuntimeMode): MaybePromise<void>;
     stop(): void;
 }>;
 
@@ -57,6 +59,7 @@ export type ProviderAdapter = Readonly<{
             model: string;
             /** Unset for the model's default effort. */
             effort: ReasoningEffort | undefined;
+            runtimeMode: RuntimeMode;
             /** Resumes this conversation when set. */
             providerSessionId: string | null;
             sink: ProviderSink;

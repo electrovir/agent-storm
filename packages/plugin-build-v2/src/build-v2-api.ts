@@ -19,6 +19,18 @@ export enum ReasoningEffort {
     Ultra = 'ultra',
 }
 
+/** How much a thread's agent may do without asking the user first. */
+export enum RuntimeMode {
+    /** Asks before commands and file changes. */
+    Supervised = 'supervised',
+    /** Makes file edits without asking, and asks before everything else. */
+    AutoAcceptEdits = 'autoAcceptEdits',
+    /** The provider's own reviewer approves routine actions and asks about the rest. */
+    Auto = 'auto',
+    /** Runs commands and edits without asking. */
+    FullAccess = 'fullAccess',
+}
+
 export enum ThreadStatus {
     Idle = 'idle',
     Running = 'running',
@@ -77,6 +89,7 @@ export const threadShape = defineShape({
     model: '',
     /** Unset for the model's default effort. */
     effort: nullableShape(enumShape(ReasoningEffort)),
+    runtimeMode: enumShape(RuntimeMode),
     title: '',
     status: enumShape(ThreadStatus),
     /** Epoch milliseconds. */
@@ -185,6 +198,7 @@ export const buildV2Api = definePluginApi({
                 provider: enumShape(AiProvider),
                 model: '',
                 effort: nullableShape(enumShape(ReasoningEffort)),
+                runtimeMode: enumShape(RuntimeMode),
                 text: '',
             }),
             responseShape: threadResponseShape,
@@ -242,6 +256,17 @@ export const buildV2Api = definePluginApi({
                 threadId: '',
                 model: '',
                 effort: nullableShape(enumShape(ReasoningEffort)),
+            }),
+            responseShape: threadResponseShape,
+        },
+        /**
+         * Claude uses the new mode right away, even mid-turn. Codex uses it from the thread's next
+         * message on.
+         */
+        setThreadRuntimeMode: {
+            requestShape: defineShape({
+                threadId: '',
+                runtimeMode: enumShape(RuntimeMode),
             }),
             responseShape: threadResponseShape,
         },

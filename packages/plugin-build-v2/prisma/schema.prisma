@@ -52,6 +52,13 @@ enum ReasoningEffort {
   ultra
 }
 
+enum RuntimeMode {
+  supervised
+  autoAcceptEdits
+  auto
+  fullAccess
+}
+
 enum ApprovalDecision {
   approve
   approveForSession
@@ -70,6 +77,7 @@ model Thread {
   model             String
   /// Null for the model's default effort.
   effort            ReasoningEffort?
+  runtimeMode       RuntimeMode      @default(fullAccess)
   title             String
   status            ThreadStatus
   /// The provider's own id for the conversation: Claude's session id or Codex's thread id.

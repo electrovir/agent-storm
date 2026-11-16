@@ -3,6 +3,7 @@ import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {
     AiProvider,
+    RuntimeMode,
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
@@ -27,6 +28,7 @@ function createThread(overrides: Readonly<Partial<Thread>>): Thread {
         worktreeBranch: null,
         provider: AiProvider.Claude,
         model: '',
+        runtimeMode: RuntimeMode.FullAccess,
         title: 'Thread',
         status: ThreadStatus.Idle,
         createdAt: 0,

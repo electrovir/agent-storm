@@ -198,6 +198,7 @@ export default definePluginServer({
                 cwd: details.cwd,
                 model: details.model,
                 effort: details.effort,
+                runtimeMode: details.runtimeMode,
                 providerSessionId: details.providerSessionId,
                 sink: createSink(threadId, session),
             });
@@ -273,12 +274,13 @@ export default definePluginServer({
                         throw error;
                     }
                 },
-                async createThread({repoPath, provider, model, effort, text}) {
+                async createThread({repoPath, provider, model, effort, runtimeMode, text}) {
                     const {id} = await store.createThread({
                         repoPath: normalizePath(repoPath),
                         provider,
                         model,
                         effort,
+                        runtimeMode,
                         title: createThreadTitle(text),
                     });
                     await sendMessage({
@@ -359,6 +361,17 @@ export default definePluginServer({
                             model,
                             effort: effort ?? null,
                         }),
+                    };
+                },
+                async setThreadRuntimeMode({threadId, runtimeMode}) {
+                    const thread = await store.updateThread(threadId, {
+                        runtimeMode,
+                    });
+                    await (
+                        await sessions.get(threadId)?.catch(() => undefined)
+                    )?.setRuntimeMode(runtimeMode);
+                    return {
+                        thread,
                     };
                 },
                 async renameThread({threadId, title}) {

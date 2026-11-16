@@ -14,6 +14,7 @@ import {
 } from 'vira';
 import {
     AiProvider,
+    RuntimeMode,
     ThreadStatus,
     type ApprovalDecision,
     type ApprovalRequest,
@@ -64,6 +65,8 @@ export const VirAiChat = defineAppElement<{
             model: '',
             /** The reasoning effort a new thread starts with. Unset for the model's default. */
             effort: undefined as ReasoningEffort | undefined,
+            /** The runtime mode a new thread starts with. */
+            runtimeMode: RuntimeMode.FullAccess,
             providerModels: {} as Readonly<Partial<Record<AiProvider, ProviderModelList>>>,
             isSending: false,
             /** The request whose answer is being sent. */
@@ -493,6 +496,7 @@ export const VirAiChat = defineAppElement<{
                         provider: state.provider,
                         model: state.model,
                         effort: state.effort,
+                        runtimeMode: state.runtimeMode,
                         text,
                     });
                     updateState({
@@ -566,6 +570,7 @@ export const VirAiChat = defineAppElement<{
                 provider: state.thread?.provider || state.provider,
                 model: state.thread ? state.thread.model : state.model,
                 effort: state.thread ? state.thread.effort || undefined : state.effort,
+                runtimeMode: state.thread?.runtimeMode || state.runtimeMode,
             })}
                 ${listen(VirAiChatComposer.events.textChange, (event) => {
                     updateState({
@@ -587,6 +592,24 @@ export const VirAiChat = defineAppElement<{
                             threadId,
                             model: event.detail.model,
                             effort: event.detail.effort,
+                        });
+                        updateState({
+                            thread,
+                        });
+                    });
+                })}
+                ${listen(VirAiChatComposer.events.runtimeModeChange, async (event) => {
+                    const threadId = inputs.threadId;
+                    if (!threadId) {
+                        updateState({
+                            runtimeMode: event.detail,
+                        });
+                        return;
+                    }
+                    await runAction(async () => {
+                        const {thread} = await buildV2Client.call('setThreadRuntimeMode', {
+                            threadId,
+                            runtimeMode: event.detail,
                         });
                         updateState({
                             thread,

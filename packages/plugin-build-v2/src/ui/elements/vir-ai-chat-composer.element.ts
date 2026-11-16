@@ -8,8 +8,9 @@ import {
     ViraIcon,
     viraThemeByKeys,
 } from 'vira';
-import {type AiProvider, type ReasoningEffort} from '../../build-v2-api.js';
+import {type AiProvider, type ReasoningEffort, type RuntimeMode} from '../../build-v2-api.js';
 import {VirAiChatModelPicker, type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
+import {VirAiChatPermissions} from './vir-ai-chat-permissions.element.js';
 
 const sendIcon = createSizedIcon(LucideArrowUpIcon, 16);
 const stopIcon = createSizedIcon(LucideSquareIcon, 12);
@@ -32,6 +33,7 @@ export const VirAiChatComposer = defineAppElement<{
     model: string;
     /** Unset for the model's default effort. */
     effort: ReasoningEffort | undefined;
+    runtimeMode: RuntimeMode;
 }>()({
     tagName: 'vir-ai-chat-composer',
     events: {
@@ -46,6 +48,7 @@ export const VirAiChatComposer = defineAppElement<{
                 effort: ReasoningEffort | undefined;
             }>
         >(),
+        runtimeModeChange: defineElementEvent<RuntimeMode>(),
     },
     styles: css`
         :host {
@@ -96,6 +99,13 @@ export const VirAiChatComposer = defineAppElement<{
             justify-content: space-between;
             gap: 8px;
             padding: 0 8px 8px;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            min-width: 0;
 
             & ${VirAiChatModelPicker} {
                 flex-shrink: 1;
@@ -182,22 +192,35 @@ export const VirAiChatComposer = defineAppElement<{
                     })}
                 ></textarea>
                 <div class="footer">
-                    <${VirAiChatModelPicker.assign({
-                        providerModels: inputs.providerModels,
-                        providers: inputs.providers,
-                        provider: inputs.provider,
-                        model: inputs.model,
-                        effort: inputs.effort,
-                        isDisabled: inputs.isRunning || inputs.isBusy,
-                    })}
-                        ${listen(VirAiChatModelPicker.events.modelChange, (event) => {
-                            dispatch(
-                                new events.modelChange({
-                                    detail: event.detail,
-                                }),
-                            );
+                    <div class="controls">
+                        <${VirAiChatPermissions.assign({
+                            runtimeMode: inputs.runtimeMode,
                         })}
-                    ></${VirAiChatModelPicker}>
+                            ${listen(VirAiChatPermissions.events.runtimeModeChange, (event) => {
+                                dispatch(
+                                    new events.runtimeModeChange({
+                                        detail: event.detail,
+                                    }),
+                                );
+                            })}
+                        ></${VirAiChatPermissions}>
+                        <${VirAiChatModelPicker.assign({
+                            providerModels: inputs.providerModels,
+                            providers: inputs.providers,
+                            provider: inputs.provider,
+                            model: inputs.model,
+                            effort: inputs.effort,
+                            isDisabled: inputs.isRunning || inputs.isBusy,
+                        })}
+                            ${listen(VirAiChatModelPicker.events.modelChange, (event) => {
+                                dispatch(
+                                    new events.modelChange({
+                                        detail: event.detail,
+                                    }),
+                                );
+                            })}
+                        ></${VirAiChatModelPicker}>
+                    </div>
                     ${showsStop
                         ? html`
                               <button
