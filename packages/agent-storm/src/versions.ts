@@ -7,7 +7,11 @@ import {access, mkdir, rename, rm, writeFile} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {defineShape, nullableShape, optionalShape, parseJsonWithShape} from 'object-shape-tester';
 import {buildUrl} from 'url-vir';
-import {releaseAssetName, releaseCoreVersionFileName} from './release-layout.js';
+import {
+    releaseAssetName,
+    releaseCoreVersionFileName,
+    releaseDaemonProtocolVersionFileName,
+} from './release-layout.js';
 import {makeSpawnHelpersExecutable} from './spawn-helper.js';
 
 /** Release tags double as folder names, so anything else is refused before it touches a path. */
@@ -82,6 +86,46 @@ export async function readReleaseCoreVersion(releaseDir: string) {
     return contents == undefined
         ? undefined
         : parseJsonWithShape(contents, releaseCoreVersionShape).version;
+}
+
+const releaseDaemonProtocolVersionShape = defineShape({
+    version: 0,
+});
+
+/**
+ * Records the pty daemon protocol version of the release in `releaseDir`.
+ *
+ * @category Util
+ */
+export async function writeReleaseDaemonProtocolVersion({
+    releaseDir,
+    daemonProtocolVersion,
+}: Readonly<{releaseDir: string; daemonProtocolVersion: number}>) {
+    await writeFileAtomically({
+        path: resolve(releaseDir, releaseDaemonProtocolVersionFileName),
+        contents: `${JSON.stringify(
+            {
+                version: daemonProtocolVersion,
+            } satisfies typeof releaseDaemonProtocolVersionShape.runtimeType,
+            undefined,
+            4,
+        )}\n`,
+    });
+}
+
+/**
+ * The pty daemon protocol version of the release in `releaseDir`. `undefined` for a release built
+ * before releases recorded it.
+ *
+ * @category Util
+ */
+export async function readReleaseDaemonProtocolVersion(releaseDir: string) {
+    const contents = await readFileIfExists(
+        resolve(releaseDir, releaseDaemonProtocolVersionFileName),
+    );
+    return contents == undefined
+        ? undefined
+        : parseJsonWithShape(contents, releaseDaemonProtocolVersionShape).version;
 }
 
 /**

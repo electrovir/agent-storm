@@ -89,6 +89,14 @@ function renderUpdateBanner({
                           </ul>
                       `
                     : nothing}
+                ${updateStatus.switchClosesTerminals
+                    ? html`
+                          <span>
+                              Switching restarts the terminal daemon, which closes every open
+                              terminal.
+                          </span>
+                      `
+                    : nothing}
                 <button
                     class="switch-button"
                     ?disabled=${state.isUpdating}

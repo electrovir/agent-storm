@@ -11,8 +11,10 @@ import {
     isNewerVersion,
     readActiveVersions,
     readReleaseCoreVersion,
+    readReleaseDaemonProtocolVersion,
     rejectVersion,
     writeReleaseCoreVersion,
+    writeReleaseDaemonProtocolVersion,
 } from './versions.js';
 
 /** A release tarball with no dependencies, so installing it needs no network. */
@@ -252,6 +254,25 @@ describe(readReleaseCoreVersion.name, () => {
     it('is undefined for a folder with no recorded version', async () => {
         assert.isUndefined(
             await readReleaseCoreVersion(await mkdtemp(join(tmpdir(), 'agent-storm-empty-'))),
+        );
+    });
+});
+
+describe(readReleaseDaemonProtocolVersion.name, () => {
+    it('reads what writeReleaseDaemonProtocolVersion recorded', async () => {
+        const releaseDir = await mkdtemp(join(tmpdir(), 'agent-storm-daemon-protocol-'));
+        await writeReleaseDaemonProtocolVersion({
+            releaseDir,
+            daemonProtocolVersion: 6,
+        });
+
+        assert.strictEquals(await readReleaseDaemonProtocolVersion(releaseDir), 6);
+    });
+    it('is undefined for a release that never recorded one', async () => {
+        assert.isUndefined(
+            await readReleaseDaemonProtocolVersion(
+                await mkdtemp(join(tmpdir(), 'agent-storm-empty-')),
+            ),
         );
     });
 });

@@ -10,9 +10,11 @@ import {
     isReleaseVersion,
     readActiveVersions,
     readReleaseCoreVersion,
+    readReleaseDaemonProtocolVersion,
 } from 'agent-storm';
 import {runCommand, versionsDir} from 'agent-storm-util';
 import {type AnyDuration, convertDuration} from 'date-vir';
+import {fetchDaemonProtocolVersion} from './daemon/daemon-client.js';
 import {monorepoRoot} from './file-paths.js';
 import {findPluginsTurnedOffByCore} from './plugin-compat.js';
 import {readPlugins} from './plugins.js';
@@ -174,6 +176,7 @@ const unknownUpdateStatus: UpdateStatus = {
     preparedVersion: null,
     preparedCoreVersion: null,
     pluginsToTurnOff: [],
+    switchClosesTerminals: false,
 };
 
 const updateInstallState: {
@@ -216,6 +219,26 @@ async function getCheckoutUpdateStatus(): Promise<UpdateStatus> {
     };
 }
 
+/**
+ * Whether the release in `releaseDir` needs a newer pty daemon than the running one, so starting it
+ * replaces the daemon and closes every open terminal.
+ */
+async function doesReleaseRestartDaemon(releaseDir: string) {
+    const [
+        releaseProtocolVersion,
+        runningProtocolVersion,
+    ] = await Promise.all([
+        readReleaseDaemonProtocolVersion(releaseDir).catch(() => undefined),
+        /** No daemon running means no terminals to close. */
+        fetchDaemonProtocolVersion().catch(() => undefined),
+    ]);
+    return (
+        releaseProtocolVersion != undefined &&
+        runningProtocolVersion != undefined &&
+        releaseProtocolVersion > runningProtocolVersion
+    );
+}
+
 async function getReleaseUpdateStatus(release: Readonly<ReleaseBuild>): Promise<UpdateStatus> {
     const [
         latestVersion,
@@ -239,15 +262,14 @@ async function getReleaseUpdateStatus(release: Readonly<ReleaseBuild>): Promise<
         version: latestVersion,
         than: release.version,
     });
+    const latestVersionDir = getVersionDir({
+        versionsDir,
+        version: latestVersion,
+    });
     /** Only an installed release has its core version on disk. */
     const preparedCoreVersion = isUpToDate
         ? undefined
-        : await readReleaseCoreVersion(
-              getVersionDir({
-                  versionsDir,
-                  version: latestVersion,
-              }),
-          );
+        : await readReleaseCoreVersion(latestVersionDir);
     return {
         ...status,
         isUpToDate,
@@ -259,6 +281,7 @@ async function getReleaseUpdateStatus(release: Readonly<ReleaseBuild>): Promise<
                       plugins: (await readPlugins()).plugins,
                       coreVersion: preparedCoreVersion,
                   }),
+                  switchClosesTerminals: await doesReleaseRestartDaemon(latestVersionDir),
               }
             : {}),
     };

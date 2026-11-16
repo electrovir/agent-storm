@@ -14,6 +14,16 @@ export const releaseAssetName = 'agent-storm.tgz';
 export const releaseCoreVersionFileName = 'core-version.json';
 
 /**
+ * The file at the top of a bundled release that holds its pty daemon's protocol version. A release
+ * with a newer one restarts the running daemon, which closes every open terminal. Kept apart from
+ * {@link releaseCoreVersionFileName} because older releases reject that file when it has extra
+ * keys.
+ *
+ * @category Internal
+ */
+export const releaseDaemonProtocolVersionFileName = 'daemon-protocol-version.json';
+
+/**
  * The folders at the top of a bundled release.
  *
  * @category Internal

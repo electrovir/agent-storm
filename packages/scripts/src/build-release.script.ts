@@ -1,3 +1,4 @@
+import {daemonProtocolVersion} from '@agent-storm/server/src/daemon/protocol.js';
 import {
     agentLaunchScriptPath,
     claudeHookSourceDir,
@@ -7,7 +8,12 @@ import {
 import {releaseBuildGlobalName} from '@agent-storm/server/src/release-build.js';
 import {extractExtension, log} from '@augment-vir/common';
 import {runShellCommand} from '@augment-vir/node';
-import {releaseAssetName, ReleaseDir, writeReleaseCoreVersion} from 'agent-storm';
+import {
+    releaseAssetName,
+    ReleaseDir,
+    writeReleaseCoreVersion,
+    writeReleaseDaemonProtocolVersion,
+} from 'agent-storm';
 import {build} from 'esbuild';
 import {cp, mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises';
 import {basename, resolve} from 'node:path';
@@ -154,6 +160,10 @@ await Promise.all([
     writeReleaseCoreVersion({
         releaseDir,
         coreVersion,
+    }),
+    writeReleaseDaemonProtocolVersion({
+        releaseDir,
+        daemonProtocolVersion,
     }),
     cp(claudeHookSourceDir, resolve(serverOutDir, basename(claudeHookSourceDir)), {
         recursive: true,

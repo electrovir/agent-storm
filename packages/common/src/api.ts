@@ -929,6 +929,11 @@ const updateStatusResponseShape = defineShape({
     preparedCoreVersion: nullableShape(''),
     /** Running plugins that switching to `preparedVersion` would turn off. */
     pluginsToTurnOff: [pluginTurnedOffShape],
+    /**
+     * Whether switching to `preparedVersion` restarts the pty daemon, which closes every open
+     * terminal.
+     */
+    switchClosesTerminals: false,
 });
 
 const repoTouchRequestShape = defineShape({
