@@ -28,12 +28,14 @@ import {
     statusFilesKeys,
     toSelectValue,
 } from '../../util/diff-status.js';
+import {toDisplayedOldContent} from './diff-editor.js';
 import {createDiffPaneComments} from './diff-pane-comments.js';
 import {createDiffPaneController, createDiffPaneState} from './diff-pane-controller.js';
 import {stageSide, writeDiffSettings} from './diff-pane-requests.js';
+import {chunkSelectionAtLine} from './diff-selection.js';
 import {VirDiffCodeView} from './vir-diff-code-view.element.js';
 import {VirDiffCommentComposer} from './vir-diff-comment-composer.element.js';
-import {VirDiffFileHeader} from './vir-diff-file-header.element.js';
+import {VirDiffFileHeader, stageActionLabels} from './vir-diff-file-header.element.js';
 import {VirDiffFileList} from './vir-diff-file-list.element.js';
 import {VirDiffFileMenu} from './vir-diff-file-menu.element.js';
 import {VirDiffFileSection} from './vir-diff-file-section.element.js';
@@ -67,6 +69,8 @@ export const VirDiffPane = defineAppElement<{
     enableComments?: boolean | undefined;
     /** What this list's tab last had open, which wins over the folder's last value. */
     savedSelection?: Readonly<DiffSelection> | undefined;
+    /** Lists the files a PR into this branch changes, read-only, instead of uncommitted changes. */
+    pullRequestBaseBranch?: string | undefined;
 }>()({
     tagName: 'vir-diff-pane',
     events: {
@@ -277,6 +281,7 @@ export const VirDiffPane = defineAppElement<{
                       enableComments: !!inputs.enableComments,
                       folder: inputs.folder,
                       side: state.reviewSide,
+                      baseCommit: state.status?.pullRequestBase ?? undefined,
                       files: state.status?.[statusFilesKeys[state.reviewSide]] ?? [],
                       hideWhitespace: diffSettings.hideWhitespace,
                       unified,
@@ -286,6 +291,7 @@ export const VirDiffPane = defineAppElement<{
                       isMobile,
                       reviewComments: state.reviewComments,
                       commentDraft: state.commentDraft,
+                      renderCodeView: inputs.renderCodeView,
                   })}
                       ${listen(VirDiffReviewFile.events.addCommentRequested, (event) => {
                           comments.openCommentDraft(event.detail);
@@ -304,7 +310,11 @@ export const VirDiffPane = defineAppElement<{
                           }
                       })}
                       ${listen(VirDiffReviewFile.events.chunkMenuRequested, (event) => {
-                          if (state.busy || !state.reviewSide) {
+                          if (
+                              state.busy ||
+                              !state.reviewSide ||
+                              !stageActionLabels[state.reviewSide]
+                          ) {
                               return;
                           }
                           updateState({
@@ -393,6 +403,32 @@ export const VirDiffPane = defineAppElement<{
                           chunkCount,
                       });
                   },
+                  canStage: !state.busy && !!selected && !!stageActionLabels[selected.side],
+                  requestHunkMenu({x, y, lineNumber, isRemovedLine}) {
+                      const target = findSelected(state.status, state.selectedValue);
+                      const chunkSelection =
+                          content && !content.tooLargeOrBinary && !content.isImage
+                              ? chunkSelectionAtLine({
+                                    oldContent: toDisplayedOldContent({
+                                        content,
+                                        hideWhitespace: diffSettings.hideWhitespace,
+                                    }),
+                                    newContent: content.newContent,
+                                    lineNumber,
+                                    isRemovedLine,
+                                })
+                              : undefined;
+                      if (target && chunkSelection) {
+                          updateState({
+                              hunkMenu: {
+                                  ...chunkSelection,
+                                  x,
+                                  y,
+                                  target,
+                              },
+                          });
+                      }
+                  },
               })
             : html`
                   <${VirDiffCodeView.assign({
@@ -413,7 +449,7 @@ export const VirDiffPane = defineAppElement<{
                           state.commentDraft?.path === selectedPath
                               ? state.commentDraft?.line
                               : undefined,
-                      canStage: !state.busy && !!selected,
+                      canStage: !state.busy && !!selected && !!stageActionLabels[selected.side],
                       chunkScroll: state.chunkScroll,
                   })}
                       ?data-hidden=${isCodeViewHidden}

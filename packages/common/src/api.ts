@@ -711,6 +711,8 @@ export const folderInfoShape = defineShape({
         notPushed: false,
     },
     prUrl: nullableShape(''),
+    /** The branch the folder's PR merges into. */
+    prBaseBranch: nullableShape(''),
     prStatus: enumShape(PrStatus),
     panes: paneStatusesShape,
     /**

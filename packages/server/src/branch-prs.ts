@@ -1,3 +1,4 @@
+import {filterObject} from '@augment-vir/common';
 import {type PrInfo, type RepoSlug} from './git.js';
 
 type RepoPrCacheEntry = {
@@ -27,7 +28,8 @@ export function repoCacheKey(slug: Readonly<RepoSlug>) {
 
 /**
  * Records one PR fetched outside its repo's lookup. The repo's `fetchedAt` is left alone, so its
- * own lookup still refreshes on schedule.
+ * own lookup still refreshes on schedule. Fields `prInfo` leaves undefined keep their recorded
+ * value while the branch's recorded PR is the same PR.
  */
 export function recordBranchPr({
     owner,
@@ -44,13 +46,18 @@ export function recordBranchPr({
         owner,
         name,
     });
+    const recorded = repoPrCache.get(key)?.prsByBranch.get(branchName);
     repoPrCache.set(key, {
         fetchedAt: repoPrCache.get(key)?.fetchedAt || 0,
         prsByBranch: new Map([
             ...(repoPrCache.get(key)?.prsByBranch || []),
             [
                 branchName,
-                prInfo,
+                {
+                    ...prInfo,
+                    ...(recorded?.url === prInfo.url ? recorded : undefined),
+                    ...filterObject(prInfo, (_key, value) => value !== undefined),
+                },
             ],
         ]),
     });

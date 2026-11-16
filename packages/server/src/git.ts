@@ -471,6 +471,8 @@ export async function isGhAvailable(): Promise<boolean> {
 
 export const prInfoShape = defineShape({
     url: '',
+    /** Missing from PRs cached before it was fetched, until the next refresh. */
+    baseBranch: nullableShape(''),
     /**
      * Never {@link PrStatus.None}. Merged and closed PRs only appear within
      * {@link terminalPrDisplayWindow}; older ones are dropped from the response entirely.
@@ -704,6 +706,7 @@ const terminalPrNodeFields = [
     '      nodes {',
     '        url',
     '        headRefName',
+    '        baseRefName',
     '        state',
     '        closedAt',
     '      }',
@@ -713,6 +716,7 @@ const openPrNodeFields = [
     '      nodes {',
     '        url',
     '        headRefName',
+    '        baseRefName',
     '        headRefOid',
     '        updatedAt',
     '        state',
@@ -756,6 +760,7 @@ function buildRepoPrsQuery(openPrLimits: ReadonlyArray<number>) {
 const terminalPrNodeShape = defineShape({
     url: '',
     headRefName: '',
+    baseRefName: '',
     state: enumShape(RawPrState),
     closedAt: nullableShape(''),
 });
@@ -989,6 +994,7 @@ export function buildPrsByBranch({
         }
         map.set(node.headRefName, {
             url: node.url,
+            baseBranch: node.baseRefName,
             status: terminalPrStatuses[node.state] || toOpenPrStatus(node),
         });
     });
@@ -1008,6 +1014,7 @@ export function buildPrsByBranch({
         }
         map.set(node.headRefName, {
             url: node.url,
+            baseBranch: node.baseRefName,
             status,
         });
     });

@@ -34,6 +34,7 @@ export const reviewIcon = createSizedIcon(LucideFileStackIcon, 14);
 export const sideLabels: Readonly<Record<GitDiffSide, string>> = {
     [GitDiffSide.Staged]: 'Staged',
     [GitDiffSide.Unstaged]: 'Changed',
+    [GitDiffSide.PullRequest]: 'Pull request',
 };
 
 /** A path's final segment, which is all the file rows show — the full path is their `title`. */

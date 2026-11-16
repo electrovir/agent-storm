@@ -30,10 +30,23 @@ export type DiffCodeViewParams = Readonly<{
     isHidden: boolean;
     /** Reports how many chunks the drawn diff has, for the toolbar's change arrows. */
     setChunkCount: (chunkCount: number) => void;
+    /** False when a right-click on a change should open the browser's own menu instead. */
+    canStage: boolean;
+    /** A right-click landed on a changed line: opens the stage menu for the change holding it. */
+    requestHunkMenu: (request: HunkMenuRequest) => void;
+}>;
+
+/** Where a right-click on a changed line landed. */
+export type HunkMenuRequest = Readonly<{
+    x: number;
+    y: number;
+    /** 1-based, counted in the old file for a removed line and in the new file otherwise. */
+    lineNumber: number;
+    isRemovedLine: boolean;
 }>;
 
 /**
- * Draws a Diff tab's open file in place of the built-in CodeMirror view, which lacks comments and
- * the stage menu.
+ * Draws a Diff tab's files in place of the built-in CodeMirror view, both the open file and each
+ * file of the stacked review. Comments still only show in the built-in view.
  */
 export type RenderDiffCodeView = (params: DiffCodeViewParams) => HtmlInterpolation;

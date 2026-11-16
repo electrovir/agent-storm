@@ -1,19 +1,32 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {toDisplayedOldContent, type DiffCodeViewParams} from '@agent-storm/plugin-diff';
-import {FileDiff} from '@pierre/diffs';
-import {css, defineElementEvent, html, onDomCreated} from 'element-vir';
+import {
+    toDisplayedOldContent,
+    type DiffCodeViewParams,
+    type HunkMenuRequest,
+} from '@agent-storm/plugin-diff';
+import {check} from '@augment-vir/assert';
+import {FileDiff, type LineTypes} from '@pierre/diffs';
+import {css, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
+
+/** Whether each kind of changed row is a removed line. Unchanged rows have no stage menu. */
+const isRemovedByLineType = {
+    'change-addition': false,
+    'change-deletion': true,
+} as const satisfies Partial<Record<LineTypes, boolean>>;
 
 /**
  * The Diff V2 pane's single-file diff, drawn by `@pierre/diffs`. Stays mounted for the pane's whole
  * life, like the Diff pane's own view, so a poll that changes nothing keeps the scroll position.
  */
 export const VirPierreDiffView = defineAppElement<
-    Omit<DiffCodeViewParams, 'isHidden' | 'setChunkCount'>
+    Omit<DiffCodeViewParams, 'isHidden' | 'setChunkCount' | 'requestHunkMenu'>
 >()({
     tagName: 'vir-pierre-diff-view',
     events: {
         /** The diff was redrawn for a different file or different content, with this many chunks. */
         chunkCountChange: defineElementEvent<number>(),
+        /** A changed line was right-clicked while `canStage` is set. */
+        hunkMenuRequested: defineElementEvent<HunkMenuRequest>(),
     },
     state() {
         return {
@@ -63,6 +76,11 @@ export const VirPierreDiffView = defineAppElement<
                 overflow: inputs.softWrap ? 'wrap' : 'scroll',
                 expandUnchanged: !inputs.collapseUnchanged,
                 disableFileHeader: true,
+                /**
+                 * Several times faster than the default highlighter, which blocked the page for a
+                 * few hundred milliseconds on each larger file.
+                 */
+                preferredHighlighter: 'highlights',
             } as const;
             const renderedKey = JSON.stringify([
                 inputs.fileKey,
@@ -116,6 +134,38 @@ export const VirPierreDiffView = defineAppElement<
         return html`
             <div
                 class="diff-host"
+                ${listen('contextmenu', (event) => {
+                    if (!inputs.canStage) {
+                        return;
+                    }
+                    /**
+                     * Both the gutter's line number and the code row carry the row's line type.
+                     * Only the code row has `data-line`; the gutter's number is
+                     * `data-column-number`.
+                     */
+                    const row = event.composedPath().find((target) => {
+                        return target instanceof HTMLElement && !!target.dataset.lineType;
+                    });
+                    const lineType = row instanceof HTMLElement ? row.dataset.lineType : undefined;
+                    const lineNumber =
+                        row instanceof HTMLElement
+                            ? Number(row.dataset.line || row.dataset.columnNumber)
+                            : 0;
+                    if (!lineType || !check.isKeyOf(lineType, isRemovedByLineType) || !lineNumber) {
+                        return;
+                    }
+                    event.preventDefault();
+                    dispatch(
+                        new events.hunkMenuRequested({
+                            detail: {
+                                x: event.clientX,
+                                y: event.clientY,
+                                lineNumber,
+                                isRemovedLine: isRemovedByLineType[lineType],
+                            },
+                        }),
+                    );
+                })}
                 ${onDomCreated((element) => {
                     if (element instanceof HTMLElement && !state.container) {
                         updateState({

@@ -1,6 +1,7 @@
-import {type Chunk} from '@codemirror/merge';
-import {type Text} from '@codemirror/state';
+import {Chunk} from '@codemirror/merge';
+import {Text} from '@codemirror/state';
 import {type EditorView} from '@codemirror/view';
+import {diffConfig} from '../../util/vscode-diff.js';
 
 /**
  * What a menu entry or confirmation will act on, so the scope is visible before the click. Counted
@@ -178,4 +179,54 @@ export function chunkSelectionsAtPointer({
                   to: selection.to,
               }),
     });
+}
+
+/**
+ * The whole chunk holding one changed line of a diff drawn without CodeMirror, plus the texts its
+ * offsets index into. The chunks are built the same way the CodeMirror view builds its own, since
+ * that is what staging reads. Undefined when no chunk holds the line: the drawing's own diff can
+ * group changes differently.
+ */
+export function chunkSelectionAtLine({
+    oldContent,
+    newContent,
+    lineNumber,
+    isRemovedLine,
+}: Readonly<{
+    /** As displayed, so with whitespace-only changes already hidden when that setting is on. */
+    oldContent: string;
+    newContent: string;
+    /** 1-based, in the old file when `isRemovedLine` and in the new file otherwise. */
+    lineNumber: number;
+    isRemovedLine: boolean;
+}>) {
+    const oldText = Text.of(oldContent.split('\n'));
+    const newText = Text.of(newContent.split('\n'));
+    const chunk = Chunk.build(oldText, newText, diffConfig).find((chunk) => {
+        const lines = isRemovedLine
+            ? toLineRange({
+                  text: oldText,
+                  from: chunk.fromA,
+                  to: chunk.toA,
+              })
+            : toLineRange({
+                  text: newText,
+                  from: chunk.fromB,
+                  to: chunk.toB,
+              });
+        return lines.from < lineNumber && lineNumber <= lines.to;
+    });
+    if (!chunk) {
+        return undefined;
+    }
+    return {
+        selections: [
+            {
+                chunk,
+                newLines: undefined,
+            },
+        ],
+        oldText,
+        newText,
+    };
 }

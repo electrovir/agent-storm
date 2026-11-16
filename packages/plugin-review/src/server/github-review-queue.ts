@@ -571,6 +571,7 @@ function createPrQueue({
                         prInfo: {
                             url: pr.url,
                             status: pr.prStatus,
+                            baseBranch: pr.baseBranchName || undefined,
                         },
                     });
                 });

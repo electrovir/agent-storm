@@ -250,6 +250,7 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
         return {
             staged: [],
             unstaged: [],
+            pullRequest: [],
         };
     }
 
@@ -282,6 +283,127 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
             (entry) => entry.unstagedChange && toFile(entry, entry.unstagedChange, unstagedCounts),
             check.isTruthy,
         ),
+        pullRequest: [],
+    };
+}
+
+/**
+ * Parse `git diff --name-status -z`. Records are a status letter (with a similarity score after a
+ * rename's `R`) then the path, and a rename's record carries its old path before its new one.
+ */
+function parseNameStatus(raw: string) {
+    const fields = raw.split('\0').filter((field) => field);
+    return fields.reduce<{
+        files: Pick<GitDiffFile, 'path' | 'oldPath' | 'change'>[];
+        skipCount: number;
+    }>(
+        (accumulated, field, index) => {
+            if (accumulated.skipCount) {
+                return {
+                    files: accumulated.files,
+                    skipCount: accumulated.skipCount - 1,
+                };
+            }
+            const letter = field.slice(0, 1);
+            const isRenameOrCopy = letter === 'R' || letter === 'C';
+            return {
+                files: [
+                    ...accumulated.files,
+                    {
+                        path: fields[index + (isRenameOrCopy ? 2 : 1)] || '',
+                        oldPath: isRenameOrCopy ? fields[index + 1] : undefined,
+                        change: changeFromStatusLetter(letter),
+                    },
+                ],
+                skipCount: isRenameOrCopy ? 2 : 1,
+            };
+        },
+        {
+            files: [],
+            skipCount: 0,
+        },
+    ).files;
+}
+
+/**
+ * The files a PR into `baseBranch` changes, the way GitHub lists them: committed changes since the
+ * merge base, so uncommitted work is left to {@link getDiffStatus}. The remote-tracking branch wins
+ * over a local one because the PR merges into the remote, and a local base branch is often stale.
+ */
+export async function getPullRequestStatus({
+    folder,
+    baseBranch,
+}: Readonly<{folder: string; baseBranch: string}>): Promise<GitDiffStatus> {
+    /** Each starts with `refs/`, so a branch name can't be read as an option. */
+    const baseCommits = await Promise.all(
+        [
+            `refs/remotes/origin/${baseBranch}`,
+            `refs/heads/${baseBranch}`,
+        ].map(async (ref) => {
+            return (
+                await runGitText(folder, [
+                    'rev-parse',
+                    '--verify',
+                    '--quiet',
+                    `${ref}^{commit}`,
+                ])
+            )?.trim();
+        }),
+    );
+    const baseCommit = baseCommits.find(check.isTruthy);
+    if (!baseCommit) {
+        throw new Error(
+            `Branch '${baseBranch}' isn't in this repo. Fetch it to see the PR's diff.`,
+        );
+    }
+    const mergeBase = (
+        await runGitText(folder, [
+            'merge-base',
+            baseCommit,
+            'HEAD',
+        ])
+    )?.trim();
+    if (!mergeBase) {
+        throw new Error(`This branch shares no history with '${baseBranch}'.`);
+    }
+    const [
+        nameStatusRaw,
+        numstatRaw,
+    ] = await Promise.all([
+        runGitText(folder, [
+            'diff',
+            '--name-status',
+            '-z',
+            '--find-renames',
+            mergeBase,
+            'HEAD',
+            '--',
+        ]),
+        runGitText(folder, [
+            'diff',
+            '--numstat',
+            '-z',
+            '--no-renames',
+            mergeBase,
+            'HEAD',
+            '--',
+        ]),
+    ]);
+    if (nameStatusRaw == undefined) {
+        throw new Error(`Failed to diff this branch against '${baseBranch}'.`);
+    }
+    const counts = parseNumstat(numstatRaw || '');
+    return {
+        staged: [],
+        unstaged: [],
+        pullRequest: parseNameStatus(nameStatusRaw).map((file) => {
+            return {
+                ...file,
+                insertions: counts[file.path]?.insertions ?? 0,
+                deletions: counts[file.path]?.deletions ?? 0,
+            };
+        }),
+        pullRequestBase: mergeBase,
     };
 }
 
@@ -360,25 +482,55 @@ type SidePaths = {
 
 /**
  * The two things a diff of `side` compares. Staged is `HEAD` → index, unstaged is index → working
- * tree. A rename only needs its pre-rename path on the staged side, because the index already holds
- * the file under its new name by the time the worktree diff is taken.
+ * tree, and pull request is `baseCommit` → `HEAD`. A rename only needs its pre-rename path on the
+ * sides that start from a commit, because the index already holds the file under its new name by
+ * the time the worktree diff is taken.
  */
 function specsForSide({
     path,
     oldPath,
     side,
-}: Readonly<{path: string; oldPath: string | undefined; side: GitDiffSide}>): SidePaths {
-    const bySide: Readonly<Record<GitDiffSide, SidePaths>> = {
-        [GitDiffSide.Staged]: {
-            oldSpec: `HEAD:${oldPath || path}`,
-            newSpec: `:${path}`,
+    baseCommit,
+}: Readonly<{
+    path: string;
+    oldPath: string | undefined;
+    side: GitDiffSide;
+    baseCommit: string | undefined;
+}>): SidePaths {
+    const bySide: Readonly<Record<GitDiffSide, () => SidePaths>> = {
+        [GitDiffSide.Staged]() {
+            return {
+                oldSpec: `HEAD:${oldPath || path}`,
+                newSpec: `:${path}`,
+            };
         },
-        [GitDiffSide.Unstaged]: {
-            oldSpec: `:${path}`,
-            newSpec: undefined,
+        [GitDiffSide.Unstaged]() {
+            return {
+                oldSpec: `:${path}`,
+                newSpec: undefined,
+            };
+        },
+        [GitDiffSide.PullRequest]() {
+            /** Checked because it lands in front of a `git show` argument. */
+            if (!baseCommit || !/^[0-9a-f]+$/.test(baseCommit)) {
+                throw new Error('A pull request diff needs the commit it compares against.');
+            }
+            return {
+                oldSpec: `${baseCommit}:${oldPath || path}`,
+                newSpec: `HEAD:${path}`,
+            };
         },
     };
-    return bySide[side];
+    return bySide[side]();
+}
+
+/** The sides the index sits on, which are the only ones a stage or discard can change. */
+type IndexSide = Exclude<GitDiffSide, GitDiffSide.PullRequest>;
+
+function assertIndexSide(side: GitDiffSide): asserts side is IndexSide {
+    if (side === GitDiffSide.PullRequest) {
+        throw new Error('Committed changes cannot be staged or discarded.');
+    }
 }
 
 async function readSideBuffers({
@@ -386,11 +538,13 @@ async function readSideBuffers({
     path,
     oldPath,
     side,
+    baseCommit,
 }: Readonly<{
     folder: string;
     path: string;
     oldPath: string | undefined;
     side: GitDiffSide;
+    baseCommit: string | undefined;
 }>): Promise<{oldBuffer: Buffer; newBuffer: Buffer}> {
     const workingPath = resolveRepoPath({
         folder,
@@ -410,6 +564,7 @@ async function readSideBuffers({
         path,
         oldPath,
         side,
+        baseCommit,
     });
     const [
         oldBuffer,
@@ -531,6 +686,7 @@ export async function getDiffFileContents(
     const {oldBuffer, newBuffer} = await readSideBuffers({
         ...params,
         oldPath: params.oldPath || undefined,
+        baseCommit: params.baseCommit || undefined,
     });
 
     const extension = extractExtension(params.path).extension.toLowerCase();
@@ -578,7 +734,7 @@ export async function getDiffFileContents(
 
 /** Moves one file across the index, away from the side it's on. */
 const moveFileFromSide: Readonly<
-    Record<GitDiffSide, (params: Readonly<{folder: string; path: string}>) => Promise<void>>
+    Record<IndexSide, (params: Readonly<{folder: string; path: string}>) => Promise<void>>
 > = {
     async [GitDiffSide.Unstaged]({folder, path}) {
         /** `-A` is what makes this also stage a deletion rather than only content changes. */
@@ -625,6 +781,7 @@ export async function setFileStaged({
     ) {
         throw new Error('Refusing to stage a path outside the repo.');
     }
+    assertIndexSide(side);
     await moveFileFromSide[side]({
         folder,
         path,
@@ -694,6 +851,7 @@ export async function setSideStaged({
     folder,
     side,
 }: Readonly<{folder: string; side: GitDiffSide}>): Promise<void> {
+    assertIndexSide(side);
     const status = await getDiffStatus(folder);
     await awaitedForEach(status[side], async (file) => {
         await setFileStaged({
@@ -888,7 +1046,7 @@ async function indexFileMode({
  * partially staged and then edited again fails the apply instead of silently discarding the wrong
  * version.
  */
-const discardApplyArgsBySide: Readonly<Record<GitDiffSide, ReadonlyArray<string>>> = {
+const discardApplyArgsBySide: Readonly<Record<IndexSide, ReadonlyArray<string>>> = {
     [GitDiffSide.Unstaged]: [],
     [GitDiffSide.Staged]: ['--index'],
 };
@@ -898,7 +1056,7 @@ const discardApplyArgsBySide: Readonly<Record<GitDiffSide, ReadonlyArray<string>
  * patch forward; unstaging takes the HEAD→index patch backward, which reverts just that hunk in the
  * index and leaves the working tree alone either way.
  */
-const moveApplyArgsBySide: Readonly<Record<GitDiffSide, ReadonlyArray<string>>> = {
+const moveApplyArgsBySide: Readonly<Record<IndexSide, ReadonlyArray<string>>> = {
     [GitDiffSide.Unstaged]: [],
     [GitDiffSide.Staged]: ['--reverse'],
 };
@@ -922,6 +1080,7 @@ async function buildSideHunkPatch({
         path,
         oldPath: oldPath || undefined,
         side,
+        baseCommit: undefined,
     });
     if (looksBinary(oldBuffer) || looksBinary(newBuffer)) {
         throw new Error('Cannot change part of a binary file.');
@@ -931,6 +1090,7 @@ async function buildSideHunkPatch({
         path,
         oldPath: oldPath || undefined,
         side,
+        baseCommit: undefined,
     });
     const [
         oldSideExists,
@@ -969,6 +1129,8 @@ async function buildSideHunkPatch({
 }
 
 export async function moveHunkAcrossIndex(request: HunkRequest): Promise<void> {
+    const side = request.side;
+    assertIndexSide(side);
     const patch = await buildSideHunkPatch({
         ...request,
         contextLines: hunkContextLines,
@@ -979,7 +1141,7 @@ export async function moveHunkAcrossIndex(request: HunkRequest): Promise<void> {
             'apply',
             '--cached',
             '--whitespace=nowarn',
-            ...moveApplyArgsBySide[request.side],
+            ...moveApplyArgsBySide[side],
             '-',
         ],
         patch,
@@ -997,6 +1159,8 @@ export async function moveHunkAcrossIndex(request: HunkRequest): Promise<void> {
  * diff the user is looking at, and a stale one still fails on the `-` lines not matching.
  */
 export async function discardHunkChanges(request: HunkRequest): Promise<void> {
+    const side = request.side;
+    assertIndexSide(side);
     const patch = await buildSideHunkPatch({
         ...request,
         contextLines: 0,
@@ -1008,7 +1172,7 @@ export async function discardHunkChanges(request: HunkRequest): Promise<void> {
             '--whitespace=nowarn',
             '--unidiff-zero',
             '--reverse',
-            ...discardApplyArgsBySide[request.side],
+            ...discardApplyArgsBySide[side],
             '-',
         ],
         patch,

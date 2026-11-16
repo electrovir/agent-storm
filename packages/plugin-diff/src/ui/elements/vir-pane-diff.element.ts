@@ -26,6 +26,8 @@ export const VirPaneDiff = defineAppElement<{
     renderCodeView?: RenderDiffCodeView | undefined;
     /** Picks which diff shows. Kept reachable while the manual review is starting. */
     sourcePicker?: HtmlInterpolation | undefined;
+    /** The branch the folder's PR merges into, which mounts the pull request diff. */
+    pullRequestBaseBranch: string | undefined;
 }>()({
     tagName: 'vir-pane-diff',
     events: {
@@ -71,6 +73,7 @@ export const VirPaneDiff = defineAppElement<{
         const reviewCopyFolder = inputs.paneReview.value.reviewCopyFolder;
         const isSourceShown = inputs.isShown && inputs.diffView === DiffView.Source;
         const isManualReviewChosen = inputs.isShown && inputs.diffView === DiffView.ManualReview;
+        const isPullRequestShown = inputs.isShown && inputs.diffView === DiffView.PullRequest;
         const verdictButtons = [
             {
                 text: 'Approve',
@@ -126,6 +129,32 @@ export const VirPaneDiff = defineAppElement<{
                     })}
                 ></${VirDiffPane}>
             </div>
+            ${inputs.pullRequestBaseBranch
+                ? html`
+                      <div class="diff-pane" ?data-hidden=${!isPullRequestShown}>
+                          <${VirDiffPane.assign({
+                              folder: inputs.folder,
+                              active: isPullRequestShown,
+                              screenSize: inputs.screenSize,
+                              renderCodeView: inputs.renderCodeView,
+                              toolbarTrailing: inputs.sourcePicker,
+                              savedSelection: inputs.diffSelections[DiffView.PullRequest],
+                              pullRequestBaseBranch: inputs.pullRequestBaseBranch,
+                          })}
+                              ${listen(VirDiffPane.events.selectionChange, (event) => {
+                                  dispatch(
+                                      new events.diffSelectionChange({
+                                          detail: {
+                                              diffView: DiffView.PullRequest,
+                                              selection: event.detail,
+                                          },
+                                      }),
+                                  );
+                              })}
+                          ></${VirDiffPane}>
+                      </div>
+                  `
+                : nothing}
             ${reviewCopyFolder
                 ? html`
                       <div

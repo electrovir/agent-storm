@@ -16,6 +16,7 @@ describe(resolveDiffView.name, () => {
         reviewCopyFolder: undefined,
         review: undefined,
         isManualReviewStarting: false,
+        hasPullRequest: false,
     } as const;
 
     it('falls back to a view with something to show', () => {

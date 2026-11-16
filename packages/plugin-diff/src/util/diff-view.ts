@@ -13,10 +13,13 @@ export function resolveDiffView({
     reviewCopyFolder,
     review,
     isManualReviewStarting,
+    hasPullRequest,
 }: Readonly<{
     chosen: DiffView;
     /** Whether the folder has any uncommitted change, staged or not. */
     hasChanges: boolean;
+    /** Whether the folder's branch has a PR whose base branch is known. */
+    hasPullRequest: boolean;
     reviewCopyFolder: string | undefined;
     review: Readonly<ManualReviewState> | undefined;
     isManualReviewStarting: boolean;
@@ -26,6 +29,7 @@ export function resolveDiffView({
         /** A copy left over from an earlier review would otherwise show a finished review. */
         [DiffView.ManualReview]:
             !!reviewCopyFolder && !!review && canPostVerdictByStatus[review.status],
+        [DiffView.PullRequest]: hasPullRequest,
     };
     const isManualReviewSelectable = isAvailable[DiffView.ManualReview] || isManualReviewStarting;
     return {

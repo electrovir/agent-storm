@@ -8,6 +8,7 @@ import {type GitDiffFile, type GitDiffStatus} from '../diff-api.js';
 export const statusFilesKeys = {
     [GitDiffSide.Staged]: 'staged',
     [GitDiffSide.Unstaged]: 'unstaged',
+    [GitDiffSide.PullRequest]: 'pullRequest',
 } as const satisfies Record<GitDiffSide, keyof GitDiffStatus>;
 
 /**
@@ -17,6 +18,7 @@ export const statusFilesKeys = {
 export const canDiscardSide: Readonly<Record<GitDiffSide, boolean>> = {
     [GitDiffSide.Staged]: false,
     [GitDiffSide.Unstaged]: true,
+    [GitDiffSide.PullRequest]: false,
 };
 
 /**
@@ -90,6 +92,7 @@ export function withFilesMoved(
     const staged = remaining(GitDiffSide.Staged, status.staged);
     const unstaged = remaining(GitDiffSide.Unstaged, status.unstaged);
     return {
+        ...status,
         staged: [
             ...staged,
             ...arrivals(GitDiffSide.Unstaged, staged),
@@ -109,6 +112,7 @@ export function allSelectValues(status: Readonly<GitDiffStatus> | undefined): st
     return [
         ...status.staged.map((file) => toSelectValue(GitDiffSide.Staged, file.path)),
         ...status.unstaged.map((file) => toSelectValue(GitDiffSide.Unstaged, file.path)),
+        ...status.pullRequest.map((file) => toSelectValue(GitDiffSide.PullRequest, file.path)),
     ];
 }
 
@@ -168,6 +172,10 @@ export function toMenuGroups(status: Readonly<GitDiffStatus> | undefined): FileM
         {
             side: GitDiffSide.Unstaged,
             files: status.unstaged,
+        },
+        {
+            side: GitDiffSide.PullRequest,
+            files: status.pullRequest,
         },
     ].filter((group) => group.files.length);
 }

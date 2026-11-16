@@ -24,13 +24,24 @@ export type HunkMenu = Readonly<{
     newText: Text;
 }>;
 
-/** A failed read comes back as its message rather than a throw. */
-export async function readStatus(folder: string) {
+/**
+ * A failed read comes back as its message rather than a throw. With `pullRequestBaseBranch` set, it
+ * reads the files a PR into that branch changes instead of the uncommitted ones.
+ */
+export async function readStatus({
+    folder,
+    pullRequestBaseBranch,
+}: Readonly<{folder: string; pullRequestBaseBranch: string | undefined}>) {
     try {
         return {
-            status: await diffClient.call('readStatus', {
-                folder,
-            }),
+            status: pullRequestBaseBranch
+                ? await diffClient.call('readPullRequestStatus', {
+                      folder,
+                      baseBranch: pullRequestBaseBranch,
+                  })
+                : await diffClient.call('readStatus', {
+                      folder,
+                  }),
         };
     } catch (error) {
         return {
@@ -59,10 +70,13 @@ export async function readReviewComments(folder: string) {
 export async function readDiffFile({
     folder,
     selected,
+    baseCommit,
     allowLarge,
 }: Readonly<{
     folder: string;
     selected: Readonly<SelectedFile>;
+    /** The status's `pullRequestBase`. */
+    baseCommit: string | undefined;
     allowLarge: boolean;
 }>) {
     try {
@@ -72,6 +86,7 @@ export async function readDiffFile({
                 path: selected.file.path,
                 oldPath: selected.file.oldPath ?? undefined,
                 side: selected.side,
+                baseCommit,
                 allowLarge,
             }),
         };

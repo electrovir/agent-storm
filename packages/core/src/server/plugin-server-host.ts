@@ -23,6 +23,7 @@ export type RepoSlug = {
 export type BranchPrInfo = {
     url: string;
     status: PrStatus;
+    baseBranch?: string | undefined;
 };
 
 /** A checkout's git state as the app last read it. */

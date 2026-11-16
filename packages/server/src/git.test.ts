@@ -35,6 +35,7 @@ function openPrNodes(nodes: ReadonlyArray<Readonly<Partial<OpenPrNode>>>): OpenP
         return {
             url: '',
             headRefName: '',
+            baseRefName: '',
             headRefOid: '',
             updatedAt: '',
             state: RawPrState.Open,
@@ -68,12 +69,14 @@ describe(buildPrsByBranch.name, () => {
                     headRefName: 'feature',
                     state: RawPrState.Closed,
                     closedAt: daysAgoIso(1),
+                    baseRefName: 'main',
                 },
             ],
         });
         assert.deepEquals(prs.get('feature'), {
             url: 'https://github.com/owner/name/pull/2',
             status: PrStatus.AwaitingReview,
+            baseBranch: '',
         });
     });
 
@@ -407,12 +410,14 @@ describe(buildPrsByBranch.name, () => {
                     headRefName: 'old',
                     state: RawPrState.Merged,
                     closedAt: daysAgoIso(8),
+                    baseRefName: 'main',
                 },
                 {
                     url: 'https://github.com/owner/name/pull/3',
                     headRefName: 'fresh',
                     state: RawPrState.Merged,
                     closedAt: daysAgoIso(2),
+                    baseRefName: 'main',
                 },
             ],
         });
@@ -440,6 +445,7 @@ describe(buildPrsByBranch.name, () => {
                     headRefName: `merged-${index}`,
                     state: RawPrState.Merged,
                     closedAt: daysAgoIso(1),
+                    baseRefName: 'main',
                 };
             }),
         });
@@ -465,6 +471,7 @@ describe(parseRepoPrsAnswer.name, () => {
                                 headRefName: 'feature',
                                 state,
                                 closedAt: daysAgoIso(1),
+                                baseRefName: 'main',
                             },
                         ],
                     },
@@ -479,6 +486,7 @@ describe(parseRepoPrsAnswer.name, () => {
             {
                 url: 'https://github.com/owner/name/pull/1',
                 status: PrStatus.Merged,
+                baseBranch: 'main',
             },
         );
     });

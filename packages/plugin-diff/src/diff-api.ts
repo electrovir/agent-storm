@@ -27,11 +27,21 @@ const gitDiffFileShape = defineShape({
 
 /**
  * The two halves of `git status`, kept separate rather than merged. A partially-staged file is in
- * both lists at once, with different content on each side.
+ * both lists at once, with different content on each side. A pull request's status fills only
+ * `pullRequest` instead.
  */
 const gitDiffStatusResponseShape = defineShape({
     staged: [gitDiffFileShape],
     unstaged: [gitDiffFileShape],
+    pullRequest: [gitDiffFileShape],
+    /** The merge-base commit `pullRequest` is compared against. */
+    pullRequestBase: nullableShape(''),
+});
+
+const gitPullRequestStatusRequestShape = defineShape({
+    folder: '',
+    /** The branch the PR merges into. Its remote-tracking branch wins over a local one. */
+    baseBranch: '',
 });
 
 const gitDiffFileRequestShape = defineShape({
@@ -44,6 +54,8 @@ const gitDiffFileRequestShape = defineShape({
      */
     oldPath: nullableShape(''),
     side: enumShape(GitDiffSide),
+    /** The status's `pullRequestBase`. Required for the `PullRequest` side and ignored otherwise. */
+    baseCommit: nullableShape(''),
     /**
      * Set by the placeholder's "Show diff anyway" button to send the content of a file past
      * `maxDiffFileBytes` or `maxDiffFileLines`. Binary files ignore it — there is nothing useful to
@@ -54,9 +66,9 @@ const gitDiffFileRequestShape = defineShape({
 
 /** Both sides of one file's diff as plain text, for the requested {@link GitDiffSide}. */
 const gitDiffFileResponseShape = defineShape({
-    /** Contents at `HEAD` (staged side) or in the index (unstaged side). */
+    /** Contents at `HEAD` (staged side), in the index (unstaged side), or at the merge base. */
     oldContent: '',
-    /** Contents in the index (staged side) or the working tree (unstaged side). */
+    /** Contents in the index (staged side), the working tree (unstaged side), or at `HEAD`. */
     newContent: '',
     /**
      * True for a file in one of the raster image formats the pane renders as a picture instead of
@@ -128,6 +140,11 @@ export const diffApi = definePluginApi({
     calls: {
         readStatus: {
             requestShape: folderRequestShape,
+            responseShape: gitDiffStatusResponseShape,
+        },
+        /** Every file the folder's branch committed since it split from the PR's base branch. */
+        readPullRequestStatus: {
+            requestShape: gitPullRequestStatusRequestShape,
             responseShape: gitDiffStatusResponseShape,
         },
         readFile: {

@@ -2,15 +2,16 @@
 
 import {GitDiffSide, GitFileChange} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {css, defineElementEvent, html, listen} from 'element-vir';
+import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {ViraButton, ViraColorVariant, ViraSize, viraThemeByKeys} from 'vira';
 import {type GitDiffFile} from '../../diff-api.js';
 import {toFileIconUrl} from '../../util/file-icon.js';
 
-/** What a file's stage button does to a file on this side. */
-export const stageActionLabels: Readonly<Record<GitDiffSide, string>> = {
+/** What a file's stage button does to a file on this side. Undefined for a side nothing can stage. */
+export const stageActionLabels: Readonly<Record<GitDiffSide, string | undefined>> = {
     [GitDiffSide.Staged]: 'Unstage',
     [GitDiffSide.Unstaged]: 'Stage',
+    [GitDiffSide.PullRequest]: undefined,
 };
 
 /** The grey bar over a file's diff: its name and line counts, and its stage button. */
@@ -106,6 +107,7 @@ export const VirDiffFileHeader = defineAppElement<{
         }
     `,
     render({inputs, dispatch, events}) {
+        const stageLabel = stageActionLabels[inputs.side];
         const nameTemplate = html`
             <img class="file-icon" src=${toFileIconUrl(inputs.file.path)} alt="" />
             <span class="file-path" ?data-deleted=${inputs.file.change === GitFileChange.Deleted}>
@@ -138,20 +140,24 @@ export const VirDiffFileHeader = defineAppElement<{
                 : html`
                       <div class="file-name" title=${inputs.file.path}>${nameTemplate}</div>
                   `}
-            <${ViraButton.assign({
-                text: stageActionLabels[inputs.side],
-                buttonSize: ViraSize.Small,
-                color: ViraColorVariant.Neutral,
-            })}
-                title="Move the whole file across the index"
-                ${listen('click', () => {
-                    dispatch(
-                        new events.stageFile({
-                            detail: inputs.file,
-                        }),
-                    );
-                })}
-            ></${ViraButton}>
+            ${stageLabel
+                ? html`
+                      <${ViraButton.assign({
+                          text: stageLabel,
+                          buttonSize: ViraSize.Small,
+                          color: ViraColorVariant.Neutral,
+                      })}
+                          title="Move the whole file across the index"
+                          ${listen('click', () => {
+                              dispatch(
+                                  new events.stageFile({
+                                      detail: inputs.file,
+                                  }),
+                              );
+                          })}
+                      ></${ViraButton}>
+                  `
+                : nothing}
         `;
     },
 });

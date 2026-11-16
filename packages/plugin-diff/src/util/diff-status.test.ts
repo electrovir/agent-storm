@@ -23,6 +23,7 @@ const status = {
         createFile('second.ts'),
         createFile('third.ts'),
     ],
+    pullRequest: [],
 };
 
 describe(findSelected.name, () => {

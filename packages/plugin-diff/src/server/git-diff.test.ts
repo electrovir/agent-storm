@@ -1,6 +1,6 @@
 // cspell:words unstages, endobj
 
-import {GitDiffSide} from '@agent-storm/common';
+import {GitDiffSide, GitFileChange} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {execFile} from 'node:child_process';
@@ -13,6 +13,7 @@ import {
     discardUnstagedChanges,
     getDiffFileContents,
     getDiffStatus,
+    getPullRequestStatus,
     setSideStaged,
 } from './git-diff.js';
 
@@ -439,6 +440,86 @@ describe(getDiffFileContents.name, () => {
                     tooLargeOrBinary: false,
                     canShowAnyway: false,
                 },
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+});
+
+describe(getPullRequestStatus.name, () => {
+    it('lists what the branch committed since leaving its base, with a readable diff', async () => {
+        const {folder, filePath} = await createRepo();
+        try {
+            await exec('git', [
+                '-C',
+                folder,
+                'switch',
+                '--create',
+                'feature',
+            ]);
+            await writeFile(filePath, `${committedLines.join('\n')}\nsix\n`);
+            await exec('git', [
+                '-C',
+                folder,
+                'commit',
+                '--all',
+                '-m',
+                'add a line',
+            ]);
+            /** Uncommitted work belongs to the source diff, not the PR's. */
+            await writeFile(join(folder, 'draft.txt'), 'draft\n');
+
+            const status = await getPullRequestStatus({
+                folder,
+                baseBranch: 'main',
+            });
+            assert.deepEquals(status.pullRequest, [
+                {
+                    path: 'file.txt',
+                    oldPath: undefined,
+                    change: GitFileChange.Modified,
+                    insertions: 1,
+                    deletions: 0,
+                },
+            ]);
+            const contents = await getDiffFileContents({
+                folder,
+                path: 'file.txt',
+                oldPath: undefined,
+                side: GitDiffSide.PullRequest,
+                baseCommit: status.pullRequestBase,
+                allowLarge: false,
+            });
+            assert.deepEquals(
+                [
+                    contents.oldContent,
+                    contents.newContent,
+                ],
+                [
+                    `${committedLines.join('\n')}\n`,
+                    `${committedLines.join('\n')}\nsix\n`,
+                ],
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+
+    it('rejects a base branch the repo lacks', async () => {
+        const {folder} = await createRepo();
+        try {
+            await assert.throws(
+                getPullRequestStatus({
+                    folder,
+                    baseBranch: 'missing',
+                }),
             );
         } finally {
             await rm(folder, {

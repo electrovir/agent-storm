@@ -9,12 +9,15 @@ import {VirPierreDiffView} from './vir-pierre-diff-view.element.js';
 export const diffV2Pane = defineDiffPane({
     id: 'diff-v2',
     label: 'Diff V2',
-    renderCodeView({isHidden, setChunkCount, ...inputs}) {
+    renderCodeView({isHidden, setChunkCount, requestHunkMenu, ...inputs}) {
         return html`
             <${VirPierreDiffView.assign(inputs)}
                 ?data-hidden=${isHidden}
                 ${listen(VirPierreDiffView.events.chunkCountChange, (event) => {
                     setChunkCount(event.detail);
+                })}
+                ${listen(VirPierreDiffView.events.hunkMenuRequested, (event) => {
+                    requestHunkMenu(event.detail);
                 })}
             ></${VirPierreDiffView}>
         `;

@@ -3,6 +3,7 @@ import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {type GitDiffFile} from '../../diff-api.js';
+import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
 import {VirDiffReviewFile} from './vir-diff-review-file.element.js';
 
 /**
@@ -13,6 +14,8 @@ import {VirDiffReviewFile} from './vir-diff-review-file.element.js';
 export const VirDiffReview = defineAppElement<{
     folder: string;
     side: GitDiffSide;
+    /** The status's `pullRequestBase`, which a pull request side's files are read against. */
+    baseCommit: string | undefined;
     files: ReadonlyArray<GitDiffFile>;
     hideWhitespace: boolean;
     unified: boolean;
@@ -29,6 +32,8 @@ export const VirDiffReview = defineAppElement<{
               line: number;
           }>
         | undefined;
+    /** Draws each file's diff instead of the built-in CodeMirror view. */
+    renderCodeView?: RenderDiffCodeView | undefined;
 }>()({
     tagName: 'vir-diff-review',
     state() {
@@ -99,6 +104,7 @@ export const VirDiffReview = defineAppElement<{
                         <${VirDiffReviewFile.assign({
                             folder: inputs.folder,
                             side: inputs.side,
+                            baseCommit: inputs.baseCommit,
                             file,
                             scrollRoot: host,
                             hideWhitespace: inputs.hideWhitespace,
@@ -115,6 +121,7 @@ export const VirDiffReview = defineAppElement<{
                                 inputs.commentDraft?.path === file.path
                                     ? inputs.commentDraft.line
                                     : undefined,
+                            renderCodeView: inputs.renderCodeView,
                         })}
                             data-path=${file.path}
                             ${listen(VirDiffReviewFile.events.stageFile, () => {

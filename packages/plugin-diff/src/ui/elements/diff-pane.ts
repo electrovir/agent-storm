@@ -20,6 +20,7 @@ import {VirPaneDiff} from './vir-pane-diff.element.js';
 const diffViewLabels: Readonly<Record<DiffView, string>> = {
     [DiffView.Source]: 'Source',
     [DiffView.ManualReview]: 'Manual review',
+    [DiffView.PullRequest]: 'Full pull request',
 };
 
 function renderDiff(
@@ -34,6 +35,7 @@ function renderDiff(
         reviewCopyFolder: paneReview.value.reviewCopyFolder,
         review: paneReview.value.review,
         isManualReviewStarting: paneReview.value.isManualReviewStarting,
+        hasPullRequest: !!info?.prBaseBranch,
     });
     if (paneReview.value.isManualReviewStarting && diff.isAvailable[DiffView.ManualReview]) {
         paneReview.setManualReviewStarting(false);
@@ -41,6 +43,7 @@ function renderDiff(
     const isViewSelectable: Readonly<Record<DiffView, boolean>> = {
         [DiffView.Source]: diff.isAvailable[DiffView.Source],
         [DiffView.ManualReview]: diff.isManualReviewSelectable,
+        [DiffView.PullRequest]: diff.isAvailable[DiffView.PullRequest],
     };
     const isReview = isReviewFolder(params);
 
@@ -55,6 +58,7 @@ function renderDiff(
             isReviewFolder: isReview,
             screenSize: params.context.screenSize,
             renderCodeView,
+            pullRequestBaseBranch: info?.prBaseBranch || undefined,
             /** A review folder's own checkout is the manual review, with no other diff to pick. */
             sourcePicker: isReview
                 ? undefined

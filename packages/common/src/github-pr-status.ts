@@ -15,6 +15,7 @@ import {
 export const openPrNodeShape = defineShape({
     url: '',
     headRefName: '',
+    baseRefName: '',
     headRefOid: '',
     /** ISO time. */
     updatedAt: '',

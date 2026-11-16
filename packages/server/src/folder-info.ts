@@ -596,6 +596,7 @@ async function buildFolderInfo({
             notPushed: git.notPushed,
         },
         prUrl: pr?.url || null,
+        prBaseBranch: pr?.baseBranch || null,
         prStatus: pr?.status || PrStatus.None,
         panes: mapEnumToObject(PaneKind, (kind) => statusLookup(target.folder, kind)),
     };

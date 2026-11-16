@@ -5,6 +5,7 @@ import {type Extension, type Text} from '@codemirror/state';
 import {css, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {diffApi, type GitDiffFile, type GitDiffFileContents} from '../../diff-api.js';
+import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {type AddCommentRequest, type EditCommentRequest} from './diff-editor-comments.js';
 import {
@@ -13,8 +14,12 @@ import {
     toDisplayedOldContent,
     type RenderedDiff,
 } from './diff-editor.js';
-import {chunkSelectionsAtPointer, type SelectedChunk} from './diff-selection.js';
-import {VirDiffFileHeader} from './vir-diff-file-header.element.js';
+import {
+    chunkSelectionAtLine,
+    chunkSelectionsAtPointer,
+    type SelectedChunk,
+} from './diff-selection.js';
+import {VirDiffFileHeader, stageActionLabels} from './vir-diff-file-header.element.js';
 import {VirFileComments} from './vir-file-comments.element.js';
 import {VirImageDiff} from './vir-image-diff.element.js';
 
@@ -38,6 +43,8 @@ const maxPlaceholderHeight = 4000;
 export const VirDiffReviewFile = defineAppElement<{
     folder: string;
     side: GitDiffSide;
+    /** The status's `pullRequestBase`, which a pull request side's files are read against. */
+    baseCommit: string | undefined;
     file: GitDiffFile;
     /** The scrolling ancestor, which is what "near the screen" is measured against. */
     scrollRoot: Element;
@@ -52,6 +59,8 @@ export const VirDiffReviewFile = defineAppElement<{
     enableComments: boolean;
     /** 1-based line the open comment composer is writing about in this file. */
     commentingLine: number | undefined;
+    /** Draws the diff instead of the built-in CodeMirror view. */
+    renderCodeView?: RenderDiffCodeView | undefined;
 }>()({
     tagName: 'vir-diff-review-file',
     events: {
@@ -107,6 +116,8 @@ export const VirDiffReviewFile = defineAppElement<{
             syntaxLoading: false,
             editorParent: undefined as HTMLElement | undefined,
             rendered: undefined as RenderedDiff | undefined,
+            /** What `renderCodeView` last reported, undefined until it has drawn. */
+            codeViewChunkCount: undefined as number | undefined,
         };
     },
     styles: css`
@@ -183,6 +194,7 @@ export const VirDiffReviewFile = defineAppElement<{
                     path: file.path,
                     oldPath: file.oldPath ?? undefined,
                     side: inputs.side,
+                    baseCommit: inputs.baseCommit,
                     allowLarge: false,
                 })
                 .then(
@@ -204,7 +216,12 @@ export const VirDiffReviewFile = defineAppElement<{
                 );
         }
 
-        if (state.isNear && state.syntaxPath !== inputs.file.path && !state.syntaxLoading) {
+        if (
+            !inputs.renderCodeView &&
+            state.isNear &&
+            state.syntaxPath !== inputs.file.path &&
+            !state.syntaxLoading
+        ) {
             const path = inputs.file.path;
             updateState({
                 syntaxLoading: true,
@@ -229,7 +246,13 @@ export const VirDiffReviewFile = defineAppElement<{
                 rendered: undefined,
             });
         }
-        if (state.editorParent && content && isText && state.syntaxPath === file.path) {
+        if (
+            !inputs.renderCodeView &&
+            state.editorParent &&
+            content &&
+            isText &&
+            state.syntaxPath === file.path
+        ) {
             const rendered = remountChangedDiffEditor({
                 parent: state.editorParent,
                 root: host.shadowRoot,
@@ -333,12 +356,19 @@ export const VirDiffReviewFile = defineAppElement<{
             `;
         }
 
+        const isDrawn = inputs.renderCodeView
+            ? state.codeViewChunkCount != undefined
+            : !!state.rendered;
+        const drawnChunkCount = inputs.renderCodeView
+            ? state.codeViewChunkCount
+            : state.rendered?.chunks.length;
+
         function renderNote() {
             if (state.loadError && !content) {
                 return html`
                     <div class="note error">${state.loadError}</div>
                 `;
-            } else if (!content || (isText && !state.rendered)) {
+            } else if (!content || (isText && !isDrawn)) {
                 return html`
                     <div
                         class="note"
@@ -371,7 +401,7 @@ export const VirDiffReviewFile = defineAppElement<{
                             : 'Binary file — no diff shown.'}
                     </div>
                 `;
-            } else if (state.rendered?.chunks.length) {
+            } else if (drawnChunkCount) {
                 return '';
             } else {
                 return html`
@@ -406,44 +436,88 @@ export const VirDiffReviewFile = defineAppElement<{
                 })}
             ></${VirDiffFileHeader}>
             ${renderNote()}
-            <div
-                class="editor"
-                ${listen('contextmenu', (event) => {
-                    const rendered = state.rendered;
-                    const view = rendered?.editor?.view;
-                    if (!rendered || !view) {
-                        return;
-                    }
-                    const selections = chunkSelectionsAtPointer({
-                        view,
-                        chunks: rendered.chunks,
-                        event,
-                    });
-                    if (!selections.length) {
-                        return;
-                    }
-                    event.preventDefault();
-                    dispatch(
-                        new events.chunkMenuRequested({
-                            detail: {
-                                x: event.clientX,
-                                y: event.clientY,
-                                file: inputs.file,
-                                selections,
-                                oldText: rendered.oldText,
-                                newText: rendered.newText,
-                            },
-                        }),
-                    );
-                })}
-                ${onDomCreated((element) => {
-                    if (element instanceof HTMLElement && !state.editorParent) {
-                        updateState({
-                            editorParent: element,
-                        });
-                    }
-                })}
-            ></div>
+            ${inputs.renderCodeView && content && isText
+                ? inputs.renderCodeView({
+                      fileKey: file.path,
+                      path: file.path,
+                      content,
+                      hideWhitespace: inputs.hideWhitespace,
+                      unified: inputs.unified,
+                      collapseUnchanged: inputs.collapseUnchanged,
+                      softWrap: inputs.softWrap,
+                      isDark: inputs.isDark,
+                      chunkScroll: undefined,
+                      isHidden: false,
+                      setChunkCount(chunkCount) {
+                          updateState({
+                              codeViewChunkCount: chunkCount,
+                          });
+                      },
+                      canStage: !!stageActionLabels[inputs.side],
+                      requestHunkMenu({x, y, lineNumber, isRemovedLine}) {
+                          const chunkSelection = chunkSelectionAtLine({
+                              oldContent: toDisplayedOldContent({
+                                  content,
+                                  hideWhitespace: inputs.hideWhitespace,
+                              }),
+                              newContent: content.newContent,
+                              lineNumber,
+                              isRemovedLine,
+                          });
+                          if (chunkSelection) {
+                              dispatch(
+                                  new events.chunkMenuRequested({
+                                      detail: {
+                                          ...chunkSelection,
+                                          x,
+                                          y,
+                                          file: inputs.file,
+                                      },
+                                  }),
+                              );
+                          }
+                      },
+                  })
+                : html`
+                      <div
+                          class="editor"
+                          ${listen('contextmenu', (event) => {
+                              const rendered = state.rendered;
+                              const view = rendered?.editor?.view;
+                              if (!rendered || !view) {
+                                  return;
+                              }
+                              const selections = chunkSelectionsAtPointer({
+                                  view,
+                                  chunks: rendered.chunks,
+                                  event,
+                              });
+                              if (!selections.length) {
+                                  return;
+                              }
+                              event.preventDefault();
+                              dispatch(
+                                  new events.chunkMenuRequested({
+                                      detail: {
+                                          x: event.clientX,
+                                          y: event.clientY,
+                                          file: inputs.file,
+                                          selections,
+                                          oldText: rendered.oldText,
+                                          newText: rendered.newText,
+                                      },
+                                  }),
+                              );
+                          })}
+                          ${onDomCreated((element) => {
+                              if (element instanceof HTMLElement && !state.editorParent) {
+                                  updateState({
+                                      editorParent: element,
+                                  });
+                              }
+                          })}
+                      ></div>
+                  `}
         `;
     },
 });

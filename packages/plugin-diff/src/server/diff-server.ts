@@ -7,6 +7,7 @@ import {
     discardUnstagedChanges,
     getDiffFileContents,
     getDiffStatus,
+    getPullRequestStatus,
     moveHunkAcrossIndex,
     setFileStaged,
     setSideStaged,
@@ -23,6 +24,12 @@ export default definePluginServer({
             calls: {
                 async readStatus({folder}) {
                     return await getDiffStatus(normalizePath(folder));
+                },
+                async readPullRequestStatus(request) {
+                    return await getPullRequestStatus({
+                        ...request,
+                        folder: normalizePath(request.folder),
+                    });
                 },
                 async readFile(request) {
                     return await getDiffFileContents({

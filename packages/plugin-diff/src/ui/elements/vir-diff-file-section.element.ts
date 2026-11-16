@@ -4,7 +4,7 @@ import {GitDiffSide} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {colorCss} from '@electrovir/color';
-import {css, defineElementEvent, html, listen, type HtmlInterpolation} from 'element-vir';
+import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {
     LucideMinusIcon,
     LucidePlusIcon,
@@ -35,9 +35,10 @@ import {stageActionLabels} from './vir-diff-file-header.element.js';
 const revertIcon = createSizedIcon(LucideUndo2Icon, 14);
 
 /** Direction the row's stage button moves the file, matching {@link stageActionLabels}. */
-const stageActionIcons: Readonly<Record<GitDiffSide, ViraIconSvg>> = {
+const stageActionIcons: Readonly<Record<GitDiffSide, ViraIconSvg | undefined>> = {
     [GitDiffSide.Staged]: createSizedIcon(LucideMinusIcon, 14),
     [GitDiffSide.Unstaged]: createSizedIcon(LucidePlusIcon, 14),
+    [GitDiffSide.PullRequest]: undefined,
 };
 
 /**
@@ -315,8 +316,12 @@ export const VirDiffFileSection = defineAppElement<{
                     </button>
                 `;
             },
+            [GitDiffSide.PullRequest]() {
+                return nothing;
+            },
         };
 
+        const stageIcon = stageActionIcons[inputs.side];
         const rowsTemplate = files.map((file) => {
             const value = toSelectValue(inputs.side, file.path);
             const rowTargets = actionTargets(value);
@@ -344,46 +349,50 @@ export const VirDiffFileSection = defineAppElement<{
                     >
                         ${fileRowContents(file)}
                     </button>
-                    <div class="row-actions">
-                        <button
-                            type="button"
-                            class="row-action"
-                            title=${rowTargets.length > 1
-                                ? `Discard all changes to the ${rowTargets.length} selected files`
-                                : 'Discard all changes to this file'}
-                            ?data-hidden=${!canDiscardSide[inputs.side]}
-                            ?disabled=${inputs.isBusy || !canDiscardSide[inputs.side]}
-                            ${listen('click', () => {
-                                dispatch(
-                                    new events.filesDiscard({
-                                        detail: rowTargets,
-                                    }),
-                                );
-                            })}
-                        >
-                            <${ViraIcon.assign({
-                                icon: revertIcon,
-                            })}></${ViraIcon}>
-                        </button>
-                        <button
-                            type="button"
-                            class="row-action"
-                            title=${rowTargets.length > 1
-                                ? `${stageActionLabels[inputs.side]} the ${rowTargets.length} selected files`
-                                : stageActionLabels[inputs.side]}
-                            ${listen('click', () => {
-                                dispatch(
-                                    new events.filesStage({
-                                        detail: rowTargets,
-                                    }),
-                                );
-                            })}
-                        >
-                            <${ViraIcon.assign({
-                                icon: stageActionIcons[inputs.side],
-                            })}></${ViraIcon}>
-                        </button>
-                    </div>
+                    ${stageIcon
+                        ? html`
+                              <div class="row-actions">
+                                  <button
+                                      type="button"
+                                      class="row-action"
+                                      title=${rowTargets.length > 1
+                                          ? `Discard all changes to the ${rowTargets.length} selected files`
+                                          : 'Discard all changes to this file'}
+                                      ?data-hidden=${!canDiscardSide[inputs.side]}
+                                      ?disabled=${inputs.isBusy || !canDiscardSide[inputs.side]}
+                                      ${listen('click', () => {
+                                          dispatch(
+                                              new events.filesDiscard({
+                                                  detail: rowTargets,
+                                              }),
+                                          );
+                                      })}
+                                  >
+                                      <${ViraIcon.assign({
+                                          icon: revertIcon,
+                                      })}></${ViraIcon}>
+                                  </button>
+                                  <button
+                                      type="button"
+                                      class="row-action"
+                                      title=${rowTargets.length > 1
+                                          ? `${stageActionLabels[inputs.side]} the ${rowTargets.length} selected files`
+                                          : stageActionLabels[inputs.side]}
+                                      ${listen('click', () => {
+                                          dispatch(
+                                              new events.filesStage({
+                                                  detail: rowTargets,
+                                              }),
+                                          );
+                                      })}
+                                  >
+                                      <${ViraIcon.assign({
+                                          icon: stageIcon,
+                                      })}></${ViraIcon}>
+                                  </button>
+                              </div>
+                          `
+                        : nothing}
                 </div>
             `;
         });

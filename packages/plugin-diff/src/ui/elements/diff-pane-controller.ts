@@ -120,6 +120,7 @@ export function createDiffPaneState() {
         collapsedSides: {
             [GitDiffSide.Staged]: false,
             [GitDiffSide.Unstaged]: false,
+            [GitDiffSide.PullRequest]: false,
         } as Readonly<Record<GitDiffSide, boolean>>,
         /**
          * Side whose files are being read as one stacked review, or undefined for the normal
@@ -140,6 +141,7 @@ export type DiffPaneContext = Readonly<{
         enableComments?: boolean | undefined;
         /** What this list's tab last had open, which wins over the folder's last value. */
         savedSelection?: Readonly<DiffSelection> | undefined;
+        pullRequestBaseBranch?: string | undefined;
     }>;
     state: Readonly<DiffPaneState>;
     updateState: (newState: Partial<DiffPaneState>) => void;
@@ -217,7 +219,10 @@ export function createDiffPaneController({
             statusRead,
             reviewComments,
         ] = await Promise.all([
-            readStatus(folder),
+            readStatus({
+                folder,
+                pullRequestBaseBranch: inputs.pullRequestBaseBranch,
+            }),
             inputs.enableComments ? readReviewComments(folder) : undefined,
         ]);
         if (isOutdated()) {
@@ -253,6 +258,7 @@ export function createDiffPaneController({
         const diffRead = await readDiffFile({
             folder,
             selected: nextSelected,
+            baseCommit: shownStatus.pullRequestBase ?? undefined,
             allowLarge: state.allowLargeValues.includes(selectedValue ?? ''),
         });
         if (isOutdated() || state.selectedValue !== selectedValue) {
@@ -268,6 +274,26 @@ export function createDiffPaneController({
                       diffError: undefined,
                   },
         );
+    }
+
+    /**
+     * The side to open as a stacked review, which starts out as the whole list. The folder's memory
+     * is shared by its source and pull request lists, so a side the other list remembered falls
+     * back to this list's own default.
+     */
+    function resolveReviewSide() {
+        const isPullRequest = !!inputs.pullRequestBaseBranch;
+        const defaultSide = isPullRequest ? GitDiffSide.PullRequest : GitDiffSide.Unstaged;
+        const remembered =
+            inputs.savedSelection?.reviewSide ??
+            diffMemory.reviewSideByFolder.readFolder(inputs.folder) ??
+            defaultSide;
+        if (remembered === false) {
+            return undefined;
+        }
+        return (remembered === GitDiffSide.PullRequest) === isPullRequest
+            ? remembered
+            : defaultSide;
     }
 
     /** Starts, restarts, or stops the refresh poll to match the pane's visibility and folder. */
@@ -299,11 +325,7 @@ export function createDiffPaneController({
                 selectedValue:
                     inputs.savedSelection?.file ||
                     diffMemory.fileByFolder.readFolder(inputs.folder),
-                reviewSide:
-                    (inputs.savedSelection?.reviewSide ??
-                        diffMemory.reviewSideByFolder.readFolder(inputs.folder) ??
-                        GitDiffSide.Unstaged) ||
-                    undefined,
+                reviewSide: resolveReviewSide(),
                 /** A different folder's file list and diff must not linger through the reload. */
                 ...(state.armedFolder == undefined
                     ? {}

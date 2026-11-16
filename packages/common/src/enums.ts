@@ -60,6 +60,8 @@ export enum DiffView {
     Source = 'source',
     /** The copy of the branch that `/manual-review here` reviews in. */
     ManualReview = 'manualReview',
+    /** Everything the folder's branch committed since it split from its PR's base branch. */
+    PullRequest = 'pullRequest',
 }
 
 /** How a split in a pane layout lays out its children. */
@@ -153,11 +155,13 @@ export enum GitFileChange {
  * Which pair of trees a diff compares. `Staged` is `HEAD` → index (what a commit would contain);
  * `Unstaged` is index → working tree (what a commit would leave behind). A partially-staged file
  * appears on both sides with different content, which is exactly why the pane can't collapse them
- * into one `HEAD` → working tree diff.
+ * into one `HEAD` → working tree diff. `PullRequest` is the merge base with the PR's base branch →
+ * `HEAD`, which nothing in the pane can stage or discard.
  */
 export enum GitDiffSide {
     Staged = 'staged',
     Unstaged = 'unstaged',
+    PullRequest = 'pullRequest',
 }
 
 /**

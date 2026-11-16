@@ -194,6 +194,7 @@ export const VirDiffFileList = defineAppElement<{
                       `
                     : nothing}
                 ${renderSection(GitDiffSide.Staged)} ${renderSection(GitDiffSide.Unstaged)}
+                ${renderSection(GitDiffSide.PullRequest)}
             </div>
         `;
     },
