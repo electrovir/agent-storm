@@ -6,6 +6,7 @@ import {
     type PullRequestBranch,
     type PullRequestRef,
 } from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
 import {
     createBlockingInterval,
     extractErrorMessage,
@@ -17,6 +18,9 @@ import {
     manualReviewSkillDir,
     manualReviewStatePath,
     readManualReviewFile,
+    runCommand,
+    withManualReviewStateLock,
+    writeFileAtomically,
 } from 'agent-storm-util';
 import {resolve} from 'node:path';
 import {checkValidShape, defineShape, intersectShape, partialShape} from 'object-shape-tester';
@@ -118,12 +122,99 @@ function toEntryKey({owner, repoName, branchName}: Readonly<PullRequestBranch>) 
     ].join('/');
 }
 
+/**
+ * The skill script that records each status as pending. Each clears it from an exit trap, which a
+ * hard kill of the script skips, leaving the review locked as pending forever.
+ */
+const pendingStatusScripts: Readonly<Record<ManualReviewStatus, string | undefined>> = {
+    [ManualReviewStatus.Started]: '/run-review.sh',
+    [ManualReviewStatus.Aborted]: '/abort-review.sh',
+    [ManualReviewStatus.Approved]: undefined,
+    [ManualReviewStatus.RequestedChanges]: undefined,
+    [ManualReviewStatus.Commented]: undefined,
+    [ManualReviewStatus.PostFailed]: undefined,
+};
+
+/** Clears `isPending` on entries whose recording script is no longer running. */
+async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualReviewEntry>) {
+    const candidates = entries.filter((listed) => {
+        return (
+            !!listed.entry.isPending &&
+            !!listed.entry.status &&
+            !!pendingStatusScripts[listed.entry.status]
+        );
+    });
+    if (!candidates.length) {
+        return;
+    }
+    const {stdout: runningCommands} = await runCommand(
+        'ps',
+        [
+            '-axo',
+            'command=',
+        ],
+        {
+            timeout: {
+                seconds: 5,
+            },
+        },
+    );
+    const orphaned = candidates.filter((listed) => {
+        const script = listed.entry.status && pendingStatusScripts[listed.entry.status];
+        return !!script && !runningCommands.includes(script);
+    });
+    if (!orphaned.length) {
+        return;
+    }
+    await withManualReviewStateLock({
+        statePath: manualReviewStatePath,
+        async callback() {
+            const file = await readManualReviewFile(manualReviewStatePath);
+            /** A run that started since the read above has rewritten its entry, so it's skipped. */
+            const updated = orphaned.reduce((current, listed) => {
+                const repoKey = [
+                    listed.owner,
+                    listed.repoName,
+                ].join('/');
+                const stored = current[repoKey]?.[listed.branchName];
+                return check.isObject(stored) &&
+                    stored.isPending === true &&
+                    stored.lastUpdatedAt === listed.entry.lastUpdatedAt
+                    ? {
+                          ...current,
+                          [repoKey]: {
+                              ...current[repoKey],
+                              [listed.branchName]: {
+                                  ...stored,
+                                  isPending: false,
+                              },
+                          },
+                      }
+                    : current;
+            }, file);
+            if (updated !== file) {
+                await writeFileAtomically({
+                    path: manualReviewStatePath,
+                    contents: `${JSON.stringify(updated, undefined, 4)}\n`,
+                });
+            }
+        },
+    });
+    log.info(
+        `Cleared the pending flag of manual reviews whose script is gone: ${orphaned
+            .map((listed) => listed.branchName)
+            .join(', ')}`,
+    );
+}
+
 async function pollManualReviewFile() {
     try {
         const entries = listManualReviewEntries({
             file: await readManualReviewFile(manualReviewStatePath),
             entryShape: manualReviewEntryShape,
         });
+        /** `ps` is missing on Windows, where the skill's bash scripts don't run either. */
+        await clearOrphanedPendingEntries(entries).catch(() => undefined);
         const previousEntries = manualReviewWatch.previousEntries;
         manualReviewWatch.previousEntries = entries;
         if (!previousEntries) {
