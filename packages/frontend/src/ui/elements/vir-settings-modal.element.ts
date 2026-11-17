@@ -287,7 +287,10 @@ export const VirSettingsModal = defineAppElement<{
             height: auto;
             padding: 10px 12px;
 
-            & .nav,
+            & .nav {
+                padding-block: 0;
+            }
+
             & .content {
                 padding: 0;
             }
@@ -300,6 +303,12 @@ export const VirSettingsModal = defineAppElement<{
             gap: 12px;
             width: 200px;
             padding-block: 12px;
+            /**
+             * Room for the search input's focus ring, which draws outside the input and which this
+             * scroll would otherwise clip, without moving the nav.
+             */
+            padding-inline: 5px;
+            margin-inline: -5px;
             overflow-y: auto;
 
             & ${ViraInput} {
