@@ -1,5 +1,6 @@
 import {
     activityBarSaveEndpoint,
+    parsePaneGroupKey,
     rememberedSelectionSaveEndpoint,
     tabLayoutSaveEndpoint,
     uiLayoutEndpoint,
@@ -287,7 +288,7 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         void save(() => {
             return fetchApi(tabLayoutSaveEndpoint, HttpMethod.Put, {
                 requestData: {
-                    folder,
+                    ...parsePaneGroupKey(folder),
                     layout: isSharedChanged ? shared : undefined,
                     selection: isSelectionChanged ? selection : undefined,
                 },

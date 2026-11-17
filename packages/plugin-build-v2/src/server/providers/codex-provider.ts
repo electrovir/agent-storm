@@ -82,6 +82,17 @@ const modelListResponseShape = defineShape({
                     reasoningEffort: '',
                 },
             ],
+            serviceTiers: optionalShape(
+                [
+                    {
+                        id: '',
+                        name: '',
+                    },
+                ],
+                {
+                    alsoUndefined: true,
+                },
+            ),
         },
     ],
 });
@@ -177,17 +188,78 @@ export const codexProvider: ProviderAdapter = {
                         name: model.displayName,
                         description: model.description,
                         isDefault: model.isDefault,
+                        isLegacy: false,
                         supportedEfforts: parseReasoningEfforts(
                             model.supportedReasoningEfforts.map((option) => option.reasoningEffort),
                         ),
                         defaultEffort: parseReasoningEffort(model.defaultReasoningEffort),
+                        speedTiers: (model.serviceTiers || []).map((tier) => {
+                            return {
+                                id: tier.id,
+                                name: tier.name,
+                            };
+                        }),
                     };
                 });
         } finally {
             rpc.stop();
         }
     },
-    async start({cwd, model, effort, runtimeMode, providerSessionId, sink}) {
+    async generateTitle({cwd, model, prompt}) {
+        const reply = {
+            text: '',
+        };
+        const turn = Promise.withResolvers<void>();
+        const rpc = startCodexRpc({
+            cwd,
+            onNotification(method, params) {
+                if (
+                    method === 'item/agentMessage/delta' &&
+                    checkValidShape(params, deltaNotificationShape, extraKeys)
+                ) {
+                    reply.text += params.delta;
+                } else if (method === 'turn/completed') {
+                    turn.resolve();
+                }
+            },
+            onRequest(method) {
+                throw new Error(`Agent Storm doesn't support Codex's ${method} request.`);
+            },
+            onExit(reason) {
+                turn.reject(new Error(reason));
+            },
+        });
+        try {
+            await initializeCodexRpc(rpc);
+            const threadResponse = await rpc.request('thread/start', {
+                cwd,
+                model: model || null,
+                ephemeral: true,
+            });
+            assertValidShape(threadResponse, threadResponseShape, extraKeys);
+            await rpc.request('turn/start', {
+                threadId: threadResponse.thread.id,
+                approvalPolicy: 'never',
+                sandboxPolicy: {
+                    type: 'readOnly',
+                    networkAccess: false,
+                },
+                effort: 'low',
+                input: [
+                    {
+                        type: 'text',
+                        text: prompt,
+                        text_elements: [],
+                    },
+                ],
+            });
+            await turn.promise;
+            return reply.text;
+        } finally {
+            rpc.stop();
+        }
+    },
+    async start({cwd, model, effort, speedTier, runtimeMode, providerSessionId, sink}) {
         const state: {
             runtimeMode: RuntimeMode;
             turnId: string | undefined;
@@ -346,6 +418,7 @@ export const codexProvider: ProviderAdapter = {
                     const turnResponse = await rpc.request('turn/start', {
                         threadId: codexThreadId,
                         ...codexRuntimeModes[state.runtimeMode],
+                        serviceTier: speedTier || 'default',
                         ...(effort
                             ? {
                                   effort,

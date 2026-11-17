@@ -1,20 +1,26 @@
 // cspell:words haspopup
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
+import {getEnumValues} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     createSizedIcon,
-    LucideCheckIcon,
     LucideChevronDownIcon,
     LucideSearchIcon,
+    LucideZapIcon,
     ViraIcon,
+    ViraMenuItem,
     viraShadows,
     viraThemeByKeys,
 } from 'vira';
-import {type AiProvider, type ProviderModel, type ReasoningEffort} from '../../build-v2-api.js';
+import {
+    AiProvider,
+    providerLabels,
+    type ProviderModel,
+    type ReasoningEffort,
+} from '../../build-v2-api.js';
 import {readEffectiveEffort, reasoningEffortLabels} from '../../util/reasoning-effort.js';
-import {providerLabels} from './thread-display.js';
 import {providerIcons, railProviderIcons} from './vir-ai-chat-model-picker-icons.js';
 
 /** A provider's models, or why they couldn't be read. Undefined while they load. */
@@ -26,6 +32,17 @@ export type ProviderModelList =
           errorMessage: string;
       }>;
 
+/** A thread's model choice, as the picker reports it. */
+export type ModelSelection = Readonly<{
+    provider: AiProvider;
+    /** Empty for the provider's default model. */
+    model: string;
+    /** Unset when the model has no effort setting or the default effort was kept. */
+    effort: ReasoningEffort | undefined;
+    /** Unset for standard speed, or when the model has no faster tier. */
+    speedTier: string | undefined;
+}>;
+
 type PickerRow = Readonly<{
     key: string;
     provider: AiProvider;
@@ -34,36 +51,30 @@ type PickerRow = Readonly<{
 
 const chevronIcon = createSizedIcon(LucideChevronDownIcon, 14);
 const searchIcon = createSizedIcon(LucideSearchIcon, 16);
-const checkIcon = createSizedIcon(LucideCheckIcon, 14);
+const zapIcon = createSizedIcon(LucideZapIcon, 14);
+const providers = getEnumValues(AiProvider);
 
 /**
  * Picks the model and reasoning effort a thread uses, from a searchable list with a provider rail.
  * Picking another provider's model also picks that provider. The right-hand column lists the
- * highlighted model's efforts, when it has any. Arrow Up and Down move through the models, Arrow
- * Right moves into the efforts, Arrow Left moves back, and Enter picks.
+ * selected model's efforts, when it has any. A Speed row under them sets that model's service tier
+ * when it offers a faster one. Arrow Up and Down move through the models, Arrow Right moves into
+ * the efforts, Arrow Left moves back, and Enter picks.
  */
 export const VirAiChatModelPicker = defineAppElement<{
     providerModels: Readonly<Partial<Record<AiProvider, ProviderModelList>>>;
-    /** The providers whose models are offered, in order. */
-    providers: ReadonlyArray<AiProvider>;
     provider: AiProvider;
     /** Empty for the provider's default model. */
     model: string;
     /** Unset for the model's default effort. */
     effort: ReasoningEffort | undefined;
+    /** Unset for standard speed. */
+    speedTier: string | undefined;
     isDisabled: boolean;
 }>()({
     tagName: 'vir-ai-chat-model-picker',
     events: {
-        /** `model` is empty when the picked model is the provider's default. */
-        modelChange: defineElementEvent<
-            Readonly<{
-                provider: AiProvider;
-                model: string;
-                /** Unset when the model has no effort setting or the default effort was kept. */
-                effort: ReasoningEffort | undefined;
-            }>
-        >(),
+        modelChange: defineElementEvent<ModelSelection>(),
     },
     state() {
         return {
@@ -71,6 +82,7 @@ export const VirAiChatModelPicker = defineAppElement<{
             query: '',
             railProvider: undefined as AiProvider | undefined,
             highlightedIndex: 0,
+            showsOlderModels: false,
             /** The effort row the keyboard is on. Undefined while it is on the model rows. */
             effortIndex: undefined as number | undefined,
             removeOutsidePointerListener: undefined as (() => void) | undefined,
@@ -166,6 +178,10 @@ export const VirAiChatModelPicker = defineAppElement<{
                 }
             }
 
+            .zap {
+                color: ${viraThemeByKeys.yellow.foreground.body.foreground.value};
+            }
+
             .popover {
                 position: absolute;
                 bottom: 100%;
@@ -173,6 +189,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                 z-index: 130;
                 margin-bottom: 4px;
                 display: flex;
+                flex-direction: column;
                 max-width: calc(100vw - 32px);
                 max-height: 346px;
                 overflow: hidden;
@@ -180,6 +197,11 @@ export const VirAiChatModelPicker = defineAppElement<{
                 border: 1px solid ${borderColor};
                 background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
                 ${viraShadows.menuShadow}
+            }
+
+            .columns {
+                display: flex;
+                min-height: 0;
             }
 
             .rail {
@@ -298,36 +320,62 @@ export const VirAiChatModelPicker = defineAppElement<{
                 min-height: 0;
             }
 
-            .option {
-                display: flex;
-                align-items: center;
-                gap: 8px;
+            ${ViraMenuItem} {
                 min-height: 28px;
-                padding: 4px 8px;
-                box-sizing: border-box;
                 border-radius: 4px;
-                cursor: pointer;
                 font-size: 14px;
 
                 &:hover,
-                &.highlighted {
+                &[data-highlighted] {
                     background-color: ${selectedBackground};
                 }
 
-                & .option-name {
-                    min-width: 0;
-                    flex-grow: 1;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                    white-space: nowrap;
+                & .option-provider {
+                    margin-left: 6px;
+                    color: ${faintColor};
                 }
 
-                & ${ViraIcon} {
-                    flex-shrink: 0;
+                &.older-toggle {
+                    font-size: 12px;
+                    color: ${faintColor};
+                }
+            }
+
+            .speed {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                padding: 6px 12px;
+                border-top: 1px solid ${borderColor};
+                font-size: 13px;
+                color: ${mutedColor};
+
+                & .segments {
+                    display: inline-flex;
+                    gap: 2px;
+                    padding: 2px;
+                    border-radius: 6px;
+                    background-color: ${selectedBackground};
                 }
 
-                & .check {
-                    color: ${mutedColor};
+                & .segment {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 4px;
+                    padding: 2px 8px;
+                    border-radius: 4px;
+
+                    &[aria-checked='true'] {
+                        background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground
+                            .value};
+                        color: ${textColor};
+                    }
+
+                    &:focus-visible {
+                        outline: 2px solid ${viraThemeByKeys.blue.foreground.body.foreground.value};
+                        outline-offset: -2px;
+                    }
                 }
             }
 
@@ -354,36 +402,35 @@ export const VirAiChatModelPicker = defineAppElement<{
         }
         const activeRailProvider = state.railProvider || inputs.provider;
         const query = state.query.trim().toLowerCase();
+        const providerRows = rowsFor(activeRailProvider);
+        const currentRowCount = providerRows.filter((row) => !row.model.isLegacy).length;
+        /** Search always includes older models, so the toggle only shows while browsing. */
+        const hasOlderToggle = !query && currentRowCount < providerRows.length;
         const rows = query
-            ? inputs.providers.flatMap(rowsFor).filter((row) => {
+            ? providers.flatMap(rowsFor).filter((row) => {
                   return [
                       row.model.name,
                       row.model.id,
                       row.model.description,
                   ].some((text) => text.toLowerCase().includes(query));
               })
-            : rowsFor(activeRailProvider);
-        const selectedRow = inputs.providers.flatMap(rowsFor).find((row) => {
+            : providerRows.filter((row) => state.showsOlderModels || !row.model.isLegacy);
+        /** The older-models toggle trails the rows, so it takes the index after the last row. */
+        const highlightCount = rows.length + (hasOlderToggle ? 1 : 0);
+        const selectedRow = providers.flatMap(rowsFor).find((row) => {
             return (
                 row.provider === inputs.provider &&
                 (inputs.model ? row.model.id === inputs.model : row.model.isDefault)
             );
         });
         const highlightedRow = rows[state.highlightedIndex];
-        /**
-         * The efforts column follows the highlighted model, or the selected one before any row
-         * exists.
-         */
-        const effortRow = highlightedRow || selectedRow;
-        const efforts = effortRow?.model.supportedEfforts ?? [];
+        const efforts = selectedRow?.model.supportedEfforts ?? [];
         const selectedEffort = readEffectiveEffort({
             model: selectedRow?.model,
             effort: inputs.effort,
         });
-        const effortColumnSelected = readEffectiveEffort({
-            model: effortRow?.model,
-            effort: effortRow === selectedRow ? inputs.effort : undefined,
-        });
+        const speedTiers = selectedRow?.model.speedTiers ?? [];
+        const selectedSpeedTier = speedTiers.find((tier) => tier.id === inputs.speedTier);
         const activeList = inputs.providerModels[activeRailProvider];
         const emptyLabel = query
             ? 'No models found'
@@ -394,6 +441,25 @@ export const VirAiChatModelPicker = defineAppElement<{
               : 'Loading…';
         const modelName = selectedRow?.model.name || inputs.model || 'Default model';
 
+        function highlightRow(index: number) {
+            if (index !== state.highlightedIndex) {
+                updateState({
+                    highlightedIndex: index,
+                    effortIndex: undefined,
+                });
+            }
+        }
+
+        /** Keeps the highlight in place: on the first older model when shown, else on the toggle. */
+        function toggleOlderModels() {
+            updateState({
+                showsOlderModels: !state.showsOlderModels,
+                highlightedIndex: currentRowCount,
+                effortIndex: undefined,
+            });
+            focusSearch();
+        }
+
         function close() {
             updateState({
                 isOpen: false,
@@ -402,11 +468,15 @@ export const VirAiChatModelPicker = defineAppElement<{
             });
         }
 
-        function pick({
+        function emitModelChange({
             row,
             effort,
-        }: Readonly<{row: PickerRow; effort: ReasoningEffort | undefined}>) {
-            close();
+            speedTier,
+        }: Readonly<{
+            row: PickerRow;
+            effort: ReasoningEffort | undefined;
+            speedTier: string | undefined;
+        }>) {
             dispatch(
                 new events.modelChange({
                     detail: {
@@ -416,9 +486,55 @@ export const VirAiChatModelPicker = defineAppElement<{
                             effort && row.model.supportedEfforts.includes(effort)
                                 ? effort
                                 : undefined,
+                        speedTier: row.model.speedTiers.some((tier) => tier.id === speedTier)
+                            ? speedTier
+                            : undefined,
                     },
                 }),
             );
+        }
+
+        function pick({
+            row,
+            effort,
+        }: Readonly<{row: PickerRow; effort: ReasoningEffort | undefined}>) {
+            close();
+            emitModelChange({
+                row,
+                effort,
+                speedTier: inputs.speedTier,
+            });
+        }
+
+        /**
+         * Stays open on a model with reasoning efforts, with the efforts column focused, so the
+         * effort can be picked next.
+         */
+        function selectModel(row: PickerRow) {
+            if (!row.model.supportedEfforts.length) {
+                pick({
+                    row,
+                    effort: selectedEffort,
+                });
+                return;
+            }
+            const effort = readEffectiveEffort({
+                model: row.model,
+                effort: selectedEffort,
+            });
+            updateState({
+                effortIndex: Math.max(
+                    0,
+                    row.model.supportedEfforts.findIndex((supported) => supported === effort),
+                ),
+            });
+            emitModelChange({
+                row,
+                /** Keeps the effort the previous model ran at, when the new one supports it. */
+                effort: selectedEffort,
+                speedTier: inputs.speedTier,
+            });
+            focusSearch();
         }
 
         function focusSearch() {
@@ -429,7 +545,7 @@ export const VirAiChatModelPicker = defineAppElement<{
 
         function scrollHighlightedIntoView() {
             requestAnimationFrame(() => {
-                host.shadowRoot.querySelector('.highlighted')?.scrollIntoView({
+                host.shadowRoot.querySelector('[data-highlighted]')?.scrollIntoView({
                     block: 'nearest',
                 });
             });
@@ -442,6 +558,9 @@ export const VirAiChatModelPicker = defineAppElement<{
                 event.preventDefault();
                 event.stopPropagation();
                 close();
+                return;
+            } else if (event.composedPath()[0] instanceof HTMLButtonElement) {
+                /** A focused button handles its own Enter, which must not also pick a model. */
                 return;
             }
             const direction =
@@ -463,11 +582,11 @@ export const VirAiChatModelPicker = defineAppElement<{
                     });
                 } else if (event.key === 'Enter') {
                     const effort = efforts[state.effortIndex];
-                    if (effortRow && effort) {
+                    if (selectedRow && effort) {
                         event.preventDefault();
                         event.stopPropagation();
                         pick({
-                            row: effortRow,
+                            row: selectedRow,
                             effort,
                         });
                     }
@@ -480,7 +599,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                 updateState({
                     highlightedIndex: Math.max(
                         0,
-                        Math.min(rows.length - 1, state.highlightedIndex + direction),
+                        Math.min(highlightCount - 1, state.highlightedIndex + direction),
                     ),
                 });
                 scrollHighlightedIntoView();
@@ -489,16 +608,21 @@ export const VirAiChatModelPicker = defineAppElement<{
                 updateState({
                     effortIndex: Math.max(
                         0,
-                        efforts.findIndex((effort) => effort === effortColumnSelected),
+                        efforts.findIndex((effort) => effort === selectedEffort),
                     ),
                 });
+            } else if (
+                event.key === 'Enter' &&
+                hasOlderToggle &&
+                state.highlightedIndex === rows.length
+            ) {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleOlderModels();
             } else if (event.key === 'Enter' && highlightedRow) {
                 event.preventDefault();
                 event.stopPropagation();
-                pick({
-                    row: highlightedRow,
-                    effort: inputs.effort,
-                });
+                selectModel(highlightedRow);
             }
         }
 
@@ -509,6 +633,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                 aria-label=${[
                     modelName,
                     selectedEffort && reasoningEffortLabels[selectedEffort],
+                    selectedSpeedTier?.name,
                 ]
                     .filter(check.isTruthy)
                     .join(' ')}
@@ -524,6 +649,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                         query: '',
                         railProvider: inputs.provider,
                         highlightedIndex: 0,
+                        showsOlderModels: !!selectedRow?.model.isLegacy,
                         effortIndex: undefined,
                     });
                     focusSearch();
@@ -535,6 +661,15 @@ export const VirAiChatModelPicker = defineAppElement<{
                 <span class="model-label">
                     ${modelName}${selectedEffort ? ` ${reasoningEffortLabels[selectedEffort]}` : ''}
                 </span>
+                ${selectedSpeedTier
+                    ? html`
+                          <${ViraIcon.assign({
+                              icon: zapIcon,
+                          })}
+                              class="zap"
+                          ></${ViraIcon}>
+                      `
+                    : nothing}
                 <${ViraIcon.assign({
                     icon: chevronIcon,
                 })}
@@ -544,146 +679,188 @@ export const VirAiChatModelPicker = defineAppElement<{
             ${state.isOpen
                 ? html`
                       <div class="popover" role="dialog" ${listen('keydown', handleKeydown)}>
-                          <div class="rail" aria-label="Providers">
-                              ${inputs.providers.map((provider) => {
-                                  return html`
-                                      <button
-                                          type="button"
-                                          class=${provider === activeRailProvider && !query
-                                              ? 'rail-button active'
-                                              : 'rail-button'}
-                                          title=${providerLabels[provider]}
-                                          aria-label=${providerLabels[provider]}
-                                          aria-pressed=${provider === activeRailProvider}
-                                          ${listen('click', () => {
+                          <div class="columns">
+                              <div class="rail" aria-label="Providers">
+                                  ${providers.map((provider) => {
+                                      return html`
+                                          <button
+                                              type="button"
+                                              class=${provider === activeRailProvider && !query
+                                                  ? 'rail-button active'
+                                                  : 'rail-button'}
+                                              title=${providerLabels[provider]}
+                                              aria-label=${providerLabels[provider]}
+                                              aria-pressed=${provider === activeRailProvider}
+                                              ${listen('click', () => {
+                                                  updateState({
+                                                      railProvider: provider,
+                                                      highlightedIndex: 0,
+                                                      showsOlderModels:
+                                                          selectedRow?.provider === provider &&
+                                                          selectedRow.model.isLegacy,
+                                                      effortIndex: undefined,
+                                                  });
+                                                  focusSearch();
+                                              })}
+                                          >
+                                              <${ViraIcon.assign({
+                                                  icon: railProviderIcons[provider],
+                                              })}></${ViraIcon}>
+                                          </button>
+                                      `;
+                                  })}
+                              </div>
+                              <div class="column models-column">
+                                  <div class="column-header search">
+                                      <${ViraIcon.assign({
+                                          icon: searchIcon,
+                                      })}></${ViraIcon}>
+                                      <input
+                                          type="text"
+                                          placeholder="Search models..."
+                                          autocomplete="off"
+                                          spellcheck="false"
+                                          .value=${state.query}
+                                          ${listen('input', (event) => {
                                               updateState({
-                                                  railProvider: provider,
+                                                  query: extractEventTarget(event, HTMLInputElement)
+                                                      .value,
                                                   highlightedIndex: 0,
                                                   effortIndex: undefined,
                                               });
-                                              focusSearch();
                                           })}
-                                      >
-                                          <${ViraIcon.assign({
-                                              icon: railProviderIcons[provider],
-                                          })}></${ViraIcon}>
-                                      </button>
-                                  `;
-                              })}
-                          </div>
-                          <div class="column models-column">
-                              <div class="column-header search">
-                                  <${ViraIcon.assign({
-                                      icon: searchIcon,
-                                  })}></${ViraIcon}>
-                                  <input
-                                      type="text"
-                                      placeholder="Search models..."
-                                      autocomplete="off"
-                                      spellcheck="false"
-                                      .value=${state.query}
-                                      ${listen('input', (event) => {
-                                          updateState({
-                                              query: extractEventTarget(event, HTMLInputElement)
-                                                  .value,
-                                              highlightedIndex: 0,
-                                              effortIndex: undefined,
-                                          });
-                                      })}
-                                  />
-                              </div>
-                              ${rows.length
-                                  ? html`
-                                        <div class="list" role="listbox">
-                                            ${rows.map((row, index) => {
-                                                return html`
-                                                    <div
-                                                        role="option"
-                                                        class=${index === state.highlightedIndex &&
-                                                        !check.isNumber(state.effortIndex)
-                                                            ? 'option highlighted'
-                                                            : 'option'}
-                                                        aria-selected=${row.key ===
-                                                        selectedRow?.key}
-                                                        ${listen('click', () => {
-                                                            pick({
-                                                                row,
-                                                                effort: inputs.effort,
-                                                            });
+                                      />
+                                  </div>
+                                  ${rows.length
+                                      ? html`
+                                            <div class="list" role="listbox">
+                                                ${rows.map((row, index) => {
+                                                    return html`
+                                                        <${ViraMenuItem.assign({
+                                                            selected: row.key === selectedRow?.key,
+                                                            keepOpenAfterInteraction: true,
                                                         })}
-                                                        ${listen('mousemove', () => {
-                                                            if (index !== state.highlightedIndex) {
-                                                                updateState({
-                                                                    highlightedIndex: index,
-                                                                    effortIndex: undefined,
-                                                                });
-                                                            }
-                                                        })}
-                                                    >
-                                                        <${ViraIcon.assign({
-                                                            icon: providerIcons[row.provider],
-                                                        })}></${ViraIcon}>
-                                                        <span
-                                                            class="option-name"
+                                                            ?data-highlighted=${index ===
+                                                                state.highlightedIndex &&
+                                                            !check.isNumber(state.effortIndex)}
                                                             title=${row.model.description}
+                                                            ${listen('click', () => {
+                                                                selectModel(row);
+                                                            })}
+                                                            ${listen('mousemove', () => {
+                                                                highlightRow(index);
+                                                            })}
                                                         >
-                                                            ${row.model.name}
-                                                        </span>
-                                                        ${row.key === selectedRow?.key
-                                                            ? html`
-                                                                  <${ViraIcon.assign({
-                                                                      icon: checkIcon,
-                                                                  })}
-                                                                      class="check"
-                                                                  ></${ViraIcon}>
-                                                              `
-                                                            : nothing}
-                                                    </div>
-                                                `;
-                                            })}
+                                                            ${row.model.name}${query
+                                                                ? html`
+                                                                      <span class="option-provider">
+                                                                          ${providerLabels[
+                                                                              row.provider
+                                                                          ]}
+                                                                      </span>
+                                                                  `
+                                                                : nothing}
+                                                        </${ViraMenuItem}>
+                                                    `;
+                                                })}
+                                                ${hasOlderToggle
+                                                    ? html`
+                                                          <${ViraMenuItem.assign({
+                                                              selected: false,
+                                                              keepOpenAfterInteraction: true,
+                                                          })}
+                                                              class="older-toggle"
+                                                              aria-expanded=${state.showsOlderModels}
+                                                              ?data-highlighted=${state.highlightedIndex ===
+                                                                  rows.length &&
+                                                              !check.isNumber(state.effortIndex)}
+                                                              ${listen('click', toggleOlderModels)}
+                                                              ${listen('mousemove', () => {
+                                                                  highlightRow(rows.length);
+                                                              })}
+                                                          >
+                                                              ${state.showsOlderModels
+                                                                  ? 'Hide older models'
+                                                                  : 'Show older models'}
+                                                          </${ViraMenuItem}>
+                                                      `
+                                                    : nothing}
+                                            </div>
+                                        `
+                                      : html`
+                                            <div class="empty">${emptyLabel}</div>
+                                        `}
+                              </div>
+                              ${efforts.length && selectedRow
+                                  ? html`
+                                        <div class="column efforts-column" aria-label="Reasoning">
+                                            <div class="column-header">
+                                                <span>Reasoning</span>
+                                                <span>${selectedRow.model.name}</span>
+                                            </div>
+                                            <div class="list" role="listbox">
+                                                ${efforts.map((effort, index) => {
+                                                    return html`
+                                                        <${ViraMenuItem.assign({
+                                                            selected: effort === selectedEffort,
+                                                            keepOpenAfterInteraction: true,
+                                                        })}
+                                                            ?data-highlighted=${index ===
+                                                            state.effortIndex}
+                                                            ${listen('click', () => {
+                                                                pick({
+                                                                    row: selectedRow,
+                                                                    effort,
+                                                                });
+                                                            })}
+                                                        >
+                                                            ${reasoningEffortLabels[effort]}
+                                                        </${ViraMenuItem}>
+                                                    `;
+                                                })}
+                                            </div>
                                         </div>
                                     `
-                                  : html`
-                                        <div class="empty">${emptyLabel}</div>
-                                    `}
+                                  : nothing}
                           </div>
-                          ${efforts.length && effortRow
+                          ${selectedRow && speedTiers.length
                               ? html`
-                                    <div class="column efforts-column" aria-label="Reasoning">
-                                        <div class="column-header">
-                                            <span>Reasoning</span>
-                                            <span>${effortRow.model.name}</span>
-                                        </div>
-                                        <div class="list" role="listbox">
-                                            ${efforts.map((effort, index) => {
+                                    <div class="speed">
+                                        <span>Speed</span>
+                                        <div class="segments" role="radiogroup" aria-label="Speed">
+                                            ${[
+                                                {
+                                                    id: undefined,
+                                                    name: 'Standard',
+                                                },
+                                                ...speedTiers,
+                                            ].map((tier) => {
                                                 return html`
-                                                    <div
-                                                        role="option"
-                                                        class=${index === state.effortIndex
-                                                            ? 'option highlighted'
-                                                            : 'option'}
-                                                        aria-selected=${effort ===
-                                                        effortColumnSelected}
+                                                    <button
+                                                        type="button"
+                                                        class="segment"
+                                                        role="radio"
+                                                        aria-checked=${tier.id ===
+                                                        selectedSpeedTier?.id}
                                                         ${listen('click', () => {
-                                                            pick({
-                                                                row: effortRow,
-                                                                effort,
+                                                            emitModelChange({
+                                                                row: selectedRow,
+                                                                effort: inputs.effort,
+                                                                speedTier: tier.id,
                                                             });
                                                         })}
                                                     >
-                                                        <span class="option-name">
-                                                            ${reasoningEffortLabels[effort]}
-                                                        </span>
-                                                        ${effort === effortColumnSelected
+                                                        ${tier.id
                                                             ? html`
                                                                   <${ViraIcon.assign({
-                                                                      icon: checkIcon,
+                                                                      icon: zapIcon,
                                                                   })}
-                                                                      class="check"
+                                                                      class="zap"
                                                                   ></${ViraIcon}>
                                                               `
                                                             : nothing}
-                                                    </div>
+                                                        ${tier.name}
+                                                    </button>
                                                 `;
                                             })}
                                         </div>

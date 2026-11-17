@@ -1,11 +1,14 @@
 import {definePluginServer} from '@agent-storm/core/server';
-import {extractErrorMessage} from '@augment-vir/common';
+import {extractErrorMessage, log} from '@augment-vir/common';
 import {normalizePath} from 'agent-storm-util';
 import {randomUUID} from 'node:crypto';
 import {
     AiProvider,
     ApprovalDecision,
+    ApprovalKind,
+    type ApprovalRequest,
     buildV2Api,
+    providerLabels,
     type ProviderModel,
     ThreadItemKind,
     ThreadItemStatus,
@@ -13,6 +16,7 @@ import {
 } from '../build-v2-api.js';
 import {openBuildV2Database} from './build-v2-database.js';
 import {createClaudeSessionStore} from './claude-session-store.js';
+import {buildContextHandoff} from './context-handoff.js';
 import {createClaudeProvider} from './providers/claude-provider.js';
 import {codexProvider} from './providers/codex-provider.js';
 import {
@@ -20,7 +24,13 @@ import {
     type ProviderSession,
     type ProviderSink,
 } from './providers/provider-session.js';
-import {createThreadTitle, createWorktreeName} from './thread-names.js';
+import {saveUpload} from './save-upload.js';
+import {
+    createThreadTitle,
+    createThreadTitlePrompt,
+    createWorktreeName,
+    parseGeneratedTitle,
+} from './thread-names.js';
 import {createThreadStore} from './thread-store.js';
 
 const ok = {
@@ -35,7 +45,7 @@ export default definePluginServer({
             prismaClient,
             emit,
         });
-        await store.settleInterruptedWork();
+        const interruptedThreadIds = await store.settleInterruptedWork();
 
         const providers: Readonly<Record<AiProvider, ProviderAdapter>> = {
             [AiProvider.Claude]: createClaudeProvider(createClaudeSessionStore(prismaClient)),
@@ -52,7 +62,14 @@ export default definePluginServer({
             string,
             {
                 threadId: string;
-                resolve(decision: ApprovalDecision): void;
+                /** How many answers approving the request takes. */
+                questionCount: number;
+                resolve(
+                    resolution: Readonly<{
+                        decision: ApprovalDecision;
+                        answers: ReadonlyArray<string>;
+                    }>,
+                ): void;
             }
         >();
 
@@ -70,17 +87,31 @@ export default definePluginServer({
             );
         }
 
-        async function settleApproval(requestId: string, decision: ApprovalDecision) {
+        async function settleApproval(
+            requestId: string,
+            decision: ApprovalDecision,
+            answers: ReadonlyArray<string> = [],
+        ) {
             const pending = pendingApprovals.get(requestId);
             if (!pending) {
                 throw new Error('That request is no longer waiting for an answer.');
+            } else if (
+                decision !== ApprovalDecision.Decline &&
+                answers.length !== pending.questionCount
+            ) {
+                throw new Error(
+                    `Expected ${pending.questionCount} answers but got ${answers.length}.`,
+                );
             }
             pendingApprovals.delete(requestId);
             const remaining = await store.resolveRequest({
                 requestId,
                 decision,
             });
-            pending.resolve(decision);
+            pending.resolve({
+                decision,
+                answers,
+            });
             if (
                 !remaining.length &&
                 (await store.findThread(pending.threadId)).status === ThreadStatus.NeedsApproval
@@ -113,6 +144,45 @@ export default definePluginServer({
         function createSink(threadId: string, session: {current?: Promise<ProviderSession>}) {
             function isCurrent() {
                 return !!session.current && sessions.get(threadId) === session.current;
+            }
+
+            async function openRequest(
+                request: Readonly<
+                    Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason' | 'questions'>
+                >,
+                signal: AbortSignal | undefined,
+            ) {
+                if (!isCurrent() || signal?.aborted) {
+                    return {
+                        decision: ApprovalDecision.Decline,
+                        answers: [],
+                    };
+                }
+                const {id} = await store.addRequest({
+                    ...request,
+                    threadId,
+                });
+                const resolution = new Promise<
+                    Readonly<{
+                        decision: ApprovalDecision;
+                        answers: ReadonlyArray<string>;
+                    }>
+                >((resolve) => {
+                    pendingApprovals.set(id, {
+                        threadId,
+                        questionCount: request.questions.length,
+                        resolve,
+                    });
+                });
+                signal?.addEventListener('abort', async () => {
+                    if (pendingApprovals.has(id)) {
+                        await settleApproval(id, ApprovalDecision.Decline);
+                    }
+                });
+                await store.updateThread(threadId, {
+                    status: ThreadStatus.NeedsApproval,
+                });
+                return await resolution;
             }
 
             return {
@@ -148,28 +218,27 @@ export default definePluginServer({
                     }
                 },
                 async requestApproval(request, signal) {
-                    if (!isCurrent() || signal?.aborted) {
-                        return ApprovalDecision.Decline;
-                    }
-                    const {id} = await store.addRequest({
-                        ...request,
-                        threadId,
-                    });
-                    const decision = new Promise<ApprovalDecision>((resolve) => {
-                        pendingApprovals.set(id, {
-                            threadId,
-                            resolve,
-                        });
-                    });
-                    signal?.addEventListener('abort', async () => {
-                        if (pendingApprovals.has(id)) {
-                            await settleApproval(id, ApprovalDecision.Decline);
-                        }
-                    });
-                    await store.updateThread(threadId, {
-                        status: ThreadStatus.NeedsApproval,
-                    });
-                    return await decision;
+                    const {decision} = await openRequest(
+                        {
+                            ...request,
+                            questions: [],
+                        },
+                        signal,
+                    );
+                    return decision;
+                },
+                async askQuestions({title, reason, questions}, signal) {
+                    const {decision, answers} = await openRequest(
+                        {
+                            kind: ApprovalKind.Question,
+                            title,
+                            detail: '',
+                            reason,
+                            questions,
+                        },
+                        signal,
+                    );
+                    return decision === ApprovalDecision.Decline ? undefined : [...answers];
                 },
                 async addNotice(text) {
                     if (isCurrent()) {
@@ -198,6 +267,7 @@ export default definePluginServer({
                 cwd: details.cwd,
                 model: details.model,
                 effort: details.effort,
+                speedTier: details.speedTier,
                 runtimeMode: details.runtimeMode,
                 providerSessionId: details.providerSessionId,
                 sink: createSink(threadId, session),
@@ -225,7 +295,41 @@ export default definePluginServer({
             });
         }
 
+        /**
+         * Replaces a new thread's first-line title with one a model writes, unless the user renamed
+         * the thread meanwhile.
+         */
+        async function generateThreadTitle({
+            threadId,
+            text,
+            placeholderTitle,
+        }: Readonly<{threadId: string; text: string; placeholderTitle: string}>) {
+            try {
+                const details = await store.findSessionDetails(threadId);
+                const title = parseGeneratedTitle(
+                    await providers[details.provider].generateTitle({
+                        cwd: details.cwd,
+                        model: details.model,
+                        prompt: createThreadTitlePrompt(text),
+                    }),
+                );
+                if (title && (await store.findThread(threadId)).title === placeholderTitle) {
+                    await store.updateThread(threadId, {
+                        title,
+                    });
+                }
+            } catch (error) {
+                log.warning(`Generating a thread title failed: ${extractErrorMessage(error)}`);
+            }
+        }
+
         async function sendMessage({threadId, text}: Readonly<{threadId: string; text: string}>) {
+            /** A provider starting without a conversation to resume hasn't seen the thread so far. */
+            const earlierItems =
+                sessions.has(threadId) ||
+                (await store.findSessionDetails(threadId)).providerSessionId
+                    ? []
+                    : (await store.readThread(threadId)).items;
             turnIds.set(threadId, randomUUID());
             await store.putItem({
                 threadId,
@@ -239,7 +343,14 @@ export default definePluginServer({
                 status: ThreadStatus.Running,
             });
             try {
-                await (await ensureSession(threadId)).send(text);
+                await (
+                    await ensureSession(threadId)
+                ).send(
+                    buildContextHandoff({
+                        items: earlierItems,
+                        text,
+                    }),
+                );
             } catch (error) {
                 await addNotice({
                     threadId,
@@ -250,6 +361,16 @@ export default definePluginServer({
                 });
             }
         }
+
+        /** Like a restored AI terminal pane, a thread a restart cut off is told to continue. */
+        interruptedThreadIds.forEach((threadId) => {
+            sendMessage({
+                threadId,
+                text: 'Agent Storm restarted while you were working, which cut off your last turn. Pick up where you left off.',
+            }).catch((error: unknown) => {
+                log.warning(`Resuming thread ${threadId} failed: ${extractErrorMessage(error)}`);
+            });
+        });
 
         return {
             calls: {
@@ -274,14 +395,29 @@ export default definePluginServer({
                         throw error;
                     }
                 },
-                async createThread({repoPath, provider, model, effort, runtimeMode, text}) {
+                async createThread({
+                    repoPath,
+                    provider,
+                    model,
+                    effort,
+                    speedTier,
+                    runtimeMode,
+                    text,
+                }) {
+                    const placeholderTitle = createThreadTitle(text);
                     const {id} = await store.createThread({
                         repoPath: normalizePath(repoPath),
                         provider,
                         model,
                         effort,
+                        speedTier,
                         runtimeMode,
-                        title: createThreadTitle(text),
+                        title: placeholderTitle,
+                    });
+                    void generateThreadTitle({
+                        threadId: id,
+                        text,
+                        placeholderTitle,
                     });
                     await sendMessage({
                         threadId: id,
@@ -293,6 +429,14 @@ export default definePluginServer({
                 },
                 async readThread({threadId}) {
                     return await store.readThread(threadId);
+                },
+                async uploadFile(request) {
+                    return {
+                        path: await saveUpload({
+                            ...request,
+                            uploadsDir: tempDir,
+                        }),
+                    };
                 },
                 async sendMessage(request) {
                     await sendMessage(request);
@@ -310,8 +454,8 @@ export default definePluginServer({
                     }
                     return ok;
                 },
-                async resolveRequest({requestId, decision}) {
-                    await settleApproval(requestId, decision);
+                async resolveRequest({requestId, decision, answers}) {
+                    await settleApproval(requestId, decision, answers);
                     return ok;
                 },
                 async moveToWorktree({threadId, requestId}) {
@@ -347,20 +491,38 @@ export default definePluginServer({
                         thread: await store.findThread(threadId),
                     };
                 },
-                async setThreadModel({threadId, model, effort}) {
-                    const {status} = await store.findThread(threadId);
-                    if (status === ThreadStatus.Running || status === ThreadStatus.NeedsApproval) {
+                async setThreadModel({threadId, provider, model, effort, speedTier}) {
+                    const previous = await store.findThread(threadId);
+                    if (
+                        previous.status === ThreadStatus.Running ||
+                        previous.status === ThreadStatus.NeedsApproval
+                    ) {
                         throw new Error('Wait for the thread to finish before switching models.');
                     }
                     /** The next message starts the provider again, resuming on the new model. */
                     const session = sessions.get(threadId);
                     sessions.delete(threadId);
                     (await session?.catch(() => undefined))?.stop();
+                    const isNewProvider = provider !== previous.provider;
+                    const thread = await store.updateThread(threadId, {
+                        provider,
+                        model,
+                        effort: effort ?? null,
+                        speedTier: speedTier || null,
+                        ...(isNewProvider
+                            ? {
+                                  providerSessionId: null,
+                              }
+                            : {}),
+                    });
+                    if (isNewProvider) {
+                        await addNotice({
+                            threadId,
+                            text: `Switched from ${providerLabels[previous.provider]} to ${providerLabels[provider]}. The next message gives ${providerLabels[provider]} this chat's earlier messages.`,
+                        });
+                    }
                     return {
-                        thread: await store.updateThread(threadId, {
-                            model,
-                            effort: effort ?? null,
-                        }),
+                        thread,
                     };
                 },
                 async setThreadRuntimeMode({threadId, runtimeMode}) {
@@ -381,6 +543,10 @@ export default definePluginServer({
                         }),
                     };
                 },
+                async markThreadRead({threadId}) {
+                    await store.markThreadRead(threadId);
+                    return ok;
+                },
                 async archiveThread({threadId}) {
                     await stopSession(threadId);
                     await store.archiveThread(threadId);
@@ -389,7 +555,10 @@ export default definePluginServer({
             },
             async stop() {
                 [...pendingApprovals.values()].forEach((pending) => {
-                    pending.resolve(ApprovalDecision.Decline);
+                    pending.resolve({
+                        decision: ApprovalDecision.Decline,
+                        answers: [],
+                    });
                 });
                 pendingApprovals.clear();
                 await Promise.all(

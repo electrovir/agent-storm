@@ -1,4 +1,9 @@
-import {defineNumberSetting, defineSetting, sidebarWidth} from '@agent-storm/core/frontend';
+import {
+    defineFolderSetting,
+    defineNumberSetting,
+    defineSetting,
+    sidebarWidth,
+} from '@agent-storm/core/frontend';
 
 /** The Build V2 tab's memory, restored whenever the tab opens with nothing selected. */
 export const buildV2Memory = {
@@ -18,4 +23,31 @@ export const buildV2Memory = {
             return value || undefined;
         },
     }),
+    /** The project of the new-thread composer that was open, so a reload reopens it. */
+    draftRepoPath: defineSetting<string | undefined>({
+        key: 'agent-storm:build-v2:draft-repo-path',
+        defaultValue: undefined,
+        parse(raw) {
+            return raw || undefined;
+        },
+        serialize(value) {
+            return value || undefined;
+        },
+    }),
+    /** Each chat's unsent message, keyed by `toComposerDraftKey`. */
+    composerDrafts: defineFolderSetting({
+        key: 'agent-storm:build-v2:composer-drafts',
+        valueShape: '',
+    }),
 };
+
+/** A new chat's draft is kept per project, since it has no thread id yet. */
+export function toComposerDraftKey({
+    threadId,
+    repoPath,
+}: Readonly<{
+    threadId: string | undefined;
+    repoPath: string;
+}>) {
+    return threadId || `new:${repoPath}`;
+}

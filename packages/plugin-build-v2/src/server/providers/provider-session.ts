@@ -32,6 +32,14 @@ export type ProviderSink = Readonly<{
         request: Readonly<Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason'>>,
         signal?: AbortSignal | undefined,
     ): Promise<ApprovalDecision>;
+    /**
+     * Asks the user `questions` and resolves to one answer per question, in order. Resolves to
+     * `undefined` when the user dismisses them, `signal` aborts, or the session stops first.
+     */
+    askQuestions(
+        params: Readonly<Pick<ApprovalRequest, 'title' | 'reason' | 'questions'>>,
+        signal?: AbortSignal | undefined,
+    ): Promise<string[] | undefined>;
     addNotice(text: string): MaybePromise<void>;
     /** The provider's process ended, so the next message must start a new session. */
     endSession(): void;
@@ -52,6 +60,18 @@ export type ProviderAdapter = Readonly<{
             cwd: string;
         }>,
     ): Promise<ProviderModel[]>;
+    /**
+     * Runs one tool-free turn on `prompt` in a session that isn't saved, and resolves to the reply.
+     * Uses a small model where the provider has one, else `model`.
+     */
+    generateTitle(
+        params: Readonly<{
+            cwd: string;
+            /** Empty for the provider's default model. */
+            model: string;
+            prompt: string;
+        }>,
+    ): Promise<string>;
     start(
         params: Readonly<{
             cwd: string;
@@ -59,6 +79,8 @@ export type ProviderAdapter = Readonly<{
             model: string;
             /** Unset for the model's default effort. */
             effort: ReasoningEffort | undefined;
+            /** The model's faster service tier, by its id. Unset for standard speed. */
+            speedTier: string | undefined;
             runtimeMode: RuntimeMode;
             /** Resumes this conversation when set. */
             providerSessionId: string | null;

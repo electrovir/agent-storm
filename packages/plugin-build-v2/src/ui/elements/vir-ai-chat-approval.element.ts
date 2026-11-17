@@ -32,6 +32,10 @@ const approvalLabels: Record<
         label: 'App permission approval',
         detailLabel: 'Permission request',
     },
+    [ApprovalKind.Question]: {
+        label: 'Question',
+        detailLabel: 'Question',
+    },
 };
 
 const shieldIcon = createSizedIcon(LucideShieldIcon, 12);

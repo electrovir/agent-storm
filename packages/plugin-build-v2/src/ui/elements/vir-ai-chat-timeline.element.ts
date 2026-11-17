@@ -451,6 +451,20 @@ export const VirAiChatTimeline = defineAppElement<{
         }
     `,
     render({inputs, state, updateState}) {
+        const timeline = buildTimeline(inputs.items);
+        const hasLiveItem = inputs.items.some((item) => {
+            return item.status === ThreadItemStatus.InProgress;
+        });
+        /**
+         * Like T3 Code, a running turn's trailing work log is one line that names the current step
+         * or says it's working between steps. Swapping between that line and a separate
+         * "Working..." row changes the timeline's height, which jumps everything above it.
+         */
+        const liveWorkKey =
+            inputs.isRunning && timeline.at(-1)?.kind === TimelineEntryKind.Work
+                ? timeline.at(-1)?.key
+                : undefined;
+
         function isExpanded(key: string, defaultValue: boolean) {
             return state.expanded[key] ?? defaultValue;
         }
@@ -582,10 +596,14 @@ export const VirAiChatTimeline = defineAppElement<{
         }
 
         function renderWork(entry: Readonly<TimelineEntry>) {
-            const isInProgress = entry.items.some((item) => {
+            const liveItem = entry.items.findLast((item) => {
                 return item.status === ThreadItemStatus.InProgress;
             });
-            const isOpen = isExpanded(entry.key, isInProgress);
+            /**
+             * Like T3 Code, a group only opens when clicked. Opening it while a step runs and
+             * closing it between steps makes the whole timeline jump.
+             */
+            const isOpen = isExpanded(entry.key, false);
             const firstIcon =
                 workItemDisplays[entry.items[0]?.kind ?? ThreadItemKind.ToolCall].icon;
 
@@ -602,16 +620,27 @@ export const VirAiChatTimeline = defineAppElement<{
                         toggle(entry.key, isOpen);
                     })}
                 >
-                    ${isInProgress
+                    ${liveItem || entry.key === liveWorkKey
                         ? html`
                               <div class="live-row">
                                   ${renderWorkLogLine({
                                       icon: renderIcon({
-                                          icon: firstIcon,
+                                          icon: liveItem
+                                              ? workItemDisplays[liveItem.kind].icon
+                                              : firstIcon,
                                       }),
                                       label: html`
                                           <span class="live-label">
-                                              ${summarizeWork(entry.items)}
+                                              ${liveItem
+                                                  ? liveItem.kind === ThreadItemKind.Reasoning
+                                                      ? liveItem.text.trim().split('\n').at(-1) ||
+                                                        workItemDisplays[liveItem.kind].describe(
+                                                            liveItem,
+                                                        )
+                                                      : workItemDisplays[liveItem.kind].describe(
+                                                            liveItem,
+                                                        )
+                                                  : 'Working...'}
                                           </span>
                                       `,
                                       trailing: nothing,
@@ -724,11 +753,6 @@ export const VirAiChatTimeline = defineAppElement<{
             },
         };
 
-        const timeline = buildTimeline(inputs.items);
-        const hasLiveItem = inputs.items.some((item) => {
-            return item.status === ThreadItemStatus.InProgress;
-        });
-
         return html`
             <div class="timeline">
                 ${timeline.length || inputs.isRunning
@@ -737,7 +761,7 @@ export const VirAiChatTimeline = defineAppElement<{
                           <p class="empty">Send a message to start the conversation.</p>
                       `}
                 ${timeline.map((entry) => entryRenderers[entry.kind](entry))}
-                ${inputs.isRunning && !hasLiveItem
+                ${inputs.isRunning && !hasLiveItem && !liveWorkKey
                     ? html`
                           <div class="working">
                               <div class="working-inner">

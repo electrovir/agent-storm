@@ -1,8 +1,15 @@
 import {css} from 'element-vir';
 import {type PopoverOffset, ViraMenuItem, viraThemeByKeys} from 'vira';
 
-/** Styles for the per-folder menus that a sidebar row and a repo header both render. */
+/** Styles for the context menus that sidebar rows and headers render. */
 export const sidebarFolderMenuStyles = css`
+    /* Menu items inherit the font from where their trigger sits, so pin it to the sidebar list's. */
+    ${ViraMenuItem} {
+        font-size: 13px;
+        font-weight: 300;
+        letter-spacing: 0.01em;
+    }
+
     /* Colors the item's icon too, which inherits the text color. */
     ${ViraMenuItem}:has(.danger-menu-item) {
         color: ${viraThemeByKeys.red.foreground.body.foreground.value};

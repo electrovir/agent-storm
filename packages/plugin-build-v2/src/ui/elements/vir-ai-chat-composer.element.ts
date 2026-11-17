@@ -1,23 +1,32 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {extractEventTarget} from '@augment-vir/web';
-import {css, defineElementEvent, html, listen} from 'element-vir';
+import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     createSizedIcon,
+    LucideArchiveIcon,
     LucideArrowUpIcon,
     LucideSquareIcon,
-    ViraIcon,
+    ViraButton,
+    ViraColorVariant,
+    ViraEmphasis,
     viraThemeByKeys,
 } from 'vira';
 import {type AiProvider, type ReasoningEffort, type RuntimeMode} from '../../build-v2-api.js';
-import {VirAiChatModelPicker, type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
+import {
+    VirAiChatModelPicker,
+    type ModelSelection,
+    type ProviderModelList,
+} from './vir-ai-chat-model-picker.element.js';
 import {VirAiChatPermissions} from './vir-ai-chat-permissions.element.js';
 
 const sendIcon = createSizedIcon(LucideArrowUpIcon, 16);
 const stopIcon = createSizedIcon(LucideSquareIcon, 12);
+const archiveIcon = createSizedIcon(LucideArchiveIcon, 16);
 
 /**
  * The message box under a chat. Enter sends and Shift+Enter starts a new line. While the thread
- * runs and the box is empty, Stop takes the send button's place.
+ * runs and the box is empty, Stop takes the send button's place. With a `questionAction`, the box
+ * holds a custom answer and the send button moves through the questions instead.
  */
 export const VirAiChatComposer = defineAppElement<{
     text: string;
@@ -25,30 +34,40 @@ export const VirAiChatComposer = defineAppElement<{
     isRunning: boolean;
     /** While a send or stop is in flight. */
     isBusy: boolean;
+    /** Shows the archive button beside send. */
+    canArchive: boolean;
     providerModels: Readonly<Partial<Record<AiProvider, ProviderModelList>>>;
-    /** The providers the model picker offers models from. */
-    providers: ReadonlyArray<AiProvider>;
     provider: AiProvider;
     /** Empty for the provider's default model. */
     model: string;
     /** Unset for the model's default effort. */
     effort: ReasoningEffort | undefined;
+    /** Unset for standard speed. */
+    speedTier: string | undefined;
     runtimeMode: RuntimeMode;
+    /** Focuses the message box each time this turns on. */
+    isShown: boolean;
+    /** Set while a question waits, to label the send button and submit even with an empty box. */
+    questionAction:
+        | Readonly<{
+              label: string;
+              isEnabled: boolean;
+          }>
+        | undefined;
 }>()({
     tagName: 'vir-ai-chat-composer',
     events: {
         textChange: defineElementEvent<string>(),
         submitted: defineElementEvent<string>(),
         stopRequested: defineElementEvent<void>(),
-        modelChange: defineElementEvent<
-            Readonly<{
-                provider: AiProvider;
-                model: string;
-                /** Unset for the model's default effort. */
-                effort: ReasoningEffort | undefined;
-            }>
-        >(),
+        archiveRequested: defineElementEvent<void>(),
+        modelChange: defineElementEvent<ModelSelection>(),
         runtimeModeChange: defineElementEvent<RuntimeMode>(),
+    },
+    state() {
+        return {
+            wasShown: false,
+        };
     },
     styles: css`
         :host {
@@ -112,46 +131,63 @@ export const VirAiChatComposer = defineAppElement<{
             }
         }
 
-        .action {
+        .actions {
             display: flex;
             flex-shrink: 0;
             align-items: center;
-            justify-content: center;
+            gap: 12px;
+        }
+
+        .action {
+            flex-shrink: 0;
             width: 32px;
             height: 32px;
-            padding: 0;
-            border: none;
-            border-radius: 50%;
-            cursor: pointer;
-            transition: background-color 150ms;
+            ${ViraButton.cssVars['vira-button-border-radius'].name}: 50%;
 
-            &.send {
-                color: ${viraThemeByKeys.blue['on-self'].body.foreground.value};
-                background-color: ${viraThemeByKeys.blue['on-self'].body.background.value};
-
-                &:hover:not(:disabled) {
-                    background-color: ${viraThemeByKeys.blue.foreground['highest-contrast']
-                        .foreground.value};
-                }
+            &.labeled {
+                width: auto;
+                ${ViraButton.cssVars['vira-button-border-radius'].name}: 16px;
             }
 
             &.stop {
-                color: ${viraThemeByKeys.red['on-self'].body.foreground.value};
-                background-color: ${viraThemeByKeys.red['on-self'].body.background.value};
-            }
-
-            &:disabled {
-                cursor: default;
-                color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
-                background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
-                    .value};
+                ${ViraButton.cssVars['vira-button-border-width'].name}: 0;
+                ${ViraButton.cssVars['vira-button-disabled-text-color'].name}: ${viraThemeByKeys
+                    .grey.foreground.placeholder.foreground.value};
+                ${ViraButton.cssVars['vira-button-disabled-background-color']
+                    .name}: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
+                ${ViraButton.cssVars['vira-button-text-color'].name}: ${viraThemeByKeys.red[
+                    'on-self'
+                ].body.foreground.value};
+                ${ViraButton.cssVars['vira-button-background-color'].name}: ${viraThemeByKeys.red[
+                    'on-self'
+                ].body.background.value};
+                ${ViraButton.cssVars['vira-button-hover-text-color'].name}: ${viraThemeByKeys.red[
+                    'on-self'
+                ].body.foreground.value};
+                ${ViraButton.cssVars['vira-button-hover-background-color'].name}: ${viraThemeByKeys
+                    .red['on-self'].body.background.value};
+                ${ViraButton.cssVars['vira-button-active-text-color'].name}: ${viraThemeByKeys.red[
+                    'on-self'
+                ].body.foreground.value};
+                ${ViraButton.cssVars['vira-button-active-background-color'].name}: ${viraThemeByKeys
+                    .red['on-self'].body.background.value};
             }
         }
     `,
-    render({inputs, dispatch, events}) {
+    render({inputs, state, updateState, dispatch, events, host}) {
+        if (inputs.isShown !== state.wasShown) {
+            updateState({
+                wasShown: inputs.isShown,
+            });
+            if (inputs.isShown) {
+                requestAnimationFrame(() => {
+                    host.shadowRoot.querySelector('textarea')?.focus();
+                });
+            }
+        }
         const hasText = !!inputs.text.trim();
-        const canSend = hasText && !inputs.isBusy;
-        const showsStop = inputs.isRunning && !hasText;
+        const canSend = (inputs.questionAction?.isEnabled ?? hasText) && !inputs.isBusy;
+        const showsStop = !inputs.questionAction && inputs.isRunning && !hasText;
 
         function submit() {
             if (!canSend) {
@@ -169,7 +205,7 @@ export const VirAiChatComposer = defineAppElement<{
                 <textarea
                     rows="2"
                     data-testid="composer-editor"
-                    aria-label="Message"
+                    aria-label=${inputs.questionAction ? 'Your own answer' : 'Message'}
                     placeholder=${inputs.placeholder}
                     .value=${inputs.text}
                     ${listen('input', (event) => {
@@ -206,10 +242,10 @@ export const VirAiChatComposer = defineAppElement<{
                         ></${VirAiChatPermissions}>
                         <${VirAiChatModelPicker.assign({
                             providerModels: inputs.providerModels,
-                            providers: inputs.providers,
                             provider: inputs.provider,
                             model: inputs.model,
                             effort: inputs.effort,
+                            speedTier: inputs.speedTier,
                             isDisabled: inputs.isRunning || inputs.isBusy,
                         })}
                             ${listen(VirAiChatModelPicker.events.modelChange, (event) => {
@@ -221,44 +257,77 @@ export const VirAiChatComposer = defineAppElement<{
                             })}
                         ></${VirAiChatModelPicker}>
                     </div>
-                    ${showsStop
-                        ? html`
-                              <button
-                                  type="button"
-                                  class="action stop"
-                                  title="Interrupt"
-                                  aria-label="Stop generation"
-                                  ?disabled=${inputs.isBusy}
-                                  ${listen('click', () => {
-                                      if (inputs.isBusy) {
-                                          return;
-                                      }
-                                      dispatch(
-                                          new events.stopRequested({
-                                              detail: undefined,
-                                          }),
-                                      );
+                    <div class="actions">
+                        ${inputs.canArchive
+                            ? html`
+                                  <${ViraButton.assign({
+                                      icon: archiveIcon,
+                                      color: ViraColorVariant.Neutral,
+                                      buttonEmphasis: ViraEmphasis.Subtle,
+                                      isDisabled: inputs.isBusy,
                                   })}
-                              >
-                                  <${ViraIcon.assign({
+                                      class="action"
+                                      title="Archive thread"
+                                      aria-label="Archive thread"
+                                      ${listen('click', () => {
+                                          if (inputs.isBusy) {
+                                              return;
+                                          }
+                                          dispatch(
+                                              new events.archiveRequested({
+                                                  detail: undefined,
+                                              }),
+                                          );
+                                      })}
+                                  ></${ViraButton}>
+                              `
+                            : nothing}
+                        ${showsStop
+                            ? html`
+                                  <${ViraButton.assign({
                                       icon: stopIcon,
-                                  })}></${ViraIcon}>
-                              </button>
-                          `
-                        : html`
-                              <button
-                                  type="submit"
-                                  class="action send"
-                                  title="Submit message"
-                                  aria-label="Submit message"
-                                  ?disabled=${!canSend}
-                                  ${listen('click', submit)}
-                              >
-                                  <${ViraIcon.assign({
-                                      icon: sendIcon,
-                                  })}></${ViraIcon}>
-                              </button>
-                          `}
+                                      color: ViraColorVariant.Custom,
+                                      isDisabled: inputs.isBusy,
+                                  })}
+                                      class="action stop"
+                                      title="Interrupt"
+                                      aria-label="Stop generation"
+                                      ${listen('click', () => {
+                                          if (inputs.isBusy) {
+                                              return;
+                                          }
+                                          dispatch(
+                                              new events.stopRequested({
+                                                  detail: undefined,
+                                              }),
+                                          );
+                                      })}
+                                  ></${ViraButton}>
+                              `
+                            : inputs.questionAction
+                              ? html`
+                                    <${ViraButton.assign({
+                                        text: inputs.questionAction.label,
+                                        color: ViraColorVariant.Brand,
+                                        isDisabled: !canSend,
+                                    })}
+                                        class="action labeled"
+                                        ${listen('click', submit)}
+                                    ></${ViraButton}>
+                                `
+                              : html`
+                                    <${ViraButton.assign({
+                                        icon: sendIcon,
+                                        color: ViraColorVariant.Brand,
+                                        isDisabled: !canSend,
+                                    })}
+                                        class="action"
+                                        title="Submit message"
+                                        aria-label="Submit message"
+                                        ${listen('click', submit)}
+                                    ></${ViraButton}>
+                                `}
+                    </div>
                 </div>
             </div>
         `;

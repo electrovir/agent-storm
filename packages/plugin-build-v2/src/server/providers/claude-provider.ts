@@ -10,7 +10,8 @@ import {
     type SessionStore,
 } from '@anthropic-ai/claude-agent-sdk';
 import {check} from '@augment-vir/assert';
-import {extractErrorMessage} from '@augment-vir/common';
+import {arrayToObject, extractErrorMessage} from '@augment-vir/common';
+import {checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
 import {
     ApprovalDecision,
     ReasoningEffort,
@@ -18,6 +19,7 @@ import {
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
+    type ProviderModel,
 } from '../../build-v2-api.js';
 import {parseReasoningEfforts} from '../../util/reasoning-effort.js';
 import {
@@ -29,6 +31,29 @@ import {
     type ClaudeToolDescription,
 } from './claude-items.js';
 import {type ProviderAdapter, type ProviderSink} from './provider-session.js';
+
+const askUserQuestionInputShape = defineShape({
+    questions: [
+        {
+            header: '',
+            question: '',
+            multiSelect: optionalShape(false, {
+                alsoUndefined: true,
+            }),
+            options: [
+                {
+                    label: '',
+                    description: optionalShape('', {
+                        alsoUndefined: true,
+                    }),
+                    preview: optionalShape('', {
+                        alsoUndefined: true,
+                    }),
+                },
+            ],
+        },
+    ],
+});
 
 /** The levels Claude Code accepts. It has no equivalent of Ultra. */
 const claudeEfforts: Readonly<Partial<Record<ReasoningEffort, EffortLevel>>> = {
@@ -45,6 +70,165 @@ const claudePermissionModes: Readonly<Record<RuntimeMode, PermissionMode>> = {
     [RuntimeMode.Auto]: 'auto',
     [RuntimeMode.FullAccess]: 'bypassPermissions',
 };
+
+/** The speed tier id for Claude Code's fast mode. */
+const claudeFastSpeedTier = 'fast';
+
+const claudeFastSpeedTiers: ProviderModel['speedTiers'] = [
+    {
+        id: claudeFastSpeedTier,
+        name: 'Fast',
+    },
+];
+
+/**
+ * Older Claude versions. Claude Code lists only the current version of each family, so the version
+ * it replaces goes here when a new one ships.
+ */
+const olderClaudeModels: ReadonlyArray<ProviderModel> = [
+    {
+        id: 'claude-fable-5-1',
+        name: 'Fable 5.1',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.ExtraHigh,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: [],
+    },
+    {
+        id: 'claude-fable-5',
+        name: 'Fable 5',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.ExtraHigh,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: [],
+    },
+    {
+        id: 'claude-opus-5',
+        name: 'Opus 5',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.ExtraHigh,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: claudeFastSpeedTiers,
+    },
+    {
+        id: 'claude-opus-4-8',
+        name: 'Opus 4.8',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.ExtraHigh,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: claudeFastSpeedTiers,
+    },
+    {
+        id: 'claude-opus-4-7',
+        name: 'Opus 4.7',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.ExtraHigh,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: claudeFastSpeedTiers,
+    },
+    {
+        id: 'claude-opus-4-6',
+        name: 'Opus 4.6',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: claudeFastSpeedTiers,
+    },
+    {
+        id: 'claude-opus-4-5',
+        name: 'Opus 4.5',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: claudeFastSpeedTiers,
+    },
+    {
+        id: 'claude-sonnet-5',
+        name: 'Sonnet 5',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.ExtraHigh,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: [],
+    },
+    {
+        id: 'claude-sonnet-4-6',
+        name: 'Sonnet 4.6',
+        supportedEfforts: [
+            ReasoningEffort.Low,
+            ReasoningEffort.Medium,
+            ReasoningEffort.High,
+            ReasoningEffort.Max,
+        ],
+        speedTiers: [],
+    },
+    {
+        id: 'claude-haiku-4-5',
+        name: 'Haiku 4.5',
+        supportedEfforts: [],
+        speedTiers: [],
+    },
+].map((model) => {
+    return {
+        ...model,
+        description: '',
+        isDefault: false,
+        isLegacy: true,
+    };
+});
+
+/**
+ * Claude Code names a model by family alone ("Opus") and starts its description with the version
+ * ("Opus 5.5 · Best for everyday, complex tasks"), so the version moves into the name.
+ */
+function splitClaudeModelVersion({
+    displayName,
+    description,
+    isDefault,
+}: Readonly<{displayName: string; description: string; isDefault: boolean}>) {
+    const [
+        version,
+        ...rest
+    ] = description.split(' · ');
+    return version && rest.length
+        ? {
+              name: isDefault ? `Default (${version})` : version,
+              description: rest.join(' · '),
+          }
+        : {
+              name: displayName,
+              description,
+          };
+}
 
 /** The messages a session sends Claude, as the async iterable `query` reads its prompt from. */
 function createMessageQueue() {
@@ -114,24 +298,55 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 },
             });
             try {
-                return (await claudeQuery.supportedModels()).map((model) => {
-                    return {
-                        id: model.value,
-                        name: model.displayName,
-                        description: model.description,
+                const reportedModels = await claudeQuery.supportedModels();
+                const reportedIds = reportedModels.map((model) => model.resolvedModel);
+                return [
+                    ...reportedModels.map((model): ProviderModel => {
                         /** Claude Code lists its default model under the value `default`. */
-                        isDefault: model.value === 'default',
-                        supportedEfforts: model.supportsEffort
-                            ? parseReasoningEfforts(model.supportedEffortLevels)
-                            : [],
-                    };
-                });
+                        const isDefault = model.value === 'default';
+                        return {
+                            id: model.value,
+                            ...splitClaudeModelVersion({
+                                displayName: model.displayName,
+                                description: model.description,
+                                isDefault,
+                            }),
+                            isDefault,
+                            isLegacy: false,
+                            supportedEfforts: model.supportsEffort
+                                ? parseReasoningEfforts(model.supportedEffortLevels)
+                                : [],
+                            speedTiers: model.supportsFastMode ? claudeFastSpeedTiers : [],
+                        };
+                    }),
+                    ...olderClaudeModels.filter((model) => !reportedIds.includes(model.id)),
+                ];
             } finally {
                 prompt.close();
                 claudeQuery.close();
             }
         },
-        start({cwd, model, effort, runtimeMode, providerSessionId, sink}) {
+        async generateTitle({cwd, prompt}) {
+            const claudeQuery = query({
+                prompt,
+                options: {
+                    cwd,
+                    model: 'haiku',
+                    tools: [],
+                    maxTurns: 1,
+                    persistSession: false,
+                    /** Skips the user's hooks and the repo's CLAUDE.md, which a title doesn't need. */
+                    settingSources: [],
+                },
+            });
+            for await (const message of claudeQuery) {
+                if (message.type === 'result') {
+                    return message.subtype === 'success' ? message.result : '';
+                }
+            }
+            return '';
+        },
+        start({cwd, model, effort, speedTier, runtimeMode, providerSessionId, sink}) {
             const state = {
                 runtimeMode,
                 /** The id of the message the stream events currently belong to. */
@@ -175,43 +390,92 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         behavior: 'allow',
                         updatedInput: input,
                     };
-                }
-                const tool = describeClaudeToolUse({
-                    name: toolName,
-                    input,
-                });
-                const decision = await sink.requestApproval(
-                    {
-                        kind: claudeApprovalKinds[tool.kind],
-                        title: tool.title || toolName,
-                        detail: tool.text,
-                        reason: title || '',
-                    },
-                    signal,
-                );
-                const results: Readonly<Record<ApprovalDecision, () => PermissionResult>> = {
-                    [ApprovalDecision.Approve]() {
-                        return {
-                            behavior: 'allow',
-                            updatedInput: input,
-                        };
-                    },
-                    [ApprovalDecision.ApproveForSession]() {
-                        state.sessionApprovals.add(approvalKey);
-                        return {
-                            behavior: 'allow',
-                            updatedInput: input,
-                        };
-                    },
-                    [ApprovalDecision.Decline]() {
+                } else if (
+                    toolName === 'AskUserQuestion' &&
+                    checkValidShape(input, askUserQuestionInputShape, {
+                        allowExtraKeys: true,
+                    })
+                ) {
+                    const answers = await sink.askQuestions(
+                        {
+                            title: 'Question',
+                            reason: title || '',
+                            questions: input.questions.map(
+                                ({multiSelect, options, ...question}) => {
+                                    return {
+                                        ...question,
+                                        isMultiSelect: !!multiSelect,
+                                        options: options.map((option) => {
+                                            return {
+                                                label: option.label,
+                                                description: option.description || '',
+                                                preview: option.preview || '',
+                                            };
+                                        }),
+                                    };
+                                },
+                            ),
+                        },
+                        signal,
+                    );
+                    if (!answers) {
                         state.declinedToolIds.add(toolUseID);
                         return {
                             behavior: 'deny',
-                            message: 'The user declined this.',
+                            message: 'The user dismissed the question without answering.',
                         };
-                    },
-                };
-                return results[decision]();
+                    }
+                    return {
+                        behavior: 'allow',
+                        updatedInput: {
+                            ...input,
+                            /** Claude Code reads each answer by its question's text. */
+                            answers: arrayToObject(input.questions, (question, index) => {
+                                return {
+                                    key: question.question,
+                                    value: answers[index] || '',
+                                };
+                            }),
+                        },
+                    };
+                } else {
+                    const tool = describeClaudeToolUse({
+                        name: toolName,
+                        input,
+                    });
+                    const decision = await sink.requestApproval(
+                        {
+                            kind: claudeApprovalKinds[tool.kind],
+                            title: tool.title || toolName,
+                            detail: tool.text,
+                            reason: title || '',
+                        },
+                        signal,
+                    );
+                    const results: Readonly<Record<ApprovalDecision, () => PermissionResult>> = {
+                        [ApprovalDecision.Approve]() {
+                            return {
+                                behavior: 'allow',
+                                updatedInput: input,
+                            };
+                        },
+                        [ApprovalDecision.ApproveForSession]() {
+                            state.sessionApprovals.add(approvalKey);
+                            return {
+                                behavior: 'allow',
+                                updatedInput: input,
+                            };
+                        },
+                        [ApprovalDecision.Decline]() {
+                            state.declinedToolIds.add(toolUseID);
+                            return {
+                                behavior: 'deny',
+                                message: 'The user declined this.',
+                            };
+                        },
+                    };
+                    return results[decision]();
+                }
             };
 
             const claudeQuery = query({
@@ -233,6 +497,10 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                               resume: providerSessionId,
                           }
                         : {}),
+                    /** Overrides `fastMode` in the user's settings. */
+                    settings: {
+                        fastMode: speedTier === claudeFastSpeedTier,
+                    },
                     sessionStore,
                     includePartialMessages: true,
                     /** Overrides a `defaultMode` in the user's settings. */

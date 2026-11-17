@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/root",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "private": true,
     "homepage": "https://github.com/electrovir/agent-storm",
     "bugs": {

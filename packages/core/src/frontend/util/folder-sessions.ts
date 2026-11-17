@@ -1,6 +1,6 @@
 import {
     type FolderSessions,
-    type PaneKind,
+    PaneKind,
     type PaneSessionStatus,
     sessionCloseEndpoint,
     sessionCreateEndpoint,
@@ -8,7 +8,7 @@ import {
     sessionRenameEndpoint,
     sessionSetAiEndpoint,
 } from '@agent-storm/common';
-import {extractErrorMessage} from '@augment-vir/common';
+import {extractErrorMessage, mapEnumToObject} from '@augment-vir/common';
 import {type EndpointRequestType, HttpMethod} from '@rest-vir/api';
 import {Observable} from 'element-vir';
 import {fetchApi} from './api-client.js';
@@ -18,11 +18,18 @@ type SessionRequest<Params> = Readonly<Omit<Params, 'folder'>>;
 export type FolderSessionsObservable = ReturnType<typeof createFolderSessions>;
 
 /**
- * One folder's session tabs, both kinds, loaded on creation. Each mutation replaces the list with
- * the server's answer so tab order and names match it, and resolves to that answer, or to
- * `undefined` after putting the failure in `error`.
+ * One pane group's session tabs, both kinds, loaded on creation. Each mutation replaces the list
+ * with the server's answer so tab order and names match it, and resolves to that answer, or to
+ * `undefined` after putting the failure in `error`. Lists only the sessions in `scope`, so a scoped
+ * pane group and the folder's own don't show each other's terminals.
  */
-export function createFolderSessions(folder: string) {
+export function createFolderSessions({
+    folder,
+    scope,
+}: Readonly<{
+    folder: string;
+    scope?: string | undefined;
+}>) {
     const observable = new Observable<{
         /**
          * Undefined until the first load resolves. The panes render nothing until then so a
@@ -40,6 +47,13 @@ export function createFolderSessions(folder: string) {
         },
     });
 
+    /** Every pane group's sessions, so another group's live ones don't read as missing here. */
+    const folderWide: {
+        sessions: FolderSessions | undefined;
+    } = {
+        sessions: undefined,
+    };
+
     function update(partial: Partial<typeof observable.value>) {
         observable.setValue({
             ...observable.value,
@@ -55,7 +69,13 @@ export function createFolderSessions(folder: string) {
 
     async function applySessions(request: Promise<FolderSessions>) {
         try {
-            const sessions = await request;
+            const allSessions = await request;
+            folderWide.sessions = allSessions;
+            const sessions = mapEnumToObject(PaneKind, (kind) => {
+                return allSessions[kind].filter((session) => {
+                    return (session.scope || '') === (scope || '');
+                });
+            });
             update({
                 sessions,
                 error: undefined,
@@ -85,7 +105,8 @@ export function createFolderSessions(folder: string) {
         reload,
         /** Reloads the list for a live session it's missing. */
         sync(sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>) {
-            const {sessions, reloadedSessionIds} = observable.value;
+            const {reloadedSessionIds} = observable.value;
+            const sessions = folderWide.sessions;
             /**
              * A tab the server opened on its own, like watch mode's, appears as a live session
              * first.
@@ -116,6 +137,7 @@ export function createFolderSessions(folder: string) {
                     requestData: {
                         folder,
                         kind,
+                        scope,
                     },
                 }),
             );

@@ -1,6 +1,8 @@
 import {type PluginServerContext} from '@agent-storm/core/server';
 import {assertWrap} from '@augment-vir/assert';
+import {awaitedForEach} from '@augment-vir/common';
 import {getNowInIsoString} from 'date-vir';
+import {assertValidShape, defineShape} from 'object-shape-tester';
 import {
     AiProvider,
     ApprovalDecision,
@@ -10,6 +12,7 @@ import {
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
+    userQuestionShape,
     type ApprovalRequest,
     type buildV2Api,
     type Thread,
@@ -27,9 +30,11 @@ const threadSelect = {
     provider: true,
     model: true,
     effort: true,
+    speedTier: true,
     runtimeMode: true,
     title: true,
     status: true,
+    hasUnreadReply: true,
 } satisfies Prisma.ThreadSelect;
 
 const itemSelect = {
@@ -52,7 +57,12 @@ const requestSelect = {
     title: true,
     detail: true,
     reason: true,
+    questions: true,
 } satisfies Prisma.ApprovalRequestSelect;
+
+const storedQuestionsShape = defineShape([
+    userQuestionShape,
+]);
 
 /**
  * Prisma types each enum column as its own string union, which the API's enum with the same values
@@ -100,11 +110,15 @@ export function toThreadItem({
 export function toApprovalRequest({
     createdAt,
     kind,
+    questions,
     ...row
 }: Readonly<Prisma.ApprovalRequestGetPayload<{select: typeof requestSelect}>>): ApprovalRequest {
+    const parsedQuestions: unknown = JSON.parse(questions);
+    assertValidShape(parsedQuestions, storedQuestionsShape);
     return {
         ...row,
         kind: assertWrap.isEnumValue(kind, ApprovalKind),
+        questions: parsedQuestions,
         createdAt: createdAt.getTime(),
     };
 }
@@ -153,7 +167,9 @@ export function createThreadStore({
                 Prisma.ThreadUpdateInput,
                 | 'cwd'
                 | 'worktreeBranch'
+                | 'provider'
                 | 'model'
+                | 'speedTier'
                 | 'effort'
                 | 'runtimeMode'
                 | 'title'
@@ -220,7 +236,16 @@ export function createThreadStore({
         },
         async createThread(
             data: Readonly<
-                Pick<Thread, 'repoPath' | 'provider' | 'model' | 'effort' | 'runtimeMode' | 'title'>
+                Pick<
+                    Thread,
+                    | 'repoPath'
+                    | 'provider'
+                    | 'model'
+                    | 'effort'
+                    | 'speedTier'
+                    | 'runtimeMode'
+                    | 'title'
+                >
             >,
         ) {
             const thread = toThread(
@@ -228,6 +253,7 @@ export function createThreadStore({
                     data: {
                         ...data,
                         effort: data.effort ?? null,
+                        speedTier: data.speedTier || null,
                         cwd: data.repoPath,
                         status: ThreadStatus.Idle,
                     },
@@ -249,6 +275,7 @@ export function createThreadStore({
                     cwd: true,
                     model: true,
                     effort: true,
+                    speedTier: true,
                     runtimeMode: true,
                     providerSessionId: true,
                 },
@@ -258,6 +285,7 @@ export function createThreadStore({
                 effort: details.effort
                     ? assertWrap.isEnumValue(details.effort, ReasoningEffort)
                     : undefined,
+                speedTier: details.speedTier || undefined,
                 runtimeMode: assertWrap.isEnumValue(details.runtimeMode, RuntimeMode),
                 provider: assertWrap.isEnumValue(provider, AiProvider),
             };
@@ -368,6 +396,51 @@ export function createThreadStore({
                     toThreadItem(row),
                 ],
             });
+            if (
+                item.kind === ThreadItemKind.AssistantMessage &&
+                item.status === ThreadItemStatus.Completed
+            ) {
+                const {count} = await prismaClient.thread.updateMany({
+                    where: {
+                        id: item.threadId,
+                        hasUnreadReply: false,
+                    },
+                    data: {
+                        hasUnreadReply: true,
+                    },
+                });
+                if (count) {
+                    emit('threadChanged', await findThread(item.threadId));
+                }
+            }
+        },
+        async markThreadRead(threadId: string) {
+            const {updatedAt, hasUnreadReply} = await prismaClient.thread.findUniqueOrThrow({
+                where: {
+                    id: threadId,
+                },
+                select: {
+                    updatedAt: true,
+                    hasUnreadReply: true,
+                },
+            });
+            if (!hasUnreadReply) {
+                return;
+            }
+            const thread = toThread(
+                await prismaClient.thread.update({
+                    where: {
+                        id: threadId,
+                    },
+                    /** Passing `updatedAt` keeps Prisma's `@updatedAt` from bumping it. */
+                    data: {
+                        hasUnreadReply: false,
+                        updatedAt,
+                    },
+                    select: threadSelect,
+                }),
+            );
+            emit('threadChanged', thread);
         },
         /** Ignores a delta for an item that isn't in progress. */
         appendDelta({
@@ -396,12 +469,18 @@ export function createThreadStore({
         },
         async addRequest(
             request: Readonly<
-                Pick<ApprovalRequest, 'threadId' | 'kind' | 'title' | 'detail' | 'reason'>
+                Pick<
+                    ApprovalRequest,
+                    'threadId' | 'kind' | 'title' | 'detail' | 'reason' | 'questions'
+                >
             >,
         ) {
             const created = toApprovalRequest(
                 await prismaClient.approvalRequest.create({
-                    data: request,
+                    data: {
+                        ...request,
+                        questions: JSON.stringify(request.questions),
+                    },
                     select: requestSelect,
                 }),
             );
@@ -438,11 +517,6 @@ export function createThreadStore({
             });
             return requests;
         },
-        /**
-         * Settles what a previous run left mid-flight, since no provider survives the server
-         * stopping: pending requests are declined, unfinished items fail, and busy threads go
-         * idle.
-         */
         /**
          * Fails a thread's unfinished items, keeping the text they streamed, once its provider
          * stops.
@@ -508,7 +582,34 @@ export function createThreadStore({
                 items: rows.map(toThreadItem),
             });
         },
+        /**
+         * Settles what a previous run left mid-flight, since no provider survives the server
+         * stopping: pending requests are declined, unfinished items fail, and busy threads go idle,
+         * each with a notice saying why its turn stopped. Resolves to the ids of those threads.
+         */
         async settleInterruptedWork() {
+            const busyThreads = await prismaClient.thread.findMany({
+                where: {
+                    status: {
+                        in: [
+                            ThreadStatus.Running,
+                            ThreadStatus.NeedsApproval,
+                        ],
+                    },
+                },
+                select: {
+                    id: true,
+                    items: {
+                        select: {
+                            turnId: true,
+                        },
+                        orderBy: {
+                            order: 'desc',
+                        },
+                        take: 1,
+                    },
+                },
+            });
             await prismaClient.$transaction([
                 prismaClient.approvalRequest.updateMany({
                     where: {
@@ -541,6 +642,16 @@ export function createThreadStore({
                     },
                 }),
             ]);
+            await awaitedForEach(busyThreads, async (thread) => {
+                await this.putItem(
+                    this.notice({
+                        threadId: thread.id,
+                        turnId: thread.items[0]?.turnId || '',
+                        text: 'Agent Storm restarted during this turn, so it is continuing the turn.',
+                    }),
+                );
+            });
+            return busyThreads.map((thread) => thread.id);
         },
         notice({
             threadId,

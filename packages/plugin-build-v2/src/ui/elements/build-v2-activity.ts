@@ -1,5 +1,5 @@
-import {defineActivity} from '@agent-storm/core/frontend';
-import {css, html, keyed, listen} from 'element-vir';
+import {defineActivity, VirPaneGroup} from '@agent-storm/core/frontend';
+import {css, html, keyed, listen, nothing} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {ThreadStatus} from '../../build-v2-api.js';
 import {buildV2Memory} from '../../util/build-v2-memory.js';
@@ -10,10 +10,14 @@ import {
     startThreadSync,
     storeThread,
 } from '../../util/build-v2-state.js';
+import {aiChatPane} from './ai-chat-pane.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
 import {VirBuildV2Sidebar} from './vir-build-v2-sidebar.element.js';
 
-/** Chat threads with Claude and Codex, listed by repo, one open at a time. */
+/**
+ * Chat threads with Claude and Codex, listed by repo, one open at a time. Each thread has its own
+ * tabs, starting with just its chat, and its own terminals.
+ */
 export const buildV2Activity = defineActivity({
     id: buildV2ActivityId,
     label: 'Build V2',
@@ -68,25 +72,50 @@ export const buildV2Activity = defineActivity({
 
         const thread = state.threads.value?.find((existing) => existing.id === threadId);
 
-        return keyed(
-            threadId || `draft:${draftRepoPath}`,
-            html`
-                <${VirAiChat.assign({
-                    context,
-                    threadId,
-                    repoPath: thread?.repoPath || draftRepoPath || '',
-                })}
-                    ${listen(VirAiChat.events.threadCreated, (event) => {
-                        state.draftRepoPath.setValue(undefined);
-                        storeThread(state, event.detail);
-                        buildV2Memory.selectedThread.write(event.detail.id);
-                        route.navigate([
-                            event.detail.id,
-                        ]);
+        if (threadId && !state.threads.value) {
+            return nothing;
+        } else if (threadId && thread) {
+            return keyed(
+                threadId,
+                html`
+                    <${VirPaneGroup.assign({
+                        folder: thread.cwd || thread.repoPath,
+                        active: true,
+                        context,
+                        scope: `build-v2:${threadId}`,
+                        defaultTabs: [
+                            {
+                                kind: aiChatPane.id,
+                                state: {
+                                    threadId,
+                                },
+                            },
+                        ],
+                    })}></${VirPaneGroup}>
+                `,
+            );
+        } else {
+            return keyed(
+                threadId || `draft:${draftRepoPath}`,
+                html`
+                    <${VirAiChat.assign({
+                        context,
+                        threadId,
+                        repoPath: thread?.repoPath || draftRepoPath || '',
+                        isShown: true,
                     })}
-                ></${VirAiChat}>
-            `,
-        );
+                        ${listen(VirAiChat.events.threadCreated, (event) => {
+                            state.draftRepoPath.setValue(undefined);
+                            storeThread(state, event.detail);
+                            buildV2Memory.selectedThread.write(event.detail.id);
+                            route.navigate([
+                                event.detail.id,
+                            ]);
+                        })}
+                    ></${VirAiChat}>
+                `,
+            );
+        }
     },
     findTitle({state, subPaths}) {
         const [threadId] = subPaths;
@@ -99,6 +128,11 @@ export const buildV2Activity = defineActivity({
         );
     },
     findRestoredSubPaths({state}) {
+        if (state.draftRepoPath.value) {
+            return [
+                newThreadSubPath,
+            ];
+        }
         const rememberedId = buildV2Memory.selectedThread.read();
         return rememberedId && state.threads.value?.some((thread) => thread.id === rememberedId)
             ? [
@@ -107,8 +141,16 @@ export const buildV2Activity = defineActivity({
             : undefined;
     },
     findRedirect({subPaths, state}) {
+        const [firstSubPath] = subPaths;
+        /** An archived thread leaves the list, so its route would otherwise ask for it and fail. */
+        const isUnknownThread =
+            !!firstSubPath &&
+            firstSubPath !== newThreadSubPath &&
+            !!state.threads.value &&
+            !state.threads.value.some((thread) => thread.id === firstSubPath);
         return subPaths.length > 1 ||
-            (subPaths[0] === newThreadSubPath && !state.draftRepoPath.value)
+            (firstSubPath === newThreadSubPath && !state.draftRepoPath.value) ||
+            isUnknownThread
             ? []
             : undefined;
     },

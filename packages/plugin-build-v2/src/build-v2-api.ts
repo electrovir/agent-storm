@@ -9,6 +9,11 @@ export enum AiProvider {
     Codex = 'codex',
 }
 
+export const providerLabels: Record<AiProvider, string> = {
+    [AiProvider.Claude]: 'Claude',
+    [AiProvider.Codex]: 'Codex',
+};
+
 /** How much thinking a model does before it answers. */
 export enum ReasoningEffort {
     Low = 'low',
@@ -67,6 +72,8 @@ export enum ApprovalKind {
     FileChange = 'fileChange',
     /** Any other tool or permission the provider asks for. */
     Permission = 'permission',
+    /** The agent asks the user to pick from options or type their own answer. */
+    Question = 'question',
 }
 
 export enum ApprovalDecision {
@@ -89,9 +96,13 @@ export const threadShape = defineShape({
     model: '',
     /** Unset for the model's default effort. */
     effort: nullableShape(enumShape(ReasoningEffort)),
+    /** The id of the model's faster service tier the thread uses. Unset for standard speed. */
+    speedTier: nullableShape(''),
     runtimeMode: enumShape(RuntimeMode),
     title: '',
     status: enumShape(ThreadStatus),
+    /** The agent finished a reply since the thread was last on screen. */
+    hasUnreadReply: false,
     /** Epoch milliseconds. */
     createdAt: 0,
     /** Epoch milliseconds of the thread's latest activity, which orders the sidebar. */
@@ -122,6 +133,24 @@ export const threadItemShape = defineShape({
 
 export type ThreadItem = typeof threadItemShape.runtimeType;
 
+export const userQuestionShape = defineShape({
+    /** A few words naming the question. */
+    header: '',
+    question: '',
+    /** Lets the user pick any number of options instead of exactly one. */
+    isMultiSelect: false,
+    options: [
+        {
+            label: '',
+            description: '',
+            /** Markdown to show under the option, such as a mockup or code. Empty for none. */
+            preview: '',
+        },
+    ],
+});
+
+export type UserQuestion = typeof userQuestionShape.runtimeType;
+
 export const approvalRequestShape = defineShape({
     id: '',
     threadId: '',
@@ -132,6 +161,10 @@ export const approvalRequestShape = defineShape({
     detail: '',
     /** Why the provider says it needs this, when it says. */
     reason: '',
+    /** What a `Question` request asks. Empty for every other kind. */
+    questions: [
+        userQuestionShape,
+    ],
     /** Epoch milliseconds. */
     createdAt: 0,
 });
@@ -145,12 +178,22 @@ export const providerModelShape = defineShape({
     description: '',
     /** The model a thread with an empty `model` uses. */
     isDefault: false,
+    /** An older version, which the picker hides behind "Show older models" until searched for. */
+    isLegacy: false,
     /** Empty when the model has no effort setting. */
     supportedEfforts: [
         enumShape(ReasoningEffort),
     ],
     /** The effort the model uses when a thread sets none, when the provider says. */
     defaultEffort: nullableShape(enumShape(ReasoningEffort)),
+    /** The faster service tiers the model offers besides standard speed. */
+    speedTiers: [
+        {
+            /** What a thread's `speedTier` holds to use this tier. */
+            id: '',
+            name: '',
+        },
+    ],
 });
 
 export type ProviderModel = typeof providerModelShape.runtimeType;
@@ -198,6 +241,7 @@ export const buildV2Api = definePluginApi({
                 provider: enumShape(AiProvider),
                 model: '',
                 effort: nullableShape(enumShape(ReasoningEffort)),
+                speedTier: nullableShape(''),
                 runtimeMode: enumShape(RuntimeMode),
                 text: '',
             }),
@@ -213,6 +257,16 @@ export const buildV2Api = definePluginApi({
                 requests: [
                     approvalRequestShape,
                 ],
+            }),
+        },
+        /** Saves a file dropped onto a chat, so a message can name its path for the agent to read. */
+        uploadFile: {
+            requestShape: defineShape({
+                filename: '',
+                dataBase64: '',
+            }),
+            responseShape: defineShape({
+                path: '',
             }),
         },
         /** Sends a message. Starts the provider again first if it isn't running. */
@@ -232,6 +286,10 @@ export const buildV2Api = definePluginApi({
             requestShape: defineShape({
                 requestId: '',
                 decision: enumShape(ApprovalDecision),
+                /** One answer per question, in order, when approving a `Question` request. */
+                answers: [
+                    '',
+                ],
             }),
             responseShape: okResponseShape,
         },
@@ -248,14 +306,18 @@ export const buildV2Api = definePluginApi({
             responseShape: threadResponseShape,
         },
         /**
-         * Uses `model` and `effort` from the thread's next message on. A missing `effort` is the
-         * model's default. Fails while the thread runs.
+         * Uses `provider`, `model`, `effort`, and `speedTier` from the thread's next message on. A
+         * missing `effort` is the model's default and a missing `speedTier` is standard speed. A
+         * new provider gets the thread's earlier messages with that next message. Fails while the
+         * thread runs.
          */
         setThreadModel: {
             requestShape: defineShape({
                 threadId: '',
+                provider: enumShape(AiProvider),
                 model: '',
                 effort: nullableShape(enumShape(ReasoningEffort)),
+                speedTier: nullableShape(''),
             }),
             responseShape: threadResponseShape,
         },
@@ -276,6 +338,11 @@ export const buildV2Api = definePluginApi({
                 title: '',
             }),
             responseShape: threadResponseShape,
+        },
+        /** Clears the thread's `hasUnreadReply` without moving it in the sidebar's order. */
+        markThreadRead: {
+            requestShape: threadRequestShape,
+            responseShape: okResponseShape,
         },
         /** Stops the thread and hides it from the sidebar. */
         archiveThread: {

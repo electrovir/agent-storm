@@ -2,6 +2,7 @@ import {
     PaneKind,
     PaneStatus,
     restartPaneEndpoint,
+    toPaneGroupKey,
     type PaneTab,
     type SessionMeta,
 } from '@agent-storm/common';
@@ -43,6 +44,7 @@ import {
     closeTab,
     createDefaultTabLayout,
     createTabId,
+    createTabLayout,
     findSessionPaneKind,
     isTabLayoutConsistent,
     listDisplayedTabIds,
@@ -58,8 +60,43 @@ import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirPaneTabLabel} from './vir-pane-tab-label.element.js';
 import {VirTabHost, type TabHostNewTabOption, type TabHostTab} from './vir-tab-host.element.js';
 
-/** The last selection logged per folder, so each render doesn't log an unchanged one. */
+/** The last selection logged per pane group, so each render doesn't log an unchanged one. */
 const loggedSelections = new Map<string, string>();
+
+/** Each extension's state for one pane group, re-rendering the pane group whenever one changes. */
+function startExtensionRuns({
+    extensions,
+    folder,
+    context,
+    folderSessions,
+    host,
+}: Readonly<{
+    extensions: AppContext['paneGroupExtensions'];
+    folder: string;
+    context: AppContext;
+    folderSessions: FolderSessionsObservable;
+    host: Readonly<Pick<HTMLElement & {requestUpdate(): void}, 'requestUpdate'>>;
+}>) {
+    const extensionRuns: PaneGroupView['extensionRuns'] = arrayToObject(extensions, (extension) => {
+        return {
+            key: extension.id,
+            value: extension.create({
+                folder,
+                context,
+                folderSessions,
+            }),
+        };
+    });
+    return {
+        extensionRuns,
+        /** Element-vir only watches observables held directly in state, not inside a record. */
+        extensionListeners: getObjectTypedValues(extensionRuns).map((run) => {
+            return run.listen(false, () => {
+                host.requestUpdate();
+            });
+        }),
+    };
+}
 
 /** Names a renamed tab's kind, which its name hides. An unnamed tab already shows its kind. */
 function renderKindTooltip({
@@ -86,6 +123,13 @@ export const VirPaneGroup = defineAppElement<{
     context: AppContext;
     /** What this folder's parent hands each plugin's pane group extension, by extension id. */
     extensionInputs?: PaneGroupExtensionInputs | undefined;
+    /**
+     * Sets this pane group apart from the folder's own: it keeps its own tabs and its own
+     * terminals, which still open in the folder. Empty for the folder's own pane group.
+     */
+    scope?: string | undefined;
+    /** What a pane group with no saved layout starts with, instead of the folder's defaults. */
+    defaultTabs?: ReadonlyArray<Readonly<Pick<PaneTab, 'kind' | 'state'>>> | undefined;
 }>()({
     tagName: 'vir-pane-group',
     state() {
@@ -116,25 +160,18 @@ export const VirPaneGroup = defineAppElement<{
         };
     },
     init({inputs, updateState, host}) {
-        const folderSessions = createFolderSessions(inputs.folder);
-        const extensionRuns = arrayToObject(inputs.context.paneGroupExtensions, (extension) => {
-            return {
-                key: extension.id,
-                value: extension.create({
-                    folder: inputs.folder,
-                    context: inputs.context,
-                    folderSessions,
-                }),
-            };
+        const folderSessions = createFolderSessions({
+            folder: inputs.folder,
+            scope: inputs.scope,
         });
         updateState({
             folderSessions,
-            extensionRuns,
-            /** Element-vir only watches observables held directly in state, not inside a record. */
-            extensionListeners: getObjectTypedValues(extensionRuns).map((run) => {
-                return run.listen(false, () => {
-                    host.requestUpdate();
-                });
+            ...startExtensionRuns({
+                extensions: inputs.context.paneGroupExtensions,
+                folder: inputs.folder,
+                context: inputs.context,
+                folderSessions,
+                host,
             }),
         });
     },
@@ -198,7 +235,7 @@ export const VirPaneGroup = defineAppElement<{
             min-width: 0;
         }
     `,
-    render({inputs, state, updateState}) {
+    render({inputs, state, updateState, host}) {
         const {folderSessions} = state;
         if (!folderSessions) {
             return '';
@@ -227,7 +264,11 @@ export const VirPaneGroup = defineAppElement<{
               `
             : nothing;
 
-        const sharedLayout = uiLayout.value.layout?.tabLayouts[inputs.folder];
+        const layoutKey = toPaneGroupKey({
+            folder: inputs.folder,
+            scope: inputs.scope,
+        });
+        const sharedLayout = uiLayout.value.layout?.tabLayouts[layoutKey];
         if (!sessions || !uiLayout.value.layout) {
             return html`
                 ${folderNameBar} ${errorLine}
@@ -236,7 +277,7 @@ export const VirPaneGroup = defineAppElement<{
 
         function writeLayout(change: (current: Readonly<TabLayout>) => Readonly<TabLayout>) {
             uiLayout.updateTabLayout({
-                folder: inputs.folder,
+                folder: layoutKey,
                 update(current) {
                     return current && change(current);
                 },
@@ -255,7 +296,7 @@ export const VirPaneGroup = defineAppElement<{
         /** A stored layout the reducers can't trust is replaced, as if the folder had none. */
         const baseLayout =
             sharedLayout && isTabLayoutConsistent(sharedLayout)
-                ? uiLayout.getTabLayout(inputs.folder)
+                ? uiLayout.getTabLayout(layoutKey)
                 : undefined;
         const unloadedPaneIds = inputs.context.panes
             .map((pane) => pane.id)
@@ -270,14 +311,23 @@ export const VirPaneGroup = defineAppElement<{
         const initialLayout =
             baseLayout ||
             [
-                uiLayout.takeShowRequest(inputs.folder),
+                uiLayout.takeShowRequest(layoutKey),
             ].reduce(
                 (layout: Readonly<TabLayout>, kind) => (kind ? showTabKind(layout, kind) : layout),
-                createDefaultTabLayout({
-                    sessions,
-                    panes: inputs.context.panes,
-                    extensionInputs,
-                }),
+                inputs.defaultTabs
+                    ? createTabLayout([
+                          inputs.defaultTabs.map((tab) => {
+                              return {
+                                  ...tab,
+                                  id: createTabId(tab.kind),
+                              };
+                          }),
+                      ])
+                    : createDefaultTabLayout({
+                          sessions,
+                          panes: inputs.context.panes,
+                          extensionInputs,
+                      }),
             );
         if (!baseLayout) {
             logDebug('paneGroup.render without base layout', {
@@ -286,7 +336,7 @@ export const VirPaneGroup = defineAppElement<{
                 isConsistent: sharedLayout ? isTabLayoutConsistent(sharedLayout) : undefined,
             });
             uiLayout.updateTabLayout({
-                folder: inputs.folder,
+                folder: layoutKey,
                 update() {
                     return initialLayout;
                 },
@@ -295,14 +345,14 @@ export const VirPaneGroup = defineAppElement<{
         const layout = syncAllSessionTabs(initialLayout);
         /** Traces tab selections that revert, while debug logging is on. */
         const renderedSelection = JSON.stringify(splitTabLayout(layout).selection);
-        if (loggedSelections.get(inputs.folder) !== renderedSelection) {
-            loggedSelections.set(inputs.folder, renderedSelection);
+        if (loggedSelections.get(layoutKey) !== renderedSelection) {
+            loggedSelections.set(layoutKey, renderedSelection);
             logDebug('paneGroup.render selection', {
                 folder: inputs.folder,
                 isActive: inputs.active,
                 selection: splitTabLayout(layout).selection,
-                windowSelection: uiLayout.value.selections[inputs.folder],
-                serverSelection: uiLayout.value.layout.tabSelections[inputs.folder],
+                windowSelection: uiLayout.value.selections[layoutKey],
+                serverSelection: uiLayout.value.layout.tabSelections[layoutKey],
             });
         }
         /**
@@ -331,6 +381,35 @@ export const VirPaneGroup = defineAppElement<{
             });
         });
 
+        /** A plugin that loads after this pane group mounted brings its extension then. */
+        const lateExtensions = inputs.context.paneGroupExtensions.filter((extension) => {
+            return !Object.hasOwn(state.extensionRuns, extension.id);
+        });
+        const lateRuns = lateExtensions.length
+            ? startExtensionRuns({
+                  extensions: lateExtensions,
+                  folder: inputs.folder,
+                  context: inputs.context,
+                  folderSessions,
+                  host,
+              })
+            : undefined;
+        const extensionRuns = lateRuns
+            ? {
+                  ...state.extensionRuns,
+                  ...lateRuns.extensionRuns,
+              }
+            : state.extensionRuns;
+        if (lateRuns) {
+            updateState({
+                extensionRuns,
+                extensionListeners: [
+                    ...state.extensionListeners,
+                    ...lateRuns.extensionListeners,
+                ],
+            });
+        }
+
         const view: PaneGroupView = {
             folder: inputs.folder,
             context: inputs.context,
@@ -338,7 +417,7 @@ export const VirPaneGroup = defineAppElement<{
             isMobile,
             layout,
             extensionInputs,
-            extensionRuns: state.extensionRuns,
+            extensionRuns,
             writeLayout,
             openNewTab,
             sessionToFocus: state.sessionToFocus,
@@ -383,7 +462,7 @@ export const VirPaneGroup = defineAppElement<{
         }
         inputs.context.paneGroupExtensions.forEach((extension) => {
             extension.sync({
-                run: assertWrap.isDefined(state.extensionRuns[extension.id]),
+                run: assertWrap.isDefined(extensionRuns[extension.id]),
                 inputs: extensionInputs[extension.id],
                 view,
                 displayedTabIds,
@@ -807,7 +886,7 @@ export const VirPaneGroup = defineAppElement<{
                         selection: splitTabLayout(event.detail).selection,
                     });
                     uiLayout.updateTabLayout({
-                        folder: inputs.folder,
+                        folder: layoutKey,
                         update() {
                             return event.detail;
                         },

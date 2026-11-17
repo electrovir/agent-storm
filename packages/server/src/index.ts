@@ -734,6 +734,7 @@ const sessionCreateImplementation = implementor.implementEndpoint(sessionCreateE
                 responseData: await createFolderSession({
                     folder: normalizePath(requestData.folder),
                     kind: requestData.kind,
+                    scope: requestData.scope,
                 }),
             },
         };

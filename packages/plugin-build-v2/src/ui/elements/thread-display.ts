@@ -3,10 +3,11 @@ import {
     createSizedIcon,
     LucideBrainIcon,
     LucideCircleAlertIcon,
-    LucideCircleDashedIcon,
     LucideFilePenIcon,
     LucideInfoIcon,
     LucideListTodoIcon,
+    LucideLoaderIcon,
+    LucideMessageCircleQuestionMarkIcon,
     LucideMessageSquareIcon,
     LucideShieldAlertIcon,
     LucideShieldQuestionMarkIcon,
@@ -17,18 +18,12 @@ import {
     type ViraThemeColorName,
 } from 'vira';
 import {
-    AiProvider,
     ApprovalKind,
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
     type ThreadItem,
 } from '../../build-v2-api.js';
-
-export const providerLabels: Record<AiProvider, string> = {
-    [AiProvider.Claude]: 'Claude',
-    [AiProvider.Codex]: 'Codex',
-};
 
 /** How a thread's status shows in the sidebar's dot and the chat header's pill. */
 export const threadStatusDisplays: Record<
@@ -76,12 +71,14 @@ export const approvalKindLabels: Record<ApprovalKind, string> = {
     [ApprovalKind.Command]: 'Command approval',
     [ApprovalKind.FileChange]: 'File change approval',
     [ApprovalKind.Permission]: 'Permission approval',
+    [ApprovalKind.Question]: 'Question',
 };
 
 export const approvalKindIcons: Record<ApprovalKind, ViraIconSvg> = {
     [ApprovalKind.Command]: LucideTerminalIcon,
     [ApprovalKind.FileChange]: LucideFilePenIcon,
     [ApprovalKind.Permission]: LucideShieldAlertIcon,
+    [ApprovalKind.Question]: LucideMessageCircleQuestionMarkIcon,
 };
 
 function describeWithVerbs(verbs: Readonly<Record<ThreadItemStatus, string>>, fallback: string) {
@@ -180,7 +177,7 @@ export const workItemDisplays: Record<
 };
 
 const statusIconSize = 12;
-const workingIcon = createSizedIcon(LucideCircleDashedIcon, statusIconSize);
+const workingIcon = createSizedIcon(LucideLoaderIcon, statusIconSize);
 const approvalIcon = createSizedIcon(LucideShieldQuestionMarkIcon, statusIconSize);
 const failedIcon = createSizedIcon(LucideCircleAlertIcon, statusIconSize);
 
@@ -190,8 +187,12 @@ export const sidebarStatusDisplays: Record<
     Readonly<{
         /** Idle threads show their relative time instead. */
         status?: Readonly<{
-            label: string;
+            /** Icon-only statuses show no label. */
+            label: string | undefined;
+            /** Explains an icon-only status on hover. */
+            tooltip: string | undefined;
             icon: ViraIconSvg;
+            isSpinning: boolean;
             color: ViraThemeColorName;
         }>;
         /** Receded rows dim until hovered. */
@@ -209,9 +210,11 @@ export const sidebarStatusDisplays: Record<
     },
     [ThreadStatus.Running]: {
         status: {
-            label: 'Working',
+            label: undefined,
+            tooltip: 'The AI is working on this thread.',
             icon: workingIcon,
-            color: 'blue',
+            isSpinning: true,
+            color: 'pink',
         },
         shouldRecede: true,
         folderDot: {
@@ -222,7 +225,9 @@ export const sidebarStatusDisplays: Record<
     [ThreadStatus.NeedsApproval]: {
         status: {
             label: 'Approval',
+            tooltip: undefined,
             icon: approvalIcon,
+            isSpinning: false,
             color: 'yellow',
         },
         shouldRecede: true,
@@ -234,7 +239,9 @@ export const sidebarStatusDisplays: Record<
     [ThreadStatus.Failed]: {
         status: {
             label: 'Failed',
+            tooltip: undefined,
             icon: failedIcon,
+            isSpinning: false,
             color: 'red',
         },
         shouldRecede: false,

@@ -1,11 +1,34 @@
-import {defineAppElement, type ActivityRoute, type AppContext} from '@agent-storm/core/frontend';
+import {
+    hideRepoEndpoint,
+    settingsEndpoint,
+    touchRepoEndpoint,
+    type Settings,
+} from '@agent-storm/common';
+import {
+    createSettingsTarget,
+    defineAppElement,
+    fetchApi,
+    ScreenSize,
+    SettingsSection,
+    sidebarContextMenuOffset,
+    sidebarFolderMenuStyles,
+    VirSidebarSearch,
+    type ActivityRoute,
+    type AppContext,
+} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
+import {HttpMethod} from '@rest-vir/api';
 import {classMap, css, html, listen, nothing} from 'element-vir';
 import {
     createSizedIcon,
     LucideChevronDownIcon,
     LucideSquarePenIcon,
+    PopoverAnchor,
+    PopoverTrigger,
+    renderMenuItemEntries,
+    ViraCollapsibleWrapper,
     ViraIcon,
+    ViraMenuTrigger,
     viraThemeByKeys,
 } from 'vira';
 import {type Thread} from '../../build-v2-api.js';
@@ -18,9 +41,12 @@ import {
     storeThread,
     type BuildV2State,
 } from '../../util/build-v2-state.js';
+import {arrangeRepoGroups} from '../../util/sidebar-groups.js';
 import {groupThreadsByRepo} from '../../util/thread-timeline.js';
-import {renderProjectMonogram} from './sidebar-project-icon.js';
+import {folderSettingsSection} from './build-v2-settings-sections.js';
 import {sidebarStatusDisplays} from './thread-display.js';
+import {VirBuildV2AddFolderModal} from './vir-build-v2-add-folder-modal.element.js';
+import {VirBuildV2SidebarHeader} from './vir-build-v2-sidebar-header.element.js';
 import {VirBuildV2ThreadRow} from './vir-build-v2-thread-row.element.js';
 
 const chevronIcon = createSizedIcon(LucideChevronDownIcon, 12);
@@ -37,14 +63,17 @@ export const VirBuildV2Sidebar = defineAppElement<{
         return {
             actionError: undefined as string | undefined,
             collapsedRepoPaths: [] as ReadonlyArray<string>,
+            searchQuery: '',
+            isAddFolderModalOpen: false,
         };
     },
     styles: css`
+        ${sidebarFolderMenuStyles}
+
         :host {
             display: flex;
             flex-direction: column;
             min-height: 0;
-            overflow-y: auto;
         }
 
         .sidebar {
@@ -54,7 +83,11 @@ export const VirBuildV2Sidebar = defineAppElement<{
             flex-grow: 1;
             width: 100%;
             min-width: 0;
-            padding: 8px;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 4px 0;
+            user-select: none;
+            -webkit-user-select: none;
         }
 
         .message {
@@ -92,7 +125,6 @@ export const VirBuildV2Sidebar = defineAppElement<{
         ul {
             display: flex;
             flex-direction: column;
-            gap: 1px;
             margin: 0;
             padding: 0;
             list-style: none;
@@ -104,43 +136,51 @@ export const VirBuildV2Sidebar = defineAppElement<{
 
         .project {
             position: relative;
-            padding-top: 8px;
+        }
 
-            &:first-child {
-                padding-top: 0;
-            }
+        /* A menu trigger is inline by default, which would shrink the header to its content. */
+        .project ${ViraMenuTrigger} {
+            display: flex;
+            width: 100%;
         }
 
         .project-header {
             display: flex;
+            flex-grow: 1;
             box-sizing: border-box;
             width: 100%;
-            height: 32px;
+            height: 28px;
             align-items: center;
             gap: 10px;
-            padding: 0 8px;
-            border: none;
-            border-radius: 6px;
+            padding: 0 5px;
             background: transparent;
             font: inherit;
             text-align: left;
-            cursor: pointer;
-            outline: none;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
 
             &:hover {
-                background-color: ${viraThemeByKeys.grey['behind-fg']['highest-contrast'].background
+                background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
                     .value};
-            }
-
-            &:focus-visible {
-                outline: 2px solid ${viraThemeByKeys.blue.foreground.body.foreground.value};
-                outline-offset: -2px;
             }
 
             &.drafting {
-                background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
+                background-color: ${viraThemeByKeys.blue['behind-fg']['small-body'].background
                     .value};
+            }
+
+            &.empty-project {
+                cursor: default;
+            }
+        }
+
+        .chevron {
+            display: inline-flex;
+            flex-shrink: 0;
+            transition: transform 120ms;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+
+            &.collapsed {
+                transform: rotate(-90deg);
             }
         }
 
@@ -177,29 +217,18 @@ export const VirBuildV2Sidebar = defineAppElement<{
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
-        .chevron {
-            display: inline-flex;
-            flex-shrink: 0;
-            transition: transform 120ms;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-
-            &.collapsed {
-                transform: rotate(-90deg);
-            }
-        }
-
         .new-thread-wrapper {
             position: absolute;
-            top: 8px;
-            right: 24px;
-            bottom: 0;
+            top: 0;
+            right: 22px;
             display: flex;
+            height: 28px;
             align-items: center;
             opacity: 0;
-        }
 
-        .project:first-child .new-thread-wrapper {
-            top: 0;
+            &.empty-project {
+                right: 2px;
+            }
         }
 
         .project:hover .new-thread-wrapper,
@@ -252,10 +281,20 @@ export const VirBuildV2Sidebar = defineAppElement<{
         const draftRepoPath = inputs.buildV2State.draftRepoPath.value;
         const activeThreadId =
             inputs.route.subPaths[0] === newThreadSubPath ? undefined : inputs.route.subPaths[0];
-        const groups = groupThreadsByRepo({
+        const allGroups = groupThreadsByRepo({
             repos: findThreadRepos(inputs.context),
             threads: threads || [],
         });
+        const snapshot = inputs.context.folderData.value.snapshot;
+        const groups = arrangeRepoGroups({
+            groups: allGroups,
+            folderInfo: inputs.context.folderData.value.folderInfo,
+            repos: snapshot?.repos || [],
+            sorting: snapshot?.settings.sidebarSorting,
+            onlyShowRecent: snapshot?.settings.onlyShowRecent,
+            searchQuery: state.searchQuery,
+        });
+        const isSearching = !!state.searchQuery.trim();
 
         async function runAction(action: () => Promise<void>) {
             try {
@@ -270,7 +309,38 @@ export const VirBuildV2Sidebar = defineAppElement<{
             }
         }
 
+        /** Counts as use of the folder for the "Hide Inactive" filter, which both sidebars share. */
+        function touchFolder(folder: string) {
+            void fetchApi(touchRepoEndpoint, HttpMethod.Post, {
+                requestData: {
+                    folder,
+                },
+            }).catch(() => undefined);
+        }
+
+        async function updateSettings(change: Readonly<Partial<Settings>>) {
+            await runAction(async () => {
+                const settings = await fetchApi(settingsEndpoint, HttpMethod.Get);
+                await fetchApi(settingsEndpoint, HttpMethod.Put, {
+                    requestData: {
+                        ...settings,
+                        ...change,
+                    },
+                });
+                await inputs.context.folderData.refresh();
+            });
+        }
+
+        function startDraft(repoPath: string) {
+            touchFolder(repoPath);
+            inputs.buildV2State.draftRepoPath.setValue(repoPath);
+            inputs.route.navigate([
+                newThreadSubPath,
+            ]);
+        }
+
         function selectThread(thread: Readonly<Thread>) {
+            touchFolder(thread.repoPath);
             inputs.buildV2State.draftRepoPath.setValue(undefined);
             buildV2Memory.selectedThread.write(thread.id);
             inputs.route.navigate([
@@ -279,6 +349,49 @@ export const VirBuildV2Sidebar = defineAppElement<{
         }
 
         return html`
+            <${VirBuildV2SidebarHeader.assign({
+                mobileModal: inputs.context.screenSize === ScreenSize.Mobile,
+                searchQuery: state.searchQuery,
+                hasSearchResult: isSearching && !!groups.length,
+                sidebarSorting: snapshot?.settings.sidebarSorting,
+                onlyShowRecent: snapshot?.settings.onlyShowRecent,
+                themeClient: inputs.context.themeClient,
+            })}
+                ${listen(VirSidebarSearch.events.searchQueryChange, (event) => {
+                    updateState({
+                        searchQuery: event.detail,
+                    });
+                })}
+                ${listen(VirSidebarSearch.events.searchSubmit, () => {
+                    const [firstGroup] = groups;
+                    const [firstThread] = firstGroup?.threads || [];
+                    if (firstThread) {
+                        selectThread(firstThread);
+                    } else if (firstGroup) {
+                        startDraft(firstGroup.repo.path);
+                    }
+                })}
+                ${listen(VirBuildV2SidebarHeader.events.addFolderRequest, () => {
+                    updateState({
+                        isAddFolderModalOpen: true,
+                    });
+                })}
+                ${listen(VirBuildV2SidebarHeader.events.sortingSelect, async (event) => {
+                    await updateSettings({
+                        sidebarSorting: event.detail,
+                    });
+                })}
+                ${listen(VirBuildV2SidebarHeader.events.hideInactiveChange, async (event) => {
+                    await updateSettings({
+                        onlyShowRecent: event.detail,
+                    });
+                })}
+                ${listen(VirBuildV2SidebarHeader.events.settingsRequest, () => {
+                    inputs.context.openSettings({
+                        section: SettingsSection.General,
+                    });
+                })}
+            ></${VirBuildV2SidebarHeader}>
             <div class="sidebar">
                 ${loadError
                     ? html`
@@ -306,16 +419,27 @@ export const VirBuildV2Sidebar = defineAppElement<{
                     : html`
                           <div class="message">Loading threads…</div>
                       `}
-                ${groups.length || !threads
+                ${allGroups.length || !threads
                     ? nothing
                     : html`
                           <div class="message">
                               No projects yet. Add a folder to start a thread in it.
                           </div>
                       `}
+                ${groups.length || !allGroups.length
+                    ? nothing
+                    : html`
+                          <div class="message">
+                              ${isSearching
+                                  ? 'No matching folders or threads.'
+                                  : 'No recently active folders. Toggle Hide Inactive to show all.'}
+                          </div>
+                      `}
                 <ul>
                     ${groups.map((group) => {
-                        const isCollapsed = state.collapsedRepoPaths.includes(group.repo.path);
+                        /** A collapsed folder would hide the threads a search matched. */
+                        const isCollapsed =
+                            !isSearching && state.collapsedRepoPaths.includes(group.repo.path);
                         const isDrafting =
                             draftRepoPath === group.repo.path &&
                             inputs.route.subPaths[0] === newThreadSubPath;
@@ -326,78 +450,219 @@ export const VirBuildV2Sidebar = defineAppElement<{
                             : undefined;
                         return html`
                             <li class="project">
-                                <button
-                                    type="button"
-                                    class=${classMap({
-                                        'project-header': true,
-                                        drafting: isDrafting,
-                                    })}
-                                    aria-expanded=${!isCollapsed}
-                                    title=${group.repo.path}
-                                    ${listen('click', () => {
-                                        updateState({
-                                            collapsedRepoPaths: isCollapsed
-                                                ? state.collapsedRepoPaths.filter(
-                                                      (path) => path !== group.repo.path,
-                                                  )
-                                                : [
-                                                      ...state.collapsedRepoPaths,
-                                                      group.repo.path,
-                                                  ],
-                                        });
-                                    })}
+                                <${ViraCollapsibleWrapper.assign({
+                                    expanded: !isCollapsed,
+                                })}
+                                    ${listen(
+                                        ViraCollapsibleWrapper.events.expandChange,
+                                        (event) => {
+                                            if (!group.threads.length) {
+                                                return;
+                                            }
+                                            updateState({
+                                                collapsedRepoPaths: event.detail
+                                                    ? state.collapsedRepoPaths.filter(
+                                                          (path) => path !== group.repo.path,
+                                                      )
+                                                    : [
+                                                          ...state.collapsedRepoPaths,
+                                                          group.repo.path,
+                                                      ],
+                                            });
+                                        },
+                                    )}
                                 >
-                                    ${renderProjectMonogram({
-                                        projectName: group.repo.name,
+                                    <${ViraMenuTrigger.assign({
+                                        trigger: PopoverTrigger.ContextMenu,
+                                        popoverAnchor: PopoverAnchor.Mouse,
+                                        popoverOffset: sidebarContextMenuOffset,
                                     })}
-                                    <span class="project-name">${group.repo.name}</span>
-                                    ${folderDot
-                                        ? html`
-                                              <span
-                                                  class="folder-dot"
-                                                  style=${css`
-                                                      background-color: ${viraThemeByKeys[
-                                                          folderDot.color
-                                                      ].foreground.body.foreground.value};
-                                                  `}
-                                              >
-                                                  <span class="screen-reader-only">
-                                                      ${folderDot.label}
-                                                  </span>
-                                              </span>
-                                          `
-                                        : nothing}
-                                    ${isCollapsed && group.threads.length
-                                        ? html`
-                                              <span class="thread-count">
-                                                  ${group.threads.length}
-                                              </span>
-                                          `
-                                        : nothing}
-                                    <span
-                                        class=${classMap({
-                                            chevron: true,
-                                            collapsed: isCollapsed,
+                                        slot=${ViraCollapsibleWrapper.slotNames[
+                                            'vira-collapsible-wrapper-header'
+                                        ]}
+                                        ${listen('click', (event) => {
+                                            /**
+                                             * The menu sits inside the collapsible header's button,
+                                             * so a click on a menu item would otherwise also
+                                             * collapse or expand the project.
+                                             */
+                                            const isHeaderClick = event
+                                                .composedPath()
+                                                .some((target) => {
+                                                    return (
+                                                        target instanceof HTMLElement &&
+                                                        target.classList.contains('project-header')
+                                                    );
+                                                });
+                                            if (!isHeaderClick) {
+                                                event.stopPropagation();
+                                            }
                                         })}
                                     >
-                                        <${ViraIcon.assign({
-                                            icon: chevronIcon,
-                                        })}></${ViraIcon}>
-                                    </span>
-                                </button>
-                                <span class="new-thread-wrapper">
+                                        <div
+                                            class=${classMap({
+                                                'project-header': true,
+                                                drafting: isDrafting,
+                                                'empty-project': !group.threads.length,
+                                            })}
+                                            title=${group.repo.path}
+                                            data-sidebar-search-result
+                                            slot=${ViraMenuTrigger.slotNames[
+                                                'vira-menu-trigger-trigger'
+                                            ]}
+                                        >
+                                            <span class="project-name">${group.repo.name}</span>
+                                            ${folderDot
+                                                ? html`
+                                                      <span
+                                                          class="folder-dot"
+                                                          style=${css`
+                                                              background-color: ${viraThemeByKeys[
+                                                                  folderDot.color
+                                                              ].foreground.body.foreground.value};
+                                                          `}
+                                                      >
+                                                          <span class="screen-reader-only">
+                                                              ${folderDot.label}
+                                                          </span>
+                                                      </span>
+                                                  `
+                                                : nothing}
+                                            ${isCollapsed && group.threads.length
+                                                ? html`
+                                                      <span class="thread-count">
+                                                          ${group.threads.length}
+                                                      </span>
+                                                  `
+                                                : nothing}
+                                            ${group.threads.length
+                                                ? html`
+                                                      <span
+                                                          class=${classMap({
+                                                              chevron: true,
+                                                              collapsed: isCollapsed,
+                                                          })}
+                                                      >
+                                                          <${ViraIcon.assign({
+                                                              icon: chevronIcon,
+                                                          })}></${ViraIcon}>
+                                                      </span>
+                                                  `
+                                                : nothing}
+                                        </div>
+                                        ${renderMenuItemEntries([
+                                            {
+                                                content: 'Settings',
+                                                onClick() {
+                                                    inputs.context.openSettings(
+                                                        createSettingsTarget({
+                                                            section: folderSettingsSection,
+                                                            details: {
+                                                                folder: group.repo.path,
+                                                            },
+                                                        }),
+                                                    );
+                                                },
+                                            },
+                                            {
+                                                content: 'Hide folder',
+                                                async onClick() {
+                                                    await runAction(async () => {
+                                                        await fetchApi(
+                                                            hideRepoEndpoint,
+                                                            HttpMethod.Post,
+                                                            {
+                                                                requestData: {
+                                                                    folder: group.repo.path,
+                                                                },
+                                                            },
+                                                        );
+                                                        await inputs.context.folderData.refresh();
+                                                    });
+                                                },
+                                            },
+                                        ])}
+                                    </${ViraMenuTrigger}>
+                                    <ul>
+                                        ${group.threads.map((thread) => {
+                                            return html`
+                                                <li data-sidebar-search-result>
+                                                    <${VirBuildV2ThreadRow.assign({
+                                                        thread,
+                                                        isActive: thread.id === activeThreadId,
+                                                    })}
+                                                        ${listen(
+                                                            VirBuildV2ThreadRow.events.selected,
+                                                            () => {
+                                                                selectThread(thread);
+                                                            },
+                                                        )}
+                                                        ${listen(
+                                                            VirBuildV2ThreadRow.events.renamed,
+                                                            async (event) => {
+                                                                await runAction(async () => {
+                                                                    const renamed =
+                                                                        await buildV2Client.call(
+                                                                            'renameThread',
+                                                                            {
+                                                                                threadId: thread.id,
+                                                                                title: event.detail,
+                                                                            },
+                                                                        );
+                                                                    storeThread(
+                                                                        inputs.buildV2State,
+                                                                        renamed.thread,
+                                                                    );
+                                                                });
+                                                            },
+                                                        )}
+                                                        ${listen(
+                                                            VirBuildV2ThreadRow.events.archived,
+                                                            async () => {
+                                                                await runAction(async () => {
+                                                                    await buildV2Client.call(
+                                                                        'archiveThread',
+                                                                        {
+                                                                            threadId: thread.id,
+                                                                        },
+                                                                    );
+                                                                    inputs.buildV2State.threads.setValue(
+                                                                        inputs.buildV2State.threads.value?.filter(
+                                                                            (existing) => {
+                                                                                return (
+                                                                                    existing.id !==
+                                                                                    thread.id
+                                                                                );
+                                                                            },
+                                                                        ),
+                                                                    );
+                                                                    if (
+                                                                        thread.id === activeThreadId
+                                                                    ) {
+                                                                        inputs.route.navigate([]);
+                                                                    }
+                                                                });
+                                                            },
+                                                        )}
+                                                    ></${VirBuildV2ThreadRow}>
+                                                </li>
+                                            `;
+                                        })}
+                                    </ul>
+                                </${ViraCollapsibleWrapper}>
+                                <span
+                                    class=${classMap({
+                                        'new-thread-wrapper': true,
+                                        'empty-project': !group.threads.length,
+                                    })}
+                                >
                                     <button
                                         type="button"
                                         class="new-thread"
                                         aria-label=${`New thread in ${group.repo.name}`}
                                         title=${`New thread in ${group.repo.name}`}
                                         ${listen('click', () => {
-                                            inputs.buildV2State.draftRepoPath.setValue(
-                                                group.repo.path,
-                                            );
-                                            inputs.route.navigate([
-                                                newThreadSubPath,
-                                            ]);
+                                            startDraft(group.repo.path);
                                         })}
                                     >
                                         <${ViraIcon.assign({
@@ -406,74 +671,28 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                     </button>
                                 </span>
                             </li>
-                            ${isCollapsed
-                                ? nothing
-                                : group.threads.map((thread) => {
-                                      return html`
-                                          <li>
-                                              <${VirBuildV2ThreadRow.assign({
-                                                  thread,
-                                                  isActive: thread.id === activeThreadId,
-                                              })}
-                                                  ${listen(
-                                                      VirBuildV2ThreadRow.events.selected,
-                                                      () => {
-                                                          selectThread(thread);
-                                                      },
-                                                  )}
-                                                  ${listen(
-                                                      VirBuildV2ThreadRow.events.renamed,
-                                                      async (event) => {
-                                                          await runAction(async () => {
-                                                              const renamed =
-                                                                  await buildV2Client.call(
-                                                                      'renameThread',
-                                                                      {
-                                                                          threadId: thread.id,
-                                                                          title: event.detail,
-                                                                      },
-                                                                  );
-                                                              storeThread(
-                                                                  inputs.buildV2State,
-                                                                  renamed.thread,
-                                                              );
-                                                          });
-                                                      },
-                                                  )}
-                                                  ${listen(
-                                                      VirBuildV2ThreadRow.events.archived,
-                                                      async () => {
-                                                          await runAction(async () => {
-                                                              await buildV2Client.call(
-                                                                  'archiveThread',
-                                                                  {
-                                                                      threadId: thread.id,
-                                                                  },
-                                                              );
-                                                              inputs.buildV2State.threads.setValue(
-                                                                  inputs.buildV2State.threads.value?.filter(
-                                                                      (existing) => {
-                                                                          return (
-                                                                              existing.id !==
-                                                                              thread.id
-                                                                          );
-                                                                      },
-                                                                  ),
-                                                              );
-                                                              if (thread.id === activeThreadId) {
-                                                                  inputs.route.navigate([]);
-                                                              }
-                                                          });
-                                                      },
-                                                  )}
-                                              ></${VirBuildV2ThreadRow}>
-                                          </li>
-                                      `;
-                                  })}
                         `;
                     })}
                 </ul>
             </div>
+            <${VirBuildV2AddFolderModal.assign({
+                open: state.isAddFolderModalOpen,
+            })}
+                ${listen(VirBuildV2AddFolderModal.events.close, () => {
+                    updateState({
+                        isAddFolderModalOpen: false,
+                    });
+                })}
+                ${listen(VirBuildV2AddFolderModal.events.errorReport, (event) => {
+                    updateState({
+                        actionError: event.detail,
+                    });
+                })}
+                ${listen(VirBuildV2AddFolderModal.events.folderAdd, async (event) => {
+                    await inputs.context.folderData.refresh();
+                    startDraft(event.detail);
+                })}
+            ></${VirBuildV2AddFolderModal}>
         `;
     },
 });

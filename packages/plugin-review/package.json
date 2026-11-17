@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/plugin-review",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "private": true,
     "description": "",
     "keywords": [],
@@ -30,14 +30,14 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/common": "^0.2.0",
-        "@agent-storm/core": "^0.2.0",
+        "@agent-storm/common": "^0.3.0",
+        "@agent-storm/core": "^0.3.0",
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",
         "@augment-vir/node": "^32.7.1",
         "@electrovir/color": "^2.0.0",
         "@rest-vir/api": "^2.5.0",
-        "agent-storm-util": "^0.2.0",
+        "agent-storm-util": "^0.3.0",
         "date-vir": "^9.4.1",
         "element-vir": "^27.0.2",
         "object-shape-tester": "^6.15.3",

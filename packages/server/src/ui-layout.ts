@@ -1,6 +1,7 @@
 import {
     sharedTabLayoutShape,
     tabSelectionShape,
+    toPaneGroupKey,
     type SharedTabLayout,
     type TabSelection,
     type UiLayout,
@@ -45,6 +46,10 @@ const appLayoutShape = defineShape({
 const folderStateShape = defineShape({
     /** The directory name is only a readable, collision-free key, so the path is kept here. */
     folder: '',
+    /** Missing for the folder's own pane group. See {@link toPaneGroupKey}. */
+    scope: optionalShape('', {
+        alsoUndefined: true,
+    }),
     tabLayout: sharedTabLayoutShape,
     /** The latest selection from any window. */
     tabSelection: optionalShape(tabSelectionShape, {
@@ -66,9 +71,23 @@ export function readUiLayoutRevision() {
     return revision.value;
 }
 
-/** A folder's UI state lives in its own directory, so deleting the folder deletes just that. */
-function toFolderStateDir(folder: string) {
-    const hash = createHash('sha256').update(folder).digest('hex').slice(0, 12);
+/** A pane group's UI state lives in its own directory, so deleting it deletes just that. */
+function toFolderStateDir({
+    folder,
+    scope,
+}: Readonly<{
+    folder: string;
+    scope?: string | undefined;
+}>) {
+    const hash = createHash('sha256')
+        .update(
+            toPaneGroupKey({
+                folder,
+                scope,
+            }),
+        )
+        .digest('hex')
+        .slice(0, 12);
     return join(folderStatesDir, `${basename(folder)}-${hash}`);
 }
 
@@ -109,7 +128,7 @@ export async function loadUiLayout(): Promise<UiLayout> {
         tabLayouts: typedObjectFromEntries(
             folderStates.map((state) => {
                 return [
-                    state.folder,
+                    toPaneGroupKey(state),
                     state.tabLayout,
                 ];
             }),
@@ -119,7 +138,7 @@ export async function loadUiLayout(): Promise<UiLayout> {
                 return state.tabSelection
                     ? [
                           [
-                              state.folder,
+                              toPaneGroupKey(state),
                               state.tabSelection,
                           ],
                       ]
@@ -145,10 +164,12 @@ async function changeUiLayout(change: () => Promise<void>) {
 /** Saves whichever of `layout` and `selection` is given, keeping the other as stored. */
 export async function saveTabLayout({
     folder,
+    scope,
     layout,
     selection,
 }: Readonly<
     PartialWithUndefined<{
+        scope: string;
         layout: Readonly<SharedTabLayout>;
         selection: Readonly<TabSelection>;
     }> & {
@@ -160,7 +181,10 @@ export async function saveTabLayout({
         if (!(await doesPathExist(folder))) {
             return;
         }
-        const stateDir = toFolderStateDir(folder);
+        const stateDir = toFolderStateDir({
+            folder,
+            scope,
+        });
         const existing = await readFolderState(stateDir);
         const tabLayout = layout || existing?.tabLayout;
         /** A selection means nothing without the layout it selects in. */
@@ -172,6 +196,7 @@ export async function saveTabLayout({
             contents: JSON.stringify(
                 {
                     folder,
+                    scope: scope || undefined,
                     tabLayout,
                     tabSelection: selection || existing?.tabSelection,
                 } satisfies typeof folderStateShape.runtimeType,
@@ -251,12 +276,25 @@ export async function saveRememberedSelection({
     });
 }
 
+/** Deletes the state of the folder's own pane group and of every scoped one in it. */
 export async function deleteFolderState(folder: string) {
     await changeUiLayout(async () => {
-        await rm(toFolderStateDir(folder), {
-            recursive: true,
-            force: true,
+        const scopedStates = (await readFolderStates()).filter((state) => {
+            return state.folder === folder;
         });
+        await Promise.all(
+            [
+                {
+                    folder,
+                },
+                ...scopedStates,
+            ].map(async (state) => {
+                await rm(toFolderStateDir(state), {
+                    recursive: true,
+                    force: true,
+                });
+            }),
+        );
     });
 }
 

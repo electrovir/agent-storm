@@ -32,5 +32,7 @@ export function readEffectiveEffort({
     model: Readonly<Pick<ProviderModel, 'supportedEfforts' | 'defaultEffort'>> | undefined;
     effort: ReasoningEffort | undefined;
 }>) {
-    return effort && model?.supportedEfforts.includes(effort) ? effort : model?.defaultEffort;
+    return effort && model?.supportedEfforts.includes(effort)
+        ? effort
+        : model?.defaultEffort || undefined;
 }

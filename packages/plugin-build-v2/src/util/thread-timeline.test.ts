@@ -31,6 +31,7 @@ function createThread(overrides: Readonly<Partial<Thread>>): Thread {
         runtimeMode: RuntimeMode.FullAccess,
         title: 'Thread',
         status: ThreadStatus.Idle,
+        hasUnreadReply: false,
         createdAt: 0,
         updatedAt: 0,
         ...overrides,

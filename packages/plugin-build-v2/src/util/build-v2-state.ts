@@ -3,6 +3,7 @@ import {extractErrorMessage} from '@augment-vir/common';
 import {Observable} from 'element-vir';
 import {buildV2PluginId, type Thread} from '../build-v2-api.js';
 import {buildV2Client} from './build-v2-client.js';
+import {buildV2Memory} from './build-v2-memory.js';
 import {findPathName, upsertThread, type ThreadRepo} from './thread-timeline.js';
 
 export const buildV2ActivityId = buildV2PluginId;
@@ -12,6 +13,12 @@ export const newThreadSubPath = 'new';
 
 /** Everything the Build V2 plugin keeps for the app's whole life. */
 export function createBuildV2State() {
+    const draftRepoPath = new Observable<string | undefined>({
+        defaultValue: buildV2Memory.draftRepoPath.read(),
+    });
+    draftRepoPath.listen(false, (value) => {
+        buildV2Memory.draftRepoPath.write(value);
+    });
     return {
         /** Every thread that isn't archived. Undefined until the first list loads. */
         threads: new Observable<ReadonlyArray<Readonly<Thread>> | undefined>({
@@ -21,9 +28,7 @@ export function createBuildV2State() {
             defaultValue: undefined,
         }),
         /** The checkout the new-thread composer starts its thread in. */
-        draftRepoPath: new Observable<string | undefined>({
-            defaultValue: undefined,
-        }),
+        draftRepoPath,
     };
 }
 

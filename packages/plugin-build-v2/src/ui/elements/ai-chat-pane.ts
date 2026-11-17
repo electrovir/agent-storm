@@ -24,6 +24,7 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
                 context: params.context,
                 threadId: params.tabState.threadId || undefined,
                 repoPath: params.folder,
+                isShown: params.isDisplayed && params.isActive,
             })}
                 ${listen(VirAiChat.events.threadCreated, (event) => {
                     const state = findBuildV2State(params.context);
@@ -39,6 +40,16 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
                         });
                     });
                 })}
+                ${listen(VirAiChat.events.threadArchived, () => {
+                    params.writeLayout((current) => {
+                        return updateTabState(current, {
+                            tabId: params.tabId,
+                            state: {
+                                threadId: '',
+                            } satisfies typeof aiChatTabStateShape.runtimeType,
+                        });
+                    });
+                })}
             ></${VirAiChat}>
         `,
     );
@@ -48,30 +59,15 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
 export const aiChatPane: PaneDefinition<typeof aiChatTabStateShape> = {
     id: 'ai-chat',
     tabStateShape: aiChatTabStateShape,
-    label({tabState, context}) {
-        return (
-            findBuildV2State(context)?.threads.value?.find(
-                (thread) => thread.id === tabState.threadId,
-            )?.title || 'AI Chat'
-        );
+    label() {
+        return 'AI Chat';
     },
-    newTabEntries({context, folder}) {
-        const folderThreads = (findBuildV2State(context)?.threads.value || [])
-            .filter((thread) => thread.repoPath === folder || thread.cwd === folder)
-            .toSorted((first, second) => second.updatedAt - first.updatedAt);
+    newTabEntries() {
         return [
             {
                 label: 'AI Chat',
                 state: undefined,
             },
-            ...folderThreads.map((thread) => {
-                return {
-                    label: `AI Chat: ${thread.title || 'New thread'}`,
-                    state: {
-                        threadId: thread.id,
-                    },
-                };
-            }),
         ];
     },
     icon: createSizedIcon(LucideMessageSquareIcon, 14),

@@ -41,6 +41,7 @@ enum ApprovalKind {
   command
   fileChange
   permission
+  question
 }
 
 enum ReasoningEffort {
@@ -78,10 +79,14 @@ model Thread {
   /// Null for the model's default effort.
   effort            ReasoningEffort?
   runtimeMode       RuntimeMode      @default(fullAccess)
+  /// The provider's id for a faster service tier. Null for standard speed.
+  speedTier         String?
   title             String
   status            ThreadStatus
   /// The provider's own id for the conversation: Claude's session id or Codex's thread id.
   providerSessionId String?
+  /// Set when the agent finishes a reply, and cleared once the thread is on screen.
+  hasUnreadReply    Boolean      @default(false)
 
   items    ThreadItem[]
   requests ApprovalRequest[]
@@ -117,6 +122,8 @@ model ApprovalRequest {
   title      String
   detail     String
   reason     String
+  /// A question request's questions as JSON. An empty array for every other kind.
+  questions  String            @default("[]")
   resolvedAt DateTime?
   decision   ApprovalDecision?
   threadId   String

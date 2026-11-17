@@ -321,9 +321,12 @@ export async function markPaneStarted({
 export async function createFolderSession({
     folder: folderPath,
     kind,
+    scope,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
+    /** The pane group the tab joins. Empty for the folder's own. */
+    scope?: string | undefined;
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
     const current = await getFolderSessions(folder);
@@ -331,15 +334,22 @@ export async function createFolderSession({
         ...current,
         [kind]: [
             ...current[kind],
-            createSessionMeta({
-                id: createCuid2(),
-                /**
-                 * An AI's resume command is usually written to pick the last conversation back up
-                 * (`claude --continue` and the like), so a new tab launched with it would show the
-                 * conversation another tab already holds.
-                 */
-                isNewConversation: paneKindRunsAi[kind],
-            }),
+            {
+                ...createSessionMeta({
+                    id: createCuid2(),
+                    /**
+                     * An AI's resume command is usually written to pick the last conversation back
+                     * up (`claude --continue` and the like), so a new tab launched with it would
+                     * show the conversation another tab already holds.
+                     */
+                    isNewConversation: paneKindRunsAi[kind],
+                }),
+                ...(scope
+                    ? {
+                          scope,
+                      }
+                    : {}),
+            },
         ],
     };
     writeFolder(folder, updated);

@@ -1,22 +1,26 @@
-import {defineAppElement} from '@agent-storm/core/frontend';
+import {
+    defineAppElement,
+    sidebarContextMenuOffset,
+    sidebarFolderMenuStyles,
+    spinAnimationCss,
+    spinKeyframesCss,
+} from '@agent-storm/core/frontend';
 import {extractEventTarget} from '@augment-vir/web';
 import {classMap, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
     createSizedIcon,
-    LucideArchiveIcon,
     LucideFolderGit2Icon,
-    LucidePencilIcon,
+    PopoverAnchor,
+    PopoverTrigger,
+    renderMenuItemEntries,
+    tooltip,
     ViraIcon,
-    viraShadows,
+    ViraMenuTrigger,
     viraThemeByKeys,
 } from 'vira';
 import {ThreadStatus, type Thread} from '../../build-v2-api.js';
-import {menuItemStyles} from './sidebar-button-classes.js';
 import {sidebarStatusDisplays} from './thread-display.js';
 
-const archiveIcon = createSizedIcon(LucideArchiveIcon, 12);
-const menuArchiveIcon = createSizedIcon(LucideArchiveIcon, 16);
-const menuRenameIcon = createSizedIcon(LucidePencilIcon, 16);
 const branchIcon = createSizedIcon(LucideFolderGit2Icon, 14);
 
 const minuteMs = 60_000;
@@ -49,13 +53,20 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         return {
             /** The title being typed while renaming. Undefined when not renaming. */
             renameText: undefined as string | undefined,
-            menuPosition: undefined as {x: number; y: number} | undefined,
+            isMenuOpen: false,
         };
     },
     styles: css`
+        ${sidebarFolderMenuStyles}
+
         :host {
             display: block;
             min-height: 0;
+        }
+
+        /* A menu trigger is inline by default, which would shrink the row to its content. */
+        ${ViraMenuTrigger} {
+            display: flex;
         }
 
         .row {
@@ -63,19 +74,20 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             display: flex;
             box-sizing: border-box;
             width: 100%;
-            height: 36px;
+            height: 28px;
             align-items: center;
-            padding: 0 10px 0 36px;
-            border-radius: 6px;
+            padding: 0 5px 0 17px;
             overflow: hidden;
             cursor: pointer;
             user-select: none;
+            -webkit-user-select: none;
             outline: none;
             text-align: left;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
 
-            &:hover {
-                background-color: ${viraThemeByKeys.grey['behind-fg']['highest-contrast'].background
+            &:hover,
+            &.menu-open {
+                background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
                     .value};
             }
 
@@ -85,7 +97,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             }
 
             &.active {
-                background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
+                background-color: ${viraThemeByKeys.blue['behind-fg']['small-body'].background
                     .value};
             }
 
@@ -94,8 +106,8 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                 flex-direction: column;
                 align-items: stretch;
                 justify-content: center;
-                padding-top: 6px;
-                padding-bottom: 6px;
+                padding-top: 3px;
+                padding-bottom: 3px;
             }
 
             &.dim-while-running {
@@ -106,18 +118,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                 &:focus-within {
                     opacity: 1;
                 }
-            }
-
-            &:hover .status,
-            &:focus-within .status {
-                opacity: 0;
-            }
-
-            &:hover .archive,
-            &:focus-visible .archive,
-            & .archive:focus-visible {
-                opacity: 1;
-                pointer-events: auto;
             }
         }
 
@@ -162,6 +162,9 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             font: inherit;
             font-size: 14px;
             font-weight: 500;
+            /** The sidebar turns off text selection, which Safari also applies to typing. */
+            user-select: text;
+            -webkit-user-select: text;
             background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
 
@@ -188,34 +191,24 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             font-size: 12px;
             font-variant-numeric: tabular-nums;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            transition: opacity 120ms;
 
             &.has-status {
                 font-weight: 500;
             }
-        }
 
-        .archive {
-            position: absolute;
-            top: 0;
-            right: 0;
-            bottom: 0;
-            display: inline-flex;
-            align-items: center;
-            padding: 0 8px;
-            border: none;
-            border-radius: 6px;
-            background: transparent;
-            cursor: pointer;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 120ms;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-
-            &:hover {
-                color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            &.spinning ${ViraIcon} {
+                ${spinAnimationCss}
             }
         }
+
+        .unread-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
+        }
+
+        ${spinKeyframesCss}
 
         .branch {
             display: flex;
@@ -233,27 +226,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                 text-overflow: ellipsis;
             }
         }
-
-        .menu-backdrop {
-            position: fixed;
-            inset: 0;
-            z-index: 129;
-        }
-
-        .menu {
-            position: fixed;
-            z-index: 130;
-            box-sizing: border-box;
-            min-width: min(160px, calc(100vw - 32px));
-            max-width: calc(100vw - 32px);
-            padding: 4px;
-            border: 1px solid ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
-            border-radius: 8px;
-            background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
-            ${viraShadows.menuShadow}
-        }
-
-        ${menuItemStyles}
     `,
     render({inputs, state, updateState, dispatch, events}) {
         const display = sidebarStatusDisplays[inputs.thread.status];
@@ -278,7 +250,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
 
         function startRename() {
             updateState({
-                menuPosition: undefined,
                 renameText: inputs.thread.title,
             });
         }
@@ -350,141 +321,113 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                   `;
 
         return html`
-            <div
-                role="button"
-                tabindex="0"
-                aria-label=${inputs.thread.title}
-                aria-current=${inputs.isActive ? 'page' : nothing}
-                class=${classMap({
-                    row: true,
-                    active: inputs.isActive,
-                    multiline: isMultiline,
-                    'dim-while-running':
-                        shouldRecede && inputs.thread.status === ThreadStatus.Running,
-                })}
-                ${listen('click', select)}
-                ${listen('dblclick', startRename)}
-                ${listen('keydown', (event) => {
-                    if (
-                        event.target === event.currentTarget &&
-                        [
-                            'Enter',
-                            ' ',
-                        ].includes(event.key)
-                    ) {
-                        event.preventDefault();
-                        select();
-                    }
-                })}
-                ${listen('contextmenu', (event) => {
-                    event.preventDefault();
+            <${ViraMenuTrigger.assign({
+                trigger: PopoverTrigger.ContextMenu,
+                popoverAnchor: PopoverAnchor.Mouse,
+                popoverOffset: sidebarContextMenuOffset,
+            })}
+                ${listen(ViraMenuTrigger.events.openChange, (event) => {
                     updateState({
-                        menuPosition: {
-                            x: event.clientX,
-                            y: event.clientY,
-                        },
+                        isMenuOpen: event.detail,
                     });
                 })}
             >
-                <div class="top">
-                    ${title}
-                    <span class="trailing">
-                        <span
-                            class=${classMap({
-                                status: true,
-                                'has-status': !!display.status,
-                            })}
-                            style=${display.status
-                                ? css`
-                                      color: ${viraThemeByKeys[display.status.color].foreground.body
-                                          .foreground.value};
-                                  `
-                                : nothing}
-                        >
-                            ${display.status
-                                ? html`
-                                      <${ViraIcon.assign({
-                                          icon: display.status.icon,
-                                      })}></${ViraIcon}>
-                                      ${display.status.label}
-                                  `
-                                : compactTimeLabel(inputs.thread.updatedAt)}
+                <div
+                    slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                    role="button"
+                    tabindex="0"
+                    aria-label=${inputs.thread.title}
+                    aria-current=${inputs.isActive ? 'page' : nothing}
+                    class=${classMap({
+                        row: true,
+                        active: inputs.isActive,
+                        multiline: isMultiline,
+                        'menu-open': state.isMenuOpen,
+                        'dim-while-running':
+                            shouldRecede && inputs.thread.status === ThreadStatus.Running,
+                    })}
+                    ${listen('click', select)}
+                    ${listen('dblclick', startRename)}
+                    ${listen('keydown', (event) => {
+                        if (
+                            event.target === event.currentTarget &&
+                            [
+                                'Enter',
+                                ' ',
+                            ].includes(event.key)
+                        ) {
+                            event.preventDefault();
+                            select();
+                        }
+                    })}
+                >
+                    <div class="top">
+                        ${title}
+                        <span class="trailing">
+                            <span
+                                class=${classMap({
+                                    status: true,
+                                    'has-status': !!display.status,
+                                    spinning: !!display.status?.isSpinning,
+                                })}
+                                ${display.status?.tooltip
+                                    ? tooltip(display.status.tooltip, {
+                                          delay: {
+                                              milliseconds: 300,
+                                          },
+                                      })
+                                    : nothing}
+                                style=${display.status
+                                    ? css`
+                                          color: ${viraThemeByKeys[display.status.color].foreground
+                                              .body.foreground.value};
+                                      `
+                                    : nothing}
+                            >
+                                ${display.status
+                                    ? html`
+                                          <${ViraIcon.assign({
+                                              icon: display.status.icon,
+                                          })}></${ViraIcon}>
+                                          ${display.status.label || nothing}
+                                      `
+                                    : html`
+                                          ${inputs.thread.hasUnreadReply && !inputs.isActive
+                                              ? html`
+                                                    <span
+                                                        class="unread-dot"
+                                                        role="img"
+                                                        aria-label="New reply"
+                                                    ></span>
+                                                `
+                                              : nothing}
+                                          ${compactTimeLabel(inputs.thread.updatedAt)}
+                                      `}
+                            </span>
                         </span>
-                        <button
-                            type="button"
-                            class="archive"
-                            aria-label="Archive thread"
-                            title="Archive thread"
-                            ${listen('click', (event) => {
-                                event.stopPropagation();
-                                archive();
-                            })}
-                        >
-                            <${ViraIcon.assign({
-                                icon: archiveIcon,
-                            })}></${ViraIcon}>
-                        </button>
-                    </span>
+                    </div>
+                    ${isMultiline
+                        ? html`
+                              <div class="branch">
+                                  <${ViraIcon.assign({
+                                      icon: branchIcon,
+                                  })}></${ViraIcon}>
+                                  <span class="branch-name">${inputs.thread.worktreeBranch}</span>
+                              </div>
+                          `
+                        : nothing}
                 </div>
-                ${isMultiline
-                    ? html`
-                          <div class="branch">
-                              <${ViraIcon.assign({
-                                  icon: branchIcon,
-                              })}></${ViraIcon}>
-                              <span class="branch-name">${inputs.thread.worktreeBranch}</span>
-                          </div>
-                      `
-                    : nothing}
-            </div>
-            ${state.menuPosition
-                ? html`
-                      <div
-                          class="menu-backdrop"
-                          ${listen('click', () => {
-                              updateState({
-                                  menuPosition: undefined,
-                              });
-                          })}
-                          ${listen('contextmenu', (event) => {
-                              event.preventDefault();
-                              updateState({
-                                  menuPosition: undefined,
-                              });
-                          })}
-                      ></div>
-                      <div
-                          class="menu"
-                          role="menu"
-                          style=${css`
-                              left: ${state.menuPosition.x}px;
-                              top: ${state.menuPosition.y}px;
-                          `}
-                      >
-                          <div class="menu-item" role="menuitem" ${listen('click', startRename)}>
-                              <${ViraIcon.assign({
-                                  icon: menuRenameIcon,
-                              })}></${ViraIcon}>
-                              Rename
-                          </div>
-                          <div
-                              class="menu-item"
-                              role="menuitem"
-                              ${listen('click', () => {
-                                  updateState({
-                                      menuPosition: undefined,
-                                  });
-                                  archive();
-                              })}
-                          >
-                              <${ViraIcon.assign({
-                                  icon: menuArchiveIcon,
-                              })}></${ViraIcon}>
-                              Archive
-                          </div>
-                      </div>
-                  `
-                : nothing}
+                ${renderMenuItemEntries([
+                    {
+                        content: 'Rename',
+                        onClick: startRename,
+                    },
+                    {
+                        content: 'Archive',
+                        onClick: archive,
+                    },
+                ])}
+            </${ViraMenuTrigger}>
         `;
     },
 });

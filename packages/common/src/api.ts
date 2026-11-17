@@ -800,6 +800,13 @@ export const sessionMetaShape = defineShape({
     launchedAiId: optionalShape('', {
         alsoUndefined: true,
     }),
+    /**
+     * The pane group the tab belongs to, when the folder has more than one (see
+     * {@link toPaneGroupKey}). Missing for the folder's own tabs.
+     */
+    scope: optionalShape('', {
+        alsoUndefined: true,
+    }),
 });
 
 /**
@@ -819,6 +826,10 @@ const sessionListRequestShape = defineShape({
 const sessionCreateRequestShape = defineShape({
     folder: '',
     kind: enumShape(PaneKind),
+    /** The pane group the new tab joins. Empty for the folder's own. */
+    scope: optionalShape('', {
+        alsoUndefined: true,
+    }),
 });
 
 const sessionRenameRequestShape = defineShape({
@@ -1579,16 +1590,53 @@ export const tabSelectionShape = defineShape({
 
 export type TabSelection = typeof tabSelectionShape.runtimeType;
 
+/** A null character can't be in a path, so no folder's key can be mistaken for a scoped one. */
+const paneGroupKeySeparator = '\0';
+
+/**
+ * Keys a pane group's tab layout. A folder's own pane group is keyed by its path. A scoped one,
+ * such as a Build V2 thread's, shares the folder's terminals' working directory but keeps its own
+ * tabs.
+ */
+export function toPaneGroupKey({
+    folder,
+    scope,
+}: Readonly<{
+    folder: string;
+    scope?: string | undefined;
+}>) {
+    return scope
+        ? [
+              folder,
+              scope,
+          ].join(paneGroupKeySeparator)
+        : folder;
+}
+
+/** Reverses {@link toPaneGroupKey}. */
+export function parsePaneGroupKey(key: string) {
+    const separatorIndex = key.indexOf(paneGroupKeySeparator);
+    return separatorIndex < 0
+        ? {
+              folder: key,
+              scope: undefined,
+          }
+        : {
+              folder: key.slice(0, separatorIndex),
+              scope: key.slice(separatorIndex + paneGroupKeySeparator.length),
+          };
+}
+
 /** UI layout kept on the server so every window shows the same one. */
 export const uiLayoutShape = defineShape({
-    /** Keyed by folder path. */
+    /** Keyed by {@link toPaneGroupKey}. */
     tabLayouts: recordShape({
         keys: '',
         values: sharedTabLayoutShape,
     }),
     /**
-     * The selection last made in each folder, keyed by folder path. A window uses it wherever it
-     * has no valid selection of its own.
+     * The selection last made in each pane group, keyed by {@link toPaneGroupKey}. A window uses it
+     * wherever it has no valid selection of its own.
      */
     tabSelections: recordShape({
         keys: '',
@@ -1636,6 +1684,10 @@ export const tabLayoutSaveEndpoint = defineEndpoint({
         [HttpMethod.Put]: {
             requestData: defineShape({
                 folder: '',
+                /** Empty for the folder's own pane group. See {@link toPaneGroupKey}. */
+                scope: optionalShape('', {
+                    alsoUndefined: true,
+                }),
                 /** Omitted when only the selection changed. */
                 layout: optionalShape(sharedTabLayoutShape, {
                     alsoUndefined: true,
