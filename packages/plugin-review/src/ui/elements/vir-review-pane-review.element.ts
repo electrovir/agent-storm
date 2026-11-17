@@ -16,6 +16,15 @@ const reviewStateTagColors: Record<GitHubReviewState, ViraThemeColorName> = {
     [GitHubReviewState.Pending]: ViraThemeColorName.yellow,
 };
 
+/**
+ * Bodies the manual-review skill posts when no summary is given, because GitHub requires a body for
+ * these verdicts. The verdict tag already says the same thing.
+ */
+const fillerReviewBodies = [
+    'Requesting changes.',
+    'Reviewed.',
+];
+
 /** A submitted review in the Review pane's conversation list. */
 export const VirReviewPaneReview = defineAppElement<{
     review: Readonly<GitHubReview>;
@@ -105,7 +114,12 @@ export const VirReviewPaneReview = defineAppElement<{
                         </${ViraLink}>
                     </div>
                 </div>
-                ${inputs.review.bodyHtml
+                ${inputs.review.bodyHtml &&
+                !fillerReviewBodies.includes(
+                    new DOMParser()
+                        .parseFromString(inputs.review.bodyHtml, 'text/html')
+                        .body.textContent.trim(),
+                )
                     ? html`
                           <div class="markdown">
                               ${unsafeHTML(sanitizeGitHubHtml(inputs.review.bodyHtml))}

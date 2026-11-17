@@ -249,16 +249,17 @@ export const VirReviewPaneConversations = defineAppElement<{
                 };
             }),
         ].toSorted((first, second) => first.createdAt.localeCompare(second.createdAt));
-        /** Commits arrive one by one, so a run of them from one author reads as a single push. */
+        /**
+         * A run of pushes from one author reads as a single push, shown as the run's latest push
+         * (its time and whether it was forced).
+         */
         const timeline = oldestFirst
             .filter((entry, index) => {
                 const next = oldestFirst[index + 1];
                 return !(
                     'push' in entry &&
-                    !entry.push.isForcePush &&
                     next &&
                     'push' in next &&
-                    !next.push.isForcePush &&
                     next.push.pusher === entry.push.pusher
                 );
             })
