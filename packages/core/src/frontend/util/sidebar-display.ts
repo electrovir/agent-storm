@@ -8,7 +8,6 @@ import {
     LucideLoaderIcon,
     LucideMinusIcon,
     LucideXIcon,
-    Ring016Icon,
     Ring116Icon,
     Ring216Icon,
     Ring316Icon,
@@ -60,8 +59,8 @@ export const prStatusIcons: Record<PrStatus, ViraIconSvg | undefined> = {
     [PrStatus.Closed]: undefined,
 };
 
-/** Shown in place of a PR status that has no icon of its own. */
-export const localChangesIcon = createPrRingIcon(Ring016Icon, ViraThemeColorName.grey);
+/** Shown in place of an open PR's status while the checkout has changes the PR doesn't have yet. */
+export const localChangesIcon = createPrRingIcon(Ring116Icon, ViraThemeColorName.grey);
 export const localChangesTooltip = 'Has uncommitted or not pushed changes.';
 
 export const prStatusTooltips: Record<PrStatus, string> = {

@@ -204,17 +204,21 @@ export const VirSidebarRow = defineAppElement<{
             inputs.folder.git.dirty ? '*' : '',
             inputs.folder.git.notPushed ? '+' : '',
         ].join('');
+        const hasPr = !!inputs.folder.prUrl;
+        const isPrFinished = finishedPrStatuses.includes(inputs.folder.prStatus);
         const showsLocalChanges =
-            !prStatusIcons[inputs.folder.prStatus] &&
-            (inputs.folder.git.dirty || inputs.folder.git.notPushed);
+            hasPr && !isPrFinished && (inputs.folder.git.dirty || inputs.folder.git.notPushed);
         const statusIcon = showsLocalChanges
             ? localChangesIcon
             : prStatusIcons[inputs.folder.prStatus];
         const statusTooltip = showsLocalChanges
-            ? localChangesTooltip
+            ? [
+                  localChangesTooltip,
+                  prStatusTooltips[inputs.folder.prStatus],
+              ]
+                  .filter(Boolean)
+                  .join(' ')
             : prStatusTooltips[inputs.folder.prStatus];
-        const hasPr = !!inputs.folder.prUrl;
-        const isPrFinished = finishedPrStatuses.includes(inputs.folder.prStatus);
 
         return html`
             <${ViraMenuTrigger.assign({

@@ -162,7 +162,7 @@ export const VirSidebarHeader = defineAppElement<{
                     buttonSize,
                     color: ViraColorVariant.Positive,
                 })}
-                    ${tooltip('Add new repository.', sidebarTooltipOptions)}
+                    ${tooltip('Add folder', sidebarTooltipOptions)}
                     ${listen('click', () => {
                         dispatch(
                             new events.addRepoRequest({
