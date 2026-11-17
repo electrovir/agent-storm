@@ -45,6 +45,7 @@ const baseRawPr: RawPrView = {
         },
     ],
     latestReviews: [],
+    reviews: [],
     reviewRequests: [],
     statusCheckRollup: [],
 };
@@ -299,6 +300,73 @@ describe(classifyPrCheck.name, () => {
         );
     });
 
+    it('marks a change requester with no review threads as summary-only', () => {
+        const changeRequest = {
+            authorAssociation: RawAuthorAssociation.Member,
+            state: RawReviewState.ChangesRequested,
+            submittedAt: '2026-10-02T00:00:00Z',
+        };
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        latestReviews: [
+                            {
+                                ...changeRequest,
+                                author: {
+                                    login: 'summary-only',
+                                },
+                            },
+                            {
+                                ...changeRequest,
+                                author: {
+                                    login: 'line-commenter',
+                                },
+                            },
+                        ],
+                    },
+                    threads: [
+                        {
+                            id: 'thread',
+                            isResolved: true,
+                            comments: {
+                                nodes: [
+                                    {
+                                        author: {
+                                            __typename: RawActorType.User,
+                                            login: 'line-commenter',
+                                        },
+                                        authorAssociation: RawAuthorAssociation.Member,
+                                        body: 'Rename this.',
+                                        createdAt: '2026-10-02T00:00:00Z',
+                                        reactionGroups: [],
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    reReviewLogins: true,
+                    summaryOnlyReReviewLogins: true,
+                },
+            ),
+            {
+                reReviewLogins: [
+                    'summary-only',
+                    'line-commenter',
+                ],
+                summaryOnlyReReviewLogins: [
+                    'summary-only',
+                ],
+            },
+        );
+    });
+
     it('ignores reviews from outside the repo', () => {
         assert.deepEquals(
             selectFrom(
@@ -333,35 +401,93 @@ describe(classifyPrCheck.name, () => {
         );
     });
 
-    it("finds the viewer's latest verdict, hidden by a later comment", () => {
-        const verdictAts = [
-            RawReviewState.Approved,
-            RawReviewState.Commented,
-        ].map((state) => {
-            return classifyPrCheck({
+    it('keeps a change request that a later comment follows but not one a later approval does', () => {
+        assert.deepEquals(
+            classifyPrCheck({
                 trustedBotLogins: [],
                 pr: {
                     ...baseRawPr,
-                    latestReviews: [
+                    reviews: [
                         {
                             author: {
-                                login: 'viewer',
+                                login: 'commenter',
                             },
-                            authorAssociation: RawAuthorAssociation.Member,
-                            state,
-                            submittedAt: '2026-10-02T00:00:00Z',
+                            state: RawReviewState.ChangesRequested,
+                        },
+                        {
+                            author: {
+                                login: 'approver',
+                            },
+                            state: RawReviewState.ChangesRequested,
+                        },
+                        {
+                            author: {
+                                login: 'commenter',
+                            },
+                            state: RawReviewState.Commented,
+                        },
+                        {
+                            author: {
+                                login: 'approver',
+                            },
+                            state: RawReviewState.Approved,
                         },
                     ],
                 },
                 threads: [],
                 viewerLogin: 'viewer',
                 checkedAt: '2026-10-31T00:00:00Z',
-            }).viewerVerdictAt;
-        });
-        assert.deepEquals(verdictAts, [
-            '2026-10-02T00:00:00Z',
-            '',
-        ]);
+            }).changesRequestedBy,
+            [
+                'commenter',
+            ],
+        );
+    });
+
+    it("finds the viewer's latest verdict past a later comment", () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        reviews: [
+                            {
+                                author: {
+                                    login: 'viewer',
+                                },
+                                state: RawReviewState.Approved,
+                                submittedAt: '2026-10-02T00:00:00Z',
+                                commit: {
+                                    oid: 'abc1234',
+                                },
+                            },
+                            {
+                                author: {
+                                    login: 'viewer',
+                                },
+                                state: RawReviewState.Commented,
+                                submittedAt: '2026-10-03T00:00:00Z',
+                                commit: {
+                                    oid: 'abc1234',
+                                },
+                            },
+                        ],
+                    },
+                    threads: [],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    viewerVerdictAt: true,
+                    viewerVerdictSha: true,
+                },
+            ),
+            {
+                viewerVerdictAt: '2026-10-02T00:00:00Z',
+                viewerVerdictSha: 'abc1234',
+            },
+        );
     });
 });
 

@@ -91,6 +91,17 @@ const rawPrViewFields = {
             submittedAt: '',
         },
     ],
+    /** Every review, oldest first. Unlike `latestReviews`, a later comment hides no verdict here. */
+    reviews: [
+        {
+            author: rawLoginShape,
+            state: enumShape(RawReviewState),
+            submittedAt: nullableShape(''),
+            commit: nullableShape({
+                oid: '',
+            }),
+        },
+    ],
     reviewRequests: [
         partialShape({
             login: '',
@@ -470,6 +481,15 @@ export function classifyPrCheck({
      * A changes-requested review whose threads are all resolved has been answered, so it belongs
      * back in the reviewer's queue whether or not a pass pushed anything for it.
      */
+    const viewerVerdict = pr.reviews.findLast((review) => {
+        return (
+            toLogin(review.author) === viewerLogin &&
+            [
+                RawReviewState.Approved,
+                RawReviewState.ChangesRequested,
+            ].includes(review.state)
+        );
+    });
     const reReviewLogins = removeDuplicates(
         collaboratorReviews
             .filter((review) => review.state === RawReviewState.ChangesRequested)
@@ -549,27 +569,39 @@ export function classifyPrCheck({
         gatingPendingCount,
         failingChecks,
         reReviewLogins,
+        /** The `reReviewLogins` who opened no review thread, so left nothing that can be resolved. */
+        summaryOnlyReReviewLogins: reReviewLogins.filter((login) => {
+            return !threads.some((thread) => toLogin(thread.comments.nodes[0]?.author) === login);
+        }),
         needs,
         isReadyToMerge: isNothingOpen && mergeableMergeStates[mergeState],
         isAwaitingRequestedReview,
         isAwaitingViewerReview:
             isAwaitingRequestedReview && requestedReviewers.includes(viewerLogin),
-        /**
-         * ISO time of the viewer's latest approval or change request, empty when the viewer's
-         * latest review is neither. GitHub keeps only each author's latest review here, so a
-         * comment the viewer posts afterward hides the verdict.
-         */
-        viewerVerdictAt:
-            pr.latestReviews.find((review) => {
-                return (
-                    toLogin(review.author) === viewerLogin &&
-                    [
-                        RawReviewState.Approved,
-                        RawReviewState.ChangesRequested,
-                    ].includes(review.state)
-                );
-            })?.submittedAt || '',
+        /** ISO time of the viewer's latest approval or change request, empty when there is none. */
+        viewerVerdictAt: viewerVerdict?.submittedAt || '',
+        /** The commit the viewer's latest approval or change request was on. */
+        viewerVerdictSha: viewerVerdict?.commit?.oid || '',
+        /** Logins whose latest approval, change request, or dismissal is a change request. */
+        changesRequestedBy: removeDuplicates(
+            pr.reviews.map((review) => toLogin(review.author)).filter(check.isTruthy),
+        ).filter((login) => {
+            return (
+                pr.reviews.findLast((review) => {
+                    return (
+                        toLogin(review.author) === login &&
+                        [
+                            RawReviewState.Approved,
+                            RawReviewState.ChangesRequested,
+                            RawReviewState.Dismissed,
+                        ].includes(review.state)
+                    );
+                })?.state === RawReviewState.ChangesRequested
+            );
+        }),
         isBlockedOnHuman: thumbsUpWaitCount > 0 || isAwaitingRequestedReview,
+        /** A review thread waits on a human's answer or the viewer's 👍. */
+        isAwaitingThreadAnswer: thumbsUpWaitCount > 0,
         /** ISO time of the latest collaborator review or comment, empty when there is none. */
         humanActivityAt,
     };

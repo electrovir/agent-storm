@@ -6,7 +6,6 @@ import {
     PrStatus,
     RawPrState,
     RawReviewDecision,
-    RawReviewState,
     WatchModeStatus,
     type FolderInfo,
     type PullRequestBranch,
@@ -1050,11 +1049,14 @@ async function checkFolder({
     folder,
     entry,
     finishedPass,
+    isPassExited,
 }: Readonly<{
     deps: Readonly<WatchModeDeps>;
     folder: string;
     entry: Readonly<WatchEntry>;
     finishedPass: WatchEntry['pass'];
+    /** The pass's tab exited, so it may not have finished its tasks and they get sent again. */
+    isPassExited: boolean;
 }>) {
     const branch = await readReviewHost().getCurrentBranch(folder);
     const slug = await readReviewHost().getRepoSlug(folder);
@@ -1211,8 +1213,13 @@ async function checkFolder({
               ]
             : []),
     ];
+    const needTaskList = prCheck.needs.map((need) => needTasks[need]).filter(check.isTruthy);
+    /** Feedback that lands mid-pass isn't in that pass's tasks, so the pass didn't look at it. */
+    const isEveryNeedPassed = needTaskList.every((task) => finishedPass?.tasks.includes(task));
     const idleStateKey =
-        finishedPass && !isNewPush ? createIdleStateKey(prCheck) : entry.idleStateKey;
+        finishedPass && !isNewPush && !isPassExited && isEveryNeedPassed
+            ? createIdleStateKey(prCheck)
+            : entry.idleStateKey;
     await updateEntry(folder, {
         pushCount,
         pushLog,
@@ -1225,29 +1232,21 @@ async function checkFolder({
     const hasViewerReviewed = prCheck.reviews.some((review) => review.login === viewerLogin);
     /**
      * Assignees resolve their own threads, so the all-resolved re-request below never reaches them.
-     * A pass that answered their threads with a code push hands the PR back to them instead. The
-     * viewer is left to `viewerReviewOwed`.
+     * A pass that answered their threads, with a code push or only a reply asking them something,
+     * hands the PR back to them instead.
      */
-    const answeredAssignees =
-        isNewPush && finishedPass.tasks.includes(WatchTask.Comments)
-            ? prCheck.assignees.filter((login) => {
-                  return (
-                      login !== viewerLogin &&
-                      prCheck.reviews.some((review) => {
-                          return (
-                              review.login === login &&
-                              review.state === RawReviewState.ChangesRequested
-                          );
-                      }) &&
-                      prCheck.unresolvedThreads.some((thread) => {
-                          return (
-                              thread.openedBy === login &&
-                              thread.status === ThreadStatus.AwaitingHuman
-                          );
-                      })
-                  );
-              })
-            : [];
+    const answeredAssignees = finishedPass?.tasks.includes(WatchTask.Comments)
+        ? prCheck.assignees.filter((login) => {
+              return (
+                  prCheck.changesRequestedBy.includes(login) &&
+                  prCheck.unresolvedThreads.some((thread) => {
+                      return (
+                          thread.openedBy === login && thread.status === ThreadStatus.AwaitingHuman
+                      );
+                  })
+              );
+          })
+        : [];
     const isCodePush =
         isNewPush &&
         (hasViewerReviewed || !!answeredAssignees.length) &&
@@ -1263,13 +1262,16 @@ async function checkFolder({
             oldHeadSha: finishedPass.headSha,
             newHeadSha: prCheck.headSha,
         }));
-    const isPushToReview = isCodePush && hasViewerReviewed;
+    /** The viewer can approve a pass's push before the pass ends and this check sees it. */
+    const isHeadJudgedByViewer = prCheck.viewerVerdictSha === prCheck.headSha;
+    const isPushToReview = isCodePush && hasViewerReviewed && !isHeadJudgedByViewer;
     const viewerReviewOwed = isPushToReview
         ? {
               at: prCheck.checkedAt,
               reason: `watch mode pushed ${prCheck.headSha.slice(0, 7)} for ${finishedPass.tasks.join(', ')}, which changed code you have not reviewed.`,
           }
         : hasViewerReviewed &&
+            !isHeadJudgedByViewer &&
             entry.viewerReviewOwedAt &&
             prCheck.viewerVerdictAt < entry.viewerReviewOwedAt
           ? {
@@ -1290,20 +1292,44 @@ async function checkFolder({
             isRepeat: !isPushToReview,
         });
     }
-    if (isCodePush && answeredAssignees.length) {
+    /** `viewerReviewOwed` already re-requested the viewer for a code push. */
+    const answeredLogins = answeredAssignees.filter((login) => {
+        return !isPushToReview || login !== viewerLogin;
+    });
+    if (answeredLogins.length) {
         await requestReviews({
             folder,
             prCheck,
-            logins: answeredAssignees,
-            reason: `watch mode pushed ${prCheck.headSha.slice(0, 7)} to address your requested changes. Your threads are left open for you to resolve.`,
+            logins: answeredLogins,
+            reason: [
+                isCodePush
+                    ? `watch mode pushed ${prCheck.headSha.slice(0, 7)} to address your requested changes.`
+                    : 'watch mode replied to your requested changes and needs your answer.',
+                'Your threads are left open for you to resolve.',
+            ].join(' '),
         });
     }
-    if (prCheck.reReviewLogins.length) {
+    const threadedReReviewLogins = prCheck.reReviewLogins.filter((login) => {
+        return !prCheck.summaryOnlyReReviewLogins.includes(login);
+    });
+    if (threadedReReviewLogins.length) {
         await requestReviews({
             folder,
             prCheck,
-            logins: prCheck.reReviewLogins,
+            logins: threadedReReviewLogins,
             reason: 'none of the threads from your changes-requested review is still unresolved, so it is ready for another look.',
+        });
+    }
+    if (prCheck.summaryOnlyReReviewLogins.length) {
+        await requestReviews({
+            folder,
+            prCheck,
+            logins: prCheck.summaryOnlyReReviewLogins,
+            reason: [
+                'your changes-requested review has only a summary comment and no file or line comments.',
+                'A summary comment cannot be resolved, so watch mode cannot tell when your feedback is addressed and treats the review as ready for another look.',
+                'Please leave each piece of feedback as a file or line comment instead, so each one stays open until it is resolved.',
+            ].join(' '),
         });
     }
 
@@ -1340,7 +1366,6 @@ async function checkFolder({
         return;
     }
 
-    const needTaskList = prCheck.needs.map((need) => needTasks[need]).filter(check.isTruthy);
     if (needTaskList.length && idleStateKey === createIdleStateKey(prCheck)) {
         await updateEntry(folder, {
             status: WatchModeStatus.Watching,
@@ -1442,7 +1467,7 @@ async function checkFolder({
     await updateEntry(folder, {
         status: WatchModeStatus.Watching,
         pendingPolls,
-        message: prCheck.isBlockedOnHuman
+        message: prCheck.isAwaitingThreadAnswer
             ? 'Waiting on a human to answer or 👍 a review thread.'
             : prCheck.pendingCount
               ? 'Waiting on checks.'
@@ -1540,8 +1565,9 @@ async function runFolder(folder: string) {
             deps,
             folder,
             entry: checkedEntry,
-            /** An exited pass may not have finished its tasks, so they get sent again. */
-            finishedPass: passResult?.isExited ? undefined : entry.pass,
+            /** A restart can make a pass look exited after it already pushed. */
+            finishedPass: entry.pass,
+            isPassExited: !!passResult?.isExited,
         });
     } catch (error) {
         const failureCount = (watchState.entries[folder]?.failureCount || 0) + 1;
