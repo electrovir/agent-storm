@@ -66,6 +66,19 @@ export async function readReviewComments(folder: string) {
     }
 }
 
+/** Undefined when the read fails, so a failed read leaves the last explanations in place. */
+export async function readReviewExplanations(folder: string) {
+    try {
+        return (
+            await reviewClient.call('readReviewExplanations', {
+                folder,
+            })
+        ).fileExplanations;
+    } catch {
+        return undefined;
+    }
+}
+
 /** A failed read comes back as its message rather than a throw. */
 export async function readDiffFile({
     folder,
@@ -104,6 +117,7 @@ export async function writeDiffSettings(
         hideWhitespace: boolean;
         collapseUnchanged: boolean;
         softWrap: boolean | undefined;
+        hideAiExplanations: boolean;
     }>,
 ) {
     const currentSettings = await fetchApi(settingsEndpoint, HttpMethod.Get);
@@ -114,6 +128,7 @@ export async function writeDiffSettings(
             diffHideWhitespace: settings.hideWhitespace,
             diffCollapseUnchanged: settings.collapseUnchanged,
             diffSoftWrap: settings.softWrap,
+            diffHideAiExplanations: settings.hideAiExplanations,
         },
     });
 }

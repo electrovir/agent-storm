@@ -12,6 +12,7 @@ import {
     LucideFoldVerticalIcon,
     LucidePilcrowIcon,
     LucideRows2Icon,
+    LucideSparklesIcon,
     LucideTextWrapIcon,
     ViraButton,
     ViraColorVariant,
@@ -30,6 +31,7 @@ const inlineLayoutIcon = createSizedIcon(LucideRows2Icon, 12);
 const whitespaceIcon = createSizedIcon(LucidePilcrowIcon, 12);
 const collapseUnchangedIcon = createSizedIcon(LucideFoldVerticalIcon, 12);
 const softWrapIcon = createSizedIcon(LucideTextWrapIcon, 12);
+const aiExplanationsIcon = createSizedIcon(LucideSparklesIcon, 12);
 
 /** The diff pane's display choices, which the pane keeps in the server settings. */
 export type DiffSettings = Readonly<{
@@ -38,6 +40,7 @@ export type DiffSettings = Readonly<{
     collapseUnchanged: boolean;
     /** Undefined wraps everywhere but on a phone. */
     softWrap: boolean | undefined;
+    hideAiExplanations: boolean;
 }>;
 
 /**
@@ -56,6 +59,13 @@ export const VirDiffToolbar = defineAppElement<{
     /** Whether long lines currently wrap, which `diffSettings.softWrap` alone can't say. */
     softWrap: boolean;
     diffSettings: DiffSettings;
+    /** Undefined outside a manual review, which hides the AI explanations button. */
+    aiExplanations?:
+        | Readonly<{
+              /** Whether the manual-review skill wrote any, without which the button is disabled. */
+              hasAny: boolean;
+          }>
+        | undefined;
     /** Shown after the other buttons. */
     trailing?: HtmlInterpolation | undefined;
 }>()({
@@ -280,7 +290,38 @@ export const VirDiffToolbar = defineAppElement<{
                     });
                 })}
             ></${ViraButton}>
+            ${inputs.aiExplanations
+                ? renderAiExplanationsButton(inputs.aiExplanations.hasAny)
+                : nothing}
         `;
+
+        function renderAiExplanationsButton(hasAny: boolean) {
+            const isShown = hasAny && !inputs.diffSettings.hideAiExplanations;
+            return html`
+                <${ViraButton.assign({
+                    icon: aiExplanationsIcon,
+                    buttonSize,
+                    buttonEmphasis: ViraEmphasis.Subtle,
+                    /** Lit up while the explanations are showing. */
+                    color: isShown ? ViraColorVariant.Info : ViraColorVariant.Plain,
+                    isDisabled: !hasAny,
+                })}
+                    title=${hasAny
+                        ? isShown
+                            ? 'AI explanations are shown beside each file. Click to hide them.'
+                            : 'AI explanations are hidden. Click to show them beside each file.'
+                        : 'The manual-review skill has not written AI explanations for this review.'}
+                    ${listen('click', () => {
+                        if (!hasAny) {
+                            return;
+                        }
+                        changeSettings({
+                            hideAiExplanations: !inputs.diffSettings.hideAiExplanations,
+                        });
+                    })}
+                ></${ViraButton}>
+            `;
+        }
 
         return html`
             ${inputs.isMobile

@@ -507,6 +507,14 @@ export const settingsJsonSchema = {
             description:
                 "When on, the Diff pane wraps long lines. When off, each file's diff scrolls sideways instead. Toggled by the wrap button in the Diff pane toolbar.",
         },
+        /** Sticky companion to `diffLayout`, written by the Diff pane's AI explanations button. */
+        diffHideAiExplanations: {
+            type: 'boolean',
+            default: false,
+            title: 'Hide AI explanations',
+            description:
+                "When on, a manual review's Diff pane hides the explanation the manual-review skill wrote beside each file. Toggled by the AI explanations button in the Diff pane toolbar.",
+        },
         /**
          * When on, the sidebar hides standalone repos that haven't been activated within the last 7
          * days (and have no running panes). Worktree-roots and their children are always shown

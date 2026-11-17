@@ -2,7 +2,7 @@ import {type GitDiffSide, type ReviewComment} from '@agent-storm/common';
 import {createPluginApiClient, defineAppElement} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
 import {type Extension, type Text} from '@codemirror/state';
-import {css, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
+import {css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {diffApi, type GitDiffFile, type GitDiffFileContents} from '../../diff-api.js';
 import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
@@ -19,6 +19,7 @@ import {
     chunkSelectionsAtPointer,
     type SelectedChunk,
 } from './diff-selection.js';
+import {VirDiffExplanation} from './vir-diff-explanation.element.js';
 import {VirDiffFileHeader, stageActionLabels} from './vir-diff-file-header.element.js';
 import {VirFileComments} from './vir-file-comments.element.js';
 import {VirImageDiff} from './vir-image-diff.element.js';
@@ -61,6 +62,9 @@ export const VirDiffReviewFile = defineAppElement<{
     commentingLine: number | undefined;
     /** Draws the diff instead of the built-in CodeMirror view. */
     renderCodeView?: RenderDiffCodeView | undefined;
+    /** Whether to show the explanation column, even for a file the skill wrote none for. */
+    isExplanationShown?: boolean | undefined;
+    explanation?: string | undefined;
 }>()({
     tagName: 'vir-diff-review-file',
     events: {
@@ -123,10 +127,29 @@ export const VirDiffReviewFile = defineAppElement<{
     styles: css`
         :host {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             flex-shrink: 0;
             border-bottom: 1px solid
                 ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
+        }
+
+        .file-main {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+            min-width: 0;
+        }
+
+        /*
+         * Sticks to the top of the review while its file scrolls past, the way the file header
+         * does, and scrolls itself when it is taller than the review. The 100cqh is the review's
+         * own height (VirDiffReview is the size container).
+         */
+        ${VirDiffExplanation}.beside {
+            position: sticky;
+            top: 0;
+            align-self: flex-start;
+            max-height: 100cqh;
         }
 
         /*
@@ -414,110 +437,126 @@ export const VirDiffReviewFile = defineAppElement<{
             }
         }
 
+        function renderExplanation(placement: 'beside' | 'inline') {
+            if (!inputs.isExplanationShown || (placement === 'inline') !== inputs.isMobile) {
+                return nothing;
+            }
+            return html`
+                <${VirDiffExplanation.assign({
+                    explanation: inputs.explanation,
+                })}
+                    class=${placement}
+                ></${VirDiffExplanation}>
+            `;
+        }
+
         return html`
-            <${VirDiffFileHeader.assign({
-                file: inputs.file,
-                side: inputs.side,
-                isOpenable: true,
-            })}
-                ${listen(VirDiffFileHeader.events.fileSelected, (event) => {
-                    dispatch(
-                        new events.fileSelected({
-                            detail: event.detail,
-                        }),
-                    );
+            <div class="file-main">
+                <${VirDiffFileHeader.assign({
+                    file: inputs.file,
+                    side: inputs.side,
+                    isOpenable: true,
                 })}
-                ${listen(VirDiffFileHeader.events.stageFile, (event) => {
-                    dispatch(
-                        new events.stageFile({
-                            detail: event.detail,
-                        }),
-                    );
-                })}
-            ></${VirDiffFileHeader}>
-            ${renderNote()}
-            ${inputs.renderCodeView && content && isText
-                ? inputs.renderCodeView({
-                      fileKey: file.path,
-                      path: file.path,
-                      content,
-                      hideWhitespace: inputs.hideWhitespace,
-                      unified: inputs.unified,
-                      collapseUnchanged: inputs.collapseUnchanged,
-                      softWrap: inputs.softWrap,
-                      isDark: inputs.isDark,
-                      chunkScroll: undefined,
-                      isHidden: false,
-                      setChunkCount(chunkCount) {
-                          updateState({
-                              codeViewChunkCount: chunkCount,
-                          });
-                      },
-                      canStage: !!stageActionLabels[inputs.side],
-                      requestHunkMenu({x, y, lineNumber, isRemovedLine}) {
-                          const chunkSelection = chunkSelectionAtLine({
-                              oldContent: toDisplayedOldContent({
-                                  content,
-                                  hideWhitespace: inputs.hideWhitespace,
-                              }),
-                              newContent: content.newContent,
-                              lineNumber,
-                              isRemovedLine,
-                          });
-                          if (chunkSelection) {
-                              dispatch(
-                                  new events.chunkMenuRequested({
-                                      detail: {
-                                          ...chunkSelection,
-                                          x,
-                                          y,
-                                          file: inputs.file,
-                                      },
-                                  }),
-                              );
-                          }
-                      },
-                  })
-                : html`
-                      <div
-                          class="editor"
-                          ${listen('contextmenu', (event) => {
-                              const rendered = state.rendered;
-                              const view = rendered?.editor?.view;
-                              if (!rendered || !view) {
-                                  return;
-                              }
-                              const selections = chunkSelectionsAtPointer({
-                                  view,
-                                  chunks: rendered.chunks,
-                                  event,
+                    ${listen(VirDiffFileHeader.events.fileSelected, (event) => {
+                        dispatch(
+                            new events.fileSelected({
+                                detail: event.detail,
+                            }),
+                        );
+                    })}
+                    ${listen(VirDiffFileHeader.events.stageFile, (event) => {
+                        dispatch(
+                            new events.stageFile({
+                                detail: event.detail,
+                            }),
+                        );
+                    })}
+                ></${VirDiffFileHeader}>
+                ${renderExplanation('inline')} ${renderNote()}
+                ${inputs.renderCodeView && content && isText
+                    ? inputs.renderCodeView({
+                          fileKey: file.path,
+                          path: file.path,
+                          content,
+                          hideWhitespace: inputs.hideWhitespace,
+                          unified: inputs.unified,
+                          collapseUnchanged: inputs.collapseUnchanged,
+                          softWrap: inputs.softWrap,
+                          isDark: inputs.isDark,
+                          chunkScroll: undefined,
+                          isHidden: false,
+                          setChunkCount(chunkCount) {
+                              updateState({
+                                  codeViewChunkCount: chunkCount,
                               });
-                              if (!selections.length) {
-                                  return;
-                              }
-                              event.preventDefault();
-                              dispatch(
-                                  new events.chunkMenuRequested({
-                                      detail: {
-                                          x: event.clientX,
-                                          y: event.clientY,
-                                          file: inputs.file,
-                                          selections,
-                                          oldText: rendered.oldText,
-                                          newText: rendered.newText,
-                                      },
+                          },
+                          canStage: !!stageActionLabels[inputs.side],
+                          requestHunkMenu({x, y, lineNumber, isRemovedLine}) {
+                              const chunkSelection = chunkSelectionAtLine({
+                                  oldContent: toDisplayedOldContent({
+                                      content,
+                                      hideWhitespace: inputs.hideWhitespace,
                                   }),
-                              );
-                          })}
-                          ${onDomCreated((element) => {
-                              if (element instanceof HTMLElement && !state.editorParent) {
-                                  updateState({
-                                      editorParent: element,
-                                  });
+                                  newContent: content.newContent,
+                                  lineNumber,
+                                  isRemovedLine,
+                              });
+                              if (chunkSelection) {
+                                  dispatch(
+                                      new events.chunkMenuRequested({
+                                          detail: {
+                                              ...chunkSelection,
+                                              x,
+                                              y,
+                                              file: inputs.file,
+                                          },
+                                      }),
+                                  );
                               }
-                          })}
-                      ></div>
-                  `}
+                          },
+                      })
+                    : html`
+                          <div
+                              class="editor"
+                              ${listen('contextmenu', (event) => {
+                                  const rendered = state.rendered;
+                                  const view = rendered?.editor?.view;
+                                  if (!rendered || !view) {
+                                      return;
+                                  }
+                                  const selections = chunkSelectionsAtPointer({
+                                      view,
+                                      chunks: rendered.chunks,
+                                      event,
+                                  });
+                                  if (!selections.length) {
+                                      return;
+                                  }
+                                  event.preventDefault();
+                                  dispatch(
+                                      new events.chunkMenuRequested({
+                                          detail: {
+                                              x: event.clientX,
+                                              y: event.clientY,
+                                              file: inputs.file,
+                                              selections,
+                                              oldText: rendered.oldText,
+                                              newText: rendered.newText,
+                                          },
+                                      }),
+                                  );
+                              })}
+                              ${onDomCreated((element) => {
+                                  if (element instanceof HTMLElement && !state.editorParent) {
+                                      updateState({
+                                          editorParent: element,
+                                      });
+                                  }
+                              })}
+                          ></div>
+                      `}
+            </div>
+            ${renderExplanation('beside')}
         `;
     },
 });

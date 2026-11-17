@@ -34,6 +34,11 @@ export const VirDiffReview = defineAppElement<{
         | undefined;
     /** Draws each file's diff instead of the built-in CodeMirror view. */
     renderCodeView?: RenderDiffCodeView | undefined;
+    /**
+     * The manual-review skill's explanation of each file, keyed by path, shown beside it. Undefined
+     * shows none.
+     */
+    fileExplanations?: Readonly<Record<string, string>> | undefined;
 }>()({
     tagName: 'vir-diff-review',
     state() {
@@ -50,6 +55,27 @@ export const VirDiffReview = defineAppElement<{
                 | undefined,
         };
     },
+    init({host}) {
+        /**
+         * CodeMirror re-sets a focused editor's DOM selection whenever scrolling redraws the lines
+         * around its cursor, and Safari answers that by scrolling the caret back into view. This
+         * review is the scroller for every file's editor, so scrolling past the cursor kept yanking
+         * the review back to it. Dropping the editor's focus once the reader scrolls stops that;
+         * the cursor stays in the editor's state.
+         */
+        function blurFocusedEditor() {
+            const focused = host.shadowRoot.activeElement?.shadowRoot?.activeElement;
+            if (focused instanceof HTMLElement && focused.classList.contains('cm-content')) {
+                focused.blur();
+            }
+        }
+        host.addEventListener('wheel', blurFocusedEditor, {
+            passive: true,
+        });
+        host.addEventListener('touchmove', blurFocusedEditor, {
+            passive: true,
+        });
+    },
     styles: css`
         :host {
             display: flex;
@@ -58,6 +84,8 @@ export const VirDiffReview = defineAppElement<{
             min-width: 0;
             min-height: 0;
             overflow: auto;
+            /** Lets each file's sticky explanation cap its height at this scroll's. */
+            container-type: size;
         }
 
         .note {
@@ -122,6 +150,8 @@ export const VirDiffReview = defineAppElement<{
                                     ? inputs.commentDraft.line
                                     : undefined,
                             renderCodeView: inputs.renderCodeView,
+                            isExplanationShown: !!inputs.fileExplanations,
+                            explanation: inputs.fileExplanations?.[file.path],
                         })}
                             data-path=${file.path}
                             ${listen(VirDiffReviewFile.events.stageFile, () => {

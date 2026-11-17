@@ -13,5 +13,6 @@ export const diffSettingsSection = defineSettingsSection({
         'diffHideWhitespace',
         'diffCollapseUnchanged',
         'diffSoftWrap',
+        'diffHideAiExplanations',
     ],
 });

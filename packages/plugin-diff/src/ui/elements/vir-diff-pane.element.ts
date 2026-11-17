@@ -9,7 +9,7 @@ import {
     spinAnimationCss,
     spinKeyframesCss,
 } from '@agent-storm/core/frontend';
-import {extractErrorMessage} from '@augment-vir/common';
+import {extractErrorMessage, getObjectTypedKeys} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {
     asyncProp,
@@ -35,6 +35,7 @@ import {stageSide, writeDiffSettings} from './diff-pane-requests.js';
 import {chunkSelectionAtLine} from './diff-selection.js';
 import {VirDiffCodeView} from './vir-diff-code-view.element.js';
 import {VirDiffCommentComposer} from './vir-diff-comment-composer.element.js';
+import {VirDiffExplanation} from './vir-diff-explanation.element.js';
 import {VirDiffFileHeader, stageActionLabels} from './vir-diff-file-header.element.js';
 import {VirDiffFileList} from './vir-diff-file-list.element.js';
 import {VirDiffFileMenu} from './vir-diff-file-menu.element.js';
@@ -98,6 +99,7 @@ export const VirDiffPane = defineAppElement<{
                         hideWhitespace: settings.diffHideWhitespace ?? true,
                         collapseUnchanged: settings.diffCollapseUnchanged ?? true,
                         softWrap: settings.diffSoftWrap,
+                        hideAiExplanations: !!settings.diffHideAiExplanations,
                     };
                 },
             }),
@@ -188,6 +190,7 @@ export const VirDiffPane = defineAppElement<{
                   hideWhitespace: true,
                   collapseUnchanged: true,
                   softWrap: undefined,
+                  hideAiExplanations: false,
               };
         /**
          * A phone scrolls long lines sideways unless the user chose otherwise: wrapped on a narrow
@@ -244,6 +247,13 @@ export const VirDiffPane = defineAppElement<{
         const content = state.diffContent;
         const selectedPath = selected?.file.path;
         const hasFiles = allSelectValues(state.status).length > 0;
+        const hasAiExplanations =
+            !!inputs.enableComments && getObjectTypedKeys(state.fileExplanations).length > 0;
+        const shownExplanations =
+            hasAiExplanations && !diffSettings.hideAiExplanations
+                ? state.fileExplanations
+                : undefined;
+        const isSelectedExplanationShown = !!shownExplanations && !!selected && !state.reviewSide;
 
         const toolbarTemplate = html`
             <${VirDiffToolbar.assign({
@@ -255,6 +265,11 @@ export const VirDiffPane = defineAppElement<{
                 unified,
                 softWrap,
                 diffSettings,
+                aiExplanations: inputs.enableComments
+                    ? {
+                          hasAny: hasAiExplanations,
+                      }
+                    : undefined,
                 trailing: inputs.toolbarTrailing,
             })}
                 ${listen(VirDiffToolbar.events.fileStep, async (event) => {
@@ -292,6 +307,7 @@ export const VirDiffPane = defineAppElement<{
                       reviewComments: state.reviewComments,
                       commentDraft: state.commentDraft,
                       renderCodeView: inputs.renderCodeView,
+                      fileExplanations: shownExplanations,
                   })}
                       ${listen(VirDiffReviewFile.events.addCommentRequested, (event) => {
                           comments.openCommentDraft(event.detail);
@@ -580,6 +596,16 @@ export const VirDiffPane = defineAppElement<{
                       ></${VirDiffFileList}>
                   `;
 
+        function renderSelectedExplanation(placement: 'beside' | 'inline') {
+            return html`
+                <${VirDiffExplanation.assign({
+                    explanation: selectedPath ? shownExplanations?.[selectedPath] : undefined,
+                })}
+                    class=${placement}
+                ></${VirDiffExplanation}>
+            `;
+        }
+
         return html`
             ${toolbarTemplate}
             <div class="body">
@@ -597,8 +623,14 @@ export const VirDiffPane = defineAppElement<{
                               ></${VirDiffFileHeader}>
                           `
                         : nothing}
+                    ${isSelectedExplanationShown && isMobile
+                        ? renderSelectedExplanation('inline')
+                        : nothing}
                     ${mainTemplate} ${codeViewTemplate}
                 </div>
+                ${isSelectedExplanationShown && !isMobile
+                    ? renderSelectedExplanation('beside')
+                    : nothing}
                 ${hunkMenuTemplate} ${commentComposerTemplate}
                 ${selected && !content && !state.diffError && !state.reviewSide
                     ? html`

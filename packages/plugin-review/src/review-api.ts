@@ -12,7 +12,7 @@ import {
     reviewQueuePrShape,
     reviewQueueResponseShape,
 } from '@agent-storm/common';
-import {defineShape, enumShape, nullableShape} from 'object-shape-tester';
+import {defineShape, enumShape, nullableShape, recordShape} from 'object-shape-tester';
 
 const folderRequestShape = defineShape({
     folder: '',
@@ -69,6 +69,19 @@ export const reviewApi = definePluginApi({
         readReviewComments: {
             requestShape: folderRequestShape,
             responseShape: reviewCommentsResponseShape,
+        },
+        /**
+         * The plain-text explanation the manual-review skill wrote for each file of the review the
+         * folder holds, keyed by repo-relative path. Empty when it wrote none.
+         */
+        readReviewExplanations: {
+            requestShape: folderRequestShape,
+            responseShape: defineShape({
+                fileExplanations: recordShape({
+                    keys: '',
+                    values: '',
+                }),
+            }),
         },
         addReviewComment: {
             requestShape: defineShape({

@@ -21,6 +21,7 @@ import {
     discardUnstagedPrompt,
     readDiffFile,
     readReviewComments,
+    readReviewExplanations,
     readStatus,
     stageFiles,
     toDiscardFilesPrompt,
@@ -84,6 +85,8 @@ export function createDiffPaneState() {
          * skill posted and cleared disappears here too.
          */
         reviewComments: [] as ReadonlyArray<ReviewComment>,
+        /** The manual-review skill's explanation of each file, keyed by path. */
+        fileExplanations: {} as Readonly<Record<string, string>>,
         commentDraft: undefined as CommentDraft | undefined,
         /**
          * Folder the live refresh timer was created for, or undefined when no timer is running.
@@ -218,12 +221,14 @@ export function createDiffPaneController({
         const [
             statusRead,
             reviewComments,
+            fileExplanations,
         ] = await Promise.all([
             readStatus({
                 folder,
                 pullRequestBaseBranch: inputs.pullRequestBaseBranch,
             }),
             inputs.enableComments ? readReviewComments(folder) : undefined,
+            inputs.enableComments ? readReviewExplanations(folder) : undefined,
         ]);
         if (isOutdated()) {
             return;
@@ -233,6 +238,11 @@ export function createDiffPaneController({
             ...(reviewComments
                 ? {
                       reviewComments,
+                  }
+                : {}),
+            ...(fileExplanations
+                ? {
+                      fileExplanations,
                   }
                 : {}),
         });
@@ -336,6 +346,7 @@ export function createDiffPaneController({
                           markedValues: [],
                           selectionAnchor: undefined,
                           reviewComments: [],
+                          fileExplanations: {},
                           commentDraft: undefined,
                       }),
             });

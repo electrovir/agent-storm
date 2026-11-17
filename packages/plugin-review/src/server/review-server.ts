@@ -30,6 +30,7 @@ import {
     readReviewComments,
     updateReviewComment,
 } from './review-comments.js';
+import {readReviewExplanations} from './review-explanations.js';
 import {findManualReviewCopy, sweepDeletingReviewFolders} from './review-folders.js';
 import {setReviewHost} from './review-host.js';
 import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
@@ -69,6 +70,11 @@ export default definePluginServer({
                 async closeEditorWindow(request) {
                     await closeReviewWindow(request);
                     return ok;
+                },
+                async readReviewExplanations({folder}) {
+                    return {
+                        fileExplanations: await readReviewExplanations(folder),
+                    };
                 },
                 async readReviewComments({folder}) {
                     return {
