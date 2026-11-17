@@ -26,6 +26,11 @@ type PluginFolder = Readonly<{
     code: string | undefined;
     /** The server entry's file, when the plugin has one. */
     serverPath: string | undefined;
+    /**
+     * Hashes only what the server part runs, so rebuilding the browser bundle doesn't restart it
+     * and end its in-flight work.
+     */
+    serverHash: string;
     /** The folders holding the manifest and the entries, which changes are watched in. */
     watchedDirs: ReadonlyArray<string>;
 }>;
@@ -121,6 +126,11 @@ async function readPluginFolder({
             },
             code: browser.code,
             serverPath: server?.path,
+            serverHash: createHash('sha256')
+                .update(manifestText)
+                .update('\0')
+                .update(server?.code || '')
+                .digest('hex'),
             watchedDirs: [
                 realPath,
                 dirname(browser.path),
@@ -135,6 +145,7 @@ async function readPluginFolder({
             },
             code: undefined,
             serverPath: undefined,
+            serverHash: '',
             watchedDirs: [
                 realPath,
             ],
@@ -443,7 +454,7 @@ export async function readActivePluginCode(pluginId: string) {
 }
 
 /**
- * Every active plugin with a server part, read fresh so each `contentHash` matches the files at
+ * Every active plugin with a server part, read fresh so each `serverHash` matches the files at
  * `serverPath` as they are now.
  */
 export async function readActivePluginServers() {
@@ -454,7 +465,7 @@ export async function readActivePluginServers() {
             ? [
                   {
                       pluginId: plugin.id,
-                      contentHash: plugin.contentHash,
+                      serverHash: folder.serverHash,
                       serverPath: folder.serverPath,
                   },
               ]

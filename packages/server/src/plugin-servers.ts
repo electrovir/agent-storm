@@ -14,7 +14,7 @@ import {listenToPluginChanges, readActivePluginServers} from './plugins.js';
 
 /** One plugin's started server part, or why it didn't start. */
 type PluginServerStart = Readonly<{
-    contentHash: string;
+    serverHash: string;
     running: Promise<
         Readonly<
             | {
@@ -47,15 +47,15 @@ const pluginServers: {
 async function importPluginServer({
     pluginId,
     serverPath,
-    contentHash,
+    serverHash,
 }: Readonly<{
     pluginId: string;
     serverPath: string;
-    contentHash: string;
+    serverHash: string;
 }>) {
     /** Node keeps every module it imported, so a new hash is the only way to load new code. */
     const module: unknown = await import(
-        `${pathToFileURL(serverPath).href}?contentHash=${contentHash}`
+        `${pathToFileURL(serverPath).href}?serverHash=${serverHash}`
     );
     const definition =
         check.isObject(module) && check.hasKey(module, 'default') ? module.default : undefined;
@@ -76,11 +76,11 @@ function startPluginServer(
     plugin: Readonly<{
         pluginId: string;
         serverPath: string;
-        contentHash: string;
+        serverHash: string;
     }>,
 ): PluginServerStart {
     return {
-        contentHash: plugin.contentHash,
+        serverHash: plugin.serverHash,
         running: (async () => {
             try {
                 const definition = await importPluginServer(plugin);
@@ -159,7 +159,7 @@ async function syncPluginServers() {
             start,
         ]) => {
             return !active.some((plugin) => {
-                return plugin.pluginId === pluginId && plugin.contentHash === start.contentHash;
+                return plugin.pluginId === pluginId && plugin.serverHash === start.serverHash;
             });
         },
     );
