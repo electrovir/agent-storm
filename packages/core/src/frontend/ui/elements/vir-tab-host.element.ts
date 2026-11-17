@@ -4,6 +4,7 @@ import {clamp, getEnumValues, type PartialWithUndefined} from '@augment-vir/comm
 import {extractEventTarget} from '@augment-vir/web';
 import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {
+    LucidePlusIcon,
     PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
@@ -745,7 +746,7 @@ export const VirTabHost = defineAppElement<{
                                 buttonSize: ViraSize.Small,
                                 buttonEmphasis: ViraEmphasis.Subtle,
                                 color: ViraColorVariant.Neutral,
-                                text: '+',
+                                icon: LucidePlusIcon,
                             })}
                                 slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
                                 title="New tab"
