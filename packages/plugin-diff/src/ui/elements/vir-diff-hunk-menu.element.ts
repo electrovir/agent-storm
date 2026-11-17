@@ -1,7 +1,6 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {colorCss} from '@electrovir/color';
-import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
-import {viraShadows, viraThemeByKeys} from 'vira';
+import {css, defineElementEvent, html, listen} from 'element-vir';
+import {renderMenuItemEntries, ViraMenu} from 'vira';
 import {canDiscardSide} from '../../util/diff-status.js';
 import {type HunkMenu} from './diff-pane-requests.js';
 import {stageScopeLabel} from './diff-selection.js';
@@ -37,33 +36,10 @@ export const VirDiffHunkMenu = defineAppElement<{
          * fixed: the pane scrolls and the editor is a scroll container of its own, so anchoring to
          * either would need the offsets recomputed on every scroll.
          */
-        .hunk-menu {
+        ${ViraMenu} {
             position: fixed;
             z-index: 4;
-            display: flex;
-            flex-direction: column;
             min-width: 160px;
-            padding: 3px;
-            border-radius: 5px;
-            border: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            ${viraShadows.menuShadow}
-            ${colorCss(viraThemeByKeys.grey['behind-fg'].body)};
-        }
-
-        .hunk-menu button {
-            appearance: none;
-            border: none;
-            background: none;
-            padding: 5px 8px;
-            border-radius: 3px;
-            text-align: left;
-            cursor: pointer;
-            font: inherit;
-            color: inherit;
-        }
-
-        .hunk-menu button:hover {
-            ${colorCss(viraThemeByKeys.blue.foreground.body)};
         }
     `,
     render({inputs, dispatch, events}) {
@@ -86,42 +62,38 @@ export const VirDiffHunkMenu = defineAppElement<{
                     close();
                 })}
             ></div>
-            <div
-                class="hunk-menu"
+            <${ViraMenu}
                 style=${css`
                     left: ${inputs.menu.x}px;
                     top: ${inputs.menu.y}px;
                 `}
             >
-                <button
-                    type="button"
-                    ${listen('click', () => {
-                        dispatch(
-                            new events.stage({
-                                detail: inputs.menu,
-                            }),
-                        );
-                    })}
-                >
-                    ${stageActionLabels[inputs.menu.target.side]} ${scopeText}
-                </button>
-                ${canDiscardSide[inputs.menu.target.side]
-                    ? html`
-                          <button
-                              type="button"
-                              ${listen('click', () => {
-                                  dispatch(
-                                      new events.undo({
-                                          detail: inputs.menu,
-                                      }),
-                                  );
-                              })}
-                          >
-                              Undo ${scopeText}
-                          </button>
-                      `
-                    : nothing}
-            </div>
+                ${renderMenuItemEntries([
+                    {
+                        content: `${stageActionLabels[inputs.menu.target.side]} ${scopeText}`,
+                        hideIcon: true,
+                        onClick() {
+                            dispatch(
+                                new events.stage({
+                                    detail: inputs.menu,
+                                }),
+                            );
+                        },
+                    },
+                    {
+                        content: `Undo ${scopeText}`,
+                        hideIcon: true,
+                        hidden: !canDiscardSide[inputs.menu.target.side],
+                        onClick() {
+                            dispatch(
+                                new events.undo({
+                                    detail: inputs.menu,
+                                }),
+                            );
+                        },
+                    },
+                ])}
+            </${ViraMenu}>
         `;
     },
 });
