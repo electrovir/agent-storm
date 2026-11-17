@@ -4,7 +4,7 @@ import {runCommand, writeFileAtomically} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {createHash} from 'node:crypto';
 import {access, mkdir, rename, rm, writeFile} from 'node:fs/promises';
-import {basename, dirname, resolve} from 'node:path';
+import {resolve} from 'node:path';
 import {defineShape, nullableShape, optionalShape, parseJsonWithShape} from 'object-shape-tester';
 import {buildUrl} from 'url-vir';
 import {releaseAssetName, releaseCoreVersionFileName} from './release-layout.js';
@@ -219,6 +219,15 @@ async function writeActiveVersions({
     });
 }
 
+/**
+ * Windows' own `tar`, not whichever is first on the PATH: GNU tar from Git for Windows reads the
+ * `C:` of a Windows path as a remote host and can't extract into one.
+ */
+const tarCommand =
+    currentOperatingSystem === OperatingSystem.Windows
+        ? resolve(process.env.SystemRoot || String.raw`C:\Windows`, 'System32', 'tar.exe')
+        : 'tar';
+
 /** Windows can only run `npm`, a `.cmd` script, through a shell. */
 const needsShellForNpm = {
     [OperatingSystem.Linux]: false,
@@ -250,20 +259,15 @@ export async function installVersion({
         recursive: true,
     });
     try {
-        /**
-         * Only the archive's file name goes to `-f`: GNU tar (which Git for Windows puts on the
-         * PATH) reads the `C:` in an absolute Windows path as a remote host name.
-         */
         await runCommand(
-            'tar',
+            tarCommand,
             [
                 '-xzf',
-                basename(tarballPath),
+                tarballPath,
                 '-C',
                 stagingDir,
             ],
             {
-                cwd: dirname(tarballPath),
                 timeout: {
                     minutes: 2,
                 },
