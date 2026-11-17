@@ -4,7 +4,7 @@ import {runCommand, writeFileAtomically} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {createHash} from 'node:crypto';
 import {access, mkdir, rename, rm, writeFile} from 'node:fs/promises';
-import {resolve} from 'node:path';
+import {basename, dirname, resolve} from 'node:path';
 import {defineShape, nullableShape, optionalShape, parseJsonWithShape} from 'object-shape-tester';
 import {buildUrl} from 'url-vir';
 import {releaseAssetName, releaseCoreVersionFileName} from './release-layout.js';
@@ -250,15 +250,20 @@ export async function installVersion({
         recursive: true,
     });
     try {
+        /**
+         * Only the archive's file name goes to `-f`: GNU tar (which Git for Windows puts on the
+         * PATH) reads the `C:` in an absolute Windows path as a remote host name.
+         */
         await runCommand(
             'tar',
             [
                 '-xzf',
-                tarballPath,
+                basename(tarballPath),
                 '-C',
                 stagingDir,
             ],
             {
+                cwd: dirname(tarballPath),
                 timeout: {
                     minutes: 2,
                 },

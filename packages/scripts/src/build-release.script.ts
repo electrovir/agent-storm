@@ -187,12 +187,11 @@ await runShellCommand('npm install --package-lock-only --ignore-scripts', {
 });
 
 await mkdir(assetDir);
-await runShellCommand(
-    `tar -czf ${JSON.stringify(resolve(assetDir, releaseAssetName))} -C ${JSON.stringify(releaseDir)} .`,
-    {
-        rejectOnError: true,
-    },
-);
+/** A bare file name for `-f`, so GNU tar on Windows doesn't read `C:` as a remote host. */
+await runShellCommand(`tar -czf ${releaseAssetName} -C ${JSON.stringify(releaseDir)} .`, {
+    cwd: assetDir,
+    rejectOnError: true,
+});
 
 log.success(
     `Built agent-storm ${releaseBuild.version} (${releaseBuild.commit}) into ${releaseDir} and ${assetDir}`,
