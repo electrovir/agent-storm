@@ -1,9 +1,11 @@
 import {type PluginServerHost} from '@agent-storm/core/server';
+import {wait} from '@augment-vir/common';
 import {normalizePath} from 'agent-storm-util';
 import {dirname} from 'node:path';
 import {readBranchPrStatus, recordBranchPr} from './branch-prs.js';
 import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
 import {fetchPaneStatuses, killFolderPanes} from './daemon/daemon-client.js';
+import {forgetFolderActivity} from './folder-activity.js';
 import {
     getCachedFolders,
     listenToNewFolderPrs,
@@ -14,7 +16,14 @@ import {
     refreshFolderInfoNow,
 } from './folder-info.js';
 import {loadFolderSettings} from './folder-settings.js';
-import {addWorktree, getCurrentBranch, getRepoSlug, listenToGitInfoChanges} from './git.js';
+import {
+    addWorktree,
+    getCurrentBranch,
+    getRepoSlug,
+    isWorktreeRoot,
+    listenToGitInfoChanges,
+    removeWorktree,
+} from './git.js';
 import {
     launchFolderSession,
     runInIdleFolderShell,
@@ -26,6 +35,7 @@ import {getLivePaneSessionIds, getPaneSessionStatusLookup, getPaneStatusLookup} 
 import {
     createFolderSession,
     findFolderSession,
+    forgetFolderSessions,
     getFolderSessions,
     renameFolderSession,
 } from './sessions.js';
@@ -66,14 +76,16 @@ export const pluginServerHost: PluginServerHost = {
     getRepoSlug,
     listenToGitInfoChanges,
     async createWorktree({folder, name}) {
-        const baseCheckout = normalizePath(folder);
-        const repoPath =
-            (await getCachedFolders()).find((info) => info.path === baseCheckout)?.parentRepoPath ||
-            dirname(baseCheckout);
+        const normalizedFolder = normalizePath(folder);
+        const isRoot = await isWorktreeRoot(normalizedFolder);
+        const repoPath = isRoot
+            ? normalizedFolder
+            : (await getCachedFolders()).find((info) => info.path === normalizedFolder)
+                  ?.parentRepoPath || dirname(normalizedFolder);
         const {worktreePath} = await addWorktree({
             repoPath,
             name,
-            baseCheckout,
+            baseCheckout: isRoot ? undefined : normalizedFolder,
         });
         await refreshFolderInfoNow();
         await runPostWorktreeCmd({
@@ -83,5 +95,27 @@ export const pluginServerHost: PluginServerHost = {
         return {
             worktreePath,
         };
+    },
+    async deleteWorktree({worktreePath}) {
+        await killFolderPanes({
+            folder: worktreePath,
+        }).catch(() => {
+            /* if the daemon has no live panes for this folder, continue with deletion */
+        });
+        await wait({
+            milliseconds: 250,
+        });
+        await removeWorktree({
+            worktreePath,
+        });
+        /**
+         * Drop the folder's session tabs now that the folder is gone. Worktree paths are derived
+         * deterministically from the worktree name, so leaving them behind means a later worktree
+         * created with the same name inherits this one's named, PTY-less tabs.
+         */
+        await forgetFolderSessions(worktreePath);
+        forgetFolderActivity(worktreePath);
+        await deleteFolderState(worktreePath);
+        await refreshFolderInfoNow();
     },
 };

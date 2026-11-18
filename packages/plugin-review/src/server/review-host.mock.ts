@@ -31,6 +31,7 @@ export const testReviewHost: PluginServerHost = {
     findFolderSession: throwUnmocked,
     renameFolderSession: throwUnmocked,
     createWorktree: throwUnmocked,
+    deleteWorktree: throwUnmocked,
     isClaudeReady: throwUnmocked,
     isClaudeAwaitingPermission: throwUnmocked,
     spawnPane: throwUnmocked,

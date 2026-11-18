@@ -161,6 +161,11 @@ export type PluginServerHost = Readonly<{
             name: string;
         }>,
     ): Promise<{worktreePath: string}>;
+    /**
+     * Deletes the worktree folder the way the app's own "delete worktree" does, uncommitted changes
+     * included, and closes its panes. Its branch stays.
+     */
+    deleteWorktree(params: Readonly<{worktreePath: string}>): Promise<void>;
     getCurrentBranch(folder: string): Promise<string | null>;
     getRepoSlug(folder: string): Promise<RepoSlug | null>;
     /** Calls `listener` whenever a read of a folder's git state finds it changed. */
