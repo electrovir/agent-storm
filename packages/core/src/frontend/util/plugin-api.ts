@@ -12,6 +12,7 @@ import {defineShape, type Shape} from 'object-shape-tester';
 import {type ViraIconSvg, type ViraThemeClient} from 'vira';
 import {type FolderDataObservable} from './folder-data.js';
 import {type FolderSessionsObservable} from './folder-sessions.js';
+import {type KeyboardShortcut, type ShortcutAction} from './keyboard-shortcuts.js';
 import {type Setting} from './local-storage-client.js';
 import {type PaneRestartsObservable} from './pane-restarts.js';
 import {type PluginRegistryObservable} from './plugin-registry.js';
@@ -32,6 +33,7 @@ export enum SettingsSection {
     General = 'general',
     Typography = 'typography',
     Terminal = 'terminal',
+    KeyboardShortcuts = 'keyboard-shortcuts',
     Activities = 'activities',
     Plugins = 'plugins',
     Ai = 'ai',
@@ -148,6 +150,8 @@ export type AppContext = Readonly<{
     paneGroupExtensions: ReadonlyArray<AnyPaneGroupExtension>;
     /** Every plugin's page of the Settings modal. */
     settingsSections: ReadonlyArray<AnySettingsSectionContribution>;
+    /** Every plugin's keyboard shortcut actions, listed in the Keyboard shortcuts section. */
+    shortcutActions: ReadonlyArray<ShortcutAction>;
     /** Set inside an Activity tab, which can't hold another and doesn't touch remembered selections. */
     isInActivityTab: boolean;
     /**
@@ -177,6 +181,13 @@ export type AppContext = Readonly<{
             settings?: PluginSettingsDefinition<Fields> | undefined;
         }>,
     ): PluginSettingValues<Fields>;
+    /**
+     * `action`'s shortcuts on this platform: the user's own or its defaults. They follow the user's
+     * settings, like `readPluginSettings`.
+     */
+    readShortcuts(
+        action: Readonly<Pick<ShortcutAction, 'id' | 'defaults'>>,
+    ): ReadonlyArray<KeyboardShortcut>;
 }>;
 
 /** The parts of the context that are the same objects for the app's whole life. */
@@ -489,6 +500,12 @@ export type PluginDefinition<Fields extends PluginSettingFields = PluginSettingF
         panes: ReadonlyArray<AnyPaneDefinition>;
         paneGroupExtensions: ReadonlyArray<AnyPaneGroupExtension>;
         settingsSections: ReadonlyArray<AnySettingsSectionContribution>;
+        /**
+         * What the plugin lets the user trigger from the keyboard. The Keyboard shortcuts section
+         * of the Settings modal lists them. Read their current shortcuts with the context's
+         * `readShortcuts`.
+         */
+        shortcutActions: ReadonlyArray<ShortcutAction>;
         /**
          * Typed settings the Settings modal renders a form for, in a page of the plugin's own. Read
          * them with the context's `readPluginSettings`.

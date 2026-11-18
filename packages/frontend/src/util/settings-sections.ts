@@ -69,6 +69,18 @@ const coreSettingsSections: Readonly<
             'useWebgl',
         ],
     },
+    [SettingsSection.KeyboardShortcuts]: {
+        label: 'Keyboard shortcuts',
+        group: 'App',
+        searchTerms: [
+            'keyboard',
+            'shortcut',
+            'hotkey',
+            'keybinding',
+        ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
+    },
     [SettingsSection.Activities]: {
         label: 'Activity tabs',
         group: 'App',

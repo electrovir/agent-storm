@@ -14,10 +14,12 @@ import {
     type Settings,
 } from '@agent-storm/common';
 import {
+    areShortcutsModified,
     defineAppElement,
     fetchApi,
     isActivityEnabled,
     localStorageClient,
+    restoreShortcuts,
     ScreenSize,
     scrollbackLimit,
     settingsCardCss,
@@ -76,6 +78,7 @@ import {
 } from '../../util/settings-sections.js';
 import {VirSettingsAi} from './vir-settings-ai.element.js';
 import {VirSettingsFolders} from './vir-settings-folders.element.js';
+import {VirSettingsKeyboardShortcuts} from './vir-settings-keyboard-shortcuts.element.js';
 import {VirSettingsPlugins} from './vir-settings-plugins.element.js';
 import {VirSettingsSchemaRow, type SettingSchema} from './vir-settings-schema-row.element.js';
 import {VirSettingsTypography} from './vir-settings-typography.element.js';
@@ -185,6 +188,10 @@ const customSectionDefaults: Readonly<Record<string, SectionDefaults | undefined
                 ]),
             };
         },
+    },
+    [SettingsSection.KeyboardShortcuts]: {
+        isModified: areShortcutsModified,
+        restore: restoreShortcuts,
     },
     [SettingsSection.Forges]: {
         isModified(settings) {
@@ -970,6 +977,19 @@ export const VirSettingsModal = defineAppElement<{
             },
             [SettingsSection.Terminal]({entries}) {
                 return renderEntries(entries);
+            },
+            [SettingsSection.KeyboardShortcuts]({settings}) {
+                return html`
+                    <${VirSettingsKeyboardShortcuts.assign({
+                        settings,
+                        actions: inputs.context.shortcutActions,
+                        plugins: inputs.context.plugins.value.runningPlugins,
+                    })}
+                        ${listen(VirSettingsKeyboardShortcuts.events.settingsChange, (event) => {
+                            changeSettings(event.detail);
+                        })}
+                    ></${VirSettingsKeyboardShortcuts}>
+                `;
             },
             [SettingsSection.Activities]({entries}) {
                 return renderEntries(entries);

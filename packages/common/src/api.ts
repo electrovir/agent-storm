@@ -437,6 +437,21 @@ export const settingsJsonSchema = {
                 additionalProperties: true,
             },
         },
+        /**
+         * The user's own keyboard shortcuts, by shortcut action id and then by keyboard platform.
+         * An action or platform left out uses the action's defaults. Like `pluginSettings`, the
+         * frontend validates these when it reads them, since external plugins define the actions.
+         * Absent from `required` so older configs load.
+         */
+        keyboardShortcuts: {
+            type: 'object',
+            default: {},
+            title: 'Keyboard shortcuts',
+            additionalProperties: {
+                type: 'object',
+                additionalProperties: true,
+            },
+        },
         sidebarGrouping: {
             type: 'string',
             enum: [
@@ -609,6 +624,7 @@ export const customSettingKeys = [
     'folderAiIds',
     'forges',
     'pluginSettings',
+    'keyboardShortcuts',
 ] as const satisfies ReadonlyArray<keyof typeof settingsJsonSchema.properties>;
 
 type CustomSettingKey = (typeof customSettingKeys)[number];

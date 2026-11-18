@@ -52,9 +52,12 @@ type PluginsResponse = Awaited<ReturnType<typeof fetchPlugins>>;
 
 /** What a plugin adds to the app, merged across every running plugin. */
 export type PluginContributions = Readonly<{
-    [Key in 'activities' | 'panes' | 'paneGroupExtensions' | 'settingsSections']-?: NonNullable<
-        PluginDefinition[Key]
-    >;
+    [Key in
+        | 'activities'
+        | 'panes'
+        | 'paneGroupExtensions'
+        | 'settingsSections'
+        | 'shortcutActions']-?: NonNullable<PluginDefinition[Key]>;
 }>;
 
 async function fetchPlugins() {
@@ -530,6 +533,7 @@ export function createPluginRegistry({
                 panes: hostPanes,
                 paneGroupExtensions: [],
                 settingsSections: [],
+                shortcutActions: [],
             },
             problems: {},
             outdatedPluginIds: [],
@@ -888,6 +892,7 @@ export function createPluginRegistry({
                         ...(plugin.settings ? [createPluginSettingsSection(plugin)] : []),
                     ];
                 }),
+                shortcutActions: runningPlugins.flatMap((plugin) => plugin.shortcutActions || []),
             },
             problems: {
                 ...typedObjectFromEntries(

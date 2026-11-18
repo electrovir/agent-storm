@@ -28,6 +28,7 @@ describe(listSettingsSections.name, () => {
                 SettingsSection.General,
                 SettingsSection.Typography,
                 SettingsSection.Terminal,
+                SettingsSection.KeyboardShortcuts,
                 SettingsSection.Activities,
                 SettingsSection.Plugins,
                 'example:settings',

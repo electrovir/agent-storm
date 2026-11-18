@@ -11,6 +11,7 @@ import {
     isSettingsShortcut,
     observeScreenSize,
     resolvePluginSettings,
+    resolveShortcuts,
     ScreenSize,
     SettingsSection,
     VirBook,
@@ -227,6 +228,13 @@ export const VirApp = defineAppElement()({
             readPluginSettings(plugin) {
                 return resolvePluginSettings({
                     plugin,
+                    settings: (state.folderData.value.live || state.folderData.value.snapshot)
+                        ?.settings,
+                });
+            },
+            readShortcuts(action) {
+                return resolveShortcuts({
+                    action,
                     settings: (state.folderData.value.live || state.folderData.value.snapshot)
                         ?.settings,
                 });
