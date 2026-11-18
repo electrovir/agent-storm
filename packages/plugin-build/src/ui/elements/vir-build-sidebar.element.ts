@@ -1,4 +1,4 @@
-import {touchRepoEndpoint} from '@agent-storm/common';
+import {diffPaneId, PrStatus, touchRepoEndpoint} from '@agent-storm/common';
 import {
     type ActivityRoute,
     type AppContext,
@@ -36,15 +36,16 @@ export const VirBuildSidebar = defineAppElement<{
     `,
     render({inputs}) {
         const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
+        const prStatusOverrides = getFolderVerdictStatuses({
+            prReviews: findReviewState(inputs.context).prReviews.value,
+            folderInfo: inputs.context.folderData.value.folderInfo,
+        });
 
         return html`
             <${VirSidebar.assign({
                 activeFolder: inputs.activeFolder,
                 folderData: inputs.context.folderData,
-                prStatusOverrides: getFolderVerdictStatuses({
-                    prReviews: findReviewState(inputs.context).prReviews.value,
-                    folderInfo: inputs.context.folderData.value.folderInfo,
-                }),
+                prStatusOverrides,
                 themeClient: inputs.context.themeClient,
                 hideBorder: isMobile,
                 mobileModal: isMobile,
@@ -74,6 +75,17 @@ export const VirBuildSidebar = defineAppElement<{
                     const folderInfo = inputs.context.folderData.value.folderInfo;
                     const folder = folderInfo.get(event.detail);
                     if (folder) {
+                        /** A folder's first visit opens on its diff once its manual review is ready. */
+                        if (
+                            (prStatusOverrides[event.detail] || folder.prStatus) ===
+                                PrStatus.ReviewStarted &&
+                            !inputs.context.uiLayout.value.layout?.tabLayouts[event.detail]
+                        ) {
+                            inputs.context.uiLayout.showPaneTab({
+                                folder: event.detail,
+                                kind: diffPaneId,
+                            });
+                        }
                         inputs.route.navigate(subPathsForFolder(folder, folderInfo));
                     }
                 })}
