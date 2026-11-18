@@ -1,4 +1,5 @@
 import {ViraButton, ViraEmphasis, ViraSize, type ViraColorVariant, type ViraIconSvg} from 'vira';
+import {VirDiffWidgetTooltip} from './vir-diff-widget-tooltip.element.js';
 
 /** Keeps a press from moving the editor's selection, which would move the mobile add button. */
 export function keepSelectionOnPress(button: HTMLElement) {
@@ -26,11 +27,20 @@ export function buildWidgetButton({
         buttonSize: ViraSize.Small,
         buttonEmphasis: ViraEmphasis.Subtle,
     });
-    button.title = label;
     button.setAttribute('aria-label', label);
     keepSelectionOnPress(button);
     button.addEventListener('click', () => {
         onClick(button);
     });
-    return button;
+    return wrapInTooltip(button, label);
+}
+
+/** Wraps hand-built DOM in {@link VirDiffWidgetTooltip}. */
+export function wrapInTooltip(element: HTMLElement, text: string) {
+    const wrapper = new VirDiffWidgetTooltip();
+    wrapper.assignInputs({
+        text,
+    });
+    wrapper.append(element);
+    return wrapper;
 }

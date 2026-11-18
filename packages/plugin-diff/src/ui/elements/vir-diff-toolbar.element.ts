@@ -19,6 +19,7 @@ import {
     ViraEmphasis,
     ViraSize,
     createSizedIcon,
+    tooltip,
     viraThemeByKeys,
 } from 'vira';
 import {type GitDiffStatus} from '../../diff-api.js';
@@ -162,7 +163,7 @@ export const VirDiffToolbar = defineAppElement<{
                     color: ViraColorVariant.Plain,
                     isDisabled: !hasFiles,
                 })}
-                    title="Previous file"
+                    ${tooltip('Previous file')}
                     ${listen('click', () => {
                         dispatch(
                             new events.fileStep({
@@ -178,7 +179,7 @@ export const VirDiffToolbar = defineAppElement<{
                     color: ViraColorVariant.Plain,
                     isDisabled: !hasFiles,
                 })}
-                    title="Next file"
+                    ${tooltip('Next file')}
                     ${listen('click', () => {
                         dispatch(
                             new events.fileStep({
@@ -196,7 +197,7 @@ export const VirDiffToolbar = defineAppElement<{
                     color: ViraColorVariant.Plain,
                     isDisabled: !inputs.hasChunks,
                 })}
-                    title="Previous change"
+                    ${tooltip('Previous change')}
                     ${listen('click', () => {
                         dispatch(
                             new events.chunkStep({
@@ -212,7 +213,7 @@ export const VirDiffToolbar = defineAppElement<{
                     color: ViraColorVariant.Plain,
                     isDisabled: !inputs.hasChunks,
                 })}
-                    title="Next change"
+                    ${tooltip('Next change')}
                     ${listen('click', () => {
                         dispatch(
                             new events.chunkStep({
@@ -231,7 +232,7 @@ export const VirDiffToolbar = defineAppElement<{
                 buttonEmphasis: ViraEmphasis.Subtle,
                 color: ViraColorVariant.Plain,
             })}
-                title=${inputs.unified ? 'Switch to side-by-side' : 'Switch to inline'}
+                ${tooltip(inputs.unified ? 'Switch to side-by-side' : 'Switch to inline')}
                 ${listen('click', () => {
                     changeSettings({
                         diffLayout: inputs.unified ? DiffLayout.Split : DiffLayout.Inline,
@@ -247,9 +248,11 @@ export const VirDiffToolbar = defineAppElement<{
                     ? ViraColorVariant.Plain
                     : ViraColorVariant.Info,
             })}
-                title=${inputs.diffSettings.hideWhitespace
-                    ? 'Whitespace-only changes are hidden. Click to show them.'
-                    : 'Whitespace-only changes are shown. Click to hide them.'}
+                ${tooltip(
+                    inputs.diffSettings.hideWhitespace
+                        ? 'Whitespace-only changes are hidden. Click to show them.'
+                        : 'Whitespace-only changes are shown. Click to hide them.',
+                )}
                 ${listen('click', () => {
                     changeSettings({
                         hideWhitespace: !inputs.diffSettings.hideWhitespace,
@@ -263,9 +266,11 @@ export const VirDiffToolbar = defineAppElement<{
                 /** Lit up while long lines wrap. */
                 color: inputs.softWrap ? ViraColorVariant.Info : ViraColorVariant.Plain,
             })}
-                title=${inputs.softWrap
-                    ? 'Long lines wrap. Click to scroll them sideways instead.'
-                    : 'Long lines scroll sideways. Click to wrap them.'}
+                ${tooltip(
+                    inputs.softWrap
+                        ? 'Long lines wrap. Click to scroll them sideways instead.'
+                        : 'Long lines scroll sideways. Click to wrap them.',
+                )}
                 ${listen('click', () => {
                     changeSettings({
                         softWrap: !inputs.softWrap,
@@ -281,9 +286,11 @@ export const VirDiffToolbar = defineAppElement<{
                     ? ViraColorVariant.Plain
                     : ViraColorVariant.Info,
             })}
-                title=${inputs.diffSettings.collapseUnchanged
-                    ? 'Unchanged lines are collapsed. Click to show the whole file.'
-                    : 'The whole file is shown. Click to collapse unchanged lines.'}
+                ${tooltip(
+                    inputs.diffSettings.collapseUnchanged
+                        ? 'Unchanged lines are collapsed. Click to show the whole file.'
+                        : 'The whole file is shown. Click to collapse unchanged lines.',
+                )}
                 ${listen('click', () => {
                     changeSettings({
                         collapseUnchanged: !inputs.diffSettings.collapseUnchanged,
@@ -306,11 +313,13 @@ export const VirDiffToolbar = defineAppElement<{
                     color: isShown ? ViraColorVariant.Info : ViraColorVariant.Plain,
                     isDisabled: !hasAny,
                 })}
-                    title=${hasAny
-                        ? isShown
-                            ? 'AI explanations are shown beside each file. Click to hide them.'
-                            : 'AI explanations are hidden. Click to show them beside each file.'
-                        : 'The manual-review skill has not written AI explanations for this review.'}
+                    ${tooltip(
+                        hasAny
+                            ? isShown
+                                ? 'AI explanations are shown beside each file. Click to hide them.'
+                                : 'AI explanations are hidden. Click to show them beside each file.'
+                            : 'The manual-review skill has not written AI explanations for this review.',
+                    )}
                     ${listen('click', () => {
                         if (!hasAny) {
                             return;

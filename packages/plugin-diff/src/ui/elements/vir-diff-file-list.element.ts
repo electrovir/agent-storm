@@ -1,7 +1,7 @@
 import {GitDiffSide} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
-import {viraThemeByKeys} from 'vira';
+import {tooltip, viraThemeByKeys} from 'vira';
 import {type GitDiffStatus} from '../../diff-api.js';
 import {diffMemory, diffSidebarWidth} from '../../util/diff-memory.js';
 import {statusFilesKeys} from '../../util/diff-status.js';
@@ -173,7 +173,7 @@ export const VirDiffFileList = defineAppElement<{
             <div
                 class="sidebar-divider"
                 ?data-dragging=${state.isDragging}
-                title="Drag to resize. Double-click to reset."
+                ${tooltip('Drag to resize. Double-click to reset.')}
                 ${listen('pointerdown', onDividerPointerDown)}
                 ${listen('dblclick', () => {
                     updateState({

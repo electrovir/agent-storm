@@ -2,6 +2,7 @@ import {type PartialWithUndefined} from '@augment-vir/common';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     LucideRotateCcwIcon,
+    tooltip,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
@@ -108,7 +109,7 @@ export const VirSettingsRow = defineAppElement<
                     ${inputs.rowTitle}
                     ${inputs.isModified
                         ? html`
-                              <span title="Reset to default">
+                              <span ${tooltip('Reset to default')}>
                                   <${ViraButton.assign({
                                       icon: LucideRotateCcwIcon,
                                       buttonSize: ViraSize.Small,

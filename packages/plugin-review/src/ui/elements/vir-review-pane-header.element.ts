@@ -10,6 +10,7 @@ import {
     LucideCopyCheckIcon,
     LucideCopyIcon,
     LucideRotateCwIcon,
+    tooltip,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
@@ -160,7 +161,7 @@ export const VirReviewPaneHeader = defineAppElement<{
                         color: ViraColorVariant.Neutral,
                         icon: state.isUrlCopied ? copiedIcon : copyIcon,
                     })}
-                        title="Copy the PR URL."
+                        ${tooltip('Copy the PR URL.')}
                         ${listen('click', async () => {
                             await navigator.clipboard.writeText(inputs.pullRequest.url);
                             updateState({
@@ -185,7 +186,7 @@ export const VirReviewPaneHeader = defineAppElement<{
             })}
                 class="refresh-button"
                 ?data-spinning=${inputs.isRefreshing}
-                title="Refresh the PR from GitHub."
+                ${tooltip('Refresh the PR from GitHub.')}
                 ${listen('click', () => {
                     if (inputs.isRefreshing) {
                         return;

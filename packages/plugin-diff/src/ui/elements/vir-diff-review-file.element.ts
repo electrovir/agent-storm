@@ -68,8 +68,6 @@ export const VirDiffReviewFile = defineAppElement<{
 }>()({
     tagName: 'vir-diff-review-file',
     events: {
-        /** The header was clicked: the pane opens this file in its own diff. */
-        fileSelected: defineElementEvent<string>(),
         /** The stage button was clicked: the pane moves the whole file across the index. */
         stageFile: defineElementEvent<GitDiffFile>(),
         /** The pane owns the comment composer, so this only says where it should open. */
@@ -455,15 +453,7 @@ export const VirDiffReviewFile = defineAppElement<{
                 <${VirDiffFileHeader.assign({
                     file: inputs.file,
                     side: inputs.side,
-                    isOpenable: true,
                 })}
-                    ${listen(VirDiffFileHeader.events.fileSelected, (event) => {
-                        dispatch(
-                            new events.fileSelected({
-                                detail: event.detail,
-                            }),
-                        );
-                    })}
                     ${listen(VirDiffFileHeader.events.stageFile, (event) => {
                         dispatch(
                             new events.stageFile({

@@ -3,7 +3,7 @@ import {defineAppElement} from '@agent-storm/core/frontend';
 import {type Text} from '@codemirror/state';
 import {EditorView} from '@codemirror/view';
 import {asyncProp, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
-import {viraThemeByKeys} from 'vira';
+import {tooltip, viraThemeByKeys} from 'vira';
 import {type GitDiffFileContents} from '../../diff-api.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {type AddCommentRequest, type EditCommentRequest} from './diff-editor-comments.js';
@@ -358,7 +358,7 @@ export const VirDiffCodeView = defineAppElement<{
                                   <button
                                       type="button"
                                       class="ruler-mark"
-                                      title="Jump to change ${index + 1}"
+                                      ${tooltip(`Jump to change ${index + 1}`)}
                                       style=${css`
                                           top: ${mark.topPercent}%;
                                           height: ${mark.heightPercent}%;

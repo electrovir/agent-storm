@@ -11,6 +11,7 @@ import {
     ViraEmphasis,
     ViraSize,
     createSizedIcon,
+    tooltip,
     viraThemeByKeys,
 } from 'vira';
 import {type AddCommentRequest, type EditCommentRequest} from './diff-editor-comments.js';
@@ -80,7 +81,7 @@ export const VirFileComments = defineAppElement<{
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Neutral,
                         })}
-                            title="Edit review comment"
+                            ${tooltip('Edit review comment')}
                             ${listen('click', (event) => {
                                 const anchor = extractEventTarget(
                                     event,
@@ -103,7 +104,7 @@ export const VirFileComments = defineAppElement<{
                             buttonEmphasis: ViraEmphasis.Subtle,
                             color: ViraColorVariant.Danger,
                         })}
-                            title="Delete review comment"
+                            ${tooltip('Delete review comment')}
                             ${listen('click', () => {
                                 dispatch(
                                     new events.deleteCommentRequested({

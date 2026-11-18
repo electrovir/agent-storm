@@ -251,7 +251,7 @@ export const VirPaneGroup = defineAppElement<{
 
         const folderNameBar = isMobile
             ? html`
-                  <div class="folder-name-bar" title=${inputs.folder}>
+                  <div class="folder-name-bar" ${tooltip(inputs.folder)}>
                       <span class="folder-name-label">
                           ${inputs.folder.split('/').findLast(Boolean) || inputs.folder}
                       </span>

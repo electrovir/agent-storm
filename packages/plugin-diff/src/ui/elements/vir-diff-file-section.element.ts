@@ -12,6 +12,7 @@ import {
     ViraCollapsibleCard,
     ViraIcon,
     createSizedIcon,
+    tooltip,
     viraThemeByKeys,
     type ViraIconSvg,
 } from 'vira';
@@ -101,7 +102,6 @@ export const VirDiffFileSection = defineAppElement<{
             padding: 6px 8px 2px;
             font-size: 10px;
             letter-spacing: 0.06em;
-            text-transform: uppercase;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
@@ -120,6 +120,9 @@ export const VirDiffFileSection = defineAppElement<{
             flex-grow: 0;
             flex-shrink: 0;
             gap: 2px;
+            /* Tooltips render inline here and would inherit the card header's bold text. */
+            font-weight: normal;
+            letter-spacing: normal;
         }
 
         .sidebar-row {
@@ -259,7 +262,7 @@ export const VirDiffFileSection = defineAppElement<{
                     <button
                         type="button"
                         class="row-action"
-                        title="Discard all unstaged changes"
+                        ${tooltip('Discard all unstaged changes')}
                         ?disabled=${inputs.isBusy}
                         ${listen('click', (event) => {
                             event.stopPropagation();
@@ -277,7 +280,7 @@ export const VirDiffFileSection = defineAppElement<{
                     <button
                         type="button"
                         class="row-action"
-                        title="Stage all changes"
+                        ${tooltip('Stage all changes')}
                         ?disabled=${inputs.isBusy}
                         ${listen('click', (event) => {
                             event.stopPropagation();
@@ -299,7 +302,7 @@ export const VirDiffFileSection = defineAppElement<{
                     <button
                         type="button"
                         class="row-action"
-                        title="Unstage all changes"
+                        ${tooltip('Unstage all changes')}
                         ?disabled=${inputs.isBusy}
                         ${listen('click', (event) => {
                             event.stopPropagation();
@@ -334,7 +337,7 @@ export const VirDiffFileSection = defineAppElement<{
                     <button
                         type="button"
                         class="sidebar-row-open"
-                        title=${file.path}
+                        ${tooltip(file.path)}
                         ${listen('click', (event) => {
                             dispatch(
                                 new events.rowClick({
@@ -355,9 +358,11 @@ export const VirDiffFileSection = defineAppElement<{
                                   <button
                                       type="button"
                                       class="row-action"
-                                      title=${rowTargets.length > 1
-                                          ? `Discard all changes to the ${rowTargets.length} selected files`
-                                          : 'Discard all changes to this file'}
+                                      ${tooltip(
+                                          rowTargets.length > 1
+                                              ? `Discard all changes to the ${rowTargets.length} selected files`
+                                              : 'Discard all changes to this file',
+                                      )}
                                       ?data-hidden=${!canDiscardSide[inputs.side]}
                                       ?disabled=${inputs.isBusy || !canDiscardSide[inputs.side]}
                                       ${listen('click', () => {
@@ -375,9 +380,11 @@ export const VirDiffFileSection = defineAppElement<{
                                   <button
                                       type="button"
                                       class="row-action"
-                                      title=${rowTargets.length > 1
-                                          ? `${stageActionLabels[inputs.side]} the ${rowTargets.length} selected files`
-                                          : stageActionLabels[inputs.side]}
+                                      ${tooltip(
+                                          rowTargets.length > 1
+                                              ? `${stageActionLabels[inputs.side]} the ${rowTargets.length} selected files`
+                                              : stageActionLabels[inputs.side],
+                                      )}
                                       ${listen('click', () => {
                                           dispatch(
                                               new events.filesStage({
@@ -425,10 +432,12 @@ export const VirDiffFileSection = defineAppElement<{
                             type="button"
                             class="row-action"
                             ?data-active=${inputs.reviewSide === inputs.side}
-                            title=${reviewButtonTitle({
-                                side: inputs.side,
-                                reviewSide: inputs.reviewSide,
-                            })}
+                            ${tooltip(
+                                reviewButtonTitle({
+                                    side: inputs.side,
+                                    reviewSide: inputs.reviewSide,
+                                }),
+                            )}
                             ${listen('click', (event) => {
                                 event.stopPropagation();
                                 dispatch(

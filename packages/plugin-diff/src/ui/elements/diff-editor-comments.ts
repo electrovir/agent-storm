@@ -19,7 +19,7 @@ import {
     createSizedIcon,
     viraThemeByKeys,
 } from 'vira';
-import {buildWidgetButton, keepSelectionOnPress} from './diff-editor-widgets.js';
+import {buildWidgetButton, keepSelectionOnPress, wrapInTooltip} from './diff-editor-widgets.js';
 
 /** Sized to fit the diff's own gutter beside a single line. */
 const addCommentIcon = createSizedIcon(LucideMessageSquarePlusIcon, 11);
@@ -150,8 +150,7 @@ class AddCommentMarker extends GutterMarker {
         const button = document.createElement('button');
         button.type = 'button';
         button.className = addCommentButtonClass;
-        button.title = 'Add review comment';
-        button.setAttribute('aria-label', button.title);
+        button.setAttribute('aria-label', 'Add review comment');
         button.setAttribute('data-line-start', String(this.lineStart));
         const icon = new ViraIcon();
         icon.assignInputs({
@@ -167,7 +166,7 @@ class AddCommentMarker extends GutterMarker {
                 lineBottom: view.lineBlockAt(this.lineStart).bottom + view.documentTop,
             });
         });
-        return button;
+        return wrapInTooltip(button, 'Add review comment');
     }
 }
 

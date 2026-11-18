@@ -3,7 +3,7 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen} from 'element-vir';
-import {createSizedIcon, LucideClipboardIcon, ViraIcon, viraThemeByKeys} from 'vira';
+import {createSizedIcon, LucideClipboardIcon, tooltip, ViraIcon, viraThemeByKeys} from 'vira';
 
 /** One accessory key: a single sequence per tap, no sticky toggle. */
 export type AccessoryKey = {
@@ -155,7 +155,7 @@ export const VirTerminalAccessoryBar = defineAppElement<{
                 <button
                     type="button"
                     class="accessory-key"
-                    title=${key.title}
+                    ${tooltip(key.title)}
                     ${listen('pointerdown', (event) => {
                         event.preventDefault();
                         dispatch(
@@ -174,7 +174,7 @@ export const VirTerminalAccessoryBar = defineAppElement<{
             <button
                 type="button"
                 class="accessory-key"
-                title="Paste from clipboard"
+                ${tooltip('Paste from clipboard')}
                 ${listen('pointerdown', (event) => {
                     event.preventDefault();
                     dispatch(
@@ -191,7 +191,7 @@ export const VirTerminalAccessoryBar = defineAppElement<{
             <button
                 type="button"
                 class="accessory-key ctrl-key"
-                title="Ctrl — applies to the next key you press"
+                ${tooltip('Ctrl — applies to the next key you press')}
                 ?data-armed=${inputs.ctrlArmed}
                 ${listen('pointerdown', (event) => {
                     event.preventDefault();

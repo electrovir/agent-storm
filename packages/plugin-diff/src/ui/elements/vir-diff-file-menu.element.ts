@@ -8,6 +8,7 @@ import {
     ViraMenuItem,
     ViraMenuTrigger,
     createSizedIcon,
+    tooltip,
     viraThemeByKeys,
 } from 'vira';
 import {type GitDiffStatus} from '../../diff-api.js';
@@ -111,7 +112,6 @@ export const VirDiffFileMenu = defineAppElement<{
             padding: 6px 12px 2px;
             font-size: 10px;
             letter-spacing: 0.06em;
-            text-transform: uppercase;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
@@ -134,7 +134,7 @@ export const VirDiffFileMenu = defineAppElement<{
                 type="button"
                 class="file-trigger"
                 slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                title=${selected?.file.path || 'No changes'}
+                ${tooltip(selected?.file.path || 'No changes')}
                 ?disabled=${!hasFiles}
             >
                 ${selected
@@ -181,10 +181,12 @@ export const VirDiffFileMenu = defineAppElement<{
                 >
                     <div
                         class="menu-row"
-                        title=${reviewButtonTitle({
-                            side: group.side,
-                            reviewSide: inputs.reviewSide,
-                        })}
+                        ${tooltip(
+                            reviewButtonTitle({
+                                side: group.side,
+                                reviewSide: inputs.reviewSide,
+                            }),
+                        )}
                     >
                         <${ViraIcon.assign({
                             icon: reviewIcon,
@@ -206,7 +208,9 @@ export const VirDiffFileMenu = defineAppElement<{
                                 );
                             })}
                         >
-                            <div class="menu-row" title=${file.path}>${fileRowContents(file)}</div>
+                            <div class="menu-row" ${tooltip(file.path)}>
+                                ${fileRowContents(file)}
+                            </div>
                         </${ViraMenuItem}>
                     `;
                 })}

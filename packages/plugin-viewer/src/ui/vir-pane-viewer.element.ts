@@ -22,7 +22,7 @@ const fileRenderers: Readonly<Record<ViewerFileType, (file: ViewerFile) => HtmlI
         return html`
             <iframe
                 class="frame"
-                title=${file.resolvedPath}
+                aria-label=${file.resolvedPath}
                 sandbox=${frameSandboxes[ViewerFileType.Html]}
                 srcdoc=${file.srcdoc}
             ></iframe>
@@ -32,7 +32,7 @@ const fileRenderers: Readonly<Record<ViewerFileType, (file: ViewerFile) => HtmlI
         return html`
             <iframe
                 class="frame"
-                title=${file.resolvedPath}
+                aria-label=${file.resolvedPath}
                 sandbox=${frameSandboxes[ViewerFileType.Markdown]}
                 srcdoc=${file.srcdoc}
             ></iframe>

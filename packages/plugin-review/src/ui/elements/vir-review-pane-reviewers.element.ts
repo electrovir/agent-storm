@@ -5,6 +5,7 @@ import {
     createSizedIcon,
     LucideCircleCheckIcon,
     LucideCircleXIcon,
+    tooltip,
     ViraIcon,
     viraThemeByKeys,
     type ViraIconSvg,
@@ -64,7 +65,7 @@ export const VirReviewPaneReviewers = defineAppElement<{
                 <div
                     class="reviewer"
                     data-state=${reviewer.state}
-                    title=${`${reviewer.login}: ${reviewStateLabels[reviewer.state]}`}
+                    ${tooltip(`${reviewer.login}: ${reviewStateLabels[reviewer.state]}`)}
                 >
                     ${reviewer.avatarUrl
                         ? html`

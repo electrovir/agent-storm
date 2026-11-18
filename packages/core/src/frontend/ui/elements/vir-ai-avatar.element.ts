@@ -1,5 +1,5 @@
 import {css, html} from 'element-vir';
-import {viraThemeByKeys} from 'vira';
+import {tooltip, viraThemeByKeys} from 'vira';
 import {getCachedAvatarUrl, loadAvatarUrl} from '../../util/ai-avatar.js';
 import {defineAppElement} from '../define-app-element.js';
 
@@ -37,7 +37,6 @@ export const VirAiAvatar = defineAppElement<{
             border-radius: 50%;
             object-fit: cover;
             font-weight: 600;
-            text-transform: uppercase;
             background: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
@@ -70,7 +69,7 @@ export const VirAiAvatar = defineAppElement<{
                   <img class="avatar" style=${sizeStyle} src=${cachedUrl} alt=${inputs.name} />
               `
             : html`
-                  <span class="avatar" style=${sizeStyle} title=${inputs.name}>
+                  <span class="avatar" style=${sizeStyle} ${tooltip(inputs.name)}>
                       ${inputs.name.trim().slice(0, 1)}
                   </span>
               `;

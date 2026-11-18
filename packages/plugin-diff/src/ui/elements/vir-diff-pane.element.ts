@@ -22,12 +22,7 @@ import {
 } from 'element-vir';
 import {LucideLoaderIcon, ViraIcon, createSizedIcon, viraThemeByKeys} from 'vira';
 import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
-import {
-    allSelectValues,
-    findSelected,
-    statusFilesKeys,
-    toSelectValue,
-} from '../../util/diff-status.js';
+import {allSelectValues, findSelected, statusFilesKeys} from '../../util/diff-status.js';
 import {toDisplayedOldContent} from './diff-editor.js';
 import {createDiffPaneComments} from './diff-pane-comments.js';
 import {createDiffPaneController, createDiffPaneState} from './diff-pane-controller.js';
@@ -317,13 +312,6 @@ export const VirDiffPane = defineAppElement<{
                       })}
                       ${listen(VirDiffReviewFile.events.deleteCommentRequested, async (event) => {
                           await comments.onDeleteComment(event.detail);
-                      })}
-                      ${listen(VirDiffReviewFile.events.fileSelected, async (event) => {
-                          if (state.reviewSide) {
-                              await controller.selectFile(
-                                  toSelectValue(state.reviewSide, event.detail),
-                              );
-                          }
                       })}
                       ${listen(VirDiffReviewFile.events.chunkMenuRequested, (event) => {
                           if (
@@ -615,7 +603,6 @@ export const VirDiffPane = defineAppElement<{
                               <${VirDiffFileHeader.assign({
                                   file: selected.file,
                                   side: selected.side,
-                                  isOpenable: false,
                               })}
                                   ${listen(VirDiffFileHeader.events.stageFile, async () => {
                                       await controller.onStageSelectedFile();

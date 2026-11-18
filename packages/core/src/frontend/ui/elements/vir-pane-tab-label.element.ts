@@ -4,6 +4,7 @@ import {
     createSizedIcon,
     LucideHourglassIcon,
     LucideLoaderIcon,
+    tooltip,
     ViraIcon,
     viraThemeByKeys,
     type ViraIconSvg,
@@ -98,7 +99,7 @@ export const VirPaneTabLabel = defineAppElement<{
                 ? html`
                       <span
                           class="activity"
-                          title=${indicator?.title || nothing}
+                          ${indicator?.title ? tooltip(indicator.title) : nothing}
                           ?data-busy=${inputs.status === PaneStatus.Busy}
                           ?data-stalled=${inputs.status === PaneStatus.Stalled}
                       >

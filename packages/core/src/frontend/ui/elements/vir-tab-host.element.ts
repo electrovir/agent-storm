@@ -8,6 +8,7 @@ import {
     PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
+    tooltip,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
@@ -749,7 +750,7 @@ export const VirTabHost = defineAppElement<{
                                 icon: LucidePlusIcon,
                             })}
                                 slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                                title="New tab"
+                                ${tooltip('New tab')}
                             ></${ViraButton}>
                             ${renderMenuItemEntries(newTabEntries)}
                         </${ViraMenuTrigger}>
