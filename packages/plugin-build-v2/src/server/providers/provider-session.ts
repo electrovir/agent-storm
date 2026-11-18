@@ -2,12 +2,14 @@ import {type MaybePromise} from '@augment-vir/common';
 import {
     type ApprovalDecision,
     type ApprovalRequest,
+    type ComposerCommand,
     type ProviderModel,
     type ReasoningEffort,
     type RuntimeMode,
     type ThreadItem,
     type ThreadStatus,
 } from '../../build-v2-api.js';
+import {type AgentToolConnection} from '../agent-tool-server.js';
 
 /** An item as a provider describes it, before it belongs to a thread and turn. */
 export type ProviderItem = Readonly<
@@ -47,7 +49,16 @@ export type ProviderSink = Readonly<{
 
 /** A running provider process for one thread. */
 export type ProviderSession = Readonly<{
-    send(text: string): MaybePromise<void>;
+    send(
+        params: Readonly<{
+            text: string;
+            /**
+             * Where the user's own words start in `text`. Anything before it, such as an earlier
+             * conversation handed over from another provider, is context.
+             */
+            userTextStart: number;
+        }>,
+    ): MaybePromise<void>;
     interrupt(): Promise<void>;
     setRuntimeMode(runtimeMode: RuntimeMode): MaybePromise<void>;
     stop(): void;
@@ -60,6 +71,12 @@ export type ProviderAdapter = Readonly<{
             cwd: string;
         }>,
     ): Promise<ProviderModel[]>;
+    /** Starts the provider's CLI in `cwd` only long enough to ask it for its commands and skills. */
+    listCommands(
+        params: Readonly<{
+            cwd: string;
+        }>,
+    ): Promise<ComposerCommand[]>;
     /**
      * Runs one tool-free turn on `prompt` in a session that isn't saved, and resolves to the reply.
      * Uses a small model where the provider has one, else `model`.
@@ -85,6 +102,10 @@ export type ProviderAdapter = Readonly<{
             /** Resumes this conversation when set. */
             providerSessionId: string | null;
             sink: ProviderSink;
+            /** Where the session's agent calls Agent Storm's own tools. */
+            agentTools: AgentToolConnection;
+            /** Replaces the environment the provider runs with. Unset inherits the server's. */
+            env: Record<string, string> | undefined;
         }>,
     ): Promise<ProviderSession>;
 }>;

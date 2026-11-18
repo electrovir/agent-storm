@@ -18,7 +18,7 @@ import {
     type ModelDefault,
     type ModelDefaults,
 } from '../../util/model-defaults.js';
-import {reasoningEffortLabels} from '../../util/reasoning-effort.js';
+import {readEffectiveEffort, reasoningEffortLabels} from '../../util/reasoning-effort.js';
 import {type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
 
 /** Joins a provider and a model id into one dropdown value. An empty model id is the default. */
@@ -187,40 +187,29 @@ export const VirAiChatModelDefaults = defineAppElement<{
             : nothing;
 
         const efforts = selectedModel?.supportedEfforts || [];
-        const defaultEffort = selectedModel?.defaultEffort;
+        const selectedEffort = readEffectiveEffort({
+            model: selectedModel,
+            effort: value?.effort || undefined,
+        });
         const effortRow =
             value && efforts.length
                 ? html`
                       <${VirSettingsRow.assign({
                           rowTitle: 'Effort',
                           description: 'How much the model thinks before it answers.',
-                          isModified: !!value.effort,
-                      })}
-                          ${listen(VirSettingsRow.events.reset, () => {
-                              changeDefault({
-                                  ...value,
-                                  effort: undefined,
-                              });
-                          })}
-                      >
+                      })}>
                           <${ViraDropdown.assign({
-                              options: [
-                                  {
-                                      value: '',
-                                      label: defaultEffort
-                                          ? `Model default (${reasoningEffortLabels[defaultEffort]})`
-                                          : 'Model default',
-                                  },
-                                  ...efforts.map((effort) => {
-                                      return {
-                                          value: effort,
-                                          label: reasoningEffortLabels[effort],
-                                      };
-                                  }),
-                              ],
-                              selected: [
-                                  value.effort || '',
-                              ],
+                              options: efforts.map((effort) => {
+                                  return {
+                                      value: effort,
+                                      label: reasoningEffortLabels[effort],
+                                  };
+                              }),
+                              selected: selectedEffort
+                                  ? [
+                                        selectedEffort,
+                                    ]
+                                  : [],
                           })}
                               ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
                                   const effort = getEnumValues(ReasoningEffort).find((entry) => {
@@ -284,11 +273,10 @@ export const VirAiChatModelDefaults = defineAppElement<{
                                   changeDefault({
                                       provider: picked.provider,
                                       model: picked.model.isDefault ? '' : picked.model.id,
-                                      effort:
-                                          value?.effort &&
-                                          picked.model.supportedEfforts.includes(value.effort)
-                                              ? value.effort
-                                              : undefined,
+                                      effort: readEffectiveEffort({
+                                          model: picked.model,
+                                          effort: value?.effort || undefined,
+                                      }),
                                   });
                               })}
                           ></${ViraDropdown}>

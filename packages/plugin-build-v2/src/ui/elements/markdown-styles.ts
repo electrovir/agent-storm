@@ -1,6 +1,8 @@
 import {classMap, css, html, unsafeHTML} from 'element-vir';
 import {micromark} from 'micromark';
+import {gfm, gfmHtml} from 'micromark-extension-gfm';
 import {viraThemeByKeys} from 'vira';
+import {VirAiChatCodeCopy} from './vir-ai-chat-code-copy.element.js';
 
 const codeBlockPattern = /<pre><code(?: class="language-([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g;
 
@@ -18,7 +20,7 @@ function wrapCodeBlocks(markupHtml: string) {
     return markupHtml.replaceAll(codeBlockPattern, (_match, language = 'text', code) => {
         return [
             `<div class="chat-markdown-codeblock" data-language="${language}">`,
-            `<div class="chat-markdown-codeblock-header"><span>${language}</span></div>`,
+            `<div class="chat-markdown-codeblock-header"><span>${language}</span><${VirAiChatCodeCopy.tagName}></${VirAiChatCodeCopy.tagName}></div>`,
             `<pre><code>${code}</code></pre>`,
             '</div>',
         ].join('');
@@ -160,6 +162,14 @@ export const chatMarkdownStyles = css`
                 padding: 4px 10px;
                 text-align: start;
                 border: 1px solid ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
+
+                &[align='center'] {
+                    text-align: center;
+                }
+
+                &[align='right'] {
+                    text-align: end;
+                }
             }
 
             & th {
@@ -186,6 +196,7 @@ export const chatMarkdownStyles = css`
             & .chat-markdown-codeblock-header {
                 display: flex;
                 align-items: center;
+                justify-content: space-between;
                 padding: 6px 6px 0 12px;
                 font-family: monospace;
                 font-size: 11px;
@@ -229,7 +240,16 @@ export function renderChatMarkdown({
             })}
         >
             ${unsafeHTML(
-                wrapCodeBlocks(micromark(hasLineBreaks ? preserveLineBreaks(text) : text)),
+                wrapCodeBlocks(
+                    micromark(hasLineBreaks ? preserveLineBreaks(text) : text, {
+                        extensions: [
+                            gfm(),
+                        ],
+                        htmlExtensions: [
+                            gfmHtml(),
+                        ],
+                    }),
+                ),
             )}
         </div>
     `;

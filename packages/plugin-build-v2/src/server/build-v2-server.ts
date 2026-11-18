@@ -1,22 +1,29 @@
-import {definePluginServer} from '@agent-storm/core/server';
-import {extractErrorMessage, log} from '@augment-vir/common';
-import {normalizePath} from 'agent-storm-util';
+import {definePluginServer, type PluginCallHandlers} from '@agent-storm/core/server';
+import {awaitedForEach, extractErrorMessage, log} from '@augment-vir/common';
+import {gitTimeout, normalizePath, runCommand} from 'agent-storm-util';
+import {convertDuration, createUtcFullDate, toJsDate} from 'date-vir';
 import {randomUUID} from 'node:crypto';
+import {stat} from 'node:fs/promises';
+import {join} from 'node:path';
 import {
     AiProvider,
     ApprovalDecision,
     ApprovalKind,
     type ApprovalRequest,
     buildV2Api,
+    type ComposerCommand,
     providerLabels,
     type ProviderModel,
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
 } from '../build-v2-api.js';
+import {startAgentToolServer} from './agent-tool-server.js';
+import {agentToolInstructions, agentTools} from './agent-tools.js';
 import {openBuildV2Database} from './build-v2-database.js';
 import {createClaudeSessionStore} from './claude-session-store.js';
 import {buildContextHandoff} from './context-handoff.js';
+import {readFolderEnv} from './folder-env.js';
 import {createClaudeProvider} from './providers/claude-provider.js';
 import {codexProvider} from './providers/codex-provider.js';
 import {
@@ -24,11 +31,12 @@ import {
     type ProviderSession,
     type ProviderSink,
 } from './providers/provider-session.js';
-import {saveUpload} from './save-upload.js';
+import {readUpload, saveUpload} from './save-upload.js';
 import {
     createThreadTitle,
     createThreadTitlePrompt,
     createWorktreeName,
+    isPlaceholderWorktreeName,
     parseGeneratedTitle,
 } from './thread-names.js';
 import {createThreadStore} from './thread-store.js';
@@ -36,6 +44,9 @@ import {createThreadStore} from './thread-store.js';
 const ok = {
     ok: true,
 } as const;
+
+/** A repo's Claude skill that makes a worktree for a new thread and opens a PR from it. */
+const openWorktreeSkillName = 'open-worktree';
 
 export default definePluginServer({
     api: buildV2Api,
@@ -45,7 +56,7 @@ export default definePluginServer({
             prismaClient,
             emit,
         });
-        const interruptedThreadIds = await store.settleInterruptedWork();
+        const interruptedThreads = await store.settleInterruptedWork();
 
         const providers: Readonly<Record<AiProvider, ProviderAdapter>> = {
             [AiProvider.Claude]: createClaudeProvider(createClaudeSessionStore(prismaClient)),
@@ -53,6 +64,19 @@ export default definePluginServer({
         };
         /** Each provider's models, read once. A failed read is dropped so the next call retries. */
         const modelLists = new Map<AiProvider, Promise<ProviderModel[]>>();
+        /**
+         * Each provider's commands and skills in each folder, by `provider:cwd`. Kept only briefly,
+         * so a skill the user just added shows up. A failed read is dropped so the next call
+         * retries.
+         */
+        const commandLists = new Map<
+            string,
+            Readonly<{
+                commands: Promise<ComposerCommand[]>;
+                /** Epoch milliseconds. */
+                listedAt: number;
+            }>
+        >();
         /** Each thread's running provider, by thread id. */
         const sessions = new Map<string, Promise<ProviderSession>>();
         /** The turn each thread's latest message started, which its new items belong to. */
@@ -72,6 +96,24 @@ export default definePluginServer({
                 ): void;
             }
         >();
+
+        /** What Agent Storm's tools left for each thread to do once its current turn ends. */
+        const afterTurnActions = new Map<string, ReadonlyArray<() => Promise<void>>>();
+
+        async function runAfterTurnActions(threadId: string) {
+            const actions = afterTurnActions.get(threadId) || [];
+            afterTurnActions.delete(threadId);
+            await awaitedForEach(actions, async (action) => {
+                try {
+                    await action();
+                } catch (error) {
+                    await addNotice({
+                        threadId,
+                        text: extractErrorMessage(error),
+                    });
+                }
+            });
+        }
 
         function readTurnId(threadId: string) {
             return turnIds.get(threadId) || '';
@@ -204,9 +246,21 @@ export default definePluginServer({
                     }
                 },
                 async setStatus(status) {
-                    if (isCurrent()) {
-                        await store.updateThread(threadId, {
-                            status,
+                    if (!isCurrent()) {
+                        return;
+                    }
+                    await store.updateThread(threadId, {
+                        status,
+                    });
+                    if (status !== ThreadStatus.Running && status !== ThreadStatus.NeedsApproval) {
+                        void generateThreadTitle({
+                            threadId,
+                        });
+                        /** Not awaited: these actions stop the session that is reporting this. */
+                        runAfterTurnActions(threadId).catch((error: unknown) => {
+                            log.warning(
+                                `Finishing thread ${threadId}'s turn failed: ${extractErrorMessage(error)}`,
+                            );
                         });
                     }
                 },
@@ -263,14 +317,19 @@ export default definePluginServer({
             }
             const details = await store.findSessionDetails(threadId);
             const session: {current?: Promise<ProviderSession>} = {};
-            session.current = providers[details.provider].start({
-                cwd: details.cwd,
-                model: details.model,
-                effort: details.effort,
-                speedTier: details.speedTier,
-                runtimeMode: details.runtimeMode,
-                providerSessionId: details.providerSessionId,
-                sink: createSink(threadId, session),
+            /** AI Session panes get per-folder variables (such as direnv's) from their shell. */
+            session.current = readFolderEnv(details.cwd).then(async (env) => {
+                return await providers[details.provider].start({
+                    env,
+                    cwd: details.cwd,
+                    model: details.model,
+                    effort: details.effort,
+                    speedTier: details.speedTier,
+                    runtimeMode: details.runtimeMode,
+                    providerSessionId: details.providerSessionId,
+                    sink: createSink(threadId, session),
+                    agentTools: agentToolServer.connect(threadId),
+                });
             });
             sessions.set(threadId, session.current);
             try {
@@ -284,42 +343,155 @@ export default definePluginServer({
         }
 
         async function stopSession(threadId: string) {
+            const {updatedAt} = await store.findThread(threadId);
+            afterTurnActions.delete(threadId);
             await declineThreadApprovals(threadId);
             const session = sessions.get(threadId);
             sessions.delete(threadId);
             (await session?.catch(() => undefined))?.stop();
             await store.failUnfinishedItems(threadId);
-            /** Declining the last pending request above marks the thread running again. */
+            /**
+             * Declining the last pending request above marks the thread running again. Stopping
+             * isn't activity: passing `updatedAt` keeps Prisma's `@updatedAt` from bumping it,
+             * which would move an archived thread's repo in the sidebar's activity sort.
+             */
             await store.updateThread(threadId, {
                 status: ThreadStatus.Idle,
+                updatedAt: toJsDate(createUtcFullDate(updatedAt)),
             });
         }
 
+        async function moveThreadToNewWorktree({
+            threadId,
+            folder,
+            title,
+        }: Readonly<{threadId: string; folder: string; title: string}>) {
+            const name = createWorktreeName(title);
+            const {worktreePath} = await host.createWorktree({
+                folder,
+                name,
+            });
+            await store.updateThread(threadId, {
+                cwd: normalizePath(worktreePath),
+                worktreeBranch: name,
+                status: ThreadStatus.Idle,
+            });
+            await addNotice({
+                threadId,
+                text: `Moved to a new worktree at ${worktreePath}.`,
+            });
+            return worktreePath;
+        }
+
         /**
-         * Replaces a new thread's first-line title with one a model writes, unless the user renamed
-         * the thread meanwhile.
+         * Has a model title the thread, unless the user or an agent renamed it. With
+         * `firstMessage`, titles a new thread from that alone. Without it, reads the conversation
+         * so far, so the title gets more specific as the thread goes on.
          */
         async function generateThreadTitle({
             threadId,
-            text,
-            placeholderTitle,
-        }: Readonly<{threadId: string; text: string; placeholderTitle: string}>) {
+            firstMessage,
+        }: Readonly<{threadId: string; firstMessage?: string | undefined}>) {
             try {
                 const details = await store.findSessionDetails(threadId);
+                if (details.hasCustomTitle) {
+                    await renamePlaceholderBranch({
+                        threadId,
+                        title: (await store.findThread(threadId)).title,
+                    });
+                    return;
+                }
                 const title = parseGeneratedTitle(
                     await providers[details.provider].generateTitle({
                         cwd: details.cwd,
                         model: details.model,
-                        prompt: createThreadTitlePrompt(text),
+                        prompt: createThreadTitlePrompt(
+                            firstMessage == undefined
+                                ? await store.readThread(threadId)
+                                : {
+                                      items: [
+                                          {
+                                              kind: ThreadItemKind.UserMessage,
+                                              text: firstMessage,
+                                          },
+                                      ],
+                                  },
+                        ),
                     }),
                 );
-                if (title && (await store.findThread(threadId)).title === placeholderTitle) {
-                    await store.updateThread(threadId, {
+                if (title) {
+                    await store.setGeneratedTitle({
+                        threadId,
+                        title,
+                    });
+                    await renamePlaceholderBranch({
+                        threadId,
                         title,
                     });
                 }
+                return title;
             } catch (error) {
                 log.warning(`Generating a thread title failed: ${extractErrorMessage(error)}`);
+                return undefined;
+            }
+        }
+
+        /**
+         * Renames a worktree branch that was created before the thread had a usable title. Leaves a
+         * pushed branch alone, since renaming it would split it from its remote branch.
+         */
+        async function renamePlaceholderBranch({
+            threadId,
+            title,
+        }: Readonly<{threadId: string; title: string}>) {
+            try {
+                const thread = await store.findThread(threadId);
+                const branch = createWorktreeName(title);
+                if (
+                    !thread.worktreeBranch ||
+                    !isPlaceholderWorktreeName(thread.worktreeBranch) ||
+                    isPlaceholderWorktreeName(branch)
+                ) {
+                    return;
+                }
+                const hasUpstream = await runCommand(
+                    'git',
+                    [
+                        'rev-parse',
+                        '--abbrev-ref',
+                        `${thread.worktreeBranch}@{upstream}`,
+                    ],
+                    {
+                        cwd: thread.cwd,
+                        timeout: gitTimeout,
+                    },
+                ).then(
+                    () => true,
+                    () => false,
+                );
+                if (hasUpstream) {
+                    return;
+                }
+                await runCommand(
+                    'git',
+                    [
+                        'branch',
+                        '-m',
+                        thread.worktreeBranch,
+                        branch,
+                    ],
+                    {
+                        cwd: thread.cwd,
+                        timeout: gitTimeout,
+                    },
+                );
+                await store.updateThread(threadId, {
+                    worktreeBranch: branch,
+                });
+            } catch (error) {
+                log.warning(
+                    `Renaming thread ${threadId}'s branch failed: ${extractErrorMessage(error)}`,
+                );
             }
         }
 
@@ -330,7 +502,11 @@ export default definePluginServer({
                 (await store.findSessionDetails(threadId)).providerSessionId
                     ? []
                     : (await store.readThread(threadId)).items;
-            turnIds.set(threadId, randomUUID());
+            const {status} = await store.findThread(threadId);
+            /** A message sent mid-turn joins that turn, so a restart can tell what it may have lost. */
+            if (status !== ThreadStatus.Running && status !== ThreadStatus.NeedsApproval) {
+                turnIds.set(threadId, randomUUID());
+            }
             await store.putItem({
                 threadId,
                 turnId: readTurnId(threadId),
@@ -342,15 +518,18 @@ export default definePluginServer({
             await store.updateThread(threadId, {
                 status: ThreadStatus.Running,
             });
+            /** Ends with `text` itself, after any earlier messages. */
+            const handoff = buildContextHandoff({
+                items: earlierItems,
+                text,
+            });
             try {
                 await (
                     await ensureSession(threadId)
-                ).send(
-                    buildContextHandoff({
-                        items: earlierItems,
-                        text,
-                    }),
-                );
+                ).send({
+                    text: handoff,
+                    userTextStart: handoff.length - text.length,
+                });
             } catch (error) {
                 await addNotice({
                     threadId,
@@ -362,197 +541,303 @@ export default definePluginServer({
             }
         }
 
+        const calls: PluginCallHandlers<typeof buildV2Api> = {
+            async listThreads() {
+                const [
+                    threads,
+                    repoActivity,
+                ] = await Promise.all([
+                    store.listThreads(),
+                    store.listRepoActivity(),
+                ]);
+                return {
+                    threads,
+                    repoActivity,
+                };
+            },
+            async listModels({provider}) {
+                const models =
+                    modelLists.get(provider) ||
+                    providers[provider].listModels({
+                        cwd: tempDir,
+                    });
+                modelLists.set(provider, models);
+                try {
+                    return {
+                        models: await models,
+                    };
+                } catch (error) {
+                    modelLists.delete(provider);
+                    throw error;
+                }
+            },
+            async listCommands({provider, cwd}) {
+                const key = `${provider}:${normalizePath(cwd)}`;
+                const cached = commandLists.get(key);
+                const entry =
+                    cached &&
+                    Date.now() - cached.listedAt <
+                        convertDuration(
+                            {
+                                seconds: 30,
+                            },
+                            {
+                                milliseconds: true,
+                            },
+                        ).milliseconds
+                        ? cached
+                        : {
+                              commands: providers[provider].listCommands({
+                                  cwd: normalizePath(cwd),
+                              }),
+                              listedAt: Date.now(),
+                          };
+                commandLists.set(key, entry);
+                try {
+                    return {
+                        commands: await entry.commands,
+                    };
+                } catch (error) {
+                    commandLists.delete(key);
+                    throw error;
+                }
+            },
+            async createThread({
+                repoPath,
+                provider,
+                model,
+                effort,
+                speedTier,
+                runtimeMode,
+                text,
+                isInWorktree,
+            }) {
+                const placeholderTitle = createThreadTitle(text);
+                const folder = normalizePath(repoPath);
+                const {id} = await store.createThread({
+                    repoPath: folder,
+                    provider,
+                    model,
+                    effort,
+                    speedTier,
+                    runtimeMode,
+                    title: placeholderTitle,
+                });
+                const isOpenWorktreeSkillUsed =
+                    isInWorktree &&
+                    provider === AiProvider.Claude &&
+                    !!(await stat(
+                        join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
+                    ).catch(() => undefined));
+                if (isInWorktree && !isOpenWorktreeSkillUsed) {
+                    /**
+                     * Waits for the generated title so the branch isn't named from raw message
+                     * text. Without one, the branch gets a placeholder name that a later title
+                     * replaces.
+                     */
+                    try {
+                        await moveThreadToNewWorktree({
+                            threadId: id,
+                            folder,
+                            title:
+                                (await generateThreadTitle({
+                                    threadId: id,
+                                    firstMessage: text,
+                                })) || '',
+                        });
+                    } catch (error) {
+                        await addNotice({
+                            threadId: id,
+                            text: `Making a worktree failed, so this thread stays in ${folder}: ${extractErrorMessage(error)}`,
+                        });
+                    }
+                } else {
+                    void generateThreadTitle({
+                        threadId: id,
+                        firstMessage: text,
+                    });
+                }
+                await sendMessage({
+                    threadId: id,
+                    text: isOpenWorktreeSkillUsed ? `/${openWorktreeSkillName} ${text}` : text,
+                });
+                return {
+                    thread: await store.findThread(id),
+                };
+            },
+            async readThread({threadId}) {
+                return await store.readThread(threadId);
+            },
+            async uploadFile(request) {
+                return {
+                    path: await saveUpload({
+                        ...request,
+                        uploadsDir: tempDir,
+                    }),
+                };
+            },
+            async readUpload({path}) {
+                return {
+                    dataBase64: await readUpload({
+                        path,
+                        uploadsDir: tempDir,
+                    }),
+                };
+            },
+            async sendMessage(request) {
+                await sendMessage(request);
+                return ok;
+            },
+            async interrupt({threadId}) {
+                await declineThreadApprovals(threadId);
+                const session = sessions.get(threadId);
+                if (session) {
+                    await (await session).interrupt();
+                } else {
+                    await store.updateThread(threadId, {
+                        status: ThreadStatus.Idle,
+                    });
+                }
+                return ok;
+            },
+            async resolveRequest({requestId, decision, answers}) {
+                await settleApproval(requestId, decision, answers);
+                return ok;
+            },
+            async moveToWorktree({threadId, requestId}) {
+                const thread = await store.findThread(threadId);
+                if (thread.worktreeBranch) {
+                    throw new Error('This thread is already in its own worktree.');
+                }
+                await stopSession(threadId);
+                const worktreePath = await moveThreadToNewWorktree({
+                    threadId,
+                    folder: thread.cwd,
+                    title: thread.title,
+                });
+                if (requestId) {
+                    await sendMessage({
+                        threadId,
+                        text: [
+                            `This thread moved to a new worktree at ${worktreePath}, so your last request was declined.`,
+                            'Redo that work there, using paths under that folder.',
+                        ].join(' '),
+                    });
+                }
+                return {
+                    thread: await store.findThread(threadId),
+                };
+            },
+            async setThreadModel({threadId, provider, model, effort, speedTier}) {
+                const previous = await store.findThread(threadId);
+                if (
+                    previous.status === ThreadStatus.Running ||
+                    previous.status === ThreadStatus.NeedsApproval
+                ) {
+                    throw new Error('Wait for the thread to finish before switching models.');
+                }
+                /** The next message starts the provider again, resuming on the new model. */
+                const session = sessions.get(threadId);
+                sessions.delete(threadId);
+                (await session?.catch(() => undefined))?.stop();
+                const isNewProvider = provider !== previous.provider;
+                const thread = await store.updateThread(threadId, {
+                    provider,
+                    model,
+                    effort: effort ?? null,
+                    speedTier: speedTier || null,
+                    ...(isNewProvider
+                        ? {
+                              providerSessionId: null,
+                          }
+                        : {}),
+                });
+                if (isNewProvider) {
+                    await addNotice({
+                        threadId,
+                        text: `Switched from ${providerLabels[previous.provider]} to ${providerLabels[provider]}. The next message gives ${providerLabels[provider]} this chat's earlier messages.`,
+                    });
+                }
+                return {
+                    thread,
+                };
+            },
+            async setThreadRuntimeMode({threadId, runtimeMode}) {
+                const thread = await store.updateThread(threadId, {
+                    runtimeMode,
+                });
+                await (
+                    await sessions.get(threadId)?.catch(() => undefined)
+                )?.setRuntimeMode(runtimeMode);
+                return {
+                    thread,
+                };
+            },
+            async renameThread({threadId, title}) {
+                return {
+                    thread: await store.updateThread(threadId, {
+                        title,
+                        hasCustomTitle: true,
+                    }),
+                };
+            },
+            async markThreadRead({threadId}) {
+                await store.markThreadRead(threadId);
+                return ok;
+            },
+            async archiveThread({threadId}) {
+                await stopSession(threadId);
+                await store.archiveThread(threadId);
+                return ok;
+            },
+        };
+
+        const agentToolServer = await startAgentToolServer({
+            tools: agentTools,
+            context: {
+                calls,
+                findThread: store.findThread,
+                listFolders: host.listFolders,
+                deleteWorktree: host.deleteWorktree,
+                runAfterTurn(threadId, action) {
+                    afterTurnActions.set(threadId, [
+                        ...(afterTurnActions.get(threadId) || []),
+                        action,
+                    ]);
+                },
+            },
+            instructions: agentToolInstructions,
+        });
+
         /** Like a restored AI terminal pane, a thread a restart cut off is told to continue. */
-        interruptedThreadIds.forEach((threadId) => {
+        interruptedThreads.forEach(({threadId, laterMessages}) => {
             sendMessage({
                 threadId,
-                text: 'Agent Storm restarted while you were working, which cut off your last turn. Pick up where you left off.',
+                text: [
+                    'Agent Storm restarted while you were working, which cut off your last turn. Pick up where you left off.',
+                    ...(laterMessages.length
+                        ? [
+                              '',
+                              'The user sent these messages during that turn, which may not have reached you. Act on them if you have not already:',
+                              ...laterMessages.flatMap((message) => {
+                                  return [
+                                      '',
+                                      message
+                                          .split('\n')
+                                          .map((line) => `> ${line}`)
+                                          .join('\n'),
+                                  ];
+                              }),
+                          ]
+                        : []),
+                ].join('\n'),
             }).catch((error: unknown) => {
                 log.warning(`Resuming thread ${threadId} failed: ${extractErrorMessage(error)}`);
             });
         });
 
         return {
-            calls: {
-                async listThreads() {
-                    return {
-                        threads: await store.listThreads(),
-                    };
-                },
-                async listModels({provider}) {
-                    const models =
-                        modelLists.get(provider) ||
-                        providers[provider].listModels({
-                            cwd: tempDir,
-                        });
-                    modelLists.set(provider, models);
-                    try {
-                        return {
-                            models: await models,
-                        };
-                    } catch (error) {
-                        modelLists.delete(provider);
-                        throw error;
-                    }
-                },
-                async createThread({
-                    repoPath,
-                    provider,
-                    model,
-                    effort,
-                    speedTier,
-                    runtimeMode,
-                    text,
-                }) {
-                    const placeholderTitle = createThreadTitle(text);
-                    const {id} = await store.createThread({
-                        repoPath: normalizePath(repoPath),
-                        provider,
-                        model,
-                        effort,
-                        speedTier,
-                        runtimeMode,
-                        title: placeholderTitle,
-                    });
-                    void generateThreadTitle({
-                        threadId: id,
-                        text,
-                        placeholderTitle,
-                    });
-                    await sendMessage({
-                        threadId: id,
-                        text,
-                    });
-                    return {
-                        thread: await store.findThread(id),
-                    };
-                },
-                async readThread({threadId}) {
-                    return await store.readThread(threadId);
-                },
-                async uploadFile(request) {
-                    return {
-                        path: await saveUpload({
-                            ...request,
-                            uploadsDir: tempDir,
-                        }),
-                    };
-                },
-                async sendMessage(request) {
-                    await sendMessage(request);
-                    return ok;
-                },
-                async interrupt({threadId}) {
-                    await declineThreadApprovals(threadId);
-                    const session = sessions.get(threadId);
-                    if (session) {
-                        await (await session).interrupt();
-                    } else {
-                        await store.updateThread(threadId, {
-                            status: ThreadStatus.Idle,
-                        });
-                    }
-                    return ok;
-                },
-                async resolveRequest({requestId, decision, answers}) {
-                    await settleApproval(requestId, decision, answers);
-                    return ok;
-                },
-                async moveToWorktree({threadId, requestId}) {
-                    const thread = await store.findThread(threadId);
-                    if (thread.worktreeBranch) {
-                        throw new Error('This thread is already in its own worktree.');
-                    }
-                    await stopSession(threadId);
-                    const name = createWorktreeName(thread.title);
-                    const {worktreePath} = await host.createWorktree({
-                        folder: thread.cwd,
-                        name,
-                    });
-                    await store.updateThread(threadId, {
-                        cwd: normalizePath(worktreePath),
-                        worktreeBranch: name,
-                        status: ThreadStatus.Idle,
-                    });
-                    await addNotice({
-                        threadId,
-                        text: `Moved to a new worktree at ${worktreePath}.`,
-                    });
-                    if (requestId) {
-                        await sendMessage({
-                            threadId,
-                            text: [
-                                `This thread moved to a new worktree at ${worktreePath}, so your last request was declined.`,
-                                'Redo that work there, using paths under that folder.',
-                            ].join(' '),
-                        });
-                    }
-                    return {
-                        thread: await store.findThread(threadId),
-                    };
-                },
-                async setThreadModel({threadId, provider, model, effort, speedTier}) {
-                    const previous = await store.findThread(threadId);
-                    if (
-                        previous.status === ThreadStatus.Running ||
-                        previous.status === ThreadStatus.NeedsApproval
-                    ) {
-                        throw new Error('Wait for the thread to finish before switching models.');
-                    }
-                    /** The next message starts the provider again, resuming on the new model. */
-                    const session = sessions.get(threadId);
-                    sessions.delete(threadId);
-                    (await session?.catch(() => undefined))?.stop();
-                    const isNewProvider = provider !== previous.provider;
-                    const thread = await store.updateThread(threadId, {
-                        provider,
-                        model,
-                        effort: effort ?? null,
-                        speedTier: speedTier || null,
-                        ...(isNewProvider
-                            ? {
-                                  providerSessionId: null,
-                              }
-                            : {}),
-                    });
-                    if (isNewProvider) {
-                        await addNotice({
-                            threadId,
-                            text: `Switched from ${providerLabels[previous.provider]} to ${providerLabels[provider]}. The next message gives ${providerLabels[provider]} this chat's earlier messages.`,
-                        });
-                    }
-                    return {
-                        thread,
-                    };
-                },
-                async setThreadRuntimeMode({threadId, runtimeMode}) {
-                    const thread = await store.updateThread(threadId, {
-                        runtimeMode,
-                    });
-                    await (
-                        await sessions.get(threadId)?.catch(() => undefined)
-                    )?.setRuntimeMode(runtimeMode);
-                    return {
-                        thread,
-                    };
-                },
-                async renameThread({threadId, title}) {
-                    return {
-                        thread: await store.updateThread(threadId, {
-                            title,
-                        }),
-                    };
-                },
-                async markThreadRead({threadId}) {
-                    await store.markThreadRead(threadId);
-                    return ok;
-                },
-                async archiveThread({threadId}) {
-                    await stopSession(threadId);
-                    await store.archiveThread(threadId);
-                    return ok;
-                },
-            },
+            calls,
             async stop() {
                 [...pendingApprovals.values()].forEach((pending) => {
                     pending.resolve({
@@ -567,6 +852,7 @@ export default definePluginServer({
                     }),
                 );
                 sessions.clear();
+                await agentToolServer.stop();
                 await prismaClient.$disconnect();
             },
         };

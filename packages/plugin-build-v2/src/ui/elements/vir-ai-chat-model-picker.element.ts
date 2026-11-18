@@ -9,6 +9,7 @@ import {
     LucideChevronDownIcon,
     LucideSearchIcon,
     LucideZapIcon,
+    tooltip,
     ViraIcon,
     ViraMenuItem,
     viraShadows,
@@ -688,7 +689,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                                               class=${provider === activeRailProvider && !query
                                                   ? 'rail-button active'
                                                   : 'rail-button'}
-                                              title=${providerLabels[provider]}
+                                              ${tooltip(providerLabels[provider])}
                                               aria-label=${providerLabels[provider]}
                                               aria-pressed=${provider === activeRailProvider}
                                               ${listen('click', () => {
@@ -743,7 +744,9 @@ export const VirAiChatModelPicker = defineAppElement<{
                                                             ?data-highlighted=${index ===
                                                                 state.highlightedIndex &&
                                                             !check.isNumber(state.effortIndex)}
-                                                            title=${row.model.description}
+                                                            ${row.model.description
+                                                                ? tooltip(row.model.description)
+                                                                : nothing}
                                                             ${listen('click', () => {
                                                                 selectModel(row);
                                                             })}

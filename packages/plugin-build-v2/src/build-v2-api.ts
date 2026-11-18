@@ -198,6 +198,42 @@ export const providerModelShape = defineShape({
 
 export type ProviderModel = typeof providerModelShape.runtimeType;
 
+/** What typing a composer command's name does. */
+export enum ComposerCommandKind {
+    /** Runs as `/name` at the start of a message. */
+    Command = 'command',
+    /** Loads the skill's instructions, from `$name` anywhere in a message. */
+    Skill = 'skill',
+}
+
+/** Where a composer command or skill is defined. */
+export enum ComposerCommandSource {
+    /** Ships with the provider's CLI. */
+    BuiltIn = 'builtIn',
+    /** Checked into the thread's checkout. */
+    Repo = 'repo',
+    /** Added by the user to their own config folder. */
+    Personal = 'personal',
+    /** Synced down from the user's provider account, such as the skills enabled on claude.ai. */
+    Synced = 'synced',
+    /** From an installed plugin. */
+    Plugin = 'plugin',
+    /** Anything else, such as an MCP server's prompt. */
+    Other = 'other',
+}
+
+export const composerCommandShape = defineShape({
+    /** What follows `/` or `$`. */
+    name: '',
+    description: '',
+    /** What the command takes after its name, such as `<file>`. Empty for nothing. */
+    argumentHint: '',
+    kind: enumShape(ComposerCommandKind),
+    source: enumShape(ComposerCommandSource),
+});
+
+export type ComposerCommand = typeof composerCommandShape.runtimeType;
+
 const threadRequestShape = defineShape({
     threadId: '',
 });
@@ -221,6 +257,14 @@ export const buildV2Api = definePluginApi({
                 threads: [
                     threadShape,
                 ],
+                /** Each repo's latest thread activity, archived threads included. */
+                repoActivity: [
+                    {
+                        repoPath: '',
+                        /** Epoch milliseconds. */
+                        updatedAt: 0,
+                    },
+                ],
             }),
         },
         /** The models the provider offers, as its CLI lists them. */
@@ -234,6 +278,18 @@ export const buildV2Api = definePluginApi({
                 ],
             }),
         },
+        /** The commands and skills a thread of `provider` running in `cwd` can use. */
+        listCommands: {
+            requestShape: defineShape({
+                provider: enumShape(AiProvider),
+                cwd: '',
+            }),
+            responseShape: defineShape({
+                commands: [
+                    composerCommandShape,
+                ],
+            }),
+        },
         /** Starts a thread in the checkout and sends its first message. */
         createThread: {
             requestShape: defineShape({
@@ -244,6 +300,12 @@ export const buildV2Api = definePluginApi({
                 speedTier: nullableShape(''),
                 runtimeMode: enumShape(RuntimeMode),
                 text: '',
+                /**
+                 * Moves the thread into a new worktree, as `moveToWorktree` does, before sending
+                 * `text`. For a Claude thread in a repo with an `open-worktree` skill, sends `text`
+                 * to that skill from the checkout instead, and the skill makes the worktree.
+                 */
+                isInWorktree: false,
             }),
             responseShape: threadResponseShape,
         },
@@ -267,6 +329,15 @@ export const buildV2Api = definePluginApi({
             }),
             responseShape: defineShape({
                 path: '',
+            }),
+        },
+        /** Reads back a file saved by `uploadFile`, to preview it in a sent message. */
+        readUpload: {
+            requestShape: defineShape({
+                path: '',
+            }),
+            responseShape: defineShape({
+                dataBase64: '',
             }),
         },
         /** Sends a message. Starts the provider again first if it isn't running. */

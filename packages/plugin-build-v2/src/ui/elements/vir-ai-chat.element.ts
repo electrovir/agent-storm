@@ -1,10 +1,18 @@
 import {defineAppElement, type AppContext} from '@agent-storm/core/frontend';
-import {extractErrorMessage, getEnumValues, wait} from '@augment-vir/common';
+import {
+    createCuid2,
+    extractErrorMessage,
+    getEnumValues,
+    mapObjectValues,
+    wait,
+    wrapInTry,
+} from '@augment-vir/common';
 import {classMap, css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     createSizedIcon,
     LucideCircleAlertIcon,
     LucideGitBranchIcon,
+    tooltip,
     ViraButton,
     ViraColorVariant,
     ViraIcon,
@@ -16,17 +24,25 @@ import {
     AiProvider,
     ApprovalDecision,
     ApprovalKind,
-    providerLabels,
     RuntimeMode,
     ThreadItemKind,
     ThreadStatus,
     type ApprovalRequest,
+    type ComposerCommand,
     type Thread,
     type ThreadItem,
 } from '../../build-v2-api.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {buildV2Memory, toComposerDraftKey} from '../../util/build-v2-memory.js';
-import {collectDroppedFiles, fileToBase64} from '../../util/file-drop.js';
+import {composerShortcutActions} from '../../util/composer-shortcuts.js';
+import {collectDroppedFiles, fileToBase64, toImageThumbnailUrl} from '../../util/file-drop.js';
+import {
+    attachmentPreviewLength,
+    attachmentThumbnailSize,
+    pastedTextFilename,
+    splitMessageAttachments,
+    toAttachmentTag,
+} from '../../util/message-attachments.js';
 import {
     fillMissingModelDefaults,
     findModelDefaultsFolder,
@@ -35,7 +51,7 @@ import {
 import {applyItemDelta, findPathName, upsertItems} from '../../util/thread-timeline.js';
 import {threadStatusDisplays} from './thread-display.js';
 import {VirAiChatApproval} from './vir-ai-chat-approval.element.js';
-import {VirAiChatComposer} from './vir-ai-chat-composer.element.js';
+import {VirAiChatComposer, type ComposerAttachment} from './vir-ai-chat-composer.element.js';
 import {type ModelSelection, type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
 import {
     createQuestionDraft,
@@ -83,9 +99,19 @@ export const VirAiChat = defineAppElement<{
             /** The runtime mode a new thread starts with. */
             runtimeMode: RuntimeMode.FullAccess,
             providerModels: {} as Readonly<Partial<Record<AiProvider, ProviderModelList>>>,
+            /** The composer's `/` and `$` menu, for the provider and folder `listKey` names. */
+            composerCommands: undefined as
+                | Readonly<{
+                      listKey: string;
+                      commands: ReadonlyArray<Readonly<ComposerCommand>>;
+                  }>
+                | undefined,
             isSending: false,
-            /** Blocks sending until dropped files have uploaded and their paths are in the message. */
-            isUploading: false,
+            /**
+             * Files attached to the unsent message. Their upload paths are appended to the message
+             * when it sends.
+             */
+            attachments: [] as ReadonlyArray<Readonly<ComposerAttachment>>,
             isDraggingFiles: false,
             /** The request whose answer is being sent. */
             busyRequestId: undefined as string | undefined,
@@ -100,6 +126,15 @@ export const VirAiChat = defineAppElement<{
     init({inputs, updateState, host}) {
         updateState({
             composerText: buildV2Memory.composerDrafts.readFolder(toComposerDraftKey(inputs)) || '',
+            attachments: (
+                buildV2Memory.composerAttachments.readFolder(toComposerDraftKey(inputs)) || []
+            ).map((saved) => {
+                return {
+                    ...saved,
+                    imageUrl: saved.imageUrl || undefined,
+                    textPreview: saved.textPreview || undefined,
+                };
+            }),
         });
         getEnumValues(AiProvider).forEach((provider) => {
             buildV2Client
@@ -411,17 +446,15 @@ export const VirAiChat = defineAppElement<{
             padding: 12px 14px;
             border-radius: 12px;
             border: 1px solid ${viraThemeByKeys.red.foreground.decoration.foreground.value};
-            background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
-            background-image: linear-gradient(
-                ${viraThemeByKeys.red['behind-fg']['lowest-contrast'].background.value},
-                ${viraThemeByKeys.red['behind-fg']['lowest-contrast'].background.value}
-            );
-            color: ${viraThemeByKeys.red.foreground.body.foreground.value};
+            background-color: ${viraThemeByKeys.red['behind-bg']['lowest-contrast'].background
+                .value};
+            color: ${viraThemeByKeys.red.foreground['highest-contrast'].foreground.value};
             pointer-events: auto;
 
             & vira-icon {
                 flex-shrink: 0;
                 margin-top: 2px;
+                color: ${viraThemeByKeys.red.foreground.body.foreground.value};
             }
 
             & .error-body {
@@ -433,8 +466,11 @@ export const VirAiChat = defineAppElement<{
             }
 
             & .error-text {
-                white-space: pre-wrap;
                 overflow-wrap: anywhere;
+
+                & span {
+                    white-space: pre-wrap;
+                }
 
                 &.clamped {
                     display: -webkit-box;
@@ -512,22 +548,14 @@ export const VirAiChat = defineAppElement<{
             }
 
             & h1 {
-                display: flex;
-                justify-content: center;
-                align-items: baseline;
-                gap: 8px;
                 margin: 0;
                 font-size: 24px;
-                font-weight: 400;
+                font-weight: 500;
                 letter-spacing: -0.025em;
                 text-align: center;
 
                 @media (min-width: 640px) {
                     font-size: 30px;
-                }
-
-                & .repo-name {
-                    font-weight: 500;
                 }
             }
         }
@@ -588,17 +616,59 @@ export const VirAiChat = defineAppElement<{
             });
         }
 
-        async function send(text: string) {
+        /** Saved like the message text, minus any attachment still uploading. */
+        function setAttachments(attachments: ReadonlyArray<Readonly<ComposerAttachment>>) {
+            updateState({
+                attachments,
+            });
+            const uploaded = attachments.flatMap((attachment) => {
+                return attachment.path
+                    ? [
+                          {
+                              ...attachment,
+                              path: attachment.path,
+                          },
+                      ]
+                    : [];
+            });
+            buildV2Memory.composerAttachments.writeFolder({
+                folder: toComposerDraftKey(inputs),
+                value: uploaded.length ? uploaded : undefined,
+            });
+        }
+
+        async function send({
+            text,
+            isInWorktree,
+        }: Readonly<{
+            text: string;
+            isInWorktree: boolean;
+        }>) {
             updateState({
                 isSending: true,
             });
+            const sentAttachments = host.instanceState.attachments;
+            const message = [
+                text,
+                ...sentAttachments.map((attachment) => attachment.path),
+            ]
+                .filter((part) => !!part)
+                .join('\n');
+            function clearComposer() {
+                setComposerText('');
+                setAttachments(
+                    host.instanceState.attachments.filter(
+                        (attachment) => !sentAttachments.includes(attachment),
+                    ),
+                );
+            }
             await runAction(async () => {
                 if (inputs.threadId) {
                     await buildV2Client.call('sendMessage', {
                         threadId: inputs.threadId,
-                        text,
+                        text: message,
                     });
-                    setComposerText('');
+                    clearComposer();
                 } else {
                     const {thread} = await buildV2Client.call('createThread', {
                         repoPath: inputs.repoPath,
@@ -607,9 +677,10 @@ export const VirAiChat = defineAppElement<{
                         effort: draftSelection.effort,
                         speedTier: draftSelection.speedTier,
                         runtimeMode: state.runtimeMode,
-                        text,
+                        text: message,
+                        isInWorktree,
                     });
-                    setComposerText('');
+                    clearComposer();
                     dispatch(
                         new events.threadCreated({
                             detail: thread,
@@ -622,32 +693,73 @@ export const VirAiChat = defineAppElement<{
             });
         }
 
-        async function attachFiles(files: ReadonlyArray<File>) {
-            updateState({
-                isUploading: true,
-            });
-            await runAction(async () => {
-                const paths = await Promise.all(
-                    files.map(async (file) => {
-                        const {path} = await buildV2Client.call('uploadFile', {
-                            filename: file.name,
-                            dataBase64: await fileToBase64(file),
-                        });
-                        return path;
+        /** Shows the file's card right away and fills in its path once the upload lands. */
+        async function attachFile({
+            file,
+            textPreview,
+        }: Readonly<{
+            file: File;
+            /** Set for pasted text. */
+            textPreview: string | undefined;
+        }>) {
+            const id = createCuid2();
+            try {
+                const dataBase64 = await fileToBase64(file);
+                const imageUrl = file.type.startsWith('image/')
+                    ? await toImageThumbnailUrl({
+                          file,
+                          size: attachmentThumbnailSize,
+                      }).catch(() => {
+                          return `data:${file.type};base64,${dataBase64}`;
+                      })
+                    : undefined;
+                /** No await between reading and writing the list, so concurrent drops all land. */
+                updateState({
+                    attachments: [
+                        ...host.instanceState.attachments,
+                        {
+                            id,
+                            name: file.name,
+                            tag: toAttachmentTag(file.name),
+                            path: undefined,
+                            imageUrl,
+                            textPreview,
+                        },
+                    ],
+                });
+                const {path} = await buildV2Client.call('uploadFile', {
+                    filename: file.name,
+                    dataBase64,
+                });
+                setAttachments(
+                    host.instanceState.attachments.map((attachment) => {
+                        return attachment.id === id
+                            ? {
+                                  ...attachment,
+                                  path,
+                              }
+                            : attachment;
                     }),
                 );
-                setComposerText(
-                    [
-                        state.composerText.trimEnd(),
-                        ...paths,
-                    ]
-                        .filter((part) => !!part)
-                        .join('\n'),
+            } catch (error) {
+                setAttachments(
+                    host.instanceState.attachments.filter((attachment) => attachment.id !== id),
                 );
-            });
-            updateState({
-                isUploading: false,
-            });
+                updateState({
+                    error: extractErrorMessage(error),
+                });
+            }
+        }
+
+        async function attachFiles(files: ReadonlyArray<File>) {
+            await Promise.all(
+                files.map((file) => {
+                    return attachFile({
+                        file,
+                        textPreview: undefined,
+                    });
+                }),
+            );
         }
 
         async function moveToWorktree(requestId: string | undefined) {
@@ -773,19 +885,34 @@ export const VirAiChat = defineAppElement<{
             }
         }
 
+        const commandProvider = state.thread?.provider || draftSelection.provider;
+        const commandListKey = `${commandProvider}:${cwd}`;
+
         const composer = html`
             <${VirAiChatComposer.assign({
                 text: activeAnswer ? activeAnswer.customAnswer : state.composerText,
+                history: state.items
+                    .filter((item) => item.kind === ThreadItemKind.UserMessage)
+                    .flatMap((item) => {
+                        const {text} = splitMessageAttachments(item.text);
+                        return text
+                            ? [
+                                  text,
+                              ]
+                            : [];
+                    }),
                 placeholder: activeAnswer
                     ? 'Type your own answer, or leave this blank to use the selected option'
                     : isDraft
                       ? 'Ask anything…'
                       : 'Ask for follow-up changes…',
                 isRunning,
-                isBusy: state.isSending || state.isUploading,
+                isBusy: state.isSending || state.attachments.some((attachment) => !attachment.path),
                 canArchive:
                     !!inputs.threadId &&
                     state.items.some((item) => item.kind === ThreadItemKind.AssistantMessage),
+                canSendInWorktree: isDraft,
+                attachments: activeAnswer ? [] : state.attachments,
                 providerModels: state.providerModels,
                 provider: state.thread?.provider || draftSelection.provider,
                 model: state.thread ? state.thread.model : draftSelection.model,
@@ -794,7 +921,15 @@ export const VirAiChat = defineAppElement<{
                     ? state.thread.speedTier || undefined
                     : draftSelection.speedTier,
                 runtimeMode: state.thread?.runtimeMode || state.runtimeMode,
+                /** A list for another provider or folder stays out, and the menu shows it loading. */
+                commands:
+                    state.composerCommands?.listKey === commandListKey
+                        ? state.composerCommands.commands
+                        : undefined,
                 isShown: inputs.isShown,
+                shortcuts: mapObjectValues(composerShortcutActions, (_name, action) => {
+                    return inputs.context.readShortcuts(action);
+                }),
                 questionAction:
                     questionRequest && questionDraft
                         ? {
@@ -822,6 +957,27 @@ export const VirAiChat = defineAppElement<{
                     } else {
                         setComposerText(event.detail);
                     }
+                })}
+                ${listen(VirAiChatComposer.events.commandsRequested, async () => {
+                    const commands = await wrapInTry(
+                        async () => {
+                            return (
+                                await buildV2Client.call('listCommands', {
+                                    provider: commandProvider,
+                                    cwd,
+                                })
+                            ).commands;
+                        },
+                        {
+                            fallbackValue: [],
+                        },
+                    );
+                    updateState({
+                        composerCommands: {
+                            listKey: commandListKey,
+                            commands,
+                        },
+                    });
                 })}
                 ${listen(VirAiChatComposer.events.modelChange, async (event) => {
                     const threadId = inputs.threadId;
@@ -872,8 +1028,39 @@ export const VirAiChat = defineAppElement<{
                     if (questionDraft) {
                         await advanceQuestion(questionDraft);
                     } else {
-                        await send(event.detail);
+                        await send({
+                            text: event.detail,
+                            isInWorktree: false,
+                        });
                     }
+                })}
+                ${listen(VirAiChatComposer.events.worktreeSubmitted, async (event) => {
+                    await send({
+                        text: event.detail,
+                        isInWorktree: true,
+                    });
+                })}
+                ${listen(VirAiChatComposer.events.filesPicked, async (event) => {
+                    await attachFiles(event.detail);
+                })}
+                ${listen(VirAiChatComposer.events.textPasted, async (event) => {
+                    await attachFile({
+                        file: new File(
+                            [
+                                event.detail,
+                            ],
+                            pastedTextFilename,
+                            {
+                                type: 'text/plain',
+                            },
+                        ),
+                        textPreview: event.detail.slice(0, attachmentPreviewLength),
+                    });
+                })}
+                ${listen(VirAiChatComposer.events.attachmentRemoved, (event) => {
+                    setAttachments(
+                        state.attachments.filter((attachment) => attachment.id !== event.detail),
+                    );
                 })}
                 ${listen(VirAiChatComposer.events.stopRequested, async () => {
                     const threadId = inputs.threadId;
@@ -919,13 +1106,13 @@ export const VirAiChat = defineAppElement<{
                 <nav aria-label="Thread breadcrumb">
                     <ol>
                         <li class="project">
-                            <span class="crumb project-name" title=${cwd}>${projectName}</span>
+                            <span class="crumb project-name" ${tooltip(cwd)}>${projectName}</span>
                         </li>
                         <li class="separator" aria-hidden="true">/</li>
                         <li class="title" aria-current="page">
                             <h2
                                 aria-label=${state.thread?.title || 'New thread'}
-                                title=${state.thread?.title || ''}
+                                ${state.thread?.title ? tooltip(state.thread.title) : nothing}
                             >
                                 <span class="crumb">${state.thread?.title || 'New thread'}</span>
                             </h2>
@@ -942,18 +1129,9 @@ export const VirAiChat = defineAppElement<{
                               })}></${ViraTag}>
                           `
                         : nothing}
-                    ${state.thread
-                        ? html`
-                              <${ViraTag.assign({
-                                  text: providerLabels[state.thread.provider],
-                                  size: ViraSize.Small,
-                                  color: ViraColorVariant.Neutral,
-                              })}></${ViraTag}>
-                          `
-                        : nothing}
                     ${branch
                         ? html`
-                              <span class="branch" title=${cwd}>
+                              <span class="branch" ${tooltip(cwd)}>
                                   <${ViraIcon.assign({
                                       icon: branchIcon,
                                   })}></${ViraIcon}>
@@ -970,7 +1148,7 @@ export const VirAiChat = defineAppElement<{
                                   color: ViraColorVariant.Neutral,
                                   isDisabled: isRunning || state.isMoving,
                               })}
-                                  title="Continue this thread in a new worktree of its own"
+                                  ${tooltip('Continue this thread in a new worktree of its own')}
                                   ${listen('click', async () => {
                                       if (isRunning || state.isMoving) {
                                           return;
@@ -1001,7 +1179,7 @@ export const VirAiChat = defineAppElement<{
                                       clamped: !state.isErrorExpanded && canExpandError,
                                   })}
                               >
-                                  ${state.error}
+                                  <span>${state.error}</span>
                               </div>
                               ${canExpandError
                                   ? html`
@@ -1105,13 +1283,7 @@ export const VirAiChat = defineAppElement<{
             <div class="lane draft">
                 <div class="lane-content hero-anchor">
                     <div class="hero">
-                        <h1>
-                            <span>What should we build in</span>
-                            <span>
-                                <span class="repo-name">${findPathName(inputs.repoPath)}</span>
-                                ?
-                            </span>
-                        </h1>
+                        <h1>${findPathName(inputs.repoPath)}</h1>
                     </div>
                     ${composer}
                 </div>

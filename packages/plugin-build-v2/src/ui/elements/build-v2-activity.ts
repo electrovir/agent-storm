@@ -1,4 +1,6 @@
-import {defineActivity, VirPaneGroup} from '@agent-storm/core/frontend';
+import {toPaneGroupKey} from '@agent-storm/common';
+import {defineActivity, updateTabState, VirPaneGroup} from '@agent-storm/core/frontend';
+import {getObjectTypedEntries} from '@augment-vir/common';
 import {css, html, keyed, listen, nothing} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {ThreadStatus} from '../../build-v2-api.js';
@@ -8,7 +10,6 @@ import {
     createBuildV2State,
     newThreadSubPath,
     startThreadSync,
-    storeThread,
 } from '../../util/build-v2-state.js';
 import {aiChatPane} from './ai-chat-pane.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
@@ -72,50 +73,81 @@ export const buildV2Activity = defineActivity({
 
         const thread = state.threads.value?.find((existing) => existing.id === threadId);
 
-        if (threadId && !state.threads.value) {
+        if (threadId && !thread) {
             return nothing;
-        } else if (threadId && thread) {
-            return keyed(
-                threadId,
-                html`
-                    <${VirPaneGroup.assign({
-                        folder: thread.cwd || thread.repoPath,
-                        active: true,
-                        context,
-                        scope: `build-v2:${threadId}`,
-                        defaultTabs: [
-                            {
-                                kind: aiChatPane.id,
-                                state: {
-                                    threadId,
-                                },
-                            },
-                        ],
-                    })}></${VirPaneGroup}>
-                `,
-            );
-        } else {
-            return keyed(
-                threadId || `draft:${draftRepoPath}`,
-                html`
-                    <${VirAiChat.assign({
-                        context,
-                        threadId,
-                        repoPath: thread?.repoPath || draftRepoPath || '',
-                        isShown: true,
-                    })}
-                        ${listen(VirAiChat.events.threadCreated, (event) => {
-                            state.draftRepoPath.setValue(undefined);
-                            storeThread(state, event.detail);
-                            buildV2Memory.selectedThread.write(event.detail.id);
-                            route.navigate([
-                                event.detail.id,
-                            ]);
-                        })}
-                    ></${VirAiChat}>
-                `,
-            );
         }
+
+        const folder = thread ? thread.cwd || thread.repoPath : draftRepoPath || '';
+        const scope = `build-v2:${threadId || newThreadSubPath}`;
+
+        return keyed(
+            scope,
+            html`
+                <${VirPaneGroup.assign({
+                    folder,
+                    active: true,
+                    context,
+                    scope,
+                    defaultTabs: [
+                        {
+                            kind: aiChatPane.id,
+                            state: {
+                                threadId: threadId || '',
+                            },
+                        },
+                    ],
+                })}
+                    ${listen(VirAiChat.events.threadCreated, (event) => {
+                        if (threadId) {
+                            return;
+                        }
+                        /**
+                         * The AI Chat tab has already stored the new thread in its own state, so
+                         * the draft's next thread would open on this one without clearing it.
+                         */
+                        context.uiLayout.updateTabLayout({
+                            folder: toPaneGroupKey({
+                                folder,
+                                scope,
+                            }),
+                            update(current) {
+                                return (
+                                    current &&
+                                    getObjectTypedEntries(current.tabs)
+                                        .filter(
+                                            ([
+                                                ,
+                                                tab,
+                                            ]) => tab.state?.threadId === event.detail.id,
+                                        )
+                                        .reduce(
+                                            (
+                                                layout,
+                                                [
+                                                    tabId,
+                                                ],
+                                            ) => {
+                                                return updateTabState(layout, {
+                                                    tabId,
+                                                    state: {
+                                                        threadId: '',
+                                                    },
+                                                });
+                                            },
+                                            current,
+                                        )
+                                );
+                            },
+                        });
+                        state.draftRepoPath.setValue(undefined);
+                        buildV2Memory.selectedThread.write(event.detail.id);
+                        route.navigate([
+                            event.detail.id,
+                        ]);
+                    })}
+                ></${VirPaneGroup}>
+            `,
+        );
     },
     findTitle({state, subPaths}) {
         const [threadId] = subPaths;

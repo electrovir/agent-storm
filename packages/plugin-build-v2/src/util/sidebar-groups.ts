@@ -9,6 +9,7 @@ const groupSortKeys: Record<
         params: Readonly<{
             group: ThreadRepoGroup;
             folder: Readonly<FolderInfo> | undefined;
+            repoActivityAtMs: ReadonlyMap<string, number>;
         }>,
     ) => number
 > = {
@@ -18,9 +19,16 @@ const groupSortKeys: Record<
     [SidebarSorting.Date]({folder}) {
         return folder?.createdAtMs || 0;
     },
-    /** A thread's latest message counts as activity, the same as typing in the folder's terminal. */
-    [SidebarSorting.Activity]({group, folder}) {
-        return Math.max(group.threads[0]?.updatedAt || 0, folder?.lastActivityAtMs || 0);
+    /**
+     * A thread's latest message counts as activity, the same as typing in the folder's terminal.
+     * Archived threads still count, so archiving one doesn't move its folder.
+     */
+    [SidebarSorting.Activity]({group, folder, repoActivityAtMs}) {
+        return Math.max(
+            repoActivityAtMs.get(group.repo.path) || 0,
+            group.threads[0]?.updatedAt || 0,
+            folder?.lastActivityAtMs || 0,
+        );
     },
 };
 
@@ -58,6 +66,10 @@ function filterByRecency(
         days: -7,
     });
     return groups.filter((group) => {
+        /** The sidebar never holds archived threads, so any thread means the folder is in use. */
+        if (group.threads.length) {
+            return true;
+        }
         const lastInteractedAtMs = repos.find(
             (repo) => repo.path === group.repo.path,
         )?.lastInteractedAtMs;
@@ -78,6 +90,7 @@ function filterByRecency(
 export function arrangeRepoGroups({
     groups,
     folderInfo,
+    repoActivityAtMs,
     repos,
     sorting,
     onlyShowRecent,
@@ -85,6 +98,8 @@ export function arrangeRepoGroups({
 }: Readonly<{
     groups: ReadonlyArray<ThreadRepoGroup>;
     folderInfo: ReadonlyMap<string, Readonly<FolderInfo>>;
+    /** Repo path → its latest thread activity, archived threads included. */
+    repoActivityAtMs: ReadonlyMap<string, number>;
     repos: ReadonlyArray<Readonly<SavedRepo>>;
     sorting: SidebarSorting | undefined;
     onlyShowRecent: boolean | undefined;
@@ -103,6 +118,7 @@ export function arrangeRepoGroups({
                 sortKey: groupSortKeys[sorting ?? SidebarSorting.Name]({
                     group,
                     folder: folderInfo.get(group.repo.path),
+                    repoActivityAtMs,
                 }),
             };
         })

@@ -11,7 +11,7 @@ function createGroup({
     updatedAt,
 }: Readonly<{
     name: string;
-    threadTitle: string;
+    threadTitle: string | undefined;
     updatedAt: number;
 }>): ThreadRepoGroup {
     const path = `/repos/${name}`;
@@ -23,7 +23,7 @@ function createGroup({
         provider: AiProvider.Claude,
         model: '',
         runtimeMode: RuntimeMode.FullAccess,
-        title: threadTitle,
+        title: threadTitle || '',
         status: ThreadStatus.Idle,
         hasUnreadReply: false,
         createdAt: 0,
@@ -34,9 +34,11 @@ function createGroup({
             path,
             name,
         },
-        threads: [
-            thread,
-        ],
+        threads: threadTitle
+            ? [
+                  thread,
+              ]
+            : [],
     };
 }
 
@@ -56,6 +58,16 @@ const groups = [
         threadTitle: 'Old work',
         updatedAt: 3,
     }),
+    createGroup({
+        name: 'hotel',
+        threadTitle: undefined,
+        updatedAt: 0,
+    }),
+    createGroup({
+        name: 'echo',
+        threadTitle: undefined,
+        updatedAt: 0,
+    }),
 ];
 
 function arrangedNames(params: Readonly<Omit<Parameters<typeof arrangeRepoGroups>[0], 'groups'>>) {
@@ -66,10 +78,11 @@ function arrangedNames(params: Readonly<Omit<Parameters<typeof arrangeRepoGroups
 }
 
 describe(arrangeRepoGroups.name, () => {
-    it('hides folders without recent use and sorts the rest', () => {
+    it('hides folders without threads or recent use and sorts the rest', () => {
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
+                repoActivityAtMs: new Map(),
                 repos: [
                     {
                         path: '/repos/alpha',
@@ -80,7 +93,11 @@ describe(arrangeRepoGroups.name, () => {
                         lastInteractedAtMs: Date.now(),
                     },
                     {
-                        path: '/repos/gamma',
+                        path: '/repos/hotel',
+                        lastInteractedAtMs: Date.now(),
+                    },
+                    {
+                        path: '/repos/echo',
                     },
                 ],
                 sorting: SidebarSorting.Name,
@@ -90,6 +107,8 @@ describe(arrangeRepoGroups.name, () => {
             [
                 'alpha',
                 'beta',
+                'gamma',
+                'hotel',
             ],
         );
     });
@@ -97,6 +116,7 @@ describe(arrangeRepoGroups.name, () => {
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
+                repoActivityAtMs: new Map(),
                 repos: [],
                 sorting: SidebarSorting.Activity,
                 onlyShowRecent: true,
@@ -111,6 +131,7 @@ describe(arrangeRepoGroups.name, () => {
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
+                repoActivityAtMs: new Map(),
                 repos: [],
                 sorting: SidebarSorting.Activity,
                 onlyShowRecent: false,
@@ -118,6 +139,30 @@ describe(arrangeRepoGroups.name, () => {
             }),
             [
                 'beta',
+            ],
+        );
+    });
+    it('keeps the activity of archived threads', () => {
+        assert.deepEquals(
+            arrangedNames({
+                folderInfo: new Map(),
+                repoActivityAtMs: new Map([
+                    [
+                        '/repos/beta',
+                        4,
+                    ],
+                ]),
+                repos: [],
+                sorting: SidebarSorting.Activity,
+                onlyShowRecent: false,
+                searchQuery: '',
+            }),
+            [
+                'beta',
+                'gamma',
+                'alpha',
+                'echo',
+                'hotel',
             ],
         );
     });

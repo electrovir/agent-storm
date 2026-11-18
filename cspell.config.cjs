@@ -20,6 +20,7 @@ module.exports = {
         ...baseConfig.words,
         /** Only words appearing in JSON files, which cannot carry inline `cspell:words` comments. */
         'lezer',
+        'modelcontextprotocol',
         'prebuilds',
         'webgl',
     ],

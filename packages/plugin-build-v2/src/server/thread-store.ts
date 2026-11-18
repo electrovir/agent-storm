@@ -1,6 +1,6 @@
 import {type PluginServerContext} from '@agent-storm/core/server';
 import {assertWrap} from '@augment-vir/assert';
-import {awaitedForEach} from '@augment-vir/common';
+import {awaitedBlockingMap} from '@augment-vir/common';
 import {getNowInIsoString} from 'date-vir';
 import {assertValidShape, defineShape} from 'object-shape-tester';
 import {
@@ -173,8 +173,10 @@ export function createThreadStore({
                 | 'effort'
                 | 'runtimeMode'
                 | 'title'
+                | 'hasCustomTitle'
                 | 'status'
                 | 'providerSessionId'
+                | 'updatedAt'
             >
         >,
     ) {
@@ -263,7 +265,25 @@ export function createThreadStore({
             emit('threadChanged', thread);
             return thread;
         },
-        /** What starting the thread's provider needs. */
+        /** Gives the thread a generated title, unless it was renamed by the user or an agent. */
+        async setGeneratedTitle({threadId, title}: Readonly<{threadId: string; title: string}>) {
+            const {count} = await prismaClient.thread.updateMany({
+                where: {
+                    id: threadId,
+                    hasCustomTitle: false,
+                    title: {
+                        not: title,
+                    },
+                },
+                data: {
+                    title,
+                },
+            });
+            if (count) {
+                emit('threadChanged', await findThread(threadId));
+            }
+        },
+        /** What starting the thread's provider needs, and whether it has a custom title. */
         async findSessionDetails(threadId: string) {
             const {provider, ...details} = await prismaClient.thread.findUniqueOrThrow({
                 where: {
@@ -278,6 +298,7 @@ export function createThreadStore({
                     speedTier: true,
                     runtimeMode: true,
                     providerSessionId: true,
+                    hasCustomTitle: true,
                 },
             });
             return {
@@ -290,13 +311,42 @@ export function createThreadStore({
                 provider: assertWrap.isEnumValue(provider, AiProvider),
             };
         },
+        async listRepoActivity() {
+            const rows = await prismaClient.thread.groupBy({
+                by: [
+                    'repoPath',
+                ],
+                _max: {
+                    updatedAt: true,
+                },
+            });
+            return rows.map(({repoPath, _max}) => {
+                return {
+                    repoPath,
+                    updatedAt: _max.updatedAt?.getTime() || 0,
+                };
+            });
+        },
         async archiveThread(threadId: string) {
+            const {updatedAt} = await prismaClient.thread.findUniqueOrThrow({
+                where: {
+                    id: threadId,
+                },
+                select: {
+                    updatedAt: true,
+                },
+            });
             await prismaClient.thread.update({
                 where: {
                     id: threadId,
                 },
+                /**
+                 * Archiving isn't activity: passing `updatedAt` keeps Prisma's `@updatedAt` from
+                 * bumping it, which would move the repo in the sidebar's activity sort.
+                 */
                 data: {
                     deactivatedAt: getNowInIsoString(),
+                    updatedAt,
                 },
                 select: {
                     id: true,
@@ -585,7 +635,8 @@ export function createThreadStore({
         /**
          * Settles what a previous run left mid-flight, since no provider survives the server
          * stopping: pending requests are declined, unfinished items fail, and busy threads go idle,
-         * each with a notice saying why its turn stopped. Resolves to the ids of those threads.
+         * each with a notice saying why its turn stopped. Resolves to those threads, each with the
+         * messages the user sent after the one that started its turn.
          */
         async settleInterruptedWork() {
             const busyThreads = await prismaClient.thread.findMany({
@@ -642,16 +693,38 @@ export function createThreadStore({
                     },
                 }),
             ]);
-            await awaitedForEach(busyThreads, async (thread) => {
+            return await awaitedBlockingMap(busyThreads, async (thread) => {
+                const turnId = thread.items[0]?.turnId || '';
                 await this.putItem(
                     this.notice({
                         threadId: thread.id,
-                        turnId: thread.items[0]?.turnId || '',
+                        turnId,
                         text: 'Agent Storm restarted during this turn, so it is continuing the turn.',
                     }),
                 );
+                const userMessages = await prismaClient.threadItem.findMany({
+                    where: {
+                        threadId: thread.id,
+                        turnId,
+                        kind: ThreadItemKind.UserMessage,
+                    },
+                    select: {
+                        text: true,
+                    },
+                    orderBy: {
+                        order: 'asc',
+                    },
+                });
+                return {
+                    threadId: thread.id,
+                    /**
+                     * Messages sent while the turn ran wait in the provider's in-memory queue, so
+                     * the restart may have dropped them before they reached the conversation. The
+                     * first message started the turn, so the provider already has it.
+                     */
+                    laterMessages: userMessages.slice(1).map((item) => item.text),
+                };
             });
-            return busyThreads.map((thread) => thread.id);
         },
         notice({
             threadId,

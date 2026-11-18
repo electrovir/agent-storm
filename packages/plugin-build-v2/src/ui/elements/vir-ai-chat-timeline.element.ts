@@ -11,11 +11,13 @@ import {
 import {
     LucideChevronRightIcon,
     LucideCircleAlertIcon,
+    tooltip,
     ViraIcon,
     viraThemeByKeys,
     type ViraIconSvg,
 } from 'vira';
 import {ThreadItemKind, ThreadItemStatus, type ThreadItem} from '../../build-v2-api.js';
+import {splitMessageAttachments} from '../../util/message-attachments.js';
 import {
     buildTimeline,
     summarizeWork,
@@ -25,6 +27,7 @@ import {
 import {countDiffLines, diffLineStyles, renderDiffLines} from './diff-lines.js';
 import {chatMarkdownStyles, renderChatMarkdown} from './markdown-styles.js';
 import {workItemDisplays} from './thread-display.js';
+import {VirAiChatSentAttachment} from './vir-ai-chat-sent-attachment.element.js';
 
 function isFailedStatus(status: ThreadItemStatus) {
     return status === ThreadItemStatus.Failed || status === ThreadItemStatus.Declined;
@@ -136,8 +139,18 @@ export const VirAiChatTimeline = defineAppElement<{
 
         .user-entry {
             display: flex;
-            justify-content: flex-end;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
             padding-bottom: 16px;
+
+            & .sent-attachments {
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                gap: 8px;
+                max-width: 80%;
+            }
 
             & .user-bubble {
                 min-width: 0;
@@ -689,15 +702,33 @@ export const VirAiChatTimeline = defineAppElement<{
         > = {
             [TimelineEntryKind.UserMessage](entry) {
                 return entry.items.map((item) => {
+                    const message = splitMessageAttachments(item.text);
                     return html`
                         <div class="user-entry">
-                            <div class="user-bubble">
-                                <h3 hidden>You</h3>
-                                ${renderChatMarkdown({
-                                    text: item.text,
-                                    hasLineBreaks: true,
-                                })}
-                            </div>
+                            <h3 hidden>You</h3>
+                            ${message.attachments.length
+                                ? html`
+                                      <div class="sent-attachments">
+                                          ${message.attachments.map((attachment) => {
+                                              return html`
+                                                  <${VirAiChatSentAttachment.assign({
+                                                      attachment,
+                                                  })}></${VirAiChatSentAttachment}>
+                                              `;
+                                          })}
+                                      </div>
+                                  `
+                                : nothing}
+                            ${message.text
+                                ? html`
+                                      <div class="user-bubble">
+                                          ${renderChatMarkdown({
+                                              text: message.text,
+                                              hasLineBreaks: true,
+                                          })}
+                                      </div>
+                                  `
+                                : nothing}
                         </div>
                     `;
                 });
@@ -743,7 +774,7 @@ export const VirAiChatTimeline = defineAppElement<{
                               </div>
                           `
                         : html`
-                              <div class="notice-separator" role="separator" title=${item.text}>
+                              <div class="notice-separator" role="separator" ${tooltip(item.text)}>
                                   <span class="rule"></span>
                                   <span class="notice-text">${message}</span>
                                   <span class="rule"></span>

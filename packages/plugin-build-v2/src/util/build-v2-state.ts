@@ -24,6 +24,13 @@ export function createBuildV2State() {
         threads: new Observable<ReadonlyArray<Readonly<Thread>> | undefined>({
             defaultValue: undefined,
         }),
+        /**
+         * Repo path → epoch milliseconds of its latest thread activity, archived threads included,
+         * so archiving a thread doesn't move its repo in the sidebar's activity sort.
+         */
+        repoActivityAtMs: new Observable<ReadonlyMap<string, number>>({
+            defaultValue: new Map(),
+        }),
         loadError: new Observable<string | undefined>({
             defaultValue: undefined,
         }),
@@ -42,8 +49,18 @@ export function findBuildV2State({activityStates}: Readonly<Pick<AppContext, 'ac
 /** Loads the thread list again, replacing whatever the state had. */
 export async function loadThreads(state: Readonly<BuildV2State>) {
     try {
-        const {threads} = await buildV2Client.call('listThreads', {});
+        const {threads, repoActivity} = await buildV2Client.call('listThreads', {});
         state.threads.setValue(threads);
+        state.repoActivityAtMs.setValue(
+            new Map(
+                repoActivity.map(({repoPath, updatedAt}) => {
+                    return [
+                        repoPath,
+                        updatedAt,
+                    ];
+                }),
+            ),
+        );
         state.loadError.setValue(undefined);
     } catch (error) {
         state.loadError.setValue(extractErrorMessage(error));
@@ -53,6 +70,17 @@ export async function loadThreads(state: Readonly<BuildV2State>) {
 /** Adds or replaces one thread in the state's list, such as one a call just returned. */
 export function storeThread(state: Readonly<BuildV2State>, thread: Readonly<Thread>) {
     state.threads.setValue(upsertThread(state.threads.value || [], thread));
+    if (thread.updatedAt > (state.repoActivityAtMs.value.get(thread.repoPath) || 0)) {
+        state.repoActivityAtMs.setValue(
+            new Map([
+                ...state.repoActivityAtMs.value,
+                [
+                    thread.repoPath,
+                    thread.updatedAt,
+                ],
+            ]),
+        );
+    }
 }
 
 /** Loads the thread list and keeps it current from the server's events. Returns the remover. */

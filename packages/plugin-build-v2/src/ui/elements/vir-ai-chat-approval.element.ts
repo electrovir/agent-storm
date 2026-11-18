@@ -5,6 +5,7 @@ import {
     createSizedIcon,
     LucideGitBranchIcon,
     LucideShieldIcon,
+    tooltip,
     ViraIcon,
     viraShadows,
     viraThemeByKeys,
@@ -18,23 +19,29 @@ const approvalLabels: Record<
     Readonly<{
         label: string;
         detailLabel: string;
+        /** What the user is asked, shown above the request's detail. */
+        prompt: string;
     }>
 > = {
     [ApprovalKind.Command]: {
         label: 'Command approval',
         detailLabel: 'Command',
+        prompt: 'Allow the AI to run this command?',
     },
     [ApprovalKind.FileChange]: {
         label: 'File change approval',
         detailLabel: 'File change',
+        prompt: 'Allow the AI to make this file change?',
     },
     [ApprovalKind.Permission]: {
         label: 'App permission approval',
         detailLabel: 'Permission request',
+        prompt: 'Allow the AI to use this tool?',
     },
     [ApprovalKind.Question]: {
         label: 'Question',
         detailLabel: 'Question',
+        prompt: 'The AI has a question.',
     },
 };
 
@@ -78,6 +85,23 @@ export const VirAiChatApproval = defineAppElement<{
             min-width: 0;
         }
 
+        .prompt {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding-left: 22px;
+            overflow-wrap: anywhere;
+
+            & .heading {
+                font-weight: 500;
+            }
+
+            & .reason {
+                color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+                user-select: text;
+            }
+        }
+
         .detail-line {
             display: flex;
             align-items: flex-start;
@@ -104,10 +128,14 @@ export const VirAiChatApproval = defineAppElement<{
             border-radius: 4px;
             font-family: monospace;
             font-size: 12px;
-            white-space: pre-wrap;
             overflow-wrap: anywhere;
             user-select: text;
             scrollbar-width: thin;
+
+            /** Only the text keeps its whitespace, not the template's indentation around it. */
+            & .detail-text {
+                white-space: pre-wrap;
+            }
 
             &:focus-visible {
                 outline: 2px solid ${viraThemeByKeys.blue.foreground.body.foreground.value};
@@ -125,10 +153,6 @@ export const VirAiChatApproval = defineAppElement<{
             min-width: 0;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
             overflow-wrap: anywhere;
-
-            & .reason {
-                user-select: text;
-            }
         }
 
         .actions {
@@ -214,8 +238,8 @@ export const VirAiChatApproval = defineAppElement<{
                 cursor: pointer;
 
                 &:hover {
-                    background-color: ${viraThemeByKeys.grey['behind-fg']['lowest-contrast']
-                        .background.value};
+                    background-color: ${viraThemeByKeys.brand['behind-fg']['small-body'].background
+                        .value};
                 }
             }
         }
@@ -249,6 +273,14 @@ export const VirAiChatApproval = defineAppElement<{
                 data-v2-item-type="approval_request"
                 aria-label=${labels.label}
             >
+                <div class="prompt">
+                    <span class="heading">${labels.prompt}</span>
+                    ${inputs.request.reason
+                        ? html`
+                              <span class="reason">${inputs.request.reason}</span>
+                          `
+                        : nothing}
+                </div>
                 <div class="detail-line">
                     <${ViraIcon.assign({
                         icon: approvalKindIcons[inputs.request.kind],
@@ -263,18 +295,15 @@ export const VirAiChatApproval = defineAppElement<{
                     >
                         ${inputs.request.kind === ApprovalKind.FileChange
                             ? renderDiffLines(detail)
-                            : detail}
+                            : html`
+                                  <span class="detail-text">${detail}</span>
+                              `}
                     </code>
                 </div>
                 <div class="meta">
                     ${showsTitle
                         ? html`
                               <span>${inputs.request.title}</span>
-                          `
-                        : nothing}
-                    ${inputs.request.reason
-                        ? html`
-                              <span class="reason">${inputs.request.reason}</span>
                           `
                         : nothing}
                     <div class="actions">
@@ -355,7 +384,7 @@ export const VirAiChatApproval = defineAppElement<{
                                   <button
                                       type="button"
                                       class="inline-button"
-                                      title="Decline, then redo this work in a new worktree"
+                                      ${tooltip('Decline, then redo this work in a new worktree')}
                                       ?disabled=${inputs.isBusy}
                                       ${listen('click', () => {
                                           if (inputs.isBusy) {

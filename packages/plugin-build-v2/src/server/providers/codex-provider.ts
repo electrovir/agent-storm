@@ -1,12 +1,26 @@
+// cspell:word cwds
+import {convertDuration} from 'date-vir';
+import {sep} from 'node:path';
 import {
     assertValidShape,
     checkValidShape,
     defineShape,
     nullableShape,
     optionalShape,
+    unknownShape,
 } from 'object-shape-tester';
-import {ApprovalKind, RuntimeMode, ThreadItemKind, ThreadStatus} from '../../build-v2-api.js';
+import {
+    ApprovalDecision,
+    ApprovalKind,
+    ComposerCommandKind,
+    ComposerCommandSource,
+    RuntimeMode,
+    ThreadItemKind,
+    ThreadStatus,
+} from '../../build-v2-api.js';
 import {parseReasoningEffort, parseReasoningEfforts} from '../../util/reasoning-effort.js';
+import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
+import {syncedSkillsFolder} from './claude-commands.js';
 import {codexDecisions, describeCodexItem} from './codex-items.js';
 import {startCodexRpc, type CodexRpc} from './codex-rpc.js';
 import {type ProviderAdapter, type ProviderItem} from './provider-session.js';
@@ -68,6 +82,35 @@ const approvalRequestShape = defineShape({
     }),
 });
 
+/** An MCP elicitation Codex sends to ask before running an MCP tool. */
+const mcpToolApprovalRequestShape = defineShape({
+    serverName: '',
+    _meta: {
+        codex_approval_kind: '',
+        tool_name: '',
+        tool_params: unknownShape(),
+    },
+});
+
+/** Codex's answer to an MCP tool's approval for each decision. */
+const codexMcpToolDecisions: Readonly<Record<ApprovalDecision, Readonly<Record<string, unknown>>>> =
+    {
+        [ApprovalDecision.Approve]: {
+            action: 'accept',
+            content: {},
+        },
+        [ApprovalDecision.ApproveForSession]: {
+            action: 'accept',
+            content: {},
+            _meta: {
+                persist: 'session',
+            },
+        },
+        [ApprovalDecision.Decline]: {
+            action: 'decline',
+        },
+    };
+
 const modelListResponseShape = defineShape({
     data: [
         {
@@ -96,6 +139,31 @@ const modelListResponseShape = defineShape({
         },
     ],
 });
+
+const skillListResponseShape = defineShape({
+    data: [
+        {
+            skills: [
+                {
+                    name: '',
+                    description: '',
+                    shortDescription: nullableShape(''),
+                    path: '',
+                    scope: '',
+                    enabled: false,
+                    pluginId: nullableShape(''),
+                },
+            ],
+        },
+    ],
+});
+
+/** Where each of Codex's skill scopes is defined. */
+const codexSkillSources: Readonly<Record<string, ComposerCommandSource>> = {
+    repo: ComposerCommandSource.Repo,
+    user: ComposerCommandSource.Personal,
+    system: ComposerCommandSource.BuiltIn,
+};
 
 const extraKeys = {
     allowExtraKeys: true,
@@ -205,6 +273,54 @@ export const codexProvider: ProviderAdapter = {
             rpc.stop();
         }
     },
+    /** Codex's own slash commands aren't listed: it reads them only from its terminal UI. */
+    async listCommands({cwd}) {
+        const rpc = startCodexRpc({
+            cwd,
+            onNotification() {},
+            onRequest(method) {
+                throw new Error(`Agent Storm doesn't support Codex's ${method} request.`);
+            },
+            onExit() {},
+        });
+        try {
+            await initializeCodexRpc(rpc);
+            const response = await rpc.request('skills/list', {
+                cwds: [
+                    cwd,
+                ],
+            });
+            assertValidShape(response, skillListResponseShape, extraKeys);
+            return (
+                response.data
+                    .flatMap((entry) => entry.skills)
+                    /** Codex lists a skill once per folder it finds a copy in. */
+                    .filter((skill, index, skills) => {
+                        return (
+                            skill.enabled &&
+                            skills.findIndex((other) => other.name === skill.name) === index
+                        );
+                    })
+                    .map((skill) => {
+                        return {
+                            name: skill.name,
+                            description: skill.shortDescription || skill.description,
+                            argumentHint: '',
+                            kind: ComposerCommandKind.Skill,
+                            source: skill.pluginId
+                                ? ComposerCommandSource.Plugin
+                                : skill.path.includes(
+                                        `${sep}skills${sep}${syncedSkillsFolder}${sep}`,
+                                    )
+                                  ? ComposerCommandSource.Synced
+                                  : codexSkillSources[skill.scope] || ComposerCommandSource.Other,
+                        };
+                    })
+            );
+        } finally {
+            rpc.stop();
+        }
+    },
     async generateTitle({cwd, model, prompt}) {
         const reply = {
             text: '',
@@ -259,7 +375,17 @@ export const codexProvider: ProviderAdapter = {
             rpc.stop();
         }
     },
-    async start({cwd, model, effort, speedTier, runtimeMode, providerSessionId, sink}) {
+    async start({
+        cwd,
+        model,
+        effort,
+        speedTier,
+        runtimeMode,
+        providerSessionId,
+        sink,
+        agentTools,
+        env,
+    }) {
         const state: {
             runtimeMode: RuntimeMode;
             turnId: string | undefined;
@@ -372,10 +498,30 @@ export const codexProvider: ProviderAdapter = {
                         ],
                 };
             },
+            async 'mcpServer/elicitation/request'(params) {
+                if (
+                    !checkValidShape(params, mcpToolApprovalRequestShape, extraKeys) ||
+                    params._meta.codex_approval_kind !== 'mcp_tool_call'
+                ) {
+                    /** Agent Storm shows Codex's MCP tool approvals, not a server's own forms. */
+                    return {
+                        action: 'cancel',
+                    };
+                }
+                return codexMcpToolDecisions[
+                    await sink.requestApproval({
+                        kind: ApprovalKind.Permission,
+                        title: `${params.serverName}.${params._meta.tool_name}`,
+                        detail: JSON.stringify(params._meta.tool_params, undefined, 4),
+                        reason: '',
+                    })
+                ];
+            },
         };
 
         const rpc = startCodexRpc({
             cwd,
+            env,
             async onNotification(method, params) {
                 await notificationHandlers[method]?.(params);
             },
@@ -399,6 +545,17 @@ export const codexProvider: ProviderAdapter = {
             const threadOptions = {
                 cwd,
                 model: model || null,
+                config: {
+                    [`mcp_servers.${agentToolServerName}`]: {
+                        url: agentTools.url,
+                        http_headers: {
+                            Authorization: `Bearer ${agentTools.token}`,
+                        },
+                        tool_timeout_sec: convertDuration(agentToolTimeout, {
+                            seconds: true,
+                        }).seconds,
+                    },
+                },
             };
             const threadResponse = await rpc.request(
                 providerSessionId ? 'thread/resume' : 'thread/start',
@@ -414,7 +571,7 @@ export const codexProvider: ProviderAdapter = {
             await sink.setProviderSessionId(codexThreadId);
 
             return {
-                async send(text) {
+                async send({text}) {
                     const turnResponse = await rpc.request('turn/start', {
                         threadId: codexThreadId,
                         ...codexRuntimeModes[state.runtimeMode],

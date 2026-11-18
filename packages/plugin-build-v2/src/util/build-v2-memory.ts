@@ -4,6 +4,7 @@ import {
     defineSetting,
     sidebarWidth,
 } from '@agent-storm/core/frontend';
+import {defineShape, nullableShape} from 'object-shape-tester';
 
 /** The Build V2 tab's memory, restored whenever the tab opens with nothing selected. */
 export const buildV2Memory = {
@@ -38,6 +39,20 @@ export const buildV2Memory = {
     composerDrafts: defineFolderSetting({
         key: 'agent-storm:build-v2:composer-drafts',
         valueShape: '',
+    }),
+    /** Each chat's uploaded attachments, keyed by `toComposerDraftKey`. */
+    composerAttachments: defineFolderSetting({
+        key: 'agent-storm:build-v2:composer-attachments',
+        valueShape: [
+            defineShape({
+                id: '',
+                name: '',
+                tag: '',
+                path: '',
+                imageUrl: nullableShape(''),
+                textPreview: nullableShape(''),
+            }),
+        ],
     }),
 };
 

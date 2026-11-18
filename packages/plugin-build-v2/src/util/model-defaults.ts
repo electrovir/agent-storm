@@ -92,7 +92,10 @@ export function resolveModelDefault({
     return defaults.folders[folder] || defaults.global || undefined;
 }
 
-/** Makes `modelDefault` the global default and the folder's, wherever one isn't set yet. */
+/**
+ * Makes `modelDefault` the global default and the folder's, wherever one isn't set yet. A default
+ * saved without an effort counts as not set once `modelDefault` has one.
+ */
 export async function fillMissingModelDefaults({
     context,
     folder,
@@ -102,8 +105,15 @@ export async function fillMissingModelDefaults({
     folder: string;
     modelDefault: Readonly<ModelDefault>;
 }>) {
+    function pickDefault(existing: Readonly<ModelDefault> | null | undefined) {
+        return existing && (existing.effort || !modelDefault.effort) ? existing : modelDefault;
+    }
+
     function isMissing(defaults: Readonly<ModelDefaults>) {
-        return !defaults.global || !defaults.folders[folder];
+        return (
+            pickDefault(defaults.global) !== defaults.global ||
+            pickDefault(defaults.folders[folder]) !== defaults.folders[folder]
+        );
     }
 
     if (
@@ -124,10 +134,10 @@ export async function fillMissingModelDefaults({
         requestData: writeModelDefaults({
             settings,
             defaults: {
-                global: defaults.global || modelDefault,
+                global: pickDefault(defaults.global),
                 folders: {
                     ...defaults.folders,
-                    [folder]: defaults.folders[folder] || modelDefault,
+                    [folder]: pickDefault(defaults.folders[folder]),
                 },
             },
         }),

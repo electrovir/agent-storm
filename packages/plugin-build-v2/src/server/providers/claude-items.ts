@@ -1,13 +1,15 @@
 import {check} from '@augment-vir/assert';
 import {ApprovalKind, ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
+import {agentToolServerName} from '../agent-tool-server.js';
+import {readOnlyAgentToolNames} from '../agent-tools.js';
 import {type ProviderItem} from './provider-session.js';
 
 /** A Claude tool call as a thread item, before its result arrives. */
 export type ClaudeToolDescription = Pick<ProviderItem, 'kind' | 'title' | 'text'>;
 
 /**
- * Claude's tools that only read, which run without asking. Every other tool, including any MCP
- * tool, asks first.
+ * Claude's tools that only read, which run without asking, including Agent Storm's own read-only
+ * tools. Every other tool, including any other MCP tool, asks first.
  */
 export const readOnlyClaudeTools = [
     'Read',
@@ -20,6 +22,7 @@ export const readOnlyClaudeTools = [
     'TaskGet',
     'TaskList',
     'TaskUpdate',
+    ...readOnlyAgentToolNames.map((name) => `mcp__${agentToolServerName}__${name}`),
 ];
 
 function readString(input: Readonly<Record<string, unknown>>, key: string) {

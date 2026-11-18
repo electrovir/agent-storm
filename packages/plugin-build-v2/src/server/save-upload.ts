@@ -1,6 +1,6 @@
-import {createCuid2} from '@augment-vir/common';
-import {mkdir, writeFile} from 'node:fs/promises';
-import {extname, join} from 'node:path';
+import {convertByteSize, createCuid2, type AnyByteSize} from '@augment-vir/common';
+import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
+import {dirname, extname, join, resolve} from 'node:path';
 
 function safeFilename(input: string): string {
     const trimmed = input.trim() || 'upload';
@@ -29,4 +29,26 @@ export async function saveUpload({
     const buffer = Buffer.from(dataBase64, 'base64');
     await writeFile(filePath, buffer);
     return filePath;
+}
+
+/** The content travels base64-encoded inside one JSON response, so it can't be unbounded. */
+const maxReadUploadSize = {
+    megabytes: 20,
+} as const satisfies AnyByteSize;
+
+/** Reads a file `saveUpload` wrote, as base64. Rejects any path outside `uploadsDir`. */
+export async function readUpload({path, uploadsDir}: Readonly<{path: string; uploadsDir: string}>) {
+    const filePath = resolve(path);
+    if (dirname(filePath) !== resolve(uploadsDir)) {
+        throw new Error(`Not an uploaded file: '${path}'.`);
+    } else if (
+        (await stat(filePath)).size >
+        convertByteSize(maxReadUploadSize, {
+            bytes: true,
+        }).bytes
+    ) {
+        throw new Error(`Uploaded file is too large to preview: '${path}'.`);
+    } else {
+        return (await readFile(filePath)).toString('base64');
+    }
 }

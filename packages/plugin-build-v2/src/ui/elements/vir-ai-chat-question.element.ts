@@ -7,6 +7,7 @@ import {
     LucideChevronDownIcon,
     LucideChevronLeftIcon,
     LucideXIcon,
+    tooltip,
     ViraIcon,
     viraThemeByKeys,
 } from 'vira';
@@ -167,7 +168,7 @@ export const VirAiChatQuestion = defineAppElement<{
 
             &:hover:not(:disabled) {
                 color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-                background-color: ${viraThemeByKeys.grey['behind-fg']['lowest-contrast'].background
+                background-color: ${viraThemeByKeys.brand['behind-fg']['small-body'].background
                     .value};
             }
 
@@ -210,7 +211,7 @@ export const VirAiChatQuestion = defineAppElement<{
             cursor: pointer;
 
             &:hover:not(:disabled) {
-                background-color: ${viraThemeByKeys.grey['behind-fg']['lowest-contrast'].background
+                background-color: ${viraThemeByKeys.brand['behind-fg']['small-body'].background
                     .value};
             }
 
@@ -294,8 +295,7 @@ export const VirAiChatQuestion = defineAppElement<{
             text-align: center;
             border-radius: 4px;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            background-color: ${viraThemeByKeys.grey['behind-fg']['lowest-contrast'].background
-                .value};
+            background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
         }
 
         .preview {
@@ -356,7 +356,7 @@ export const VirAiChatQuestion = defineAppElement<{
                               <button
                                   type="button"
                                   class="icon-button"
-                                  title="Previous question"
+                                  ${tooltip('Previous question')}
                                   aria-label="Previous question"
                                   ?disabled=${isDisabled}
                                   ${listen('click', () => {
@@ -383,9 +383,11 @@ export const VirAiChatQuestion = defineAppElement<{
                             collapsed: isCollapsed,
                         })}
                         aria-expanded=${!isCollapsed}
-                        title=${isCollapsed
-                            ? 'Show the question and its options'
-                            : 'Hide the question and its options'}
+                        ${tooltip(
+                            isCollapsed
+                                ? 'Show the question and its options'
+                                : 'Hide the question and its options',
+                        )}
                         ${listen('click', () => {
                             updateState({
                                 collapsedQuestion: isCollapsed ? undefined : question.question,
@@ -413,7 +415,7 @@ export const VirAiChatQuestion = defineAppElement<{
                     <button
                         type="button"
                         class="icon-button"
-                        title="Dismiss without answering"
+                        ${tooltip('Dismiss without answering')}
                         aria-label="Dismiss without answering"
                         ?disabled=${isDisabled}
                         ${listen('click', () => {

@@ -87,6 +87,8 @@ model Thread {
   providerSessionId String?
   /// Set when the agent finishes a reply, and cleared once the thread is on screen.
   hasUnreadReply    Boolean      @default(false)
+  /// Set once the user or an agent renames the thread, which stops automatic titles replacing it.
+  hasCustomTitle    Boolean      @default(false)
 
   items    ThreadItem[]
   requests ApprovalRequest[]

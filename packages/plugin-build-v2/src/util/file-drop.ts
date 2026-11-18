@@ -36,3 +36,31 @@ export function collectDroppedFiles(transfer: DataTransfer): File[] {
     });
     return Array.from(seen);
 }
+
+/**
+ * The image's center square as a data URL, scaled down to at most `size` pixels wide, like a
+ * thumbnail shown with `object-fit: cover`. Small enough to keep in localStorage, unlike the full
+ * image. Rejects when the browser can't decode the image.
+ */
+export async function toImageThumbnailUrl({file, size}: Readonly<{file: File; size: number}>) {
+    const bitmap = await createImageBitmap(file);
+    const side = Math.min(bitmap.width, bitmap.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(size, side);
+    canvas.height = canvas.width;
+    canvas
+        .getContext('2d')
+        ?.drawImage(
+            bitmap,
+            (bitmap.width - side) / 2,
+            (bitmap.height - side) / 2,
+            side,
+            side,
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+        );
+    bitmap.close();
+    return canvas.toDataURL('image/webp');
+}

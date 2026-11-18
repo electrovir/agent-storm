@@ -26,6 +26,7 @@ import {
     PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
+    tooltip,
     ViraCollapsibleWrapper,
     ViraIcon,
     ViraMenuTrigger,
@@ -289,6 +290,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
         const groups = arrangeRepoGroups({
             groups: allGroups,
             folderInfo: inputs.context.folderData.value.folderInfo,
+            repoActivityAtMs: inputs.buildV2State.repoActivityAtMs.value,
             repos: snapshot?.repos || [],
             sorting: snapshot?.settings.sidebarSorting,
             onlyShowRecent: snapshot?.settings.onlyShowRecent,
@@ -505,7 +507,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                 drafting: isDrafting,
                                                 'empty-project': !group.threads.length,
                                             })}
-                                            title=${group.repo.path}
+                                            ${tooltip(group.repo.path)}
                                             data-sidebar-search-result
                                             slot=${ViraMenuTrigger.slotNames[
                                                 'vira-menu-trigger-trigger'
@@ -551,6 +553,12 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                 : nothing}
                                         </div>
                                         ${renderMenuItemEntries([
+                                            {
+                                                content: 'New thread',
+                                                onClick() {
+                                                    startDraft(group.repo.path);
+                                                },
+                                            },
                                             {
                                                 content: 'Settings',
                                                 onClick() {
@@ -660,7 +668,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                         type="button"
                                         class="new-thread"
                                         aria-label=${`New thread in ${group.repo.name}`}
-                                        title=${`New thread in ${group.repo.name}`}
+                                        ${tooltip(`New thread in ${group.repo.name}`)}
                                         ${listen('click', () => {
                                             startDraft(group.repo.path);
                                         })}

@@ -11,6 +11,8 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import {check} from '@augment-vir/assert';
 import {arrayToObject, extractErrorMessage} from '@augment-vir/common';
+import {convertDuration} from 'date-vir';
+import {homedir} from 'node:os';
 import {checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
 import {
     ApprovalDecision,
@@ -22,6 +24,14 @@ import {
     type ProviderModel,
 } from '../../build-v2-api.js';
 import {parseReasoningEfforts} from '../../util/reasoning-effort.js';
+import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
+import {
+    classifyClaudeCommands,
+    dispatchClaudeSkillMentions,
+    findClaudeConfigDir,
+    hasSkillMention,
+    readClaudeCommandOrigins,
+} from './claude-commands.js';
 import {
     claudeApprovalKinds,
     completeClaudeToolItem,
@@ -242,12 +252,12 @@ function createMessageQueue() {
         isClosed: false,
     };
     return {
-        push(text: string) {
+        push(content: SDKUserMessage['message']['content']) {
             state.messages.push({
                 type: 'user',
                 message: {
                     role: 'user',
-                    content: text,
+                    content,
                 },
                 parent_tool_use_id: null,
                 origin: {
@@ -326,6 +336,35 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 claudeQuery.close();
             }
         },
+        async listCommands({cwd}) {
+            const prompt = createMessageQueue();
+            const claudeQuery = query({
+                prompt,
+                options: {
+                    cwd,
+                },
+            });
+            try {
+                const [
+                    commands,
+                    origins,
+                ] = await Promise.all([
+                    claudeQuery.supportedCommands(),
+                    readClaudeCommandOrigins({
+                        cwd,
+                        configDir: findClaudeConfigDir(),
+                        home: homedir(),
+                    }),
+                ]);
+                return classifyClaudeCommands({
+                    commands,
+                    origins,
+                });
+            } finally {
+                prompt.close();
+                claudeQuery.close();
+            }
+        },
         async generateTitle({cwd, prompt}) {
             const claudeQuery = query({
                 prompt,
@@ -346,7 +385,17 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             }
             return '';
         },
-        start({cwd, model, effort, speedTier, runtimeMode, providerSessionId, sink}) {
+        start({
+            cwd,
+            model,
+            effort,
+            speedTier,
+            runtimeMode,
+            providerSessionId,
+            sink,
+            agentTools,
+            env,
+        }) {
             const state = {
                 runtimeMode,
                 /** The id of the message the stream events currently belong to. */
@@ -358,6 +407,8 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 sessionApprovals: new Set<string>(),
                 wasInterrupted: false,
                 isStopped: false,
+                /** Settles once every earlier `send` has queued its message. */
+                previousSend: Promise.resolve() as Promise<unknown>,
             };
             const messages = createMessageQueue();
 
@@ -448,7 +499,11 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                             kind: claudeApprovalKinds[tool.kind],
                             title: tool.title || toolName,
                             detail: tool.text,
-                            reason: title || '',
+                            /** Claude writes a plain-words summary of what each command does. */
+                            reason:
+                                (check.isString(input.description) && input.description) ||
+                                title ||
+                                '',
                         },
                         signal,
                     );
@@ -482,6 +537,11 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 prompt: messages,
                 options: {
                     cwd,
+                    ...(env
+                        ? {
+                              env,
+                          }
+                        : {}),
                     ...(model
                         ? {
                               model,
@@ -508,6 +568,20 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                     /** Lets the thread switch to Full access later without a restart. */
                     allowDangerouslySkipPermissions: true,
                     canUseTool,
+                    mcpServers: {
+                        [agentToolServerName]: {
+                            type: 'http',
+                            url: agentTools.url,
+                            headers: {
+                                Authorization: `Bearer ${agentTools.token}`,
+                            },
+                            timeout: convertDuration(agentToolTimeout, {
+                                milliseconds: true,
+                            }).milliseconds,
+                            /** Keeps the tools in the prompt instead of behind tool search. */
+                            alwaysLoad: true,
+                        },
+                    },
                     hooks: {
                         PreToolUse: [
                             {
@@ -678,8 +752,26 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             void readMessages(sink);
 
             return Promise.resolve({
-                send(text) {
-                    messages.push(text);
+                async send({text, userTextStart}) {
+                    /** Skips asking Claude Code for its commands when no `$` could start a mention. */
+                    const content = hasSkillMention(text.slice(userTextStart))
+                        ? claudeQuery.supportedCommands().then((commands) => {
+                              return dispatchClaudeSkillMentions({
+                                  text,
+                                  commandNames: commands.map((command) => command.name),
+                                  mentionsFrom: userTextStart,
+                              });
+                          })
+                        : text;
+                    /**
+                     * Looking up the commands takes a moment, so a later message without a mention
+                     * waits for it rather than reaching Claude first.
+                     */
+                    const queued = state.previousSend.then(async () => {
+                        messages.push(await content);
+                    });
+                    state.previousSend = queued.catch(() => undefined);
+                    await queued;
                 },
                 async interrupt() {
                     state.wasInterrupted = true;

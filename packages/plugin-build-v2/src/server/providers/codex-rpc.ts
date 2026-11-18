@@ -40,11 +40,14 @@ export type CodexRpc = ReturnType<typeof startCodexRpc>;
  */
 export function startCodexRpc({
     cwd,
+    env,
     onNotification,
     onRequest,
     onExit,
 }: Readonly<{
     cwd: string;
+    /** Replaces the environment Codex runs with. Unset inherits the server's. */
+    env?: Record<string, string> | undefined;
     onNotification(method: string, params: unknown): MaybePromise<void>;
     onRequest(method: string, params: unknown): Promise<unknown>;
     onExit(reason: string): void;
@@ -58,6 +61,7 @@ export function startCodexRpc({
         ],
         {
             cwd,
+            env,
             stdio: [
                 'pipe',
                 'pipe',
