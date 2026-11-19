@@ -158,12 +158,29 @@ export const VirImageDiff = defineAppElement<{
         }
 
         /*
+         * Only as wide as the images, so the slider under them spans the image rather than the
+         * pane. The floor keeps the slider usable under a favicon-sized image.
+         */
+        .overlay-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            align-self: center;
+            flex-shrink: 0;
+            width: fit-content;
+            min-width: min(100%, 240px);
+            max-width: 100%;
+        }
+
+        /*
          * Every layer shares one grid cell, so the cell is as big as the larger image and both
-         * images center in the same box.
+         * images center in the same box. It sits inside the frame rather than being it, so the
+         * swipe clip and line are measured across the image and not across the frame's padding or
+         * the extra width the floor above gives it.
          */
         .overlay-stack {
             display: grid;
-            flex-shrink: 0;
+            max-width: 100%;
         }
 
         .layer {
@@ -189,11 +206,13 @@ export const VirImageDiff = defineAppElement<{
             background-color: ${viraThemeByKeys.blue.foreground['non-body'].foreground.value};
         }
 
+        /* No intrinsic width of its own, so it takes the image's width instead of setting it. */
         .slider-row {
             display: flex;
             align-items: center;
             gap: 8px;
             flex-shrink: 0;
+            contain: inline-size;
 
             & ${ViraSlider} {
                 flex-grow: 1;
@@ -317,39 +336,43 @@ export const VirImageDiff = defineAppElement<{
         return html`
             <div class="image-diff">
                 ${modeBarTemplate}
-                <div class="image-frame overlay-stack">
-                    <div class="layer">
-                        <img src=${oldImage} alt="Before" />
+                <div class="overlay-group">
+                    <div class="image-frame">
+                        <div class="overlay-stack">
+                            <div class="layer">
+                                <img src=${oldImage} alt="Before" />
+                            </div>
+                            <div class="layer" style=${afterLayerStyles[mode]}>
+                                <img src=${newImage} alt="After" />
+                            </div>
+                            ${mode === ImageDiffMode.Swipe
+                                ? html`
+                                      <div class="swipe-line-layer">
+                                          <div
+                                              class="swipe-line"
+                                              style=${css`
+                                                  left: ${state.position}%;
+                                              `}
+                                          ></div>
+                                      </div>
+                                  `
+                                : nothing}
+                        </div>
                     </div>
-                    <div class="layer" style=${afterLayerStyles[mode]}>
-                        <img src=${newImage} alt="After" />
-                    </div>
-                    ${mode === ImageDiffMode.Swipe
-                        ? html`
-                              <div class="swipe-line-layer">
-                                  <div
-                                      class="swipe-line"
-                                      style=${css`
-                                          left: ${state.position}%;
-                                      `}
-                                  ></div>
-                              </div>
-                          `
-                        : nothing}
-                </div>
-                <div class="slider-row">
-                    <span class="image-side-label">Before</span>
-                    <${ViraSlider.assign({
-                        value: state.position,
-                        label: `${imageDiffModeLabels[mode]} position`,
-                    })}
-                        ${listen(ViraSlider.events.valueChange, (event) => {
-                            updateState({
-                                position: event.detail,
-                            });
+                    <div class="slider-row">
+                        <span class="image-side-label">Before</span>
+                        <${ViraSlider.assign({
+                            value: state.position,
+                            label: `${imageDiffModeLabels[mode]} position`,
                         })}
-                    ></${ViraSlider}>
-                    <span class="image-side-label">After</span>
+                            ${listen(ViraSlider.events.valueChange, (event) => {
+                                updateState({
+                                    position: event.detail,
+                                });
+                            })}
+                        ></${ViraSlider}>
+                        <span class="image-side-label">After</span>
+                    </div>
                 </div>
             </div>
         `;
