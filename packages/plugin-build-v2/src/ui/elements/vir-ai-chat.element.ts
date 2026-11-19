@@ -32,8 +32,10 @@ import {
     type Thread,
     type ThreadItem,
 } from '../../build-v2-api.js';
+import {createThreadTitle} from '../../server/thread-names.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {buildV2Memory, toComposerDraftKey} from '../../util/build-v2-memory.js';
+import {buildMinimapTurns} from '../../util/chat-minimap.js';
 import {composerShortcutActions} from '../../util/composer-shortcuts.js';
 import {collectDroppedFiles, fileToBase64, toImageThumbnailUrl} from '../../util/file-drop.js';
 import {
@@ -52,6 +54,7 @@ import {applyItemDelta, findPathName, upsertItems} from '../../util/thread-timel
 import {threadStatusDisplays} from './thread-display.js';
 import {VirAiChatApproval} from './vir-ai-chat-approval.element.js';
 import {VirAiChatComposer, type ComposerAttachment} from './vir-ai-chat-composer.element.js';
+import {VirAiChatMinimap} from './vir-ai-chat-minimap.element.js';
 import {type ModelSelection, type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
 import {
     createQuestionDraft,
@@ -61,6 +64,12 @@ import {
     type QuestionDraft,
 } from './vir-ai-chat-question.element.js';
 import {VirAiChatTimeline} from './vir-ai-chat-timeline.element.js';
+
+/**
+ * Threads this page asked the server to create, by id. Their tab opens before the server has stored
+ * them, so reading one waits for its creation first.
+ */
+const pendingThreadCreations = new Map<string, Promise<unknown>>();
 
 const branchIcon = createSizedIcon(LucideGitBranchIcon, 12);
 const worktreeIcon = createSizedIcon(LucideGitBranchIcon, 14);
@@ -204,9 +213,11 @@ export const VirAiChat = defineAppElement<{
             ],
         });
         function readThread(threadId: string) {
-            buildV2Client
-                .call('readThread', {
-                    threadId,
+            (pendingThreadCreations.get(threadId) || Promise.resolve())
+                .then(() => {
+                    return buildV2Client.call('readThread', {
+                        threadId,
+                    });
                 })
                 .then((loaded) => {
                     updateState({
@@ -654,38 +665,77 @@ export const VirAiChat = defineAppElement<{
             ]
                 .filter((part) => !!part)
                 .join('\n');
-            function clearComposer() {
-                setComposerText('');
-                setAttachments(
-                    host.instanceState.attachments.filter(
-                        (attachment) => !sentAttachments.includes(attachment),
-                    ),
-                );
+            /**
+             * Cleared before the call because the server replies only once the provider has the
+             * message, which waits on starting its process.
+             */
+            setComposerText('');
+            setAttachments(
+                host.instanceState.attachments.filter(
+                    (attachment) => !sentAttachments.includes(attachment),
+                ),
+            );
+            /** Puts the message back without clobbering anything typed while it was sending. */
+            function restoreComposer() {
+                if (!host.instanceState.composerText) {
+                    setComposerText(text);
+                }
+                setAttachments([
+                    ...sentAttachments,
+                    ...host.instanceState.attachments,
+                ]);
             }
             await runAction(async () => {
-                if (inputs.threadId) {
-                    await buildV2Client.call('sendMessage', {
-                        threadId: inputs.threadId,
-                        text: message,
-                    });
-                    clearComposer();
-                } else {
-                    const {thread} = await buildV2Client.call('createThread', {
-                        repoPath: inputs.repoPath,
-                        provider: draftSelection.provider,
-                        model: draftSelection.model,
-                        effort: draftSelection.effort,
-                        speedTier: draftSelection.speedTier,
-                        runtimeMode: state.runtimeMode,
-                        text: message,
-                        isInWorktree,
-                    });
-                    clearComposer();
-                    dispatch(
-                        new events.threadCreated({
-                            detail: thread,
-                        }),
-                    );
+                try {
+                    if (inputs.threadId) {
+                        await buildV2Client.call('sendMessage', {
+                            threadId: inputs.threadId,
+                            text: message,
+                        });
+                    } else {
+                        const id = createCuid2();
+                        const now = Date.now();
+                        const creation = buildV2Client.call('createThread', {
+                            id,
+                            repoPath: inputs.repoPath,
+                            provider: draftSelection.provider,
+                            model: draftSelection.model,
+                            effort: draftSelection.effort,
+                            speedTier: draftSelection.speedTier,
+                            runtimeMode: state.runtimeMode,
+                            text: message,
+                            isInWorktree,
+                        });
+                        pendingThreadCreations.set(id, creation);
+                        /** Shown before the server replies, which then replaces it in the list. */
+                        dispatch(
+                            new events.threadCreated({
+                                detail: {
+                                    id,
+                                    repoPath: inputs.repoPath,
+                                    cwd: inputs.repoPath,
+                                    provider: draftSelection.provider,
+                                    model: draftSelection.model,
+                                    effort: draftSelection.effort,
+                                    speedTier: draftSelection.speedTier,
+                                    runtimeMode: state.runtimeMode,
+                                    title: createThreadTitle(message),
+                                    status: ThreadStatus.Running,
+                                    hasUnreadReply: false,
+                                    createdAt: now,
+                                    updatedAt: now,
+                                },
+                            }),
+                        );
+                        try {
+                            await creation;
+                        } finally {
+                            pendingThreadCreations.delete(id);
+                        }
+                    }
+                } catch (error) {
+                    restoreComposer();
+                    throw error;
                 }
             });
             updateState({
@@ -1225,23 +1275,27 @@ export const VirAiChat = defineAppElement<{
                 : nothing;
 
         const scroller = html`
-            <div class="scroller">
-                <div class="lane">
-                    <div class="lane-content">
-                        ${state.isLoading && !state.items.length
-                            ? html`
-                                  <div class="loading">Loading thread…</div>
-                              `
-                            : html`
-                                  <${VirAiChatTimeline.assign({
-                                      items: state.items,
-                                      isRunning,
-                                  })}></${VirAiChatTimeline}>
-                              `}
-                        ${approval}
+            <${VirAiChatMinimap.assign({
+                turns: buildMinimapTurns(state.items),
+            })}>
+                <div class="scroller">
+                    <div class="lane">
+                        <div class="lane-content">
+                            ${state.isLoading && !state.items.length
+                                ? html`
+                                      <div class="loading">Loading thread…</div>
+                                  `
+                                : html`
+                                      <${VirAiChatTimeline.assign({
+                                          items: state.items,
+                                          isRunning,
+                                      })}></${VirAiChatTimeline}>
+                                  `}
+                            ${approval}
+                        </div>
                     </div>
                 </div>
-            </div>
+            </${VirAiChatMinimap}>
             <div class="lane composer-lane">
                 <div class="lane-content">
                     ${questionRequest && questionDraft

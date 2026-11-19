@@ -77,11 +77,17 @@ export const buildV2Activity = defineActivity({
             return nothing;
         }
 
-        const folder = thread ? thread.cwd || thread.repoPath : draftRepoPath || '';
+        const folderInfo = context.folderData.value.folderInfo;
+        /**
+         * The server won't save a tab layout for a folder that no longer exists, so a thread whose
+         * worktree was deleted would recreate its tabs on every render.
+         */
+        const isCwdGone = !!thread?.cwd && !!folderInfo.size && !folderInfo.has(thread.cwd);
+        const folder = thread ? (!isCwdGone && thread.cwd) || thread.repoPath : draftRepoPath || '';
         const scope = `build-v2:${threadId || newThreadSubPath}`;
 
         return keyed(
-            scope,
+            `${scope}:${folder}`,
             html`
                 <${VirPaneGroup.assign({
                     folder,

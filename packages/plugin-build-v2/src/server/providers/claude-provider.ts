@@ -433,14 +433,15 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
 
             const canUseTool: CanUseTool = async (toolName, input, {signal, toolUseID, title}) => {
                 const approvalKey = createApprovalKey(toolName, input);
+                const allowed = {
+                    behavior: 'allow',
+                    updatedInput: input,
+                } as const satisfies PermissionResult;
                 if (
                     readOnlyClaudeTools.includes(toolName) ||
                     state.sessionApprovals.has(approvalKey)
                 ) {
-                    return {
-                        behavior: 'allow',
-                        updatedInput: input,
-                    };
+                    return allowed;
                 } else if (
                     toolName === 'AskUserQuestion' &&
                     checkValidShape(input, askUserQuestionInputShape, {
@@ -489,6 +490,12 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                             }),
                         },
                     };
+                } else if (state.runtimeMode === RuntimeMode.FullAccess) {
+                    /**
+                     * `bypassPermissions` still sends tools an MCP server marks always-ask, and
+                     * commands that trip Claude Code's own safety checks, here.
+                     */
+                    return allowed;
                 } else {
                     const tool = describeClaudeToolUse({
                         name: toolName,
@@ -562,6 +569,11 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         fastMode: speedTier === claudeFastSpeedTier,
                     },
                     sessionStore,
+                    /**
+                     * The default `'batched'` flush only writes a turn's entries when it ends, so a
+                     * restart mid-turn lost the user's message and everything after it.
+                     */
+                    sessionStoreFlush: 'eager',
                     includePartialMessages: true,
                     /** Overrides a `defaultMode` in the user's settings. */
                     permissionMode: claudePermissionModes[runtimeMode],

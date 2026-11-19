@@ -704,7 +704,7 @@ export const VirAiChatTimeline = defineAppElement<{
                 return entry.items.map((item) => {
                     const message = splitMessageAttachments(item.text);
                     return html`
-                        <div class="user-entry">
+                        <div class="user-entry" data-turn-id=${item.id}>
                             <h3 hidden>You</h3>
                             ${message.attachments.length
                                 ? html`

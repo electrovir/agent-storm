@@ -1,10 +1,10 @@
 import {definePluginServer, type PluginCallHandlers} from '@agent-storm/core/server';
-import {awaitedForEach, extractErrorMessage, log} from '@augment-vir/common';
-import {gitTimeout, normalizePath, runCommand} from 'agent-storm-util';
+import {awaitedForEach, createCuid2, extractErrorMessage, log} from '@augment-vir/common';
+import {gitTimeout, hasErrorCode, normalizePath, runCommand} from 'agent-storm-util';
 import {convertDuration, createUtcFullDate, toJsDate} from 'date-vir';
 import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
-import {join} from 'node:path';
+import {basename, join} from 'node:path';
 import {
     AiProvider,
     ApprovalDecision,
@@ -31,6 +31,7 @@ import {
     type ProviderSession,
     type ProviderSink,
 } from './providers/provider-session.js';
+import {buildResumeMessage} from './resume-message.js';
 import {readUpload, saveUpload} from './save-upload.js';
 import {
     createThreadTitle,
@@ -572,7 +573,25 @@ export default definePluginServer({
                 }
             },
             async listCommands({provider, cwd}) {
-                const key = `${provider}:${normalizePath(cwd)}`;
+                const folder = normalizePath(cwd);
+                const folders = await host.listFolders();
+                /**
+                 * A worktree root only holds the repo's worktrees and has no `.claude/skills` or
+                 * `.agents/skills` of its own, so its repo skills are read from its newest
+                 * worktree, the one most likely to be up to date.
+                 */
+                const commandFolder = folders.find((info) => info.path === folder)?.isWorktreeRoot
+                    ? folders
+                          .filter((info) => {
+                              return (
+                                  !!info.parentRepoPath &&
+                                  normalizePath(info.parentRepoPath) === folder
+                              );
+                          })
+                          .toSorted((left, right) => right.createdAtMs - left.createdAtMs)[0]
+                          ?.path || folder
+                    : folder;
+                const key = `${provider}:${commandFolder}`;
                 const cached = commandLists.get(key);
                 const entry =
                     cached &&
@@ -588,7 +607,7 @@ export default definePluginServer({
                         ? cached
                         : {
                               commands: providers[provider].listCommands({
-                                  cwd: normalizePath(cwd),
+                                  cwd: commandFolder,
                               }),
                               listedAt: Date.now(),
                           };
@@ -603,6 +622,7 @@ export default definePluginServer({
                 }
             },
             async createThread({
+                id: requestedId,
                 repoPath,
                 provider,
                 model,
@@ -614,8 +634,22 @@ export default definePluginServer({
             }) {
                 const placeholderTitle = createThreadTitle(text);
                 const folder = normalizePath(repoPath);
+                /**
+                 * The sidebar groups threads by `repoPath`, so a thread started in a worktree (such
+                 * as from an AI Chat tab on a worktree folder) belongs to its main checkout.
+                 */
+                const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
                 const {id} = await store.createThread({
-                    repoPath: folder,
+                    id: requestedId || createCuid2(),
+                    repoPath: folderInfo?.parentRepoPath
+                        ? normalizePath(folderInfo.parentRepoPath)
+                        : folder,
+                    worktree: folderInfo?.parentRepoPath
+                        ? {
+                              path: folder,
+                              branch: folderInfo.branch || basename(folder),
+                          }
+                        : undefined,
                     provider,
                     model,
                     effort,
@@ -623,43 +657,64 @@ export default definePluginServer({
                     runtimeMode,
                     title: placeholderTitle,
                 });
-                const isOpenWorktreeSkillUsed =
-                    isInWorktree &&
-                    provider === AiProvider.Claude &&
-                    !!(await stat(
-                        join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
-                    ).catch(() => undefined));
-                if (isInWorktree && !isOpenWorktreeSkillUsed) {
-                    /**
-                     * Waits for the generated title so the branch isn't named from raw message
-                     * text. Without one, the branch gets a placeholder name that a later title
-                     * replaces.
-                     */
-                    try {
-                        await moveThreadToNewWorktree({
+                async function startThread() {
+                    const isOpenWorktreeSkillUsed =
+                        isInWorktree &&
+                        provider === AiProvider.Claude &&
+                        !!(await stat(
+                            join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
+                        ).catch(() => undefined));
+                    if (isInWorktree && !isOpenWorktreeSkillUsed) {
+                        /**
+                         * Waits for the generated title so the branch isn't named from raw message
+                         * text. Without one, the branch gets a placeholder name that a later title
+                         * replaces.
+                         */
+                        try {
+                            await moveThreadToNewWorktree({
+                                threadId: id,
+                                folder,
+                                title:
+                                    (await generateThreadTitle({
+                                        threadId: id,
+                                        firstMessage: text,
+                                    })) || '',
+                            });
+                        } catch (error) {
+                            await addNotice({
+                                threadId: id,
+                                text: `Making a worktree failed, so this thread stays in ${folder}: ${extractErrorMessage(error)}`,
+                            });
+                        }
+                    } else {
+                        void generateThreadTitle({
                             threadId: id,
-                            folder,
-                            title:
-                                (await generateThreadTitle({
-                                    threadId: id,
-                                    firstMessage: text,
-                                })) || '',
-                        });
-                    } catch (error) {
-                        await addNotice({
-                            threadId: id,
-                            text: `Making a worktree failed, so this thread stays in ${folder}: ${extractErrorMessage(error)}`,
+                            firstMessage: text,
                         });
                     }
-                } else {
-                    void generateThreadTitle({
+                    await sendMessage({
                         threadId: id,
-                        firstMessage: text,
+                        text: isOpenWorktreeSkillUsed ? `/${openWorktreeSkillName} ${text}` : text,
                     });
                 }
-                await sendMessage({
-                    threadId: id,
-                    text: isOpenWorktreeSkillUsed ? `/${openWorktreeSkillName} ${text}` : text,
+                /**
+                 * Not awaited so the caller can select the new thread right away: making a
+                 * worktree, generating its title, and starting the provider all take seconds.
+                 */
+                startThread().catch(async (error: unknown) => {
+                    try {
+                        await store.updateThread(id, {
+                            status: ThreadStatus.Failed,
+                        });
+                        await addNotice({
+                            threadId: id,
+                            text: extractErrorMessage(error),
+                        });
+                    } catch (failureError) {
+                        log.warning(
+                            `Recording thread ${id}'s failed start failed: ${extractErrorMessage(failureError)}`,
+                        );
+                    }
                 });
                 return {
                     thread: await store.findThread(id),
@@ -809,28 +864,66 @@ export default definePluginServer({
             instructions: agentToolInstructions,
         });
 
+        /**
+         * Archives every thread whose worktree folder is gone, however it was deleted (the sidebar,
+         * a merged PR's cleanup, or plain `git worktree remove`), and returns their ids.
+         */
+        async function archiveThreadsWithDeletedWorktrees() {
+            try {
+                const threads = await store.listThreads();
+                const orphanedThreadIds = (
+                    await Promise.all(
+                        threads.map(async (thread) => {
+                            if (!thread.worktreeBranch) {
+                                return undefined;
+                            }
+                            const isMissing = await stat(thread.cwd).then(
+                                () => false,
+                                (error: unknown) => {
+                                    return hasErrorCode(error, 'ENOENT');
+                                },
+                            );
+                            return isMissing ? thread.id : undefined;
+                        }),
+                    )
+                ).filter((threadId) => threadId != undefined);
+                await awaitedForEach(orphanedThreadIds, async (threadId) => {
+                    await calls.archiveThread({
+                        threadId,
+                    });
+                });
+                return orphanedThreadIds;
+            } catch (error) {
+                log.warning(
+                    `Archiving threads with deleted worktrees failed: ${extractErrorMessage(error)}`,
+                );
+                return [];
+            }
+        }
+
+        const archivedOnStartThreadIds = await archiveThreadsWithDeletedWorktrees();
+        const deletedWorktreeSweep = setInterval(
+            () => {
+                void archiveThreadsWithDeletedWorktrees();
+            },
+            convertDuration(
+                {
+                    minutes: 1,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds,
+        );
+
         /** Like a restored AI terminal pane, a thread a restart cut off is told to continue. */
-        interruptedThreads.forEach(({threadId, laterMessages}) => {
+        interruptedThreads.forEach(({threadId, turnMessages}) => {
+            if (archivedOnStartThreadIds.includes(threadId)) {
+                return;
+            }
             sendMessage({
                 threadId,
-                text: [
-                    'Agent Storm restarted while you were working, which cut off your last turn. Pick up where you left off.',
-                    ...(laterMessages.length
-                        ? [
-                              '',
-                              'The user sent these messages during that turn, which may not have reached you. Act on them if you have not already:',
-                              ...laterMessages.flatMap((message) => {
-                                  return [
-                                      '',
-                                      message
-                                          .split('\n')
-                                          .map((line) => `> ${line}`)
-                                          .join('\n'),
-                                  ];
-                              }),
-                          ]
-                        : []),
-                ].join('\n'),
+                text: buildResumeMessage(turnMessages),
             }).catch((error: unknown) => {
                 log.warning(`Resuming thread ${threadId} failed: ${extractErrorMessage(error)}`);
             });
@@ -839,6 +932,7 @@ export default definePluginServer({
         return {
             calls,
             async stop() {
+                clearInterval(deletedWorktreeSweep);
                 [...pendingApprovals.values()].forEach((pending) => {
                     pending.resolve({
                         decision: ApprovalDecision.Decline,

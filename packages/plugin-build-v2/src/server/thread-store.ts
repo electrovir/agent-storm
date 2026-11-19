@@ -1,6 +1,6 @@
 import {type PluginServerContext} from '@agent-storm/core/server';
 import {assertWrap} from '@augment-vir/assert';
-import {awaitedBlockingMap} from '@augment-vir/common';
+import {awaitedBlockingMap, type PartialWithUndefined} from '@augment-vir/common';
 import {getNowInIsoString} from 'date-vir';
 import {assertValidShape, defineShape} from 'object-shape-tester';
 import {
@@ -240,6 +240,7 @@ export function createThreadStore({
             data: Readonly<
                 Pick<
                     Thread,
+                    | 'id'
                     | 'repoPath'
                     | 'provider'
                     | 'model'
@@ -247,16 +248,25 @@ export function createThreadStore({
                     | 'speedTier'
                     | 'runtimeMode'
                     | 'title'
-                >
+                > &
+                    PartialWithUndefined<{
+                        /** A worktree of `repoPath` the thread starts in. */
+                        worktree: {
+                            path: string;
+                            branch: string;
+                        };
+                    }>
             >,
         ) {
+            const {worktree, ...threadData} = data;
             const thread = toThread(
                 await prismaClient.thread.create({
                     data: {
-                        ...data,
+                        ...threadData,
                         effort: data.effort ?? null,
                         speedTier: data.speedTier || null,
-                        cwd: data.repoPath,
+                        cwd: worktree?.path || data.repoPath,
+                        worktreeBranch: worktree?.branch || null,
                         status: ThreadStatus.Idle,
                     },
                     select: threadSelect,
@@ -718,11 +728,12 @@ export function createThreadStore({
                 return {
                     threadId: thread.id,
                     /**
-                     * Messages sent while the turn ran wait in the provider's in-memory queue, so
-                     * the restart may have dropped them before they reached the conversation. The
-                     * first message started the turn, so the provider already has it.
+                     * The provider may not have saved any of these before the restart: messages
+                     * sent while the turn ran wait in its in-memory queue, and Claude saves its
+                     * transcript in the background, so even the message that started the turn can
+                     * be lost.
                      */
-                    laterMessages: userMessages.slice(1).map((item) => item.text),
+                    turnMessages: userMessages.map((item) => item.text),
                 };
             });
         },

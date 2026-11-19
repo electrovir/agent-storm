@@ -96,6 +96,25 @@ describe(listComposerMenuCommands.name, () => {
         );
     });
 
+    it('lists built-in commands after the repo and personal ones', () => {
+        assert.deepEquals(
+            listComposerMenuCommands({
+                commands,
+                trigger: {
+                    kind: ComposerCommandKind.Command,
+                    query: '',
+                    rangeStart: 0,
+                    rangeEnd: 1,
+                },
+            }).map((command) => command.name),
+            [
+                'review',
+                'code-review',
+                'compact',
+            ],
+        );
+    });
+
     it('lists commands only at the start of the message', () => {
         assert.deepEquals(
             listComposerMenuCommands({
@@ -108,8 +127,8 @@ describe(listComposerMenuCommands.name, () => {
                 },
             }).map((command) => command.name),
             [
-                'code-review',
                 'review',
+                'code-review',
             ],
         );
     });

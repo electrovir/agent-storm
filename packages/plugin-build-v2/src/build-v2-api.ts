@@ -293,6 +293,11 @@ export const buildV2Api = definePluginApi({
         /** Starts a thread in the checkout and sends its first message. */
         createThread: {
             requestShape: defineShape({
+                /**
+                 * Lets the caller show the thread before the reply arrives. The server picks one
+                 * when unset.
+                 */
+                id: nullableShape(''),
                 repoPath: '',
                 provider: enumShape(AiProvider),
                 model: '',

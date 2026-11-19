@@ -165,10 +165,17 @@ function scoreCommand(command: Readonly<ComposerCommand>, query: string) {
     return scores.length ? Math.min(...scores) : undefined;
 }
 
-/** Built-in commands first, then other commands, then skills. */
-const commandGroupOrder: Readonly<Record<ComposerCommandKind, number>> = {
-    [ComposerCommandKind.Command]: 1,
-    [ComposerCommandKind.Skill]: 2,
+/**
+ * Built-in commands go last: Claude Code has dozens, and listing them first buries the repo's own
+ * skills below the fold of the menu.
+ */
+const sourceOrder: Readonly<Record<ComposerCommandSource, number>> = {
+    [ComposerCommandSource.Repo]: 0,
+    [ComposerCommandSource.Personal]: 1,
+    [ComposerCommandSource.Plugin]: 2,
+    [ComposerCommandSource.Synced]: 3,
+    [ComposerCommandSource.Other]: 4,
+    [ComposerCommandSource.BuiltIn]: 5,
 };
 
 /**
@@ -199,10 +206,7 @@ export function listComposerMenuCommands({
                       {
                           command,
                           score,
-                          group:
-                              command.source === ComposerCommandSource.BuiltIn
-                                  ? 0
-                                  : commandGroupOrder[command.kind],
+                          group: sourceOrder[command.source],
                       },
                   ];
         })
