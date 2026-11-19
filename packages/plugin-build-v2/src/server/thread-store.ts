@@ -249,24 +249,16 @@ export function createThreadStore({
                     | 'runtimeMode'
                     | 'title'
                 > &
-                    PartialWithUndefined<{
-                        /** A worktree of `repoPath` the thread starts in. */
-                        worktree: {
-                            path: string;
-                            branch: string;
-                        };
-                    }>
+                    PartialWithUndefined<Pick<Thread, 'cwd'>>
             >,
         ) {
-            const {worktree, ...threadData} = data;
             const thread = toThread(
                 await prismaClient.thread.create({
                     data: {
-                        ...threadData,
+                        ...data,
                         effort: data.effort ?? null,
                         speedTier: data.speedTier || null,
-                        cwd: worktree?.path || data.repoPath,
-                        worktreeBranch: worktree?.branch || null,
+                        cwd: data.cwd || data.repoPath,
                         status: ThreadStatus.Idle,
                     },
                     select: threadSelect,
@@ -450,10 +442,11 @@ export function createThreadStore({
                     streamingItems.delete(key);
                 }
             }
+            const threadItem = toThreadItem(row);
             emit('itemsChanged', {
                 threadId: item.threadId,
                 items: [
-                    toThreadItem(row),
+                    threadItem,
                 ],
             });
             if (
@@ -473,6 +466,7 @@ export function createThreadStore({
                     emit('threadChanged', await findThread(item.threadId));
                 }
             }
+            return threadItem;
         },
         async markThreadRead(threadId: string) {
             const {updatedAt, hasUnreadReply} = await prismaClient.thread.findUniqueOrThrow({

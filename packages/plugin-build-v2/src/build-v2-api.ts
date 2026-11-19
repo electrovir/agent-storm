@@ -307,10 +307,17 @@ export const buildV2Api = definePluginApi({
                 text: '',
                 /**
                  * Moves the thread into a new worktree, as `moveToWorktree` does, before sending
-                 * `text`. For a Claude thread in a repo with an `open-worktree` skill, sends `text`
-                 * to that skill from the checkout instead, and the skill makes the worktree.
+                 * `text`. For a Claude thread in a main checkout with an `open-worktree` skill,
+                 * sends `text` to that skill from the checkout instead, and the skill makes the
+                 * worktree.
                  */
                 isInWorktree: false,
+                /**
+                 * Waits for the worktree and the provider's start before replying, so the returned
+                 * thread shows whether starting failed. Otherwise replies as soon as the thread and
+                 * its first message are saved.
+                 */
+                isStartAwaited: nullableShape(false),
             }),
             responseShape: threadResponseShape,
         },

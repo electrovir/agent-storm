@@ -91,7 +91,15 @@ export const VirAiChat = defineAppElement<{
 }>()({
     tagName: 'vir-ai-chat',
     events: {
-        threadCreated: defineElementEvent<Thread>(),
+        /**
+         * Fired before the server confirms the thread. The new thread's element replaces this one,
+         * so `creation` is how a listener learns that the thread failed to create and should stop
+         * showing it.
+         */
+        threadCreated: defineElementEvent<{
+            thread: Thread;
+            creation: Promise<unknown>;
+        }>(),
         threadArchived: defineElementEvent<void>(),
     },
     state() {
@@ -711,19 +719,22 @@ export const VirAiChat = defineAppElement<{
                         dispatch(
                             new events.threadCreated({
                                 detail: {
-                                    id,
-                                    repoPath: inputs.repoPath,
-                                    cwd: inputs.repoPath,
-                                    provider: draftSelection.provider,
-                                    model: draftSelection.model,
-                                    effort: draftSelection.effort,
-                                    speedTier: draftSelection.speedTier,
-                                    runtimeMode: state.runtimeMode,
-                                    title: createThreadTitle(message),
-                                    status: ThreadStatus.Running,
-                                    hasUnreadReply: false,
-                                    createdAt: now,
-                                    updatedAt: now,
+                                    thread: {
+                                        id,
+                                        repoPath: inputs.repoPath,
+                                        cwd: inputs.repoPath,
+                                        provider: draftSelection.provider,
+                                        model: draftSelection.model,
+                                        effort: draftSelection.effort,
+                                        speedTier: draftSelection.speedTier,
+                                        runtimeMode: state.runtimeMode,
+                                        title: createThreadTitle(message),
+                                        status: ThreadStatus.Running,
+                                        hasUnreadReply: false,
+                                        createdAt: now,
+                                        updatedAt: now,
+                                    },
+                                    creation,
                                 },
                             }),
                         );

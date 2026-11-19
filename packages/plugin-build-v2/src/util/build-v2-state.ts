@@ -83,6 +83,11 @@ export function storeThread(state: Readonly<BuildV2State>, thread: Readonly<Thre
     }
 }
 
+/** Drops one thread from the state's list, such as one archived or one that failed to create. */
+export function removeThread(state: Readonly<BuildV2State>, threadId: string) {
+    state.threads.setValue(state.threads.value?.filter((thread) => thread.id !== threadId));
+}
+
 /** Loads the thread list and keeps it current from the server's events. Returns the remover. */
 export function startThreadSync(state: Readonly<BuildV2State>) {
     void loadThreads(state);
@@ -91,7 +96,7 @@ export function startThreadSync(state: Readonly<BuildV2State>) {
             storeThread(state, thread);
         }),
         buildV2Client.listen('threadArchived', ({threadId}) => {
-            state.threads.setValue(state.threads.value?.filter((thread) => thread.id !== threadId));
+            removeThread(state, threadId);
         }),
     ];
     const removeReconnectListener = buildV2Client.listenToReconnect(() => {

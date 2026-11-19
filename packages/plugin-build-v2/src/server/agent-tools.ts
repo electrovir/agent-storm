@@ -368,7 +368,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
     defineAgentTool({
         name: 'create_thread',
         description:
-            "Starts a new thread and sends it its first message. Unset settings default to this thread's.",
+            "Starts a new thread and sends it its first message. Returns once the thread has started, so a failed start shows in its status. Unset settings default to this thread's.",
         isReadOnly: false,
         inputSchema: {
             type: 'object',
@@ -386,7 +386,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 isInWorktree: {
                     type: 'boolean',
                     description:
-                        'Moves the new thread into a new worktree of its checkout before sending its first message. For a Claude thread in a repo with an open-worktree skill, runs that skill on the message instead, which makes the worktree and opens a PR.',
+                        'Moves the new thread into a new worktree beside its folder before sending its first message. For a Claude thread in a main checkout with an open-worktree skill, runs that skill on the message instead, which makes the worktree and opens a PR.',
                 },
                 provider: providerSchema,
                 model: modelSchema,
@@ -414,6 +414,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 runtimeMode,
                 text: input.text,
                 isInWorktree: !!input.isInWorktree,
+                isStartAwaited: true,
             });
             return {
                 thread: summarizeThread(thread),

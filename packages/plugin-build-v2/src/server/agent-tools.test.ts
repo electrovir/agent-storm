@@ -154,6 +154,7 @@ describe('create_thread', () => {
                     runtimeMode: baseThread.runtimeMode,
                     text: 'Fix the build.',
                     isInWorktree: false,
+                    isStartAwaited: true,
                 },
             },
         ]);

@@ -103,10 +103,11 @@ export const buildV2Activity = defineActivity({
                         },
                     ],
                 })}
-                    ${listen(VirAiChat.events.threadCreated, (event) => {
+                    ${listen(VirAiChat.events.threadCreated, async (event) => {
                         if (threadId) {
                             return;
                         }
+                        const newThreadId = event.detail.thread.id;
                         /**
                          * The AI Chat tab has already stored the new thread in its own state, so
                          * the draft's next thread would open on this one without clearing it.
@@ -124,7 +125,7 @@ export const buildV2Activity = defineActivity({
                                             ([
                                                 ,
                                                 tab,
-                                            ]) => tab.state?.threadId === event.detail.id,
+                                            ]) => tab.state?.threadId === newThreadId,
                                         )
                                         .reduce(
                                             (
@@ -146,10 +147,24 @@ export const buildV2Activity = defineActivity({
                             },
                         });
                         state.draftRepoPath.setValue(undefined);
-                        buildV2Memory.selectedThread.write(event.detail.id);
+                        buildV2Memory.selectedThread.write(newThreadId);
                         route.navigate([
-                            event.detail.id,
+                            newThreadId,
                         ]);
+                        try {
+                            await event.detail.creation;
+                        } catch {
+                            /**
+                             * Back to the composer, which has the failed message, unless the user
+                             * moved on.
+                             */
+                            if (buildV2Memory.selectedThread.read() === newThreadId) {
+                                state.draftRepoPath.setValue(folder);
+                                route.navigate([
+                                    newThreadSubPath,
+                                ]);
+                            }
+                        }
                     })}
                 ></${VirPaneGroup}>
             `,

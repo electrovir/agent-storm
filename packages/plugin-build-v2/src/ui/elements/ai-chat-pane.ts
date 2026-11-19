@@ -7,7 +7,7 @@ import {
 import {html, keyed, listen} from 'element-vir';
 import {defineShape} from 'object-shape-tester';
 import {createSizedIcon, LucideMessageSquareIcon} from 'vira';
-import {findBuildV2State, storeThread} from '../../util/build-v2-state.js';
+import {findBuildV2State, removeThread, storeThread} from '../../util/build-v2-state.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
 
 /** An AI Chat tab's own state. */
@@ -17,6 +17,17 @@ const aiChatTabStateShape = defineShape({
 });
 
 function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
+    function setTabThread(threadId: string) {
+        params.writeLayout((current) => {
+            return updateTabState(current, {
+                tabId: params.tabId,
+                state: {
+                    threadId,
+                } satisfies typeof aiChatTabStateShape.runtimeType,
+            });
+        });
+    }
+
     return keyed(
         params.tabState.threadId || `draft:${params.tabId}`,
         html`
@@ -26,29 +37,24 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
                 repoPath: params.folder,
                 isShown: params.isDisplayed && params.isActive,
             })}
-                ${listen(VirAiChat.events.threadCreated, (event) => {
+                ${listen(VirAiChat.events.threadCreated, async (event) => {
                     const state = findBuildV2State(params.context);
                     if (state) {
-                        storeThread(state, event.detail);
+                        storeThread(state, event.detail.thread);
                     }
-                    params.writeLayout((current) => {
-                        return updateTabState(current, {
-                            tabId: params.tabId,
-                            state: {
-                                threadId: event.detail.id,
-                            } satisfies typeof aiChatTabStateShape.runtimeType,
-                        });
-                    });
+                    setTabThread(event.detail.thread.id);
+                    try {
+                        await event.detail.creation;
+                    } catch {
+                        /** The draft composer already put the failed message back. */
+                        if (state) {
+                            removeThread(state, event.detail.thread.id);
+                        }
+                        setTabThread('');
+                    }
                 })}
                 ${listen(VirAiChat.events.threadArchived, () => {
-                    params.writeLayout((current) => {
-                        return updateTabState(current, {
-                            tabId: params.tabId,
-                            state: {
-                                threadId: '',
-                            } satisfies typeof aiChatTabStateShape.runtimeType,
-                        });
-                    });
+                    setTabThread('');
                 })}
             ></${VirAiChat}>
         `,

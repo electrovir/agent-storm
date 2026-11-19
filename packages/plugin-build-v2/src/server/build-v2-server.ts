@@ -4,7 +4,7 @@ import {gitTimeout, hasErrorCode, normalizePath, runCommand} from 'agent-storm-u
 import {convertDuration, createUtcFullDate, toJsDate} from 'date-vir';
 import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
-import {basename, join} from 'node:path';
+import {join} from 'node:path';
 import {
     AiProvider,
     ApprovalDecision,
@@ -375,7 +375,6 @@ export default definePluginServer({
             await store.updateThread(threadId, {
                 cwd: normalizePath(worktreePath),
                 worktreeBranch: name,
-                status: ThreadStatus.Idle,
             });
             await addNotice({
                 threadId,
@@ -496,19 +495,30 @@ export default definePluginServer({
             }
         }
 
-        async function sendMessage({threadId, text}: Readonly<{threadId: string; text: string}>) {
-            /** A provider starting without a conversation to resume hasn't seen the thread so far. */
-            const earlierItems =
-                sessions.has(threadId) ||
-                (await store.findSessionDetails(threadId)).providerSessionId
-                    ? []
-                    : (await store.readThread(threadId)).items;
+        /**
+         * Each new thread's start that is still making its worktree or starting its provider, with
+         * the deliveries of messages sent during it chained on. Never rejects.
+         */
+        const pendingStarts = new Map<string, Promise<void>>();
+
+        function trackStart(threadId: string, start: Promise<void>) {
+            const tracked = start.finally(() => {
+                if (pendingStarts.get(threadId) === tracked) {
+                    pendingStarts.delete(threadId);
+                }
+            });
+            pendingStarts.set(threadId, tracked);
+            return tracked;
+        }
+
+        /** Shows the user's message in the thread right away and marks the thread running. */
+        async function recordMessage({threadId, text}: Readonly<{threadId: string; text: string}>) {
             const {status} = await store.findThread(threadId);
             /** A message sent mid-turn joins that turn, so a restart can tell what it may have lost. */
             if (status !== ThreadStatus.Running && status !== ThreadStatus.NeedsApproval) {
                 turnIds.set(threadId, randomUUID());
             }
-            await store.putItem({
+            const item = await store.putItem({
                 threadId,
                 turnId: readTurnId(threadId),
                 kind: ThreadItemKind.UserMessage,
@@ -519,6 +529,23 @@ export default definePluginServer({
             await store.updateThread(threadId, {
                 status: ThreadStatus.Running,
             });
+            return item;
+        }
+
+        /** Sends a message {@link recordMessage} already recorded to the thread's provider. */
+        async function deliverMessage({
+            threadId,
+            text,
+            order,
+        }: Readonly<{threadId: string; text: string; order: number}>) {
+            /** A provider starting without a conversation to resume hasn't seen the thread so far. */
+            const earlierItems =
+                sessions.has(threadId) ||
+                (await store.findSessionDetails(threadId)).providerSessionId
+                    ? []
+                    : (await store.readThread(threadId)).items.filter((item) => {
+                          return item.order < order;
+                      });
             /** Ends with `text` itself, after any earlier messages. */
             const handoff = buildContextHandoff({
                 items: earlierItems,
@@ -540,6 +567,43 @@ export default definePluginServer({
                     status: ThreadStatus.Failed,
                 });
             }
+        }
+
+        /**
+         * A message sent while the thread is still starting waits for that start, so it reaches the
+         * provider after the first message and in the thread's final folder, without holding up the
+         * caller.
+         */
+        async function sendMessage({threadId, text}: Readonly<{threadId: string; text: string}>) {
+            const {order} = await recordMessage({
+                threadId,
+                text,
+            });
+            const pendingStart = pendingStarts.get(threadId);
+            if (!pendingStart) {
+                await deliverMessage({
+                    threadId,
+                    text,
+                    order,
+                });
+                return;
+            }
+            void trackStart(
+                threadId,
+                pendingStart
+                    .then(async () => {
+                        await deliverMessage({
+                            threadId,
+                            text,
+                            order,
+                        });
+                    })
+                    .catch((error: unknown) => {
+                        log.warning(
+                            `Delivering a message to thread ${threadId} failed: ${extractErrorMessage(error)}`,
+                        );
+                    }),
+            );
         }
 
         const calls: PluginCallHandlers<typeof buildV2Api> = {
@@ -631,6 +695,7 @@ export default definePluginServer({
                 runtimeMode,
                 text,
                 isInWorktree,
+                isStartAwaited,
             }) {
                 const placeholderTitle = createThreadTitle(text);
                 const folder = normalizePath(repoPath);
@@ -639,17 +704,23 @@ export default definePluginServer({
                  * as from an AI Chat tab on a worktree folder) belongs to its main checkout.
                  */
                 const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
+                /**
+                 * The skill runs inside `folder`, so from a worktree it could nest its new one
+                 * there. The built-in move always makes a sibling.
+                 */
+                const isOpenWorktreeSkillUsed =
+                    isInWorktree &&
+                    !folderInfo?.parentRepoPath &&
+                    provider === AiProvider.Claude &&
+                    !!(await stat(
+                        join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
+                    ).catch(() => undefined));
                 const {id} = await store.createThread({
                     id: requestedId || createCuid2(),
                     repoPath: folderInfo?.parentRepoPath
                         ? normalizePath(folderInfo.parentRepoPath)
                         : folder,
-                    worktree: folderInfo?.parentRepoPath
-                        ? {
-                              path: folder,
-                              branch: folderInfo.branch || basename(folder),
-                          }
-                        : undefined,
+                    cwd: folder,
                     provider,
                     model,
                     effort,
@@ -657,13 +728,14 @@ export default definePluginServer({
                     runtimeMode,
                     title: placeholderTitle,
                 });
+                const firstMessage = isOpenWorktreeSkillUsed
+                    ? `/${openWorktreeSkillName} ${text}`
+                    : text;
+                const {order} = await recordMessage({
+                    threadId: id,
+                    text: firstMessage,
+                });
                 async function startThread() {
-                    const isOpenWorktreeSkillUsed =
-                        isInWorktree &&
-                        provider === AiProvider.Claude &&
-                        !!(await stat(
-                            join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
-                        ).catch(() => undefined));
                     if (isInWorktree && !isOpenWorktreeSkillUsed) {
                         /**
                          * Waits for the generated title so the branch isn't named from raw message
@@ -692,30 +764,37 @@ export default definePluginServer({
                             firstMessage: text,
                         });
                     }
-                    await sendMessage({
+                    await deliverMessage({
                         threadId: id,
-                        text: isOpenWorktreeSkillUsed ? `/${openWorktreeSkillName} ${text}` : text,
+                        text: firstMessage,
+                        order,
                     });
                 }
                 /**
-                 * Not awaited so the caller can select the new thread right away: making a
+                 * Unless awaited, the caller can select the new thread right away: making a
                  * worktree, generating its title, and starting the provider all take seconds.
                  */
-                startThread().catch(async (error: unknown) => {
-                    try {
-                        await store.updateThread(id, {
-                            status: ThreadStatus.Failed,
-                        });
-                        await addNotice({
-                            threadId: id,
-                            text: extractErrorMessage(error),
-                        });
-                    } catch (failureError) {
-                        log.warning(
-                            `Recording thread ${id}'s failed start failed: ${extractErrorMessage(failureError)}`,
-                        );
-                    }
-                });
+                const start = trackStart(
+                    id,
+                    startThread().catch(async (error: unknown) => {
+                        try {
+                            await store.updateThread(id, {
+                                status: ThreadStatus.Failed,
+                            });
+                            await addNotice({
+                                threadId: id,
+                                text: extractErrorMessage(error),
+                            });
+                        } catch (failureError) {
+                            log.warning(
+                                `Recording thread ${id}'s failed start failed: ${extractErrorMessage(failureError)}`,
+                            );
+                        }
+                    }),
+                );
+                if (isStartAwaited) {
+                    await start;
+                }
                 return {
                     thread: await store.findThread(id),
                 };
