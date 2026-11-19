@@ -1,6 +1,7 @@
 import {
     manualReviewStateShape,
     ManualReviewStatus,
+    ManualReviewVerdict,
     reviewCommentShape,
     type ManualReviewState,
     type PullRequestBranch,
@@ -23,7 +24,13 @@ import {
     writeFileAtomically,
 } from 'agent-storm-util';
 import {resolve} from 'node:path';
-import {checkValidShape, defineShape, intersectShape, partialShape} from 'object-shape-tester';
+import {
+    checkValidShape,
+    defineShape,
+    enumShape,
+    intersectShape,
+    partialShape,
+} from 'object-shape-tester';
 
 /**
  * The folder a PR is reviewed in, whether Agent Storm's Review tab or the skill's `/manual-review
@@ -55,6 +62,8 @@ export const manualReviewEntryShape = defineShape(
             prUrl: '',
             /** Top of the checkout the review runs in. */
             folder: '',
+            /** Only while `status` is `postFailed`: the verdict whose post failed. */
+            failedVerdict: enumShape(ManualReviewVerdict),
             comments: [
                 reviewCommentShape,
             ],

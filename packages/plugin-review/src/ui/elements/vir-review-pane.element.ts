@@ -1,4 +1,5 @@
 import {
+    createFolderReviewPrompt,
     createManualReviewPrompt,
     skipEditorInstruction,
     type ManualReviewState,
@@ -16,14 +17,6 @@ import {ReviewPaneAction, VirReviewPaneActions} from './vir-review-pane-actions.
 import {VirReviewPaneConversations} from './vir-review-pane-conversations.element.js';
 import {VirReviewPaneHeader} from './vir-review-pane-header.element.js';
 import {VirReviewPaneReviewers} from './vir-review-pane-reviewers.element.js';
-
-/**
- * A `/manual-review` subcommand pinned to `folder`. For a Build folder the skill finds the folder's
- * `/manual-review here` copy itself, so the folder is all it needs.
- */
-function createFolderReviewPrompt({command, folder}: Readonly<{command: string; folder: string}>) {
-    return `/manual-review ${command} Run it in ${folder} rather than in any other checkout.`;
-}
 
 export const VirReviewPane = defineAppElement<{
     pullRequest: Readonly<ReviewPanePr>;

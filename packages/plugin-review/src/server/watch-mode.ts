@@ -60,6 +60,7 @@ import {
     fetchPrCheck,
     formatPrCheck,
     PrNeed,
+    readBranchChangeKey,
     reviewRequestNoteMarker,
     runGhIn,
     ThreadStatus,
@@ -135,6 +136,12 @@ const watchEntryShape = defineShape({
     prChangeKey: '',
     /** Unix milliseconds of the last check that asked GitHub about the PR itself. */
     fullCheckAt: 0,
+    /**
+     * The watching message that a pause for GitHub or for the folder's busy AI tabs replaced. A
+     * check that finds the PR unchanged puts it back rather than asking GitHub about the PR again.
+     * Empty when the pause replaced anything else, since that needs a full check to pick back up.
+     */
+    resumeMessage: '',
     /**
      * ISO time watch mode pushed code the viewer hasn't reviewed, empty once the viewer approves or
      * requests changes after it. Every reply a pass posts is a review by the viewer's own account,
@@ -223,6 +230,11 @@ function isSettledStop(message: string) {
 
 /** Keeps a slow save from landing after, and overwriting, a newer one. */
 const saveQueue = new PromiseQueue();
+
+/** The message a pause restores once it ends, kept from before an earlier pause when there was one. */
+function toResumeMessage(entry: Readonly<WatchEntry>) {
+    return entry.status === WatchModeStatus.Watching ? entry.message : entry.resumeMessage;
+}
 
 async function saveEntries() {
     const contents = JSON.stringify(watchState.entries, undefined, 4);
@@ -1005,8 +1017,8 @@ async function compactWatchSession({
 
 /**
  * Everything whose change could give a pass that found nothing to push something new to work on.
- * Pending checks count only as a yes or no, so a pass that waited on them gets one more look once
- * they all finish.
+ * Pending checks count only as a yes or no, so a pass that ended while they were pending gets one
+ * more look once they all finish.
  */
 function createIdleStateKey(prCheck: Readonly<PrCheck>) {
     return JSON.stringify([
@@ -1086,12 +1098,10 @@ async function checkFolder({
         });
         return;
     }
-    const openPrChangeKey = await readReviewHost().readOpenPrChangeKey({
-        ...slug,
-        branchName: branch,
-        maxAge: {
-            minutes: 5,
-        },
+    const openPrChangeKey = await readBranchChangeKey({
+        owner: slug.owner,
+        repoName: slug.name,
+        branch,
     });
     const prChangeKey = openPrChangeKey
         ? [
@@ -1103,14 +1113,15 @@ async function checkFolder({
           ].join(' ')
         : '';
     /**
-     * The shared polling reads less than a full check does, such as no thread reactions, so a full
-     * check still runs now and then. Pending checks are counted per check to catch stuck ones.
+     * The batched change check reads less than a full check does, such as no thread reactions, so a
+     * full check still runs now and then. Pending checks are counted per check to catch stuck
+     * ones.
      */
     if (
         prChangeKey &&
         prChangeKey === entry.prChangeKey &&
         !finishedPass &&
-        entry.status === WatchModeStatus.Watching &&
+        (entry.status === WatchModeStatus.Watching || !!entry.resumeMessage) &&
         !entry.pendingPolls &&
         Date.now() - entry.fullCheckAt <
             convertDuration(
@@ -1122,6 +1133,13 @@ async function checkFolder({
                 },
             ).milliseconds
     ) {
+        if (entry.resumeMessage) {
+            await updateEntry(folder, {
+                status: WatchModeStatus.Watching,
+                message: entry.resumeMessage,
+                resumeMessage: '',
+            });
+        }
         return;
     }
     const manualReview = await readManualReviewState({
@@ -1141,6 +1159,7 @@ async function checkFolder({
         folder,
         owner: slug.owner,
         repoName: slug.name,
+        branch,
         viewerLogin,
     });
     const local = await readLocalState({
@@ -1159,6 +1178,7 @@ async function checkFolder({
         failureCount: 0,
         prChangeKey,
         fullCheckAt: Date.now(),
+        resumeMessage: '',
     });
 
     if (!prCheck) {
@@ -1514,6 +1534,7 @@ async function runFolder(folder: string) {
                 await updateEntry(folder, {
                     status: WatchModeStatus.Paused,
                     message: pauseMessage,
+                    resumeMessage: toResumeMessage(entry),
                 });
             }
             return;
@@ -1542,6 +1563,7 @@ async function runFolder(folder: string) {
             await updateEntry(folder, {
                 status: WatchModeStatus.Paused,
                 message: "Waiting for this folder's AI tabs to finish.",
+                resumeMessage: toResumeMessage(entry),
             });
             return;
         } else if (passResult) {

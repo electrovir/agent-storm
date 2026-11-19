@@ -17,17 +17,23 @@ import {
     runningCheckStatuses,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {getObjectTypedKeys, removeDuplicates} from '@augment-vir/common';
+import {
+    getObjectTypedEntries,
+    getObjectTypedKeys,
+    removeDuplicates,
+    typedObjectFromEntries,
+} from '@augment-vir/common';
 import {runGhCommand} from 'agent-storm-util';
-import {getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
+import {convertDuration, getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
+import {createHash} from 'node:crypto';
 import {
     assertWrapValidShape,
     defineShape,
     enumShape,
     exactShape,
     nullableShape,
-    parseJsonWithShape,
     partialShape,
+    recordShape,
     unionShape,
 } from 'object-shape-tester';
 import {mentionsAny, runGraphql} from './github-pr.js';
@@ -46,7 +52,7 @@ const rawLoginShape = defineShape(
     }),
 );
 
-/** `gh` prints an empty string for a field the check has no value for. */
+/** An empty string for a field the check has no value for, as `gh pr view --json` prints it. */
 const rawStatusCheckShape = defineShape(
     partialShape({
         name: '',
@@ -64,7 +70,18 @@ const rawStatusCheckShape = defineShape(
 
 export type RawStatusCheck = typeof rawStatusCheckShape.runtimeType;
 
-/** The fields `fetchPrCheck` asks `gh pr view --json` for. */
+const rawRequestedReviewerShape = defineShape(
+    partialShape({
+        login: '',
+        name: '',
+        slug: '',
+    }),
+);
+
+/**
+ * A PR in the flattened form `gh pr view --json` prints, which is what {@link classifyPrCheck}
+ * reads.
+ */
 const rawPrViewFields = {
     number: 0,
     url: '',
@@ -76,8 +93,8 @@ const rawPrViewFields = {
     author: rawLoginShape,
     isDraft: false,
     state: enumShape(RawPrState),
-    /** Empty when the repo doesn't require a review. */
-    reviewDecision: unionShape(enumShape(RawReviewDecision), exactShape('')),
+    /** Empty or null when the repo doesn't require a review. */
+    reviewDecision: nullableShape(unionShape(enumShape(RawReviewDecision), exactShape(''))),
     mergeStateStatus: unionShape(enumShape(RawMergeState), exactShape('')),
     mergeable: unionShape(enumShape(RawMergeable), exactShape('')),
     assignees: [
@@ -103,18 +120,14 @@ const rawPrViewFields = {
         },
     ],
     reviewRequests: [
-        partialShape({
-            login: '',
-            name: '',
-            slug: '',
-        }),
+        rawRequestedReviewerShape,
     ],
     statusCheckRollup: nullableShape([
         rawStatusCheckShape,
     ]),
 };
 
-const rawPrViewShape = defineShape(rawPrViewFields);
+export const rawPrViewShape = defineShape(rawPrViewFields);
 
 export type RawPrView = typeof rawPrViewShape.runtimeType;
 
@@ -149,14 +162,106 @@ const rawReviewThreadShape = defineShape({
 
 export type RawReviewThread = typeof rawReviewThreadShape.runtimeType;
 
-const reviewThreadsResponseShape = defineShape({
-    repository: nullableShape({
-        pullRequest: nullableShape({
-            reviewThreads: {
-                nodes: [
-                    rawReviewThreadShape,
-                ],
+/** A status check rollup entry: an Actions job's `CheckRun` or a third-party `StatusContext`. */
+const rawCheckContextShape = defineShape(
+    partialShape({
+        name: '',
+        /** Null until the run finishes. */
+        conclusion: nullableShape(enumShape(RawCheckResult)),
+        status: nullableShape(enumShape(RawCheckStatus)),
+        startedAt: nullableShape(''),
+        detailsUrl: nullableShape(''),
+        checkSuite: nullableShape({
+            workflowRun: nullableShape({
+                workflow: {
+                    name: '',
+                },
+            }),
+        }),
+        context: '',
+        state: enumShape(RawCheckResult),
+        createdAt: '',
+    }),
+);
+
+const rawCheckContextPageShape = defineShape({
+    pageInfo: {
+        hasNextPage: false,
+        endCursor: nullableShape(''),
+    },
+    nodes: [
+        rawCheckContextShape,
+    ],
+});
+
+const rawWatchedPrShape = defineShape({
+    /** `statusCheckRollup` is never filled here. The rollup is read from `commits` instead. */
+    ...rawPrViewFields,
+    author: nullableShape({
+        __typename: enumShape(RawActorType),
+        login: '',
+    }),
+    assignees: {
+        nodes: rawPrViewFields.assignees,
+    },
+    latestReviews: {
+        nodes: rawPrViewFields.latestReviews,
+    },
+    reviews: {
+        nodes: rawPrViewFields.reviews,
+    },
+    reviewRequests: {
+        nodes: [
+            {
+                requestedReviewer: nullableShape(rawRequestedReviewerShape),
             },
+        ],
+    },
+    commits: {
+        nodes: [
+            {
+                commit: {
+                    oid: '',
+                    statusCheckRollup: nullableShape({
+                        state: enumShape(RawCheckResult),
+                        contexts: rawCheckContextPageShape,
+                    }),
+                },
+            },
+        ],
+    },
+    /** Null once the fork it came from is deleted. */
+    headRepository: nullableShape({
+        nameWithOwner: '',
+    }),
+    reviewThreads: {
+        nodes: [
+            rawReviewThreadShape,
+        ],
+    },
+});
+
+const watchedPrResponseShape = defineShape({
+    repository: nullableShape({
+        open: {
+            nodes: [
+                rawWatchedPrShape,
+            ],
+        },
+        closed: {
+            nodes: [
+                rawWatchedPrShape,
+            ],
+        },
+    }),
+});
+
+const moreCheckContextsResponseShape = defineShape({
+    repository: nullableShape({
+        object: nullableShape({
+            statusCheckRollup: nullableShape({
+                contexts: rawCheckContextPageShape,
+            }),
         }),
     }),
 });
@@ -643,30 +748,337 @@ export function formatPrCheck(prCheck: Readonly<PrCheck>) {
     ].join('\n');
 }
 
-/** The number is written into the query because `runGraphql` sends every variable as a string. */
-function createReviewThreadsQuery(prNumber: number) {
-    return `
-query($owner: String!, $repo: String!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: ${prNumber}) {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          comments(first: 100) {
-            nodes {
-              author { __typename login }
-              authorAssociation
-              body
-              createdAt
-              reactionGroups { content viewerHasReacted }
-            }
-          }
-        }
-      }
+const checkContextFields = [
+    'pageInfo { hasNextPage endCursor }',
+    'nodes {',
+    '  ... on CheckRun { name conclusion status startedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }',
+    '  ... on StatusContext { context state createdAt }',
+    '}',
+].join('\n');
+
+/**
+ * Everything one watch mode check reads about the branch's PR, in one request. Each connection
+ * holds at most one page, so a PR past that many reviews or threads is read only in part.
+ */
+const watchedPrQuery = [
+    'query($owner: String!, $repo: String!, $branch: String!) {',
+    '  repository(owner: $owner, name: $repo) {',
+    '    open: pullRequests(headRefName: $branch, states: [OPEN], first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...WatchedPr } }',
+    '    closed: pullRequests(headRefName: $branch, states: [MERGED, CLOSED], first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...WatchedPr } }',
+    '  }',
+    '}',
+    'fragment WatchedPr on PullRequest {',
+    '  number url title body headRefName headRefOid baseRefName isDraft state reviewDecision mergeStateStatus mergeable',
+    '  headRepository { nameWithOwner }',
+    '  author { __typename login }',
+    '  assignees(first: 100) { nodes { login } }',
+    '  latestReviews(first: 100) { nodes { author { login } authorAssociation state submittedAt } }',
+    '  reviews(first: 100) { nodes { author { login } state submittedAt commit { oid } } }',
+    '  reviewRequests(first: 100) { nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { name slug } } } }',
+    `  commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { ${checkContextFields} } } } } }`,
+    '  reviewThreads(first: 100) {',
+    '    nodes {',
+    '      id isResolved',
+    '      comments(first: 100) { nodes { author { __typename login } authorAssociation body createdAt reactionGroups { content viewerHasReacted } } }',
+    '    }',
+    '  }',
+    '}',
+].join('\n');
+
+const moreCheckContextsQuery = [
+    'query($owner: String!, $repo: String!, $sha: GitObjectID!, $after: String!) {',
+    '  repository(owner: $owner, name: $repo) {',
+    `    object(oid: $sha) { ... on Commit { statusCheckRollup { contexts(first: 100, after: $after) { ${checkContextFields} } } } }`,
+    '  }',
+    '}',
+].join('\n');
+
+/**
+ * Every rollup entry from `page` on. A rerun adds entries rather than replacing them, so a busy PR
+ * can pass one page, and a check missing from the rollup would read as not failing.
+ *
+ * Annotated because it recurses.
+ */
+async function fetchCheckContexts({
+    owner,
+    repoName,
+    sha,
+    page,
+}: Readonly<{
+    owner: string;
+    repoName: string;
+    sha: string;
+    page: Readonly<typeof rawCheckContextPageShape.runtimeType>;
+}>): Promise<Array<typeof rawCheckContextShape.runtimeType>> {
+    if (!page.pageInfo.hasNextPage) {
+        return [
+            ...page.nodes,
+        ];
     }
-  }
-}`;
+    const nextPage = assertWrapValidShape(
+        await runGraphql(moreCheckContextsQuery, {
+            owner,
+            repo: repoName,
+            sha,
+            after: page.pageInfo.endCursor || '',
+        }),
+        moreCheckContextsResponseShape,
+    ).repository?.object?.statusCheckRollup?.contexts;
+    return [
+        ...page.nodes,
+        ...(nextPage
+            ? await fetchCheckContexts({
+                  owner,
+                  repoName,
+                  sha,
+                  page: nextPage,
+              })
+            : []),
+    ];
+}
+
+/** Rollup states no further check result can change while the head commit stays the same. */
+const finishedRollupStates: ReadonlyArray<RawCheckResult> = [
+    RawCheckResult.Success,
+    RawCheckResult.Failure,
+    RawCheckResult.Error,
+];
+
+/**
+ * Each branch's complete rollup from its last check, by `owner/repo>branch`, so a finished rollup
+ * on an unchanged head commit isn't paged through again.
+ */
+const checkContextCache = new Map<
+    string,
+    {
+        sha: string;
+        state: RawCheckResult;
+        contexts: ReadonlyArray<typeof rawCheckContextShape.runtimeType>;
+    }
+>();
+
+const branchChangeNodeShape = defineShape({
+    number: 0,
+    headRepository: nullableShape({
+        nameWithOwner: '',
+    }),
+    updatedAt: '',
+    headRefOid: '',
+    mergeStateStatus: '',
+    reviewDecision: nullableShape(''),
+    headRef: nullableShape({
+        target: nullableShape(
+            partialShape({
+                statusCheckRollup: nullableShape({
+                    state: '',
+                }),
+            }),
+        ),
+    }),
+    reviewThreads: {
+        nodes: [
+            {
+                isResolved: false,
+            },
+        ],
+    },
+});
+
+const branchChangeResponseShape = defineShape({
+    /** Keyed by the query's `branch<index>` aliases. */
+    repository: nullableShape(
+        recordShape({
+            keys: '',
+            values: {
+                nodes: [
+                    branchChangeNodeShape,
+                ],
+            },
+        }),
+    ),
+});
+
+/**
+ * The first of `prs` whose branch lives in `fullRepoName` itself. `headRefName` also matches a
+ * fork's PR from a branch of the same name.
+ */
+function findOwnPr<
+    Pr extends Readonly<{headRepository?: Readonly<{nameWithOwner: string}> | null | undefined}>,
+>(prs: ReadonlyArray<Pr>, fullRepoName: string) {
+    return prs.find(
+        (pr) => pr.headRepository?.nameWithOwner.toLowerCase() === fullRepoName.toLowerCase(),
+    );
+}
+
+/**
+ * One aliased `pullRequests`, `branch<index>`, per branch, so every watched branch of a repo shares
+ * one call. `headRef` rather than `commits(last: 1)`, which is a nested list and costs more.
+ */
+function buildBranchChangeQuery(branches: ReadonlyArray<string>) {
+    return [
+        `query($owner: String!, $repo: String!, ${branches
+            .map((_branch, index) => `$branch${index}: String!`)
+            .join(', ')}) {`,
+        '  repository(owner: $owner, name: $repo) {',
+        ...branches.map((_branch, index) => {
+            return [
+                `    branch${index}: pullRequests(headRefName: $branch${index}, states: [OPEN], first: 10, orderBy: {field: CREATED_AT, direction: DESC}) {`,
+                '      nodes { number headRepository { nameWithOwner } updatedAt headRefOid mergeStateStatus reviewDecision headRef { target { ... on Commit { statusCheckRollup { state } } } } reviewThreads(first: 100) { nodes { isResolved } } }',
+                '    }',
+            ].join('\n');
+        }),
+        '  }',
+        '}',
+    ].join('\n');
+}
+
+/**
+ * A key per branch that changes whenever the branch's open PR does in a way a watch check reads,
+ * empty for a branch with no open PR.
+ */
+export function toBranchChangeKeys({
+    branches,
+    fullRepoName,
+    repository,
+}: Readonly<{
+    branches: ReadonlyArray<string>;
+    /** `owner/repo`, so a fork's PR from a same-named branch is skipped. */
+    fullRepoName: string;
+    repository: Readonly<typeof branchChangeResponseShape.runtimeType>['repository'];
+}>) {
+    return branches.map((_branch, index) => {
+        const pr = findOwnPr(repository?.[`branch${index}`]?.nodes || [], fullRepoName);
+        return pr ? createHash('sha256').update(JSON.stringify(pr)).digest('hex') : '';
+    });
+}
+
+/**
+ * Each repo's batched change check, by `owner/repo`, with when each branch last asked for it so a
+ * branch no longer watched drops out of the batch.
+ */
+const branchChangeCache = new Map<
+    string,
+    {
+        requestedAt: Readonly<Record<string, number>>;
+        batch:
+            | {
+                  branches: ReadonlyArray<string>;
+                  startedAt: number;
+                  fetching: Promise<ReadonlyArray<string>>;
+              }
+            | undefined;
+    }
+>();
+
+async function fetchBranchChangeKeys({
+    owner,
+    repoName,
+    branches,
+}: Readonly<{
+    owner: string;
+    repoName: string;
+    branches: ReadonlyArray<string>;
+}>) {
+    return toBranchChangeKeys({
+        branches,
+        fullRepoName: `${owner}/${repoName}`,
+        repository: assertWrapValidShape(
+            await runGraphql(buildBranchChangeQuery(branches), {
+                owner,
+                repo: repoName,
+                ...typedObjectFromEntries(
+                    branches.map((branch, index) => {
+                        return [
+                            `branch${index}`,
+                            branch,
+                        ];
+                    }),
+                ),
+            }),
+            branchChangeResponseShape,
+        ).repository,
+    });
+}
+
+/**
+ * The {@link toBranchChangeKeys} key of `branch`, from one call shared with every branch of the same
+ * repo checked recently. Empty when the branch has no open PR or the call failed, which the caller
+ * treats as changed.
+ */
+export async function readBranchChangeKey({
+    owner,
+    repoName,
+    branch,
+}: Readonly<{
+    owner: string;
+    repoName: string;
+    branch: string;
+}>) {
+    const repoKey = `${owner}/${repoName}`;
+    const now = Date.now();
+    const cached = branchChangeCache.get(repoKey);
+    const requestedAt: Readonly<Record<string, number>> = {
+        ...typedObjectFromEntries(
+            getObjectTypedEntries(cached?.requestedAt || {}).filter(
+                ([
+                    ,
+                    at,
+                ]) => {
+                    return (
+                        now - at <
+                        convertDuration(
+                            {
+                                minutes: 15,
+                            },
+                            {
+                                milliseconds: true,
+                            },
+                        ).milliseconds
+                    );
+                },
+            ),
+        ),
+        [branch]: now,
+    };
+    const branches = getObjectTypedKeys(requestedAt);
+    const batch =
+        cached?.batch &&
+        cached.batch.branches.includes(branch) &&
+        now - cached.batch.startedAt <
+            convertDuration(
+                {
+                    minutes: 5,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds
+            ? cached.batch
+            : {
+                  branches,
+                  startedAt: now,
+                  fetching: fetchBranchChangeKeys({
+                      owner,
+                      repoName,
+                      branches,
+                  }),
+              };
+    branchChangeCache.set(repoKey, {
+        requestedAt,
+        batch,
+    });
+    try {
+        return (await batch.fetching)[batch.branches.indexOf(branch)] || '';
+    } catch {
+        const current = branchChangeCache.get(repoKey);
+        if (current?.batch === batch) {
+            branchChangeCache.set(repoKey, {
+                ...current,
+                batch: undefined,
+            });
+        }
+        return '';
+    }
 }
 
 /** Runs `gh` in `folder`, so commands that default to the current branch's PR find it. */
@@ -679,51 +1091,92 @@ export async function runGhIn(folder: string, args: ReadonlyArray<string>) {
     ).stdout;
 }
 
-/**
- * The PR of the branch checked out in `folder`. `undefined` when the branch has never had a PR, and
- * throws for any other `gh` failure.
- */
+/** The PR of `branch`. `undefined` when the branch has never had a PR. */
 export async function fetchPrCheck({
     folder,
     owner,
     repoName,
+    branch,
     viewerLogin,
 }: Readonly<{
     folder: string;
     owner: string;
     repoName: string;
+    branch: string;
     viewerLogin: string;
 }>) {
     const checkedAt = toUtcIsoString(getNowInUtcTimezone());
-    const prJson = await runGhIn(folder, [
-        'pr',
-        'view',
-        '--json',
-        getObjectTypedKeys(rawPrViewFields).join(','),
-    ]).catch((error: unknown) => {
-        if (
-            check.isObject(error) &&
-            check.isString(error.stderr) &&
-            error.stderr.includes('no pull requests found')
-        ) {
-            return undefined;
-        }
-        throw error;
-    });
-    if (!prJson) {
-        return undefined;
-    }
-    const pr = parseJsonWithShape(prJson, rawPrViewShape);
-    const threadsResponse = assertWrapValidShape(
-        await runGraphql(createReviewThreadsQuery(pr.number), {
+    const repository = assertWrapValidShape(
+        await runGraphql(watchedPrQuery, {
             owner,
             repo: repoName,
+            branch,
         }),
-        reviewThreadsResponseShape,
-    );
+        watchedPrResponseShape,
+    ).repository;
+    /** A branch reused for a new PR keeps its closed ones, so the open one wins. */
+    const pr =
+        findOwnPr(repository?.open.nodes || [], `${owner}/${repoName}`) ||
+        findOwnPr(repository?.closed.nodes || [], `${owner}/${repoName}`);
+    if (!pr) {
+        return undefined;
+    }
+    const headCommit = pr.commits.nodes[0]?.commit;
+    const checkContextCacheKey = `${owner}/${repoName}>${branch}`;
+    const cachedCheckContexts = checkContextCache.get(checkContextCacheKey);
+    const checkContexts = headCommit?.statusCheckRollup
+        ? cachedCheckContexts?.sha === headCommit.oid &&
+          cachedCheckContexts.state === headCommit.statusCheckRollup.state &&
+          finishedRollupStates.includes(headCommit.statusCheckRollup.state)
+            ? cachedCheckContexts.contexts
+            : await fetchCheckContexts({
+                  owner,
+                  repoName,
+                  sha: headCommit.oid,
+                  page: headCommit.statusCheckRollup.contexts,
+              })
+        : [];
+    if (headCommit?.statusCheckRollup) {
+        checkContextCache.set(checkContextCacheKey, {
+            sha: headCommit.oid,
+            state: headCommit.statusCheckRollup.state,
+            contexts: checkContexts,
+        });
+    }
     return classifyPrCheck({
-        pr,
-        threads: threadsResponse.repository?.pullRequest?.reviewThreads.nodes || [],
+        pr: {
+            ...pr,
+            /**
+             * In the `app/<login>` form `gh pr view` prints for a bot, which no review author's
+             * login matches.
+             */
+            author: pr.author && {
+                login:
+                    pr.author.__typename === RawActorType.Bot
+                        ? `app/${pr.author.login}`
+                        : pr.author.login,
+            },
+            assignees: pr.assignees.nodes,
+            latestReviews: pr.latestReviews.nodes,
+            reviews: pr.reviews.nodes,
+            reviewRequests: pr.reviewRequests.nodes
+                .map((request) => request.requestedReviewer)
+                .filter(check.isTruthy),
+            statusCheckRollup: checkContexts.map((checkContext) => {
+                return {
+                    name: checkContext.name || '',
+                    context: checkContext.context || '',
+                    workflowName: checkContext.checkSuite?.workflowRun?.workflow.name || '',
+                    status: checkContext.status || '',
+                    conclusion: checkContext.conclusion || '',
+                    state: checkContext.state || '',
+                    startedAt: checkContext.startedAt || '',
+                    createdAt: checkContext.createdAt || '',
+                    detailsUrl: checkContext.detailsUrl || '',
+                };
+            }),
+        },
+        threads: pr.reviewThreads.nodes,
         viewerLogin,
         checkedAt,
         trustedBotLogins: [

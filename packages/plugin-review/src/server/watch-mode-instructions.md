@@ -2,7 +2,7 @@
 
 # Agent-storm watch mode
 
-Agent-storm's watch mode keeps this checkout's pull request moving without supervision. Agent-storm itself polls the PR, merges it once GitHub's merge button is green, counts pushes, re-requests the current GitHub user's review after each push that changes more than a rebase, tests, test baselines, or whitespace, and decides when to stop. It only hands you a pass when the PR needs work. The pass file you were pointed at lists that work and holds the latest PR check. Do exactly that work, wait for the PR's pending checks as described below, then end your turn. Do not start another pass, do not merge, and do not run `/compact`: agent-storm does all of those.
+Agent-storm's watch mode keeps this checkout's pull request moving without supervision. Agent-storm itself polls the PR, merges it once GitHub's merge button is green, counts pushes, re-requests the current GitHub user's review after each push that changes more than a rebase, tests, test baselines, or whitespace, and decides when to stop. It only hands you a pass when the PR needs work. The pass file you were pointed at lists that work and holds the latest PR check. Do exactly that work, then end your turn without waiting for CI. Do not start another pass, do not merge, and do not run `/compact`: agent-storm does all of those.
 
 ## Committing and pushing
 
@@ -41,7 +41,7 @@ Do the tasks in the pass file in the order listed, since a conflict resolution c
 -   **Local changes** → review them, then commit them unchanged as their own commit and push, before any other work and before any rebase.
 -   **Open the PR** and **Linear ticket** → per the sections below.
 
-Before ending the pass, wait for every pending check on the PR's head commit to finish, including the ones your push started: `gh pr checks <number> --watch --fail-fast`. A full CI run can outlast a foreground command's time limit, so run it in the background when your harness supports that, and re-run it until no check is pending. When a check fails, fix it in the same pass rather than guessing at a failure before it happens. End the pass once no check is pending and every failure left is one you are handing to a human.
+Do not wait for checks to finish, including the ones your push started. End the pass once your work is pushed and its threads are answered: agent-storm keeps polling the PR and hands you a new pass when a check fails. Never poll GitHub in a loop (`gh pr checks --watch`, `gh run watch`, a `sleep` loop), since every poll spends the GitHub rate limit that every watched folder shares.
 
 Never run a whole test suite locally: no bare `npm test`, no `npm test all`, no root-level test script, nothing that runs every test in a package or repo. Some repos' full suites overload a personal computer. When verifying a test fix, run only the test files that failed, as named in the failed check's log (`gh run view <run-id> --log-failed`). For other changes, run only the test files that cover what changed. Pass each file to the test command from inside its package, and leave the rest to CI.
 

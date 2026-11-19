@@ -709,13 +709,18 @@ const gitHubWriteState = {
     lastWriteAt: 0,
 };
 
+/** Whether a fetch started at `startedAt` started after the last write to GitHub, so it shows it. */
+export function isAfterLastGitHubWrite(startedAt: number) {
+    return startedAt > gitHubWriteState.lastWriteAt;
+}
+
 /**
  * Whether a fetch started at `startedAt` can answer a forced refresh: it started after the last
  * write to GitHub and recently enough that asking again would most likely get the same answer.
  */
 export function canReuseForForcedRefresh(startedAt: number) {
     return (
-        startedAt > gitHubWriteState.lastWriteAt &&
+        isAfterLastGitHubWrite(startedAt) &&
         Date.now() - startedAt <
             convertDuration(forcedRefreshReuseWindow, {
                 milliseconds: true,

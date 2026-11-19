@@ -65,6 +65,7 @@ import {
     addReactionGroups,
     canReuseForForcedRefresh,
     commentFields,
+    isAfterLastGitHubWrite,
     mentionsAny,
     rawReviewRequestShape,
     rawReviewShape,
@@ -407,9 +408,9 @@ async function fetchSearchPageGroup(
     });
 }
 
-/** Review-vir's auto-update interval, before stretching it for query cost. */
+/** How long between PR list updates, before stretching it for query cost. */
 const baseUpdateInterval: AnyDuration = {
-    minutes: 1,
+    minutes: 3,
 };
 
 /**
@@ -1312,16 +1313,20 @@ const maxReviewPrReviews = 100;
  * `runGraphql` sends every variable as a string, and GitHub won't coerce a string into an `Int!`
  * variable, so the PR number is written into the document instead.
  */
-function createReviewPrGraphql(number: number) {
+function assertPrNumber(number: number) {
     if (!Number.isSafeInteger(number) || number < 1) {
         throw new Error(`"${number}" isn't a PR number.`);
     }
+}
+
+function createReviewPrGraphql(number: number) {
+    assertPrNumber(number);
     return [
         'query($owner: String!, $name: String!) {',
         '  viewer { login avatarUrl }',
         '  repository(owner: $owner, name: $name) {',
         `    pullRequest(number: ${number}) {`,
-        '      title titleHTML url bodyHTML headRefName',
+        '      title titleHTML url bodyHTML headRefName updatedAt',
         '      assignees(first: 10) { nodes { login } }',
         `      reviewThreads(first: ${maxReviewPrThreads}) {`,
         '        nodes {',
@@ -1361,6 +1366,14 @@ const rawReviewRequestedEventShape = defineShape({
  */
 export type RawReviewRequestedEvent = typeof rawReviewRequestedEventShape.runtimeType;
 
+const reviewPrUpdatedAtPageShape = defineShape({
+    repository: nullableShape({
+        pullRequest: nullableShape({
+            updatedAt: '',
+        }),
+    }),
+});
+
 const reviewPrPageShape = defineShape({
     viewer: {
         login: '',
@@ -1373,6 +1386,7 @@ const reviewPrPageShape = defineShape({
             url: '',
             bodyHTML: '',
             headRefName: '',
+            updatedAt: '',
             assignees: {
                 nodes: [
                     {
@@ -1492,11 +1506,16 @@ export function toViewerReviewRequests({
         });
 }
 
-async function fetchReviewPr({
-    owner,
-    repoName,
-    number,
-}: Readonly<PullRequestRef>): Promise<ReviewPr> {
+/**
+ * The PR's full detail, with when GitHub last changed the PR and when this fetch started, which
+ * {@link refreshReviewPr} compares against later.
+ */
+async function fetchReviewPr({owner, repoName, number}: Readonly<PullRequestRef>): Promise<{
+    reviewPr: ReviewPr;
+    updatedAt: string;
+    startedAt: number;
+}> {
+    const startedAt = Date.now();
     const page = assertWrapValidShape(
         await runGraphql(createReviewPrGraphql(number), {
             owner,
@@ -1512,90 +1531,153 @@ async function fetchReviewPr({
         return assignee.login === page.viewer.login;
     });
     return {
-        reviewers: toReviewers({
-            requests: toReviewRequests(pullRequest.reviewRequests.nodes),
-            verdicts: pullRequest.latestOpinionatedReviews.nodes.map(toReview),
-        }),
-        viewer: {
-            login: page.viewer.login,
-            avatarUrl: page.viewer.avatarUrl,
-        },
-        title: pullRequest.title,
-        titleHtml: pullRequest.titleHTML,
-        url: pullRequest.url,
-        bodyHtml: pullRequest.bodyHTML,
-        branchName: pullRequest.headRefName,
-        threads: (
-            await addReactionGroups({
-                threads: pullRequest.reviewThreads.nodes.filter((rawThread) => {
+        updatedAt: pullRequest.updatedAt,
+        startedAt,
+        reviewPr: {
+            reviewers: toReviewers({
+                requests: toReviewRequests(pullRequest.reviewRequests.nodes),
+                verdicts: pullRequest.latestOpinionatedReviews.nodes.map(toReview),
+            }),
+            viewer: {
+                login: page.viewer.login,
+                avatarUrl: page.viewer.avatarUrl,
+            },
+            title: pullRequest.title,
+            titleHtml: pullRequest.titleHTML,
+            url: pullRequest.url,
+            bodyHtml: pullRequest.bodyHTML,
+            branchName: pullRequest.headRefName,
+            threads: (
+                await addReactionGroups({
+                    threads: pullRequest.reviewThreads.nodes.filter((rawThread) => {
+                        return (
+                            (!rawThread.isResolved &&
+                                (isViewerAssigned ||
+                                    rawThread.comments.nodes.some((comment) => {
+                                        return mentionsAny({
+                                            body: comment.body,
+                                            logins: [
+                                                page.viewer.login,
+                                            ],
+                                        });
+                                    }))) ||
+                            rawThread.comments.nodes[0]?.author?.login === page.viewer.login
+                        );
+                    }),
+                    comments: [],
+                })
+            ).threads.map((rawThread) => {
+                const thread = toThread(rawThread);
+                /** A file-level thread has no line to excerpt, and github.com shows it without one. */
+                return rawThread.subjectType === RawThreadSubjectType.File
+                    ? {
+                          ...thread,
+                          diffHunk: '',
+                      }
+                    : thread;
+            }),
+            reviews: pullRequest.reviews.nodes
+                .filter((rawReview) => {
+                    return rawReview.author?.login === page.viewer.login;
+                })
+                .map(toReview)
+                .filter((review) => {
+                    /**
+                     * Every inline comment or reply posted on its own lands in a body-less
+                     * "commented" review, which would only repeat the thread it belongs to. An
+                     * unsubmitted review isn't one yet.
+                     */
                     return (
-                        (!rawThread.isResolved &&
-                            (isViewerAssigned ||
-                                rawThread.comments.nodes.some((comment) => {
-                                    return mentionsAny({
-                                        body: comment.body,
-                                        logins: [
-                                            page.viewer.login,
-                                        ],
-                                    });
-                                }))) ||
-                        rawThread.comments.nodes[0]?.author?.login === page.viewer.login
+                        review.state !== GitHubReviewState.Pending &&
+                        (!!review.body || review.state !== GitHubReviewState.Commented)
                     );
                 }),
-                comments: [],
-            })
-        ).threads.map((rawThread) => {
-            const thread = toThread(rawThread);
-            /** A file-level thread has no line to excerpt, and github.com shows it without one. */
-            return rawThread.subjectType === RawThreadSubjectType.File
-                ? {
-                      ...thread,
-                      diffHunk: '',
-                  }
-                : thread;
-        }),
-        reviews: pullRequest.reviews.nodes
-            .filter((rawReview) => {
-                return rawReview.author?.login === page.viewer.login;
-            })
-            .map(toReview)
-            .filter((review) => {
-                /**
-                 * Every inline comment or reply posted on its own lands in a body-less "commented"
-                 * review, which would only repeat the thread it belongs to. An unsubmitted review
-                 * isn't one yet.
-                 */
-                return (
-                    review.state !== GitHubReviewState.Pending &&
-                    (!!review.body || review.state !== GitHubReviewState.Commented)
-                );
+            reviewRequests: toViewerReviewRequests({
+                events: pullRequest.timelineItems.nodes,
+                login: page.viewer.login,
             }),
-        reviewRequests: toViewerReviewRequests({
-            events: pullRequest.timelineItems.nodes,
-            login: page.viewer.login,
-        }),
-        pushes: [
-            ...pullRequest.commits.nodes.map((item) => {
-                return {
-                    id: item.id,
-                    pusher: item.commit.author?.user?.login || '',
-                    pusherAvatarUrl: item.commit.author?.avatarUrl || '',
-                    createdAt: item.commit.committedDate,
-                    isForcePush: false,
-                };
-            }),
-            ...pullRequest.forcePushes.nodes.map((event) => {
-                return {
-                    id: event.id,
-                    pusher: event.actor?.login || '',
-                    pusherAvatarUrl: event.actor?.avatarUrl || '',
-                    createdAt: event.createdAt,
-                    isForcePush: true,
-                };
-            }),
-        ].toSorted((first, second) => first.createdAt.localeCompare(second.createdAt)),
-        fetchedAt: Date.now(),
+            pushes: [
+                ...pullRequest.commits.nodes.map((item) => {
+                    return {
+                        id: item.id,
+                        pusher: item.commit.author?.user?.login || '',
+                        pusherAvatarUrl: item.commit.author?.avatarUrl || '',
+                        createdAt: item.commit.committedDate,
+                        isForcePush: false,
+                    };
+                }),
+                ...pullRequest.forcePushes.nodes.map((event) => {
+                    return {
+                        id: event.id,
+                        pusher: event.actor?.login || '',
+                        pusherAvatarUrl: event.actor?.avatarUrl || '',
+                        createdAt: event.createdAt,
+                        isForcePush: true,
+                    };
+                }),
+            ].toSorted((first, second) => first.createdAt.localeCompare(second.createdAt)),
+            fetchedAt: Date.now(),
+        },
     };
+}
+
+/**
+ * Answers a forced refresh with the previous fetch when GitHub reports no change to the PR since,
+ * which costs far fewer rate-limit points than the full query. A full fetch still runs now and then
+ * in case an edit left `updatedAt` alone, and always after this server writes to GitHub.
+ */
+async function refreshReviewPr({
+    owner,
+    repoName,
+    number,
+    previous,
+}: Readonly<
+    PullRequestRef & {
+        previous: Promise<Awaited<ReturnType<typeof fetchReviewPr>>> | undefined;
+    }
+>) {
+    const previousFetch = await previous?.catch(() => undefined);
+    if (
+        !previousFetch ||
+        !isAfterLastGitHubWrite(previousFetch.startedAt) ||
+        Date.now() - previousFetch.startedAt >=
+            convertDuration(
+                {
+                    minutes: 5,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds
+    ) {
+        return await fetchReviewPr({
+            owner,
+            repoName,
+            number,
+        });
+    }
+    assertPrNumber(number);
+    const updatedAt = assertWrapValidShape(
+        await runGraphql(
+            [
+                'query($owner: String!, $name: String!) {',
+                `  repository(owner: $owner, name: $name) { pullRequest(number: ${number}) { updatedAt } }`,
+                '}',
+            ].join('\n'),
+            {
+                owner,
+                name: repoName,
+            },
+        ),
+        reviewPrUpdatedAtPageShape,
+    ).repository?.pullRequest?.updatedAt;
+    return updatedAt === previousFetch.updatedAt
+        ? previousFetch
+        : await fetchReviewPr({
+              owner,
+              repoName,
+              number,
+          });
 }
 
 /**
@@ -1606,7 +1688,7 @@ const reviewPrCache = new Map<
     string,
     {
         number: number;
-        fetching: Promise<ReviewPr>;
+        fetching: ReturnType<typeof refreshReviewPr>;
         startedAt: number;
     }
 >();
@@ -1634,20 +1716,21 @@ export async function readReviewPr({
         cached?.number === number &&
         (!forceRefresh || canReuseForForcedRefresh(cached.startedAt))
     ) {
-        return await cached.fetching;
+        return (await cached.fetching).reviewPr;
     }
     const entry = {
         number,
-        fetching: fetchReviewPr({
+        fetching: refreshReviewPr({
             owner,
             repoName,
             number,
+            previous: cached?.number === number ? cached.fetching : undefined,
         }),
         startedAt: Date.now(),
     };
     reviewPrCache.set(cacheKey, entry);
     try {
-        return await entry.fetching;
+        return (await entry.fetching).reviewPr;
     } catch (error) {
         if (reviewPrCache.get(cacheKey) === entry) {
             if (cached) {

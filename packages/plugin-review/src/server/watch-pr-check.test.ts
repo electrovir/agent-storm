@@ -18,6 +18,7 @@ import {
     PrNeed,
     reviewRequestNoteMarker,
     ThreadStatus,
+    toBranchChangeKeys,
     type RawPrView,
     type RawReviewThread,
 } from './watch-pr-check.js';
@@ -692,6 +693,120 @@ describe(classifyThread.name, () => {
                 ThreadStatus.Actionable,
                 ThreadStatus.Actionable,
                 ThreadStatus.NeedsViewerThumbsUp,
+            ],
+        );
+    });
+});
+
+describe(toBranchChangeKeys.name, () => {
+    const openPr = {
+        number: 7,
+        headRepository: {
+            nameWithOwner: 'owner/name',
+        },
+        updatedAt: '2026-01-01T00:00:00Z',
+        headRefOid: 'abc',
+        mergeStateStatus: RawMergeState.Clean,
+        reviewDecision: RawReviewDecision.Approved,
+        headRef: {
+            target: {
+                statusCheckRollup: {
+                    state: RawCheckResult.Success,
+                },
+            },
+        },
+        reviewThreads: {
+            nodes: [
+                {
+                    isResolved: false,
+                },
+            ],
+        },
+    };
+
+    it('keys each branch by its alias and leaves a branch with no open PR empty', () => {
+        const [
+            first,
+            second,
+        ] = toBranchChangeKeys({
+            branches: [
+                'feature',
+                'no-pr',
+            ],
+            fullRepoName: 'owner/name',
+            repository: {
+                branch0: {
+                    nodes: [
+                        openPr,
+                    ],
+                },
+                branch1: {
+                    nodes: [],
+                },
+            },
+        });
+        assert.deepEquals(
+            {
+                hasFirst: !!first,
+                second,
+            },
+            {
+                hasFirst: true,
+                second: '',
+            },
+        );
+    });
+
+    it('changes the key when a thread is resolved', () => {
+        function readKey(isResolved: boolean) {
+            return toBranchChangeKeys({
+                branches: [
+                    'feature',
+                ],
+                fullRepoName: 'owner/name',
+                repository: {
+                    branch0: {
+                        nodes: [
+                            {
+                                ...openPr,
+                                reviewThreads: {
+                                    nodes: [
+                                        {
+                                            isResolved,
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
+                },
+            })[0];
+        }
+        assert.notStrictEquals(readKey(false), readKey(true));
+    });
+
+    it("skips a fork's PR from a branch of the same name", () => {
+        assert.deepEquals(
+            toBranchChangeKeys({
+                branches: [
+                    'feature',
+                ],
+                fullRepoName: 'owner/name',
+                repository: {
+                    branch0: {
+                        nodes: [
+                            {
+                                ...openPr,
+                                headRepository: {
+                                    nameWithOwner: 'forker/name',
+                                },
+                            },
+                        ],
+                    },
+                },
+            }),
+            [
+                '',
             ],
         );
     });

@@ -5,6 +5,17 @@ export const skipEditorInstruction =
     'Run the runner with CODE_REVIEW_SKIP_EDITOR=1 in its environment so it does not open an editor; agent-storm opens its Diff tab instead.';
 
 /**
+ * A `/manual-review` subcommand pinned to `folder`. For a Build folder the skill finds the folder's
+ * `/manual-review here` copy itself, so the folder is all it needs.
+ */
+export function createFolderReviewPrompt({
+    command,
+    folder,
+}: Readonly<{command: string; folder: string}>) {
+    return `/manual-review ${command} Run it in ${folder} rather than in any other checkout.`;
+}
+
+/**
  * The review folder starts empty, while `/manual-review start` expects to run from inside a
  * checkout of the PR's repo, so the prompt has the AI make the folder one first. A Build folder
  * already has the PR's branch checked out, so it uses `/manual-review here` instead.

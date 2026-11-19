@@ -1,6 +1,9 @@
 import {
+    createFolderReviewPrompt,
     createManualReviewPrompt,
     ManualReviewStatus,
+    PaneKind,
+    PaneStatus,
     PrStatus,
     type PullRequestRef,
     type ReviewQueuePr,
@@ -61,9 +64,38 @@ const autoStartState: {
      * once.
      */
     restartedHeads: ReadonlyArray<string>;
+    /** When each PR's review was last launched from the Reviewer or Assignee list, by URL. */
+    launchedAt: Readonly<Record<string, number>>;
+    /** Each PR's resent failed verdicts since the server started, by URL. */
+    failedPostRetries: Readonly<Record<string, {count: number; sentAt: number}>>;
 } = {
     triedUrls: [],
     restartedHeads: [],
+    launchedAt: {},
+    failedPostRetries: {},
+};
+
+/**
+ * How long a launched review gets to record itself before a launch that left no review is tried
+ * again, so a failure that persists, such as GitHub's rate limit, isn't retried on every update.
+ */
+const retryGap = {
+    milliseconds: 600_000,
+} as const satisfies AnyDuration;
+
+/** True for a PR that hasn't been launched, or was launched longer ago than the retry gap. */
+function hasLaunchCooledDown(url: string) {
+    const launchedAt = autoStartState.launchedAt[url];
+    return launchedAt == undefined || Date.now() - launchedAt > retryGap.milliseconds;
+}
+
+/** Whether an AI tab in this state may still be running the review's start. */
+const busyPaneStatuses: Readonly<Record<PaneStatus, boolean>> = {
+    [PaneStatus.Busy]: true,
+    [PaneStatus.Stalled]: true,
+    [PaneStatus.Idle]: false,
+    [PaneStatus.Exited]: false,
+    [PaneStatus.None]: false,
 };
 
 /**
@@ -143,7 +175,12 @@ function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
                 };
             })
             .filter(({pullRequest, isReRequested}) => {
-                return isReRequested || !autoStartState.triedUrls.includes(pullRequest.url);
+                return (
+                    isReRequested ||
+                    !autoStartState.triedUrls.includes(pullRequest.url) ||
+                    (pullRequest.url in autoStartState.launchedAt &&
+                        hasLaunchCooledDown(pullRequest.url))
+                );
             });
         autoStartState.triedUrls = removeDuplicates([
             ...autoStartState.triedUrls,
@@ -163,6 +200,10 @@ function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
         );
         void awaitedForEach(reviewablePrs, async (pullRequest) => {
             await restartOutdatedReview({
+                pullRequest,
+                deps,
+            });
+            await retryFailedPost({
                 pullRequest,
                 deps,
             });
@@ -240,6 +281,68 @@ async function restartOutdatedReview({
     } catch (error) {
         log.warning(
             `Failed to restart the outdated manual review of ${pullRequest.url}: ${extractErrorMessage(error)}`,
+        );
+    }
+}
+
+/** How many times a failed verdict is sent again before it's left for the reviewer to retry. */
+const maxFailedPostRetries = 3;
+
+/**
+ * Sends a verdict whose post failed again. Until it posts, the skill refuses to start the review
+ * over, since starting would discard the comments that failed to post.
+ */
+async function retryFailedPost({
+    pullRequest,
+    deps,
+}: Readonly<{
+    pullRequest: Readonly<ReviewQueuePr>;
+    deps: Readonly<ReviewAutoStartDeps>;
+}>) {
+    try {
+        if (await isAutoManualReviewDisabled()) {
+            return;
+        }
+        const review = await readManualReviewEntry(pullRequest);
+        if (
+            review?.status !== ManualReviewStatus.PostFailed ||
+            review.isPending ||
+            review.prNumber !== pullRequest.number ||
+            !review.failedVerdict ||
+            !review.folder ||
+            busyPaneStatuses[
+                (await readReviewHost().getPaneStatusLookup())(review.folder, PaneKind.Ai)
+            ]
+        ) {
+            return;
+        }
+        /** Checked and claimed with no await between, since both lists can list the PR. */
+        const previousRetry = autoStartState.failedPostRetries[pullRequest.url];
+        if (
+            previousRetry &&
+            (previousRetry.count >= maxFailedPostRetries ||
+                Date.now() - previousRetry.sentAt <= retryGap.milliseconds)
+        ) {
+            return;
+        }
+        autoStartState.failedPostRetries = {
+            ...autoStartState.failedPostRetries,
+            [pullRequest.url]: {
+                count: (previousRetry?.count ?? 0) + 1,
+                sentAt: Date.now(),
+            },
+        };
+        await deps.launchFolderSession({
+            folder: review.folder,
+            prompt: createFolderReviewPrompt({
+                command: review.failedVerdict,
+                folder: review.folder,
+            }),
+        });
+        log.info(`Retried the failed ${review.failedVerdict} post on ${pullRequest.url}.`);
+    } catch (error) {
+        log.warning(
+            `Failed to retry the failed review post on ${pullRequest.url}: ${extractErrorMessage(error)}`,
         );
     }
 }
@@ -329,10 +432,16 @@ async function autoStartReview({
                         }).milliseconds));
         /**
          * The skill only records a review once its runner gets going, so a folder with anything in
-         * it means a start is already underway.
+         * it means a start is underway, or one that failed before recording, such as on GitHub's
+         * rate limit, once its AI tab has gone quiet.
          */
         const isFolderEmpty = !(await readdir(folder).catch(() => [])).length;
-        if (!isRestart && (review || !isFolderEmpty)) {
+        const isFailedStart =
+            !review &&
+            !isFolderEmpty &&
+            hasLaunchCooledDown(pullRequest.url) &&
+            !busyPaneStatuses[(await readReviewHost().getPaneStatusLookup())(folder, PaneKind.Ai)];
+        if (!isRestart && !isFailedStart && (review || !isFolderEmpty)) {
             return;
         }
         await resolveReviewFolder({
@@ -341,6 +450,10 @@ async function autoStartReview({
             number: pullRequest.number,
             createFolder: true,
         });
+        autoStartState.launchedAt = {
+            ...autoStartState.launchedAt,
+            [pullRequest.url]: Date.now(),
+        };
         await deps.launchFolderSession({
             folder,
             prompt: createManualReviewPrompt({
@@ -348,7 +461,9 @@ async function autoStartReview({
                 folder,
             }),
         });
-        log.info(`${isRestart ? 'Restarted' : 'Started'} a manual review of ${pullRequest.url}.`);
+        log.info(
+            `${isRestart ? 'Restarted' : isFailedStart ? 'Retried' : 'Started'} a manual review of ${pullRequest.url}.`,
+        );
         /** The skill can take a long while to set up, and the next PR's start shouldn't wait on it. */
         void initStartedReview({
             pullRequest,

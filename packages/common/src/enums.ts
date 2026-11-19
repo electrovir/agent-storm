@@ -293,3 +293,10 @@ export enum ManualReviewStatus {
     PostFailed = 'postFailed',
     Aborted = 'aborted',
 }
+
+/** A verdict the manual-review skill posts, spelled as its `/manual-review` subcommand. */
+export enum ManualReviewVerdict {
+    Approve = 'approve',
+    RequestChanges = 'request-changes',
+    Comment = 'comment',
+}
