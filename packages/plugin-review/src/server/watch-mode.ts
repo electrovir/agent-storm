@@ -1,4 +1,6 @@
 import {
+    busyPaneStatuses,
+    finishedPrStatuses,
     GitHubPollingDisableReason,
     ManualReviewStatus,
     PaneKind,
@@ -53,7 +55,6 @@ import {
     type ListedManualReviewEntry,
 } from './manual-review-state.js';
 import {hasReviewableChanges} from './push-review.js';
-import {finishedPrStatuses} from './review-auto-start.js';
 import {isManualReviewHereCopy} from './review-folders.js';
 import {readReviewHost} from './review-host.js';
 import {
@@ -151,6 +152,8 @@ const watchEntryShape = defineShape({
     viewerReviewOwedAt: '',
     /** Why `viewerReviewOwedAt` is set, for the review request's note. */
     viewerReviewOwedReason: '',
+    /** The `viewerReviewOwedAt` whose review request already left its note on the PR. */
+    viewerReviewNotedAt: '',
     /** The pass the Watch tab is running. */
     pass: nullableShape({
         /** Unix milliseconds. */
@@ -774,15 +777,6 @@ async function readWatchSessionStatus({
     );
 }
 
-/** Whether a tab in this state is in the middle of something a pass mustn't interrupt. */
-const busyStatuses: Readonly<Record<PaneStatus, boolean>> = {
-    [PaneStatus.Busy]: true,
-    [PaneStatus.Stalled]: true,
-    [PaneStatus.Idle]: false,
-    [PaneStatus.Exited]: false,
-    [PaneStatus.None]: false,
-};
-
 async function startPass({
     deps,
     folder,
@@ -816,7 +810,7 @@ async function startPass({
         });
         return;
     } else if (
-        busyStatuses[
+        busyPaneStatuses[
             await readWatchSessionStatus({
                 folder,
                 sessionId,
@@ -993,7 +987,7 @@ async function compactWatchSession({
                 return (
                     !!conversationId &&
                     (await readReviewHost().isClaudeReady(conversationId)) &&
-                    !busyStatuses[
+                    !busyPaneStatuses[
                         await readWatchSessionStatus({
                             folder,
                             sessionId,
@@ -1224,7 +1218,17 @@ async function checkFolder({
 
     const hasNewHumanActivity = prCheck.humanActivityAt > entry.lastHumanActivityAt;
     const isNewPush = !!finishedPass && prCheck.headSha !== finishedPass.headSha;
-    const pushCount = (hasNewHumanActivity ? 0 : entry.pushCount) + (isNewPush ? 1 : 0);
+    /**
+     * Passes don't wait for CI, so a push that only fixes the checks broken by watch mode's own
+     * previous push finishes that push rather than starting a new one.
+     */
+    const isCiFixUp =
+        isNewPush &&
+        !hasNewHumanActivity &&
+        !!entry.pushLog.length &&
+        finishedPass.tasks.every((task) => task === WatchTask.Tests);
+    const pushCount =
+        (hasNewHumanActivity ? 0 : entry.pushCount) + (isNewPush && !isCiFixUp ? 1 : 0);
     const pushLog = [
         ...(hasNewHumanActivity ? [] : entry.pushLog),
         ...(isNewPush
@@ -1299,20 +1303,26 @@ async function checkFolder({
                 reason: entry.viewerReviewOwedReason,
             }
           : undefined;
+    /** A fix-up push for watch mode's own failing checks would otherwise ask for review again. */
+    const areChecksSettled = !prCheck.pendingCount && !prCheck.failingChecks.length;
+    const isViewerReviewRequested = !!viewerReviewOwed && areChecksSettled;
     await updateEntry(folder, {
         viewerReviewOwedAt: viewerReviewOwed?.at || '',
         viewerReviewOwedReason: viewerReviewOwed?.reason || '',
+        viewerReviewNotedAt: isViewerReviewRequested
+            ? viewerReviewOwed.at
+            : (viewerReviewOwed && entry.viewerReviewNotedAt) || '',
     });
-    if (viewerReviewOwed) {
+    if (isViewerReviewRequested) {
         await requestReviews({
             folder,
             prCheck,
             logins: [viewerLogin],
             reason: viewerReviewOwed.reason,
-            isRepeat: !isPushToReview,
+            isRepeat: entry.viewerReviewNotedAt === viewerReviewOwed.at,
         });
     }
-    /** `viewerReviewOwed` already re-requested the viewer for a code push. */
+    /** `viewerReviewOwed` handles the viewer for a code push. */
     const answeredLogins = answeredAssignees.filter((login) => {
         return !isPushToReview || login !== viewerLogin;
     });
@@ -1353,11 +1363,12 @@ async function checkFolder({
         });
     }
 
-    if (pushCount >= maxPushCount) {
+    /** CI fix-ups don't count toward `maxPushCount`, so this catches a run of them that never ends. */
+    if (pushCount >= maxPushCount || pushLog.length >= maxPushCount * 2) {
         await stopWatching({
             folder,
             message: [
-                `Stopped after ${maxPushCount} pushes without a human stepping in.`,
+                `Stopped after ${pushLog.length} pushes without a human stepping in.`,
                 prCheck.failingChecks.length
                     ? `Still failing: ${prCheck.failingChecks.join(', ')}.`
                     : '',
@@ -1553,7 +1564,7 @@ async function runFolder(folder: string) {
             return;
         } else if (
             (await readReviewHost().getPaneSessionStatusLookup())(folder).some((session) => {
-                return session.kind === PaneKind.Ai && busyStatuses[session.status];
+                return session.kind === PaneKind.Ai && busyPaneStatuses[session.status];
             })
         ) {
             /**

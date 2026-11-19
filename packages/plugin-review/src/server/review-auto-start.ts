@@ -1,10 +1,10 @@
 import {
+    busyPaneStatuses,
     createFolderReviewPrompt,
     createManualReviewPrompt,
+    finishedPrStatuses,
     ManualReviewStatus,
     PaneKind,
-    PaneStatus,
-    PrStatus,
     type PullRequestRef,
     type ReviewQueuePr,
 } from '@agent-storm/common';
@@ -39,23 +39,6 @@ export type ReviewAutoStartDeps = {
     runReviewInitCmd(pullRequest: Readonly<PullRequestRef>): Promise<void>;
 };
 
-/** Statuses of a PR that's no longer open, so has nothing left to review. */
-export const finishedPrStatuses: Readonly<Record<PrStatus, boolean>> = {
-    [PrStatus.None]: false,
-    [PrStatus.AwaitingReview]: false,
-    [PrStatus.ReviewStarted]: false,
-    [PrStatus.ReReviewRequested]: false,
-    [PrStatus.UnresolvedComments]: false,
-    [PrStatus.ChangesRequested]: false,
-    [PrStatus.Approved]: false,
-    [PrStatus.OthersRequestedChanges]: false,
-    [PrStatus.AwaitingOtherReviews]: false,
-    [PrStatus.ChecksFailed]: false,
-    [PrStatus.ReadyToMerge]: false,
-    [PrStatus.Merged]: true,
-    [PrStatus.Closed]: true,
-};
-
 const autoStartState: {
     /** PRs already looked at since the server started, so each is only tried once. */
     triedUrls: ReadonlyArray<string>;
@@ -68,12 +51,21 @@ const autoStartState: {
     launchedAt: Readonly<Record<string, number>>;
     /** Each PR's resent failed verdicts since the server started, by URL. */
     failedPostRetries: Readonly<Record<string, {count: number; sentAt: number}>>;
+    /** How many times each PR's failed review start has been launched again, by URL. */
+    failedStartRetries: Readonly<Record<string, number>>;
 } = {
     triedUrls: [],
     restartedHeads: [],
     launchedAt: {},
     failedPostRetries: {},
+    failedStartRetries: {},
 };
+
+/**
+ * How many times a failed verdict post or review start is tried again before it's left for the
+ * reviewer to retry.
+ */
+const maxFailedRetries = 3;
 
 /**
  * How long a launched review gets to record itself before a launch that left no review is tried
@@ -88,15 +80,6 @@ function hasLaunchCooledDown(url: string) {
     const launchedAt = autoStartState.launchedAt[url];
     return launchedAt == undefined || Date.now() - launchedAt > retryGap.milliseconds;
 }
-
-/** Whether an AI tab in this state may still be running the review's start. */
-const busyPaneStatuses: Readonly<Record<PaneStatus, boolean>> = {
-    [PaneStatus.Busy]: true,
-    [PaneStatus.Stalled]: true,
-    [PaneStatus.Idle]: false,
-    [PaneStatus.Exited]: false,
-    [PaneStatus.None]: false,
-};
 
 /**
  * Starts a manual review of every PR in the Reviewer or Assignee list without one, so each is ready
@@ -285,9 +268,6 @@ async function restartOutdatedReview({
     }
 }
 
-/** How many times a failed verdict is sent again before it's left for the reviewer to retry. */
-const maxFailedPostRetries = 3;
-
 /**
  * Sends a verdict whose post failed again. Until it posts, the skill refuses to start the review
  * over, since starting would discard the comments that failed to post.
@@ -320,7 +300,7 @@ async function retryFailedPost({
         const previousRetry = autoStartState.failedPostRetries[pullRequest.url];
         if (
             previousRetry &&
-            (previousRetry.count >= maxFailedPostRetries ||
+            (previousRetry.count >= maxFailedRetries ||
                 Date.now() - previousRetry.sentAt <= retryGap.milliseconds)
         ) {
             return;
@@ -439,6 +419,7 @@ async function autoStartReview({
         const isFailedStart =
             !review &&
             !isFolderEmpty &&
+            (autoStartState.failedStartRetries[pullRequest.url] || 0) < maxFailedRetries &&
             hasLaunchCooledDown(pullRequest.url) &&
             !busyPaneStatuses[(await readReviewHost().getPaneStatusLookup())(folder, PaneKind.Ai)];
         if (!isRestart && !isFailedStart && (review || !isFolderEmpty)) {
@@ -454,6 +435,12 @@ async function autoStartReview({
             ...autoStartState.launchedAt,
             [pullRequest.url]: Date.now(),
         };
+        if (isFailedStart && !isRestart) {
+            autoStartState.failedStartRetries = {
+                ...autoStartState.failedStartRetries,
+                [pullRequest.url]: (autoStartState.failedStartRetries[pullRequest.url] || 0) + 1,
+            };
+        }
         await deps.launchFolderSession({
             folder,
             prompt: createManualReviewPrompt({

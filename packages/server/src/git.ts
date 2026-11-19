@@ -36,7 +36,6 @@ import {
     utcTimezone,
     type AnyDuration,
 } from 'date-vir';
-import {createHash} from 'node:crypto';
 import {lstat, readdir, realpath, stat} from 'node:fs/promises';
 import {basename, dirname, join} from 'node:path';
 import {
@@ -941,17 +940,6 @@ export function parseRepoPrsAnswer(graphqlOutput: string) {
                       }),
                       openPrCount: repository.open.nodes.length,
                       hasMoreOpenPrs: repository.open.pageInfo.hasNextPage,
-                      changeKeysByBranch: new Map(
-                          repository.open.nodes.map((node) => {
-                              return [
-                                  node.headRefName,
-                                  createHash('sha256').update(JSON.stringify(node)).digest('hex'),
-                              ] satisfies [
-                                  string,
-                                  string,
-                              ];
-                          }),
-                      ),
                   }
                 : undefined;
         },

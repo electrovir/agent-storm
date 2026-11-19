@@ -11,7 +11,6 @@ import {
     type Settings,
 } from '@agent-storm/common';
 import {type MaybePromise} from '@augment-vir/common';
-import {type AnyDuration} from 'date-vir';
 
 /** A GitHub repo, as a checkout's `origin` remote names it. */
 export type RepoSlug = {
@@ -87,20 +86,6 @@ export type PluginServerHost = Readonly<{
             }
         >,
     ): void;
-    /**
-     * A fingerprint of the branch's open PR from the app's PR polling, which changes whenever
-     * anything that polling reads about the PR changes. Refreshes the repo's PRs first once they're
-     * `maxAge` old, in one GitHub call shared by every branch of the repo. Undefined when the
-     * polling knows no open PR on the branch or GitHub polling is off.
-     */
-    readOpenPrChangeKey(
-        params: Readonly<
-            RepoSlug & {
-                branchName: string;
-                maxAge: AnyDuration;
-            }
-        >,
-    ): Promise<string | undefined>;
     /** Undefined unless the app has paused its GitHub calls, as after a rate limit. */
     readGitHubPause(): {reason: GitHubPollingDisableReason; resumeAtMs: number} | undefined;
     /**

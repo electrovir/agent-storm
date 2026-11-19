@@ -11,7 +11,6 @@ import {
     listenToNewFolderPrs,
     pauseGitHubForRateLimit,
     readGitHubPause,
-    readOpenPrChangeKey,
     recordFolderPrStatus,
     refreshFolderInfoNow,
 } from './folder-info.js';
@@ -51,7 +50,6 @@ export const pluginServerHost: PluginServerHost = {
     recordFolderPrStatus,
     readBranchPrStatus,
     recordBranchPr,
-    readOpenPrChangeKey,
     readGitHubPause,
     pauseGitHubForRateLimit,
     async listPaneFolders() {

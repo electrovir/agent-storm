@@ -38,7 +38,7 @@ import {
     unknownShape,
 } from 'object-shape-tester';
 import {loadAppState, updateAppState, type AppState} from './app-state.js';
-import {openPrChangeKeys, recordBranchPr, repoCacheKey, repoPrCache} from './branch-prs.js';
+import {recordBranchPr, repoCacheKey, repoPrCache} from './branch-prs.js';
 import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {loadFolderSettings} from './folder-settings.js';
@@ -293,29 +293,6 @@ export async function pauseGitHubForRateLimit(message: string) {
     });
 }
 
-/** The branch's {@link openPrChangeKeys} entry, refreshing its repo first once `maxAge` old. */
-export async function readOpenPrChangeKey({
-    owner,
-    name,
-    branchName,
-    maxAge,
-}: Readonly<
-    RepoSlug & {
-        branchName: string;
-        maxAge: AnyDuration;
-    }
->) {
-    if (isGitHubPollingDisabled(await loadSettings())) {
-        return undefined;
-    }
-    const slug = {
-        owner,
-        name,
-    };
-    await getCachedRepoPrMap(slug, maxAge);
-    return openPrChangeKeys.get(repoCacheKey(slug))?.get(branchName);
-}
-
 /**
  * Whether the repo's PR map is older than `refreshTtl`. An `undefined` TTL means "never refresh
  * this repo" (it isn't visible in the sidebar).
@@ -381,10 +358,6 @@ function refreshRepoPrMaps(slugs: ReadonlyArray<Readonly<RepoSlug>>) {
                             repoPrCache.get(key)?.prsByBranch ||
                             new Map<string, PrInfo>(),
                     });
-                    const changeKeys = answers.get(key)?.changeKeysByBranch;
-                    if (changeKeys) {
-                        openPrChangeKeys.set(key, changeKeys);
-                    }
                 });
                 persistGithubCache();
             },

@@ -17,7 +17,6 @@ export const testReviewHost: PluginServerHost = {
     recordFolderPrStatus: throwUnmocked,
     readBranchPrStatus: throwUnmocked,
     recordBranchPr: throwUnmocked,
-    readOpenPrChangeKey: throwUnmocked,
     readGitHubPause: throwUnmocked,
     pauseGitHubForRateLimit: throwUnmocked,
     listPaneFolders: throwUnmocked,

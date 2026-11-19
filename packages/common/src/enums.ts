@@ -99,6 +99,15 @@ export enum PaneStatus {
     Exited = 'exited',
 }
 
+/** Whether a tab in this state is in the middle of something that shouldn't be interrupted. */
+export const busyPaneStatuses: Readonly<Record<PaneStatus, boolean>> = {
+    [PaneStatus.Busy]: true,
+    [PaneStatus.Stalled]: true,
+    [PaneStatus.Idle]: false,
+    [PaneStatus.Exited]: false,
+    [PaneStatus.None]: false,
+};
+
 /**
  * How the sidebar arranges its folder list. `Repo` keeps the existing layout (each repo's worktrees
  * nested under their root). `Status` regroups folders by their AI pane's current {@link PaneStatus}
@@ -280,6 +289,23 @@ export enum PrStatus {
     /** Closed without merging. */
     Closed = 'closed',
 }
+
+/** Statuses of a PR that's no longer open. */
+export const finishedPrStatuses: Readonly<Record<PrStatus, boolean>> = {
+    [PrStatus.None]: false,
+    [PrStatus.AwaitingReview]: false,
+    [PrStatus.ReviewStarted]: false,
+    [PrStatus.ReReviewRequested]: false,
+    [PrStatus.UnresolvedComments]: false,
+    [PrStatus.ChangesRequested]: false,
+    [PrStatus.Approved]: false,
+    [PrStatus.OthersRequestedChanges]: false,
+    [PrStatus.AwaitingOtherReviews]: false,
+    [PrStatus.ChecksFailed]: false,
+    [PrStatus.ReadyToMerge]: false,
+    [PrStatus.Merged]: true,
+    [PrStatus.Closed]: true,
+};
 
 /**
  * Where a review stands, as the manual-review skill records it in

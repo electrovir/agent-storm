@@ -1,4 +1,5 @@
 import {
+    finishedPrStatuses,
     type FolderInfo,
     PaneStatus,
     PrStatus,
@@ -7,7 +8,6 @@ import {
 } from '@agent-storm/common';
 import {
     defineAppElement,
-    finishedPrStatuses,
     getPrRingDisplay,
     renderPaneChip,
     sidebarContextMenuOffset,
@@ -198,7 +198,7 @@ export const VirSidebarRow = defineAppElement<{
             inputs.folder.git.notPushed ? '+' : '',
         ].join('');
         const hasPr = !!inputs.folder.prUrl;
-        const isPrFinished = finishedPrStatuses.includes(inputs.folder.prStatus);
+        const isPrFinished = finishedPrStatuses[inputs.folder.prStatus];
         const prRing = getPrRingDisplay(inputs.folder);
 
         return html`
