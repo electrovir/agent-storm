@@ -41,6 +41,7 @@ import {VirDiffReview} from './vir-diff-review.element.js';
 import {VirDiffToolbar, type DiffSettings} from './vir-diff-toolbar.element.js';
 import {VirDiffWholeFile, diffPlaceholderStyles} from './vir-diff-whole-file.element.js';
 import {VirFileComments} from './vir-file-comments.element.js';
+import {VirImageDiff, toSvgImageContent} from './vir-image-diff.element.js';
 
 const loaderIcon = createSizedIcon(LucideLoaderIcon, 24);
 
@@ -129,6 +130,13 @@ export const VirDiffPane = defineAppElement<{
 
         ${VirDiffCodeView}[data-hidden] {
             display: none;
+        }
+
+        ${VirImageDiff}.svg-preview {
+            flex-grow: 0;
+            flex-shrink: 0;
+            max-height: 50%;
+            border-top: 1px solid ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
         }
 
         /*
@@ -390,6 +398,12 @@ export const VirDiffPane = defineAppElement<{
 
         const isCodeViewHidden =
             !!state.reviewSide || !selected || !!content?.tooLargeOrBinary || !!content?.isImage;
+        const svgImageContent = isCodeViewHidden
+            ? undefined
+            : toSvgImageContent({
+                  path: selectedPath,
+                  content,
+              });
         const codeViewTemplate = inputs.renderCodeView
             ? inputs.renderCodeView({
                   fileKey: state.selectedValue,
@@ -614,6 +628,15 @@ export const VirDiffPane = defineAppElement<{
                         ? renderSelectedExplanation('inline')
                         : nothing}
                     ${mainTemplate} ${codeViewTemplate}
+                    ${svgImageContent
+                        ? html`
+                              <${VirImageDiff.assign({
+                                  content: svgImageContent,
+                              })}
+                                  class="svg-preview"
+                              ></${VirImageDiff}>
+                          `
+                        : nothing}
                 </div>
                 ${isSelectedExplanationShown && !isMobile
                     ? renderSelectedExplanation('beside')

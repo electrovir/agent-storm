@@ -4,6 +4,7 @@ import {css, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {type GitDiffFile} from '../../diff-api.js';
 import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
+import {blurDiffEditorOnScroll} from './diff-editor.js';
 import {VirDiffReviewFile} from './vir-diff-review-file.element.js';
 
 /**
@@ -56,25 +57,7 @@ export const VirDiffReview = defineAppElement<{
         };
     },
     init({host}) {
-        /**
-         * CodeMirror re-sets a focused editor's DOM selection whenever scrolling redraws the lines
-         * around its cursor, and Safari answers that by scrolling the caret back into view. This
-         * review is the scroller for every file's editor, so scrolling past the cursor kept yanking
-         * the review back to it. Dropping the editor's focus once the reader scrolls stops that;
-         * the cursor stays in the editor's state.
-         */
-        function blurFocusedEditor() {
-            const focused = host.shadowRoot.activeElement?.shadowRoot?.activeElement;
-            if (focused instanceof HTMLElement && focused.classList.contains('cm-content')) {
-                focused.blur();
-            }
-        }
-        host.addEventListener('wheel', blurFocusedEditor, {
-            passive: true,
-        });
-        host.addEventListener('touchmove', blurFocusedEditor, {
-            passive: true,
-        });
+        blurDiffEditorOnScroll(host);
     },
     styles: css`
         :host {

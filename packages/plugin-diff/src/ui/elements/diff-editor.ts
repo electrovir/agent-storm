@@ -647,6 +647,35 @@ export function syncDiffEditorComments({
 }
 
 /**
+ * Drops a diff editor's focus as soon as the reader scrolls `host`, which holds the editor in its
+ * shadow root either directly or one custom element deeper. The cursor stays in the editor's
+ * state.
+ */
+export function blurDiffEditorOnScroll(host: Readonly<HTMLElement>) {
+    /**
+     * CodeMirror re-sets a focused editor's DOM selection whenever scrolling redraws the lines
+     * around its cursor, and Safari answers that by scrolling the caret back into view, so
+     * scrolling past the cursor kept yanking the view back to it.
+     */
+    function blurFocusedEditor() {
+        const focused = host.shadowRoot?.activeElement;
+        const editorContent = focused?.shadowRoot?.activeElement ?? focused;
+        if (
+            editorContent instanceof HTMLElement &&
+            editorContent.classList.contains('cm-content')
+        ) {
+            editorContent.blur();
+        }
+    }
+    host.addEventListener('wheel', blurFocusedEditor, {
+        passive: true,
+    });
+    host.addEventListener('touchmove', blurFocusedEditor, {
+        passive: true,
+    });
+}
+
+/**
  * Each loaded diff's whitespace-folded old side. Folding runs a full line diff, and the pane
  * re-renders on every editor geometry change while scrolling, so recomputing it per render stalls
  * the scroll. Keyed by the fetched contents object, so it runs once per fetch instead.

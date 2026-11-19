@@ -20,9 +20,9 @@ import {
     type SelectedChunk,
 } from './diff-selection.js';
 import {VirDiffExplanation} from './vir-diff-explanation.element.js';
-import {VirDiffFileHeader, stageActionLabels} from './vir-diff-file-header.element.js';
+import {stageActionLabels, VirDiffFileHeader} from './vir-diff-file-header.element.js';
 import {VirFileComments} from './vir-file-comments.element.js';
-import {VirImageDiff} from './vir-image-diff.element.js';
+import {toSvgImageContent, VirImageDiff} from './vir-image-diff.element.js';
 
 /** Pixel height of one editor line, for sizing a file before its editor exists. */
 const estimatedLineHeight = 14;
@@ -260,6 +260,10 @@ export const VirDiffReviewFile = defineAppElement<{
 
         const content = state.content;
         const isText = !!content && !content.isImage && !content.tooLargeOrBinary;
+        const svgImageContent = toSvgImageContent({
+            path: file.path,
+            content,
+        });
         if (content && !isText && state.rendered) {
             state.rendered.editor?.destroy();
             state.editorParent?.replaceChildren();
@@ -545,6 +549,13 @@ export const VirDiffReviewFile = defineAppElement<{
                               })}
                           ></div>
                       `}
+                ${svgImageContent
+                    ? html`
+                          <${VirImageDiff.assign({
+                              content: svgImageContent,
+                          })}></${VirImageDiff}>
+                      `
+                    : nothing}
             </div>
             ${renderExplanation('beside')}
         `;

@@ -1,6 +1,6 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
-import {getEnumValues} from '@augment-vir/common';
+import {extractExtension, getEnumValues} from '@augment-vir/common';
 import {css, html, listen, nothing} from 'element-vir';
 import {ViraDropdown, ViraSlider, viraThemeByKeys} from 'vira';
 import {type GitDiffFileContents} from '../../diff-api.js';
@@ -18,6 +18,37 @@ const needsBothImages: Readonly<Record<ImageDiffMode, boolean>> = {
     [ImageDiffMode.Swipe]: true,
     [ImageDiffMode.OnionSkin]: true,
 };
+
+function toSvgDataUrl(svg: string) {
+    return svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : undefined;
+}
+
+/**
+ * A `.svg` file's text diff with both sides also set as pictures, for showing what it draws under
+ * its code. Undefined for any other file, or when there is no text to draw.
+ */
+export function toSvgImageContent({
+    path,
+    content,
+}: Readonly<{
+    path: string | undefined;
+    content: Readonly<GitDiffFileContents> | undefined;
+}>) {
+    if (
+        !path ||
+        !content ||
+        content.isImage ||
+        content.tooLargeOrBinary ||
+        extractExtension(path).extension.toLowerCase() !== '.svg'
+    ) {
+        return undefined;
+    }
+    return {
+        ...content,
+        oldImage: toSvgDataUrl(content.oldContent),
+        newImage: toSvgDataUrl(content.newContent),
+    };
+}
 
 /**
  * An image file shown as pictures rather than as a text diff, in GitHub's three image diff modes:
@@ -56,6 +87,7 @@ export const VirImageDiff = defineAppElement<{
             gap: 12px;
             flex-grow: 1;
             min-width: 0;
+            min-height: 0;
             padding: 12px;
             box-sizing: border-box;
             overflow: auto;

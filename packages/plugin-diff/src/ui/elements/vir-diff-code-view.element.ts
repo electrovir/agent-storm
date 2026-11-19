@@ -8,6 +8,7 @@ import {type GitDiffFileContents} from '../../diff-api.js';
 import {loadSyntaxExtensions} from '../../util/diff-syntax.js';
 import {type AddCommentRequest, type EditCommentRequest} from './diff-editor-comments.js';
 import {
+    blurDiffEditorOnScroll,
     remountChangedDiffEditor,
     syncDiffEditorComments,
     toDisplayedOldContent,
@@ -154,6 +155,9 @@ export const VirDiffCodeView = defineAppElement<{
             right: 0;
         }
     `,
+    init({host}) {
+        blurDiffEditorOnScroll(host);
+    },
     cleanup({state}) {
         state.rendered?.editor?.destroy();
     },
