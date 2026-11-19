@@ -7,10 +7,8 @@ import {
 } from '@agent-storm/common';
 import {
     defineAppElement,
-    localChangesIcon,
-    localChangesTooltip,
-    prStatusIcons,
-    prStatusTooltips,
+    finishedPrStatuses,
+    getPrRingDisplay,
     renderPaneChip,
     sidebarContextMenuOffset,
     sidebarFolderMenuStyles,
@@ -50,11 +48,6 @@ const watchModeIcons: Record<WatchModeStatus, ViraIconSvg> = {
     [WatchModeStatus.Working]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.blue),
     [WatchModeStatus.Paused]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.yellow),
 };
-
-const finishedPrStatuses: ReadonlyArray<PrStatus> = [
-    PrStatus.Merged,
-    PrStatus.Closed,
-];
 
 /**
  * One folder in the sidebar list. It holds no state, since reordering the list moves (and so
@@ -206,19 +199,7 @@ export const VirSidebarRow = defineAppElement<{
         ].join('');
         const hasPr = !!inputs.folder.prUrl;
         const isPrFinished = finishedPrStatuses.includes(inputs.folder.prStatus);
-        const showsLocalChanges =
-            hasPr && !isPrFinished && (inputs.folder.git.dirty || inputs.folder.git.notPushed);
-        const statusIcon = showsLocalChanges
-            ? localChangesIcon
-            : prStatusIcons[inputs.folder.prStatus];
-        const statusTooltip = showsLocalChanges
-            ? [
-                  localChangesTooltip,
-                  prStatusTooltips[inputs.folder.prStatus],
-              ]
-                  .filter(Boolean)
-                  .join(' ')
-            : prStatusTooltips[inputs.folder.prStatus];
+        const prRing = getPrRingDisplay(inputs.folder);
 
         return html`
             <${ViraMenuTrigger.assign({
@@ -294,11 +275,11 @@ export const VirSidebarRow = defineAppElement<{
                         : nothing}
                     <span
                         class="pr-status"
-                        ${statusTooltip ? tooltip(statusTooltip, sidebarTooltipOptions) : nothing}
+                        ${prRing.tooltip ? tooltip(prRing.tooltip, sidebarTooltipOptions) : nothing}
                         ${listen('click', () => {
                             /** The row's own click listener then opens the folder on this tab. */
                             if (
-                                !showsLocalChanges &&
+                                !prRing.showsLocalChanges &&
                                 inputs.folder.prStatus === PrStatus.AwaitingOtherReviews
                             ) {
                                 dispatch(
@@ -309,10 +290,10 @@ export const VirSidebarRow = defineAppElement<{
                             }
                         })}
                     >
-                        ${statusIcon
+                        ${prRing.icon
                             ? html`
                                   <${ViraIcon.assign({
-                                      icon: statusIcon,
+                                      icon: prRing.icon,
                                   })}></${ViraIcon}>
                               `
                             : nothing}

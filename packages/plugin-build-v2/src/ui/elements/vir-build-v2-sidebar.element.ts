@@ -597,6 +597,10 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                 <li data-sidebar-search-result>
                                                     <${VirBuildV2ThreadRow.assign({
                                                         thread,
+                                                        folderInfo:
+                                                            inputs.context.folderData.value.folderInfo.get(
+                                                                thread.cwd,
+                                                            ),
                                                         isActive: thread.id === activeThreadId,
                                                     })}
                                                         ${listen(

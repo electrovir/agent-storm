@@ -1,15 +1,19 @@
+import {type FolderInfo} from '@agent-storm/common';
 import {
     defineAppElement,
+    getPrRingDisplay,
     sidebarContextMenuOffset,
     sidebarFolderMenuStyles,
+    sidebarTooltipOptions,
     spinAnimationCss,
     spinKeyframesCss,
 } from '@agent-storm/core/frontend';
 import {extractEventTarget} from '@augment-vir/web';
 import {classMap, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
+    createColoredIcon,
     createSizedIcon,
-    LucideFolderGit2Icon,
+    LucideGitBranchIcon,
     PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
@@ -21,7 +25,9 @@ import {
 import {ThreadStatus, type Thread} from '../../build-v2-api.js';
 import {sidebarStatusDisplays} from './thread-display.js';
 
-const branchIcon = createSizedIcon(LucideFolderGit2Icon, 14);
+const branchIcon = createColoredIcon(createSizedIcon(LucideGitBranchIcon, 14), {
+    'vira-icon-stroke-color': viraThemeByKeys.grey.foreground['non-body'].foreground.value,
+});
 
 const minuteMs = 60_000;
 const hourMs = 60 * minuteMs;
@@ -41,6 +47,8 @@ function compactTimeLabel(timestamp: number) {
 /** One thread in the Build V2 sidebar: its title, status, and latest activity. */
 export const VirBuildV2ThreadRow = defineAppElement<{
     thread: Readonly<Thread>;
+    /** The folder the thread runs in, which carries its PR status. */
+    folderInfo: Readonly<FolderInfo> | undefined;
     isActive: boolean;
 }>()({
     tagName: 'vir-build-v2-thread-row',
@@ -99,15 +107,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             &.active {
                 background-color: ${viraThemeByKeys.blue['behind-fg']['small-body'].background
                     .value};
-            }
-
-            &.multiline {
-                height: auto;
-                flex-direction: column;
-                align-items: stretch;
-                justify-content: center;
-                padding-top: 3px;
-                padding-bottom: 3px;
             }
 
             &.dim-while-running {
@@ -181,6 +180,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             height: 24px;
             align-items: center;
             justify-content: flex-end;
+            gap: 6px;
         }
 
         .status {
@@ -201,6 +201,15 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             }
         }
 
+        .folder-status {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
         .unread-dot {
             width: 8px;
             height: 8px;
@@ -209,28 +218,18 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         }
 
         ${spinKeyframesCss}
-
-        .branch {
-            display: flex;
-            min-width: 0;
-            align-items: center;
-            gap: 6px;
-            margin-top: 2px;
-            font-size: 12px;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-
-            & .branch-name {
-                min-width: 0;
-                overflow: hidden;
-                white-space: nowrap;
-                text-overflow: ellipsis;
-            }
-        }
     `,
     render({inputs, state, updateState, dispatch, events}) {
         const display = sidebarStatusDisplays[inputs.thread.status];
         const shouldRecede = display.shouldRecede && !inputs.isActive;
-        const isMultiline = !!inputs.thread.worktreeBranch;
+        const statusIcon = inputs.folderInfo?.prUrl
+            ? getPrRingDisplay(inputs.folderInfo)
+            : inputs.thread.worktreeBranch
+              ? {
+                    icon: branchIcon,
+                    tooltip: inputs.thread.worktreeBranch,
+                }
+              : undefined;
 
         function select() {
             dispatch(
@@ -341,7 +340,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                     class=${classMap({
                         row: true,
                         active: inputs.isActive,
-                        multiline: isMultiline,
                         'menu-open': state.isMenuOpen,
                         'dim-while-running':
                             shouldRecede && inputs.thread.status === ThreadStatus.Running,
@@ -364,6 +362,20 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                     <div class="top">
                         ${title}
                         <span class="trailing">
+                            ${statusIcon?.icon
+                                ? html`
+                                      <span
+                                          class="folder-status"
+                                          ${statusIcon.tooltip
+                                              ? tooltip(statusIcon.tooltip, sidebarTooltipOptions)
+                                              : nothing}
+                                      >
+                                          <${ViraIcon.assign({
+                                              icon: statusIcon.icon,
+                                          })}></${ViraIcon}>
+                                      </span>
+                                  `
+                                : nothing}
                             <span
                                 class=${classMap({
                                     status: true,
@@ -406,16 +418,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                             </span>
                         </span>
                     </div>
-                    ${isMultiline
-                        ? html`
-                              <div class="branch">
-                                  <${ViraIcon.assign({
-                                      icon: branchIcon,
-                                  })}></${ViraIcon}>
-                                  <span class="branch-name">${inputs.thread.worktreeBranch}</span>
-                              </div>
-                          `
-                        : nothing}
                 </div>
                 ${renderMenuItemEntries([
                     {

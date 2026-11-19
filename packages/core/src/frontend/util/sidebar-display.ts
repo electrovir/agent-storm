@@ -1,4 +1,4 @@
-import {PaneStatus, PrStatus} from '@agent-storm/common';
+import {type FolderInfo, PaneStatus, PrStatus} from '@agent-storm/common';
 import {html} from 'element-vir';
 import {
     createColoredIcon,
@@ -78,6 +78,35 @@ export const prStatusTooltips: Record<PrStatus, string> = {
     [PrStatus.Merged]: 'PR was merged.',
     [PrStatus.Closed]: 'PR was closed without merging.',
 };
+
+export const finishedPrStatuses: ReadonlyArray<PrStatus> = [
+    PrStatus.Merged,
+    PrStatus.Closed,
+];
+
+/**
+ * The PR status ring a folder's sidebar row shows. While an open PR's checkout has changes the PR
+ * doesn't have yet, that's the local-changes ring instead, with both tooltips.
+ */
+export function getPrRingDisplay(folder: Readonly<FolderInfo>) {
+    const showsLocalChanges =
+        !!folder.prUrl &&
+        !finishedPrStatuses.includes(folder.prStatus) &&
+        (folder.git.dirty || folder.git.notPushed);
+
+    return {
+        showsLocalChanges,
+        icon: showsLocalChanges ? localChangesIcon : prStatusIcons[folder.prStatus],
+        tooltip: showsLocalChanges
+            ? [
+                  localChangesTooltip,
+                  prStatusTooltips[folder.prStatus],
+              ]
+                  .filter(Boolean)
+                  .join(' ')
+            : prStatusTooltips[folder.prStatus],
+    };
+}
 
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),
