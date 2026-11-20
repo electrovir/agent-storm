@@ -108,6 +108,15 @@ async function createTerminal({
          * together.
          */
         wordSeparator: ' \t\n()[]{}\'",:;/\\<>`=-#*',
+        /**
+         * Opens OSC 8 hyperlinks (Claude Code prints its links this way) directly. Without a
+         * handler, xterm asks `confirm()` before every one.
+         */
+        linkHandler: {
+            activate(event, uri) {
+                window.open(uri, '_blank', 'noopener');
+            },
+        },
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);

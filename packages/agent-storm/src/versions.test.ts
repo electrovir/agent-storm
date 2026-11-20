@@ -40,15 +40,22 @@ async function createFakeTarball() {
         ),
         writeFile(join(sourceDir, 'marker.txt'), 'installed'),
     ]);
-    const tarballPath = join(await mkdtemp(join(tmpdir(), 'agent-storm-fake-tarball-')), 'a.tgz');
-    await promisify(execFile)('tar', [
-        '-czf',
-        tarballPath,
-        '-C',
-        sourceDir,
-        '.',
-    ]);
-    return tarballPath;
+    const tarballDir = await mkdtemp(join(tmpdir(), 'agent-storm-fake-tarball-'));
+    /** A bare file name for `-f`, as in `installVersion`, so Windows' `C:` isn't read as a host. */
+    await promisify(execFile)(
+        'tar',
+        [
+            '-czf',
+            'a.tgz',
+            '-C',
+            sourceDir,
+            '.',
+        ],
+        {
+            cwd: tarballDir,
+        },
+    );
+    return join(tarballDir, 'a.tgz');
 }
 
 describe(installVersion.name, () => {
