@@ -161,7 +161,14 @@ export async function startAgentToolServer({
     const httpServer = createServer(async (request, response) => {
         const token = request.headers.authorization?.replace(/^Bearer /, '');
         const callerId = token ? readTokenThreadId(token) : undefined;
-        if (!callerId) {
+        /** `findThread` throws for an archived or deleted thread, whose token then stops working. */
+        const isCallerActive =
+            !!callerId &&
+            (await context.findThread(callerId).then(
+                () => true,
+                () => false,
+            ));
+        if (!callerId || !isCallerActive) {
             response.writeHead(401).end();
             return;
         }

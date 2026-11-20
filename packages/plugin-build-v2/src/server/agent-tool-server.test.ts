@@ -3,13 +3,22 @@ import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {type Thread} from '../build-v2-api.js';
 import {type AgentToolConnection, startAgentToolServer} from './agent-tool-server.js';
 import {type AgentToolContext} from './agent-tools.js';
+
+const archivedThreadId = 'archived-thread';
 
 async function startTestServer(dataDir: string) {
     return await startAgentToolServer({
         tools: [],
-        context: {} satisfies Partial<AgentToolContext> as AgentToolContext,
+        context: {
+            findThread(threadId) {
+                return threadId === archivedThreadId
+                    ? Promise.reject(new Error('No active thread.'))
+                    : Promise.resolve({} satisfies Partial<Thread> as Thread);
+            },
+        } satisfies Partial<AgentToolContext> as AgentToolContext,
         instructions: '',
         dataDir,
     });
@@ -73,6 +82,7 @@ describe(startAgentToolServer.name, () => {
                             ...connection,
                             token: signature,
                         }),
+                        archived: await requestStatus(server.connect(archivedThreadId)),
                     },
                     {
                         valid: 200,
@@ -80,6 +90,7 @@ describe(startAgentToolServer.name, () => {
                         tampered: 401,
                         truncated: 401,
                         noSeparator: 401,
+                        archived: 401,
                     },
                 );
             } finally {
