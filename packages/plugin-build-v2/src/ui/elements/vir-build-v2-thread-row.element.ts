@@ -159,8 +159,11 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             font-weight: 500;
             transition: opacity 120ms;
 
-            &.receded {
+            &.light {
                 font-weight: 400;
+            }
+
+            &.receded {
                 opacity: 0.75;
             }
         }
@@ -316,6 +319,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                       <span
                           class=${classMap({
                               title: true,
+                              light: display.shouldRecede,
                               receded: shouldRecede,
                           })}
                       >

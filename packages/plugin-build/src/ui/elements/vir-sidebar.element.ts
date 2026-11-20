@@ -579,8 +579,8 @@ export const VirSidebar = defineAppElement<{
                             <${VirSidebarRepoHeader.assign({
                                 name: root.name,
                                 /**
-                                 * Counted from the unfiltered list so the number is the repo's real
-                                 * worktree count, not however many survived the current filters.
+                                 * Counted from every worktree that isn't hidden, not however many
+                                 * survived the current filters.
                                  */
                                 count: shownFolders.filter(
                                     (folder) => folder.parentRepoPath === root.path,
