@@ -582,7 +582,7 @@ export const VirSidebar = defineAppElement<{
                                  * Counted from the unfiltered list so the number is the repo's real
                                  * worktree count, not however many survived the current filters.
                                  */
-                                count: state.folders.filter(
+                                count: shownFolders.filter(
                                     (folder) => folder.parentRepoPath === root.path,
                                 ).length,
                                 isMenuOpen: state.openMenuKey === repoMenuKey,
