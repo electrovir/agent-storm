@@ -29,6 +29,7 @@ function createGroup({
         isAskingQuestion: false,
         backgroundTaskCount: 0,
         userMessageCount: 0,
+        lastUserMessageAt: 0,
         createdAt: 0,
         updatedAt,
     };
@@ -85,7 +86,7 @@ describe(arrangeRepoGroups.name, () => {
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
-                repoActivityAtMs: new Map(),
+                archivedThreadIds: [],
                 repos: [
                     {
                         path: '/repos/alpha',
@@ -119,22 +120,22 @@ describe(arrangeRepoGroups.name, () => {
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
-                repoActivityAtMs: new Map(),
+                archivedThreadIds: [],
                 repos: [],
                 sorting: SidebarSorting.Activity,
                 onlyShowRecent: true,
                 searchQuery: ' A ',
             }),
             [
-                'gamma',
                 'alpha',
                 'beta',
+                'gamma',
             ],
         );
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
-                repoActivityAtMs: new Map(),
+                archivedThreadIds: [],
                 repos: [],
                 sorting: SidebarSorting.Activity,
                 onlyShowRecent: false,
@@ -145,25 +146,22 @@ describe(arrangeRepoGroups.name, () => {
             ],
         );
     });
-    it('keeps the activity of archived threads', () => {
+    it('sorts folders by name with folders lacking active threads last', () => {
         assert.deepEquals(
             arrangedNames({
                 folderInfo: new Map(),
-                repoActivityAtMs: new Map([
-                    [
-                        '/repos/beta',
-                        4,
-                    ],
-                ]),
+                archivedThreadIds: [
+                    'beta',
+                ],
                 repos: [],
                 sorting: SidebarSorting.Activity,
                 onlyShowRecent: false,
                 searchQuery: '',
             }),
             [
-                'beta',
-                'gamma',
                 'alpha',
+                'gamma',
+                'beta',
                 'echo',
                 'hotel',
             ],

@@ -112,6 +112,11 @@ export const threadShape = defineShape({
     backgroundTaskCount: 0,
     /** Messages the user sent in the thread. */
     userMessageCount: 0,
+    /**
+     * Epoch milliseconds of the user's latest message, which orders threads within their folder.
+     * The thread's creation time until it has one.
+     */
+    lastUserMessageAt: 0,
     /** Epoch milliseconds. */
     createdAt: 0,
     /** Epoch milliseconds of the thread's latest activity, which orders the sidebar. */
@@ -331,6 +336,11 @@ export const buildV2Api = definePluginApi({
                 speedTier: nullableShape(''),
                 runtimeMode: enumShape(RuntimeMode),
                 text: '',
+                /**
+                 * Kept as the thread's title, like a rename, instead of one generated from `text`.
+                 * Blank to generate one.
+                 */
+                title: nullableShape(''),
                 /**
                  * Moves the thread into a new worktree, as `moveToWorktree` does, before sending
                  * `text`. For a Claude thread in a main checkout with an `open-worktree` skill,

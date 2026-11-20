@@ -16,6 +16,7 @@ import {
     ViraButton,
     ViraColorVariant,
     ViraIcon,
+    ViraInput,
     ViraSize,
     ViraTag,
     viraThemeByKeys,
@@ -35,7 +36,7 @@ import {
 import {createThreadTitle} from '../../server/thread-names.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {buildV2Memory, toComposerDraftKey} from '../../util/build-v2-memory.js';
-import {confirmThreadArchive} from '../../util/build-v2-state.js';
+import {confirmThreadArchive, findBuildV2State, storeThread} from '../../util/build-v2-state.js';
 import {buildMinimapTurns} from '../../util/chat-minimap.js';
 import {composerShortcutActions} from '../../util/composer-shortcuts.js';
 import {collectDroppedFiles, fileToBase64, toImageThumbnailUrl} from '../../util/file-drop.js';
@@ -151,6 +152,8 @@ export const VirAiChat = defineAppElement<{
             error: undefined as string | undefined,
             isErrorExpanded: false,
             composerText: '',
+            /** The title a new thread starts with. Blank to generate one from its first message. */
+            threadTitle: '',
             /** The model a new thread starts with. Unset to use the folder's or global default. */
             modelSelection: undefined as ModelSelection | undefined,
             /** The runtime mode a new thread starts with. */
@@ -627,7 +630,17 @@ export const VirAiChat = defineAppElement<{
                 left: 0;
                 right: 0;
                 bottom: 100%;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                gap: 16px;
                 padding-bottom: 16px;
+            }
+
+            & .thread-title-input {
+                width: 320px;
+                max-width: 100%;
+                text-align: center;
             }
 
             & h1 {
@@ -745,7 +758,11 @@ export const VirAiChat = defineAppElement<{
              * Cleared before the call because the server replies only once the provider has the
              * message, which waits on starting its process.
              */
+            const threadTitle = host.instanceState.threadTitle.trim();
             setComposerText('');
+            updateState({
+                threadTitle: '',
+            });
             setAttachments(
                 host.instanceState.attachments.filter(
                     (attachment) => !sentAttachments.includes(attachment),
@@ -756,6 +773,11 @@ export const VirAiChat = defineAppElement<{
                 if (!host.instanceState.composerText) {
                     setComposerText(text);
                 }
+                if (!host.instanceState.threadTitle) {
+                    updateState({
+                        threadTitle,
+                    });
+                }
                 setAttachments([
                     ...sentAttachments,
                     ...host.instanceState.attachments,
@@ -764,6 +786,21 @@ export const VirAiChat = defineAppElement<{
             await runAction(async () => {
                 try {
                     if (inputs.threadId) {
+                        const buildV2State = findBuildV2State(inputs.context);
+                        if (
+                            buildV2State?.archivedThreads.value?.some(
+                                (archived) => archived.id === inputs.threadId,
+                            )
+                        ) {
+                            storeThread(
+                                buildV2State,
+                                (
+                                    await buildV2Client.call('unarchiveThread', {
+                                        threadId: inputs.threadId,
+                                    })
+                                ).thread,
+                            );
+                        }
                         await buildV2Client.call('sendMessage', {
                             threadId: inputs.threadId,
                             text: message,
@@ -780,6 +817,7 @@ export const VirAiChat = defineAppElement<{
                             speedTier: draftSelection.speedTier,
                             runtimeMode: state.runtimeMode,
                             text: message,
+                            title: threadTitle || undefined,
                             isInWorktree,
                         });
                         pendingThreadCreations.set(id, creation);
@@ -802,6 +840,7 @@ export const VirAiChat = defineAppElement<{
                                         isAskingQuestion: false,
                                         backgroundTaskCount: 0,
                                         userMessageCount: 1,
+                                        lastUserMessageAt: now,
                                         createdAt: now,
                                         updatedAt: now,
                                     },
@@ -1223,10 +1262,10 @@ export const VirAiChat = defineAppElement<{
                     if (
                         !threadId ||
                         (state.thread &&
-                            !confirmThreadArchive({
+                            !(await confirmThreadArchive({
                                 context: inputs.context,
                                 thread: state.thread,
-                            }))
+                            })))
                     ) {
                         return;
                     }
@@ -1478,6 +1517,18 @@ export const VirAiChat = defineAppElement<{
                 <div class="lane-content hero-anchor">
                     <div class="hero">
                         <h1>${findPathName(inputs.repoPath)}</h1>
+                        <${ViraInput.assign({
+                            value: state.threadTitle,
+                            placeholder: 'Thread name (optional)',
+                            showClearButton: true,
+                        })}
+                            class="thread-title-input"
+                            ${listen(ViraInput.events.valueChange, (event) => {
+                                updateState({
+                                    threadTitle: event.detail,
+                                });
+                            })}
+                        ></${ViraInput}>
                     </div>
                     ${composer}
                 </div>

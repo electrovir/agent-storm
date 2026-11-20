@@ -858,10 +858,11 @@ export default definePluginServer({
                 speedTier,
                 runtimeMode,
                 text,
+                title,
                 isInWorktree,
                 isStartAwaited,
             }) {
-                const placeholderTitle = createThreadTitle(text);
+                const customTitle = title?.trim();
                 const folder = normalizePath(repoPath);
                 /**
                  * The sidebar groups threads by `repoPath`, so a thread started in a worktree (such
@@ -890,7 +891,8 @@ export default definePluginServer({
                     effort,
                     speedTier,
                     runtimeMode,
-                    title: placeholderTitle,
+                    title: customTitle || createThreadTitle(text),
+                    hasCustomTitle: !!customTitle,
                 });
                 const firstMessage = isOpenWorktreeSkillUsed
                     ? `/${openWorktreeSkillName} ${text}`
@@ -911,10 +913,12 @@ export default definePluginServer({
                                 threadId: id,
                                 folder,
                                 title:
+                                    customTitle ||
                                     (await generateThreadTitle({
                                         threadId: id,
                                         firstMessage: text,
-                                    })) || '',
+                                    })) ||
+                                    '',
                             });
                         } catch (error) {
                             await addNotice({

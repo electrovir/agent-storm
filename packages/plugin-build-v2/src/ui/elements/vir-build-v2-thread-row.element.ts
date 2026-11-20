@@ -59,7 +59,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
     /** The folder the thread runs in, which carries its PR status. */
     folderInfo: Readonly<FolderInfo> | undefined;
     isActive: boolean;
-    /** Shows the row dimmed, and clicking it unarchives the thread instead of selecting it. */
+    /** Shows the row dimmed, with Unarchive in its menu instead of Rename and Archive. */
     isArchived: boolean;
 }>()({
     tagName: 'vir-build-v2-thread-row',
@@ -288,8 +288,6 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             );
         }
 
-        const activate = inputs.isArchived ? unarchive : select;
-
         function startRename() {
             if (inputs.isArchived) {
                 return;
@@ -391,7 +389,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                             shouldRecede && inputs.thread.status === ThreadStatus.Running,
                         archived: inputs.isArchived,
                     })}
-                    ${listen('click', activate)}
+                    ${listen('click', select)}
                     ${listen('dblclick', startRename)}
                     ${listen('keydown', (event) => {
                         if (
@@ -402,7 +400,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                             ].includes(event.key)
                         ) {
                             event.preventDefault();
-                            activate();
+                            select();
                         }
                     })}
                 >
@@ -490,19 +488,19 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                                       </span>
                                   `
                                 : statusIcon?.icon
-                                ? html`
-                                      <span
-                                          class="folder-status"
-                                          ${statusIcon.tooltip
-                                              ? tooltip(statusIcon.tooltip, sidebarTooltipOptions)
-                                              : nothing}
-                                      >
-                                          <${ViraIcon.assign({
-                                              icon: statusIcon.icon,
-                                          })}></${ViraIcon}>
-                                      </span>
-                                  `
-                                : nothing}
+                                  ? html`
+                                        <span
+                                            class="folder-status"
+                                            ${statusIcon.tooltip
+                                                ? tooltip(statusIcon.tooltip, sidebarTooltipOptions)
+                                                : nothing}
+                                        >
+                                            <${ViraIcon.assign({
+                                                icon: statusIcon.icon,
+                                            })}></${ViraIcon}>
+                                        </span>
+                                    `
+                                  : nothing}
                         </span>
                     </div>
                 </div>

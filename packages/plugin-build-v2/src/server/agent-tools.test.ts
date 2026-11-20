@@ -29,6 +29,7 @@ const baseThread: Thread = {
     isAskingQuestion: false,
     backgroundTaskCount: 0,
     userMessageCount: 0,
+    lastUserMessageAt: 0,
     createdAt: 0,
     updatedAt: 0,
 };

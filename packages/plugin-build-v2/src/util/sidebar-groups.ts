@@ -9,7 +9,7 @@ const groupSortKeys: Record<
         params: Readonly<{
             group: ThreadRepoGroup;
             folder: Readonly<FolderInfo> | undefined;
-            repoActivityAtMs: ReadonlyMap<string, number>;
+            archivedThreadIds: ReadonlyArray<string>;
         }>,
     ) => number
 > = {
@@ -20,15 +20,11 @@ const groupSortKeys: Record<
         return folder?.createdAtMs || 0;
     },
     /**
-     * A thread's latest message counts as activity, the same as typing in the folder's terminal.
-     * Archived threads still count, so archiving one doesn't move its folder.
+     * Activity reorders the threads within each folder, not the folders themselves: folders with a
+     * thread that isn't archived go first, and the rest go last.
      */
-    [SidebarSorting.Activity]({group, folder, repoActivityAtMs}) {
-        return Math.max(
-            repoActivityAtMs.get(group.repo.path) || 0,
-            group.threads[0]?.updatedAt || 0,
-            folder?.lastActivityAtMs || 0,
-        );
+    [SidebarSorting.Activity]({group, archivedThreadIds}) {
+        return group.threads.some((thread) => !archivedThreadIds.includes(thread.id)) ? 1 : 0;
     },
 };
 
@@ -90,7 +86,7 @@ function filterByRecency(
 export function arrangeRepoGroups({
     groups,
     folderInfo,
-    repoActivityAtMs,
+    archivedThreadIds,
     repos,
     sorting,
     onlyShowRecent,
@@ -98,8 +94,7 @@ export function arrangeRepoGroups({
 }: Readonly<{
     groups: ReadonlyArray<ThreadRepoGroup>;
     folderInfo: ReadonlyMap<string, Readonly<FolderInfo>>;
-    /** Repo path → its latest thread activity, archived threads included. */
-    repoActivityAtMs: ReadonlyMap<string, number>;
+    archivedThreadIds: ReadonlyArray<string>;
     repos: ReadonlyArray<Readonly<SavedRepo>>;
     sorting: SidebarSorting | undefined;
     onlyShowRecent: boolean | undefined;
@@ -118,7 +113,7 @@ export function arrangeRepoGroups({
                 sortKey: groupSortKeys[sorting ?? SidebarSorting.Name]({
                     group,
                     folder: folderInfo.get(group.repo.path),
-                    repoActivityAtMs,
+                    archivedThreadIds,
                 }),
             };
         })

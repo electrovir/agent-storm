@@ -1,3 +1,4 @@
+// cspell:words unarchived unarchiving
 import {type PluginServerContext} from '@agent-storm/core/server';
 import {assertWrap} from '@augment-vir/assert';
 import {awaitedBlockingMap, type PartialWithUndefined} from '@augment-vir/common';
@@ -42,6 +43,18 @@ const threadSelect = {
         },
         select: {
             kind: true,
+        },
+    },
+    items: {
+        where: {
+            kind: ThreadItemKind.UserMessage,
+        },
+        orderBy: {
+            createdAt: 'desc',
+        },
+        take: 1,
+        select: {
+            createdAt: true,
         },
     },
     _count: {
@@ -95,6 +108,7 @@ export function toThread({
     effort,
     runtimeMode,
     requests,
+    items,
     _count,
     ...row
 }: Readonly<Prisma.ThreadGetPayload<{select: typeof threadSelect}>>): Thread {
@@ -114,6 +128,7 @@ export function toThread({
                 ({kind}) => assertWrap.isEnumValue(kind, ApprovalKind) === ApprovalKind.Question,
             ),
         userMessageCount: _count.items,
+        lastUserMessageAt: (items[0]?.createdAt ?? createdAt).getTime(),
         createdAt: createdAt.getTime(),
         updatedAt: updatedAt.getTime(),
     };
@@ -277,7 +292,11 @@ export function createThreadStore({
                     | 'runtimeMode'
                     | 'title'
                 > &
-                    PartialWithUndefined<Pick<Thread, 'cwd'>>
+                    PartialWithUndefined<
+                        Pick<Thread, 'cwd'> & {
+                            hasCustomTitle: boolean;
+                        }
+                    >
             >,
         ) {
             const thread = toThread(
@@ -287,6 +306,7 @@ export function createThreadStore({
                         effort: data.effort ?? null,
                         speedTier: data.speedTier || null,
                         cwd: data.cwd || data.repoPath,
+                        hasCustomTitle: !!data.hasCustomTitle,
                         status: ThreadStatus.Idle,
                     },
                     select: threadSelect,
@@ -446,7 +466,15 @@ export function createThreadStore({
                 itemRows,
                 requests,
             ] = await Promise.all([
-                findThread(threadId),
+                /** Archived threads included, since the user can open one without unarchiving it. */
+                prismaClient.thread
+                    .findUniqueOrThrow({
+                        where: {
+                            id: threadId,
+                        },
+                        select: threadSelect,
+                    })
+                    .then(toThread),
                 prismaClient.threadItem.findMany({
                     where: {
                         threadId,
@@ -551,15 +579,17 @@ export function createThreadStore({
             return threadItem;
         },
         async markThreadRead(threadId: string) {
-            const {updatedAt, hasUnreadReply} = await prismaClient.thread.findUniqueOrThrow({
-                where: {
-                    id: threadId,
-                },
-                select: {
-                    updatedAt: true,
-                    hasUnreadReply: true,
-                },
-            });
+            const {updatedAt, hasUnreadReply, deactivatedAt} =
+                await prismaClient.thread.findUniqueOrThrow({
+                    where: {
+                        id: threadId,
+                    },
+                    select: {
+                        updatedAt: true,
+                        hasUnreadReply: true,
+                        deactivatedAt: true,
+                    },
+                });
             if (!hasUnreadReply) {
                 return;
             }
@@ -576,7 +606,10 @@ export function createThreadStore({
                     select: threadSelect,
                 }),
             );
-            emit('threadChanged', thread);
+            /** The client takes a changed thread as unarchived, which an opened archived one isn't. */
+            if (!deactivatedAt) {
+                emit('threadChanged', thread);
+            }
         },
         /** Ignores a delta for an item that isn't in progress. */
         appendDelta({

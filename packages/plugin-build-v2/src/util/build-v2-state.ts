@@ -53,15 +53,19 @@ export function findBuildV2State({activityStates}: Readonly<Pick<AppContext, 'ac
 
 /**
  * Asks the user before archiving a thread would delete a worktree whose branch isn't merged yet.
- * Returns `true` when the archive should go ahead, including when there's nothing to ask about.
+ * Resolves to `true` when the archive should go ahead, including when there's nothing to ask about.
+ * Waits for the first folder poll when it hasn't answered yet.
  */
-export function confirmThreadArchive({
+export async function confirmThreadArchive({
     context,
     thread,
 }: Readonly<{
     context: Pick<AppContext, 'activityStates' | 'folderData'>;
     thread: Readonly<Thread>;
 }>) {
+    if (!context.folderData.value.live) {
+        await context.folderData.refresh();
+    }
     const folderInfo = context.folderData.value.folderInfo.get(thread.cwd);
     /** Mirrors the server's `archiveThread`, which keeps a worktree another thread works in. */
     const isWorktreeShared = !!findBuildV2State(context)?.threads.value?.some((other) => {
@@ -139,6 +143,14 @@ export function storeThread(state: Readonly<BuildV2State>, thread: Readonly<Thre
             ]),
         );
     }
+}
+
+/** Finds a thread in the state's list or, while the sidebar shows them, among archived threads. */
+export function findStateThread(state: Readonly<BuildV2State>, threadId: string) {
+    return [
+        ...(state.threads.value || []),
+        ...(state.archivedThreads.value || []),
+    ].find((thread) => thread.id === threadId);
 }
 
 /** Drops one thread from the state's list, such as one archived or one that failed to create. */

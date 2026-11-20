@@ -35,6 +35,7 @@ function createThread(overrides: Readonly<Partial<Thread>>): Thread {
         isAskingQuestion: false,
         backgroundTaskCount: 0,
         userMessageCount: 0,
+        lastUserMessageAt: 0,
         createdAt: 0,
         updatedAt: 0,
         ...overrides,
@@ -57,7 +58,7 @@ function createItem(overrides: Readonly<Partial<ThreadItem>>): ThreadItem {
 }
 
 describe(groupThreadsByRepo.name, () => {
-    it('orders repos by latest thread and keeps unlisted repos', () => {
+    it('orders threads by latest user message, repos by latest activity, and keeps unlisted repos', () => {
         const groups = groupThreadsByRepo({
             repos: [
                 {
@@ -72,11 +73,13 @@ describe(groupThreadsByRepo.name, () => {
             threads: [
                 createThread({
                     id: 'old',
-                    updatedAt: 1,
+                    lastUserMessageAt: 1,
+                    updatedAt: 3,
                 }),
                 createThread({
                     id: 'new',
-                    updatedAt: 3,
+                    lastUserMessageAt: 3,
+                    updatedAt: 1,
                 }),
                 createThread({
                     id: 'other',

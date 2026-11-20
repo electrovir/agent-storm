@@ -18,6 +18,7 @@ import {buildV2Memory} from '../../util/build-v2-memory.js';
 import {
     buildV2ActivityId,
     createBuildV2State,
+    findStateThread,
     newThreadSubPath,
     startThreadSync,
 } from '../../util/build-v2-state.js';
@@ -131,7 +132,7 @@ export const buildV2Activity = defineActivity({
             `;
         }
 
-        const thread = state.threads.value?.find((existing) => existing.id === threadId);
+        const thread = threadId ? findStateThread(state, threadId) : undefined;
 
         if (threadId && !thread) {
             return nothing;
@@ -292,7 +293,7 @@ export const buildV2Activity = defineActivity({
     },
     findTitle({state, subPaths}) {
         const [threadId] = subPaths;
-        return state.threads.value?.find((thread) => thread.id === threadId)?.title;
+        return threadId ? findStateThread(state, threadId)?.title : undefined;
     },
     findCount({state}) {
         return (
@@ -320,7 +321,7 @@ export const buildV2Activity = defineActivity({
             !!firstSubPath &&
             firstSubPath !== newThreadSubPath &&
             !!state.threads.value &&
-            !state.threads.value.some((thread) => thread.id === firstSubPath);
+            !findStateThread(state, firstSubPath);
         return subPaths.length > 1 ||
             (firstSubPath === newThreadSubPath && !state.draftRepoPath.value) ||
             isUnknownThread

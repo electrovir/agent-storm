@@ -10,9 +10,14 @@ export type ThreadRepo = Readonly<{
 /** One repo's threads in the sidebar. */
 export type ThreadRepoGroup = {
     repo: ThreadRepo;
-    /** Latest activity first. */
+    /** Latest user message first. */
     threads: Thread[];
 };
+
+/** Epoch milliseconds of the latest activity among `threads`, or 0 when there are none. */
+export function findLatestUpdate(threads: ReadonlyArray<Readonly<Thread>>) {
+    return Math.max(0, ...threads.map((thread) => thread.updatedAt));
+}
 
 /** The last segment of `path`, for a repo the app's folder list doesn't name. */
 export function findPathName(path: string) {
@@ -50,11 +55,13 @@ export function groupThreadsByRepo({
                 repo,
                 threads: threads
                     .filter((thread) => thread.repoPath === repo.path)
-                    .toSorted((first, second) => second.updatedAt - first.updatedAt),
+                    .toSorted(
+                        (first, second) => second.lastUserMessageAt - first.lastUserMessageAt,
+                    ),
             };
         })
         .toSorted((first, second) => {
-            return (second.threads[0]?.updatedAt || 0) - (first.threads[0]?.updatedAt || 0);
+            return findLatestUpdate(second.threads) - findLatestUpdate(first.threads);
         });
 }
 

@@ -315,7 +315,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
         const groups = arrangeRepoGroups({
             groups: allGroups,
             folderInfo: inputs.context.folderData.value.folderInfo,
-            repoActivityAtMs: inputs.buildV2State.repoActivityAtMs.value,
+            archivedThreadIds: (archivedThreads || []).map((thread) => thread.id),
             repos: snapshot?.repos || [],
             sorting: snapshot?.settings.sidebarSorting,
             onlyShowRecent: snapshot?.settings.onlyShowRecent,
@@ -414,12 +414,10 @@ export const VirBuildV2Sidebar = defineAppElement<{
                         searchQuery: event.detail,
                     });
                 })}
-                ${listen(VirSidebarSearch.events.searchSubmit, async () => {
+                ${listen(VirSidebarSearch.events.searchSubmit, () => {
                     const [firstGroup] = groups;
                     const [firstThread] = firstGroup?.threads || [];
-                    if (firstThread && isArchived(firstThread)) {
-                        await unarchiveThread(firstThread);
-                    } else if (firstThread) {
+                    if (firstThread) {
                         selectThread(firstThread);
                     } else if (firstGroup) {
                         startDraft(firstGroup.repo.path);
@@ -712,10 +710,10 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                             VirBuildV2ThreadRow.events.archived,
                                                             async () => {
                                                                 if (
-                                                                    !confirmThreadArchive({
+                                                                    !(await confirmThreadArchive({
                                                                         context: inputs.context,
                                                                         thread,
-                                                                    })
+                                                                    }))
                                                                 ) {
                                                                     return;
                                                                 }
