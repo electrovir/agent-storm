@@ -35,8 +35,8 @@ export const fittedImageView: Readonly<ImageView> = {
 const maxImageZoom = 8;
 
 /**
- * Once zoomed, a larger-than-viewport image can't leave a gap at an edge and a smaller one can't
- * slide past an edge. At the fitted size the image stays centered.
+ * Keeps an image larger than the viewport from leaving a gap at an edge, and a smaller one from
+ * sliding past an edge.
  */
 function clampImageView({
     view,
@@ -45,9 +45,8 @@ function clampImageView({
 }: Readonly<ImageViewBounds> & {
     view: Readonly<ImageView>;
 }) {
-    const maxX = view.zoom > 1 ? Math.abs(imageSize.width * view.zoom - viewportSize.width) / 2 : 0;
-    const maxY =
-        view.zoom > 1 ? Math.abs(imageSize.height * view.zoom - viewportSize.height) / 2 : 0;
+    const maxX = Math.abs(imageSize.width * view.zoom - viewportSize.width) / 2;
+    const maxY = Math.abs(imageSize.height * view.zoom - viewportSize.height) / 2;
 
     return {
         zoom: view.zoom,

@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/plugin-build-v2",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "private": true,
     "description": "",
     "keywords": [],
@@ -30,9 +30,9 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/common": "^0.4.0",
-        "@agent-storm/core": "^0.4.0",
-        "@agent-storm/plugin-review": "^0.4.0",
+        "@agent-storm/common": "^0.5.0",
+        "@agent-storm/core": "^0.5.0",
+        "@agent-storm/plugin-review": "^0.5.0",
         "@anthropic-ai/claude-agent-sdk": "^0.3.322",
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",
@@ -43,7 +43,7 @@
         "@prisma/adapter-better-sqlite3": "7.10.1",
         "@prisma/client": "7.10.1",
         "@rest-vir/api": "^2.5.0",
-        "agent-storm-util": "^0.4.0",
+        "agent-storm-util": "^0.5.0",
         "better-sqlite3": "^13.0.3",
         "date-vir": "^9.4.1",
         "element-vir": "^27.0.2",

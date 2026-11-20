@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/plugin-debug",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "private": true,
     "description": "",
     "keywords": [],
@@ -30,7 +30,7 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/core": "^0.4.0",
+        "@agent-storm/core": "^0.5.0",
         "element-vir": "^27.0.2"
     },
     "engines": {

@@ -32,7 +32,7 @@ describe(zoomImageView.name, () => {
             },
         );
     });
-    it('centers the image again when zooming below its fitted size', () => {
+    it('stops zooming out at the fitted size', () => {
         assert.deepEquals(
             zoomImageView({
                 ...bounds,
@@ -47,7 +47,11 @@ describe(zoomImageView.name, () => {
                     y: 50,
                 },
             }),
-            fittedImageView,
+            {
+                zoom: 1,
+                x: 22.5,
+                y: 45,
+            },
         );
     });
 });
