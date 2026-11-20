@@ -53,6 +53,27 @@ describe(zoomImageView.name, () => {
 });
 
 describe(panImageView.name, () => {
+    it('pans a zoomed image smaller than the viewport up to the viewport edge', () => {
+        assert.deepEquals(
+            panImageView({
+                ...bounds,
+                view: {
+                    zoom: 1.5,
+                    x: 0,
+                    y: 0,
+                },
+                delta: {
+                    x: 100,
+                    y: -10,
+                },
+            }),
+            {
+                zoom: 1.5,
+                x: 25,
+                y: -10,
+            },
+        );
+    });
     it('stops at the image edge', () => {
         assert.deepEquals(
             panImageView({
