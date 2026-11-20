@@ -94,9 +94,9 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             display: flex;
             box-sizing: border-box;
             width: 100%;
-            height: 28px;
+            min-height: 28px;
             align-items: center;
-            padding: 0 5px 0 17px;
+            padding: 2px 5px 2px 17px;
             overflow: hidden;
             cursor: pointer;
             user-select: none;
@@ -145,17 +145,16 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             display: flex;
             flex-grow: 1;
             min-width: 0;
-            height: 24px;
-            align-items: center;
+            min-height: 24px;
+            align-items: flex-start;
             gap: 10px;
         }
 
         .title {
             flex-grow: 1;
             min-width: 0;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
+            padding: 4px 0;
+            overflow-wrap: anywhere;
             font-size: 13px;
             font-weight: 500;
             transition: opacity 120ms;

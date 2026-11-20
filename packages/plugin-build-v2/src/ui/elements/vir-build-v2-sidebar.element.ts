@@ -196,8 +196,14 @@ export const VirBuildV2Sidebar = defineAppElement<{
             }
         }
 
-        .project-name {
+        .project-label {
+            display: flex;
             flex-grow: 1;
+            min-width: 0;
+            gap: 4px;
+        }
+
+        .project-name {
             min-width: 0;
             overflow: hidden;
             white-space: nowrap;
@@ -224,8 +230,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
 
         .thread-count {
             flex-shrink: 0;
-            font-size: 11px;
-            font-variant-numeric: tabular-nums;
+            font-size: 13px;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
@@ -248,17 +253,9 @@ export const VirBuildV2Sidebar = defineAppElement<{
             opacity: 1;
         }
 
-        .project:hover .thread-count {
-            visibility: hidden;
-        }
-
         @media (pointer: coarse) {
             & .new-thread-wrapper {
                 opacity: 1;
-            }
-
-            & .thread-count {
-                visibility: hidden;
             }
         }
 
@@ -513,6 +510,10 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                   .map((thread) => sidebarStatusDisplays[thread.status].folderDot)
                                   .find((dot) => dot)
                             : undefined;
+                        /** Counted before search filtering, like the Build tab's repo count. */
+                        const threadCount =
+                            allGroups.find((entry) => entry.repo.path === group.repo.path)?.threads
+                                .length ?? group.threads.length;
                         return html`
                             <li class="project">
                                 <${ViraCollapsibleWrapper.assign({
@@ -576,7 +577,16 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                 'vira-menu-trigger-trigger'
                                             ]}
                                         >
-                                            <span class="project-name">${group.repo.name}</span>
+                                            <span class="project-label">
+                                                <span class="project-name">${group.repo.name}</span>
+                                                ${threadCount > 1
+                                                    ? html`
+                                                          <span class="thread-count">
+                                                              (${threadCount})
+                                                          </span>
+                                                      `
+                                                    : nothing}
+                                            </span>
                                             ${folderDot
                                                 ? html`
                                                       <span
@@ -590,13 +600,6 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                           <span class="screen-reader-only">
                                                               ${folderDot.label}
                                                           </span>
-                                                      </span>
-                                                  `
-                                                : nothing}
-                                            ${isCollapsed && group.threads.length
-                                                ? html`
-                                                      <span class="thread-count">
-                                                          ${group.threads.length}
                                                       </span>
                                                   `
                                                 : nothing}
