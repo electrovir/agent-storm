@@ -41,14 +41,15 @@ export function createThreadTitlePrompt({
           ]
         : [];
     return [
-        'Write a short title for the coding thread below.',
-        'The user keeps many threads open at once, so the title must tell this one apart from similar threads. Name its specific subject (the bug, feature, file, ticket, channel, or error), not only the kind of task.',
-        'Keep it to 40 characters or fewer.',
+        'Write a title for the coding thread below that reads like a terse branch name written with spaces: 2 to 5 words, such as "sidebar title overflow" or "fix codex resume crash".',
+        'The user keeps many threads open at once, so the title must tell this one apart from similar threads. Name its specific subject (the bug, feature, file, ticket, channel, or error), not only the kind of task. Drop filler words like "the", "a", "issue", and "update".',
+        'Keep it to 30 characters or fewer.',
+        'The first message sets what the thread is about. Title that main goal, not whatever the latest messages happen to be working on.',
         'Title the work the user wants done, never the conversation itself: no notes about missing context, links that cannot be opened, or what the assistant could not do.',
         `If the conversation does not yet show what that work is, such as when it holds only a link, reply with exactly ${unknownTitleReply}.`,
         ...(thread
             ? [
-                  `Its current title is "${thread.title}". Reply with that title unchanged unless the conversation shows it is vague or no longer fits.`,
+                  `Its current title is "${thread.title}". Reply with that title unchanged unless it is only a placeholder, raw message text, or too vague to tell this thread apart. Side work, follow-up fixes, and detours later in the thread never justify a new title.`,
               ]
             : []),
         'Reply with only the title: no quotes, no markdown, and no period at the end.',
