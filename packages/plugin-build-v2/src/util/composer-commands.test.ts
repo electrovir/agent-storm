@@ -5,6 +5,7 @@ import {
     detectComposerTrigger,
     insertComposerCommand,
     listComposerMenuCommands,
+    splitComposerCommandMentions,
 } from './composer-commands.js';
 
 function createCommand(
@@ -129,6 +130,61 @@ describe(listComposerMenuCommands.name, () => {
             [
                 'review',
                 'code-review',
+            ],
+        );
+    });
+});
+
+describe(splitComposerCommandMentions.name, () => {
+    it('pairs known skills anywhere and commands only first', () => {
+        const review = createCommand('review', ComposerCommandKind.Skill);
+        const clear = createCommand('clear', ComposerCommandKind.Command);
+        assert.deepEquals(
+            splitComposerCommandMentions({
+                text: '/clear then $review /review /clear\n$nope',
+                commands: [
+                    review,
+                    clear,
+                ],
+            }),
+            [
+                {
+                    text: '/clear',
+                    command: clear,
+                },
+                ...[
+                    ' ',
+                    'then',
+                    ' ',
+                ].map((text) => {
+                    return {
+                        text,
+                        command: undefined,
+                    };
+                }),
+                {
+                    text: '$review',
+                    command: review,
+                },
+                {
+                    text: ' ',
+                    command: undefined,
+                },
+                {
+                    text: '/review',
+                    command: review,
+                },
+                ...[
+                    ' ',
+                    '/clear',
+                    '\n',
+                    '$nope',
+                ].map((text) => {
+                    return {
+                        text,
+                        command: undefined,
+                    };
+                }),
             ],
         );
     });

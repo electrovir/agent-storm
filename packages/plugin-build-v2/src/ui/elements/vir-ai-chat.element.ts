@@ -7,7 +7,7 @@ import {
     wait,
     wrapInTry,
 } from '@augment-vir/common';
-import {classMap, css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {classMap, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
     createSizedIcon,
     LucideCircleAlertIcon,
@@ -35,24 +35,29 @@ import {
 import {createThreadTitle} from '../../server/thread-names.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {buildV2Memory, toComposerDraftKey} from '../../util/build-v2-memory.js';
+import {confirmThreadArchive} from '../../util/build-v2-state.js';
 import {buildMinimapTurns} from '../../util/chat-minimap.js';
 import {composerShortcutActions} from '../../util/composer-shortcuts.js';
 import {collectDroppedFiles, fileToBase64, toImageThumbnailUrl} from '../../util/file-drop.js';
+import {appendMarkdownQuote} from '../../util/markdown-quote.js';
 import {
     attachmentPreviewLength,
     attachmentThumbnailSize,
     pastedTextFilename,
     splitMessageAttachments,
     toAttachmentTag,
+    type MessageAttachment,
 } from '../../util/message-attachments.js';
 import {
     fillMissingModelDefaults,
     findModelDefaultsFolder,
     resolveModelDefault,
 } from '../../util/model-defaults.js';
+import {stickToBottom} from '../../util/stick-to-bottom.js';
 import {applyItemDelta, findPathName, upsertItems} from '../../util/thread-timeline.js';
-import {threadStatusDisplays} from './thread-display.js';
+import {questionStatusDisplay, threadStatusDisplays} from './thread-display.js';
 import {VirAiChatApproval} from './vir-ai-chat-approval.element.js';
+import {VirAiChatAttachmentViewer} from './vir-ai-chat-attachment-viewer.element.js';
 import {VirAiChatComposer, type ComposerAttachment} from './vir-ai-chat-composer.element.js';
 import {VirAiChatMinimap} from './vir-ai-chat-minimap.element.js';
 import {type ModelSelection, type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
@@ -71,9 +76,44 @@ import {VirAiChatTimeline} from './vir-ai-chat-timeline.element.js';
  */
 const pendingThreadCreations = new Map<string, Promise<unknown>>();
 
+function toCommandListKey({provider, cwd}: Readonly<{provider: AiProvider; cwd: string}>) {
+    return `${provider}:${cwd}`;
+}
+
+/** Reads the commands and skills for the composer's menu and the timeline's highlights. */
+async function loadComposerCommands({
+    provider,
+    cwd,
+}: Readonly<{provider: AiProvider; cwd: string}>) {
+    return {
+        listKey: toCommandListKey({
+            provider,
+            cwd,
+        }),
+        commands: await wrapInTry(
+            async () => {
+                return (
+                    await buildV2Client.call('listCommands', {
+                        provider,
+                        cwd,
+                    })
+                ).commands;
+            },
+            {
+                fallbackValue: [],
+            },
+        ),
+    };
+}
+
 const branchIcon = createSizedIcon(LucideGitBranchIcon, 12);
 const worktreeIcon = createSizedIcon(LucideGitBranchIcon, 14);
 const errorIcon = createSizedIcon(LucideCircleAlertIcon, 16);
+
+// cspell:word contenteditable
+/** Elements whose own click behavior a click on the chat must not override by focusing the composer. */
+const interactiveSelector =
+    'a, button, input, textarea, select, label, summary, [contenteditable], [tabindex], [role="button"]';
 
 /**
  * One chat thread: its header, timeline, pending approval, and composer. Without a `threadId` it is
@@ -130,6 +170,8 @@ export const VirAiChat = defineAppElement<{
              */
             attachments: [] as ReadonlyArray<Readonly<ComposerAttachment>>,
             isDraggingFiles: false,
+            /** Shown over the whole chat. */
+            openedAttachment: undefined as Readonly<MessageAttachment> | undefined,
             /** The request whose answer is being sent. */
             busyRequestId: undefined as string | undefined,
             /** Answers to the pending question so far. Ignored once a different request is first. */
@@ -138,6 +180,7 @@ export const VirAiChat = defineAppElement<{
             removers: [] as ReadonlyArray<() => Promise<void>>,
             removeReconnectListener: (() => {}) as () => void,
             removeSeenWatchers: (() => {}) as () => void,
+            removeStickToBottom: (() => {}) as () => void,
         };
     },
     init({inputs, updateState, host}) {
@@ -239,6 +282,16 @@ export const VirAiChat = defineAppElement<{
                         isLoading: false,
                     });
                     markReadIfSeen(threadId);
+                    /** The timeline highlights the commands its messages mention. */
+                    return loadComposerCommands({
+                        provider: loaded.thread.provider,
+                        cwd: loaded.thread.cwd || inputs.repoPath,
+                    });
+                })
+                .then((composerCommands) => {
+                    updateState({
+                        composerCommands,
+                    });
                 })
                 .catch((error: unknown) => {
                     updateState({
@@ -288,6 +341,7 @@ export const VirAiChat = defineAppElement<{
     cleanup({state}) {
         state.removeReconnectListener();
         state.removeSeenWatchers();
+        state.removeStickToBottom();
         void Promise.all(state.removers.map(async (remove) => await remove()));
     },
     styles: css`
@@ -309,7 +363,11 @@ export const VirAiChat = defineAppElement<{
             flex-grow: 1;
             min-height: 0;
             min-width: 0;
-            overflow-x: hidden;
+            /*
+             * 'clip', not 'hidden': 'overflow-x: hidden' turns 'overflow-y' into 'auto', and iOS
+             * scrolls that to reveal the focused composer, pushing everything above it off-screen.
+             */
+            overflow-x: clip;
         }
 
         header {
@@ -518,10 +576,16 @@ export const VirAiChat = defineAppElement<{
 
         .scroller {
             display: flex;
-            flex-direction: column-reverse;
+            flex-direction: column;
             flex-grow: 1;
             min-height: 0;
             overflow-y: auto;
+
+            /* Sits a short thread at the bottom, beside the composer. */
+            &::before {
+                content: '';
+                flex-grow: 1;
+            }
 
             & .lane-content {
                 padding-top: 16px;
@@ -582,7 +646,11 @@ export const VirAiChat = defineAppElement<{
     render({inputs, state, updateState, dispatch, events, host}) {
         const isDraft = !inputs.threadId;
         const isRunning = state.thread?.status === ThreadStatus.Running;
-        const status = state.thread ? threadStatusDisplays[state.thread.status] : undefined;
+        const status = state.thread?.isAskingQuestion
+            ? questionStatusDisplay
+            : state.thread
+              ? threadStatusDisplays[state.thread.status]
+              : undefined;
         const cwd = state.thread?.cwd || inputs.repoPath;
         const branch =
             state.thread?.worktreeBranch ||
@@ -731,6 +799,9 @@ export const VirAiChat = defineAppElement<{
                                         title: createThreadTitle(message),
                                         status: ThreadStatus.Running,
                                         hasUnreadReply: false,
+                                        isAskingQuestion: false,
+                                        backgroundTaskCount: 0,
+                                        userMessageCount: 1,
                                         createdAt: now,
                                         updatedAt: now,
                                     },
@@ -946,8 +1017,36 @@ export const VirAiChat = defineAppElement<{
             }
         }
 
+        /** While a question waits, the composer holds the custom answer instead of the message. */
+        function changeComposerText(text: string) {
+            if (questionDraft && activeAnswer) {
+                updateState({
+                    questionDraft: withActiveAnswer(questionDraft, {
+                        ...activeAnswer,
+                        customAnswer: text,
+                    }),
+                });
+            } else {
+                setComposerText(text);
+            }
+        }
+
+        function findComposerTextarea() {
+            return host.shadowRoot
+                .querySelector(VirAiChatComposer.tagName)
+                ?.shadowRoot?.querySelector('textarea');
+        }
+
         const commandProvider = state.thread?.provider || draftSelection.provider;
-        const commandListKey = `${commandProvider}:${cwd}`;
+        const commandListKey = toCommandListKey({
+            provider: commandProvider,
+            cwd,
+        });
+        /** A list for another provider or folder stays out, and the menu shows it loading. */
+        const commands =
+            state.composerCommands?.listKey === commandListKey
+                ? state.composerCommands.commands
+                : undefined;
 
         const composer = html`
             <${VirAiChatComposer.assign({
@@ -982,11 +1081,7 @@ export const VirAiChat = defineAppElement<{
                     ? state.thread.speedTier || undefined
                     : draftSelection.speedTier,
                 runtimeMode: state.thread?.runtimeMode || state.runtimeMode,
-                /** A list for another provider or folder stays out, and the menu shows it loading. */
-                commands:
-                    state.composerCommands?.listKey === commandListKey
-                        ? state.composerCommands.commands
-                        : undefined,
+                commands,
                 isShown: inputs.isShown,
                 shortcuts: mapObjectValues(composerShortcutActions, (_name, action) => {
                     return inputs.context.readShortcuts(action);
@@ -1008,36 +1103,14 @@ export const VirAiChat = defineAppElement<{
                         : undefined,
             })}
                 ${listen(VirAiChatComposer.events.textChange, (event) => {
-                    if (questionDraft && activeAnswer) {
-                        updateState({
-                            questionDraft: withActiveAnswer(questionDraft, {
-                                ...activeAnswer,
-                                customAnswer: event.detail,
-                            }),
-                        });
-                    } else {
-                        setComposerText(event.detail);
-                    }
+                    changeComposerText(event.detail);
                 })}
                 ${listen(VirAiChatComposer.events.commandsRequested, async () => {
-                    const commands = await wrapInTry(
-                        async () => {
-                            return (
-                                await buildV2Client.call('listCommands', {
-                                    provider: commandProvider,
-                                    cwd,
-                                })
-                            ).commands;
-                        },
-                        {
-                            fallbackValue: [],
-                        },
-                    );
                     updateState({
-                        composerCommands: {
-                            listKey: commandListKey,
-                            commands,
-                        },
+                        composerCommands: await loadComposerCommands({
+                            provider: commandProvider,
+                            cwd,
+                        }),
                     });
                 })}
                 ${listen(VirAiChatComposer.events.modelChange, async (event) => {
@@ -1118,6 +1191,11 @@ export const VirAiChat = defineAppElement<{
                         textPreview: event.detail.slice(0, attachmentPreviewLength),
                     });
                 })}
+                ${listen(VirAiChatComposer.events.attachmentOpened, (event) => {
+                    updateState({
+                        openedAttachment: event.detail,
+                    });
+                })}
                 ${listen(VirAiChatComposer.events.attachmentRemoved, (event) => {
                     setAttachments(
                         state.attachments.filter((attachment) => attachment.id !== event.detail),
@@ -1142,12 +1220,20 @@ export const VirAiChat = defineAppElement<{
                 })}
                 ${listen(VirAiChatComposer.events.archiveRequested, async () => {
                     const threadId = inputs.threadId;
-                    if (!threadId) {
+                    if (
+                        !threadId ||
+                        (state.thread &&
+                            !confirmThreadArchive({
+                                context: inputs.context,
+                                thread: state.thread,
+                            }))
+                    ) {
                         return;
                     }
                     await runAction(async () => {
                         await buildV2Client.call('archiveThread', {
                             threadId,
+                            deleteWorktree: true,
                         });
                         dispatch(
                             new events.threadArchived({
@@ -1289,7 +1375,17 @@ export const VirAiChat = defineAppElement<{
             <${VirAiChatMinimap.assign({
                 turns: buildMinimapTurns(state.items),
             })}>
-                <div class="scroller">
+                <div
+                    class="scroller"
+                    ${onDomCreated((element) => {
+                        if (element instanceof HTMLElement) {
+                            state.removeStickToBottom();
+                            updateState({
+                                removeStickToBottom: stickToBottom(element),
+                            });
+                        }
+                    })}
+                >
                     <div class="lane">
                         <div class="lane-content">
                             ${state.isLoading && !state.items.length
@@ -1300,7 +1396,40 @@ export const VirAiChat = defineAppElement<{
                                       <${VirAiChatTimeline.assign({
                                           items: state.items,
                                           isRunning,
-                                      })}></${VirAiChatTimeline}>
+                                          backgroundTaskCount:
+                                              state.thread?.backgroundTaskCount ?? 0,
+                                          commands,
+                                      })}
+                                          ${listen(
+                                              VirAiChatTimeline.events.attachmentOpened,
+                                              (event) => {
+                                                  updateState({
+                                                      openedAttachment: event.detail,
+                                                  });
+                                              },
+                                          )}
+                                          ${listen(
+                                              VirAiChatTimeline.events.quoteRequested,
+                                              (event) => {
+                                                  const text = appendMarkdownQuote({
+                                                      message: activeAnswer
+                                                          ? activeAnswer.customAnswer
+                                                          : state.composerText,
+                                                      quote: event.detail,
+                                                  });
+                                                  changeComposerText(text);
+                                                  /** Waits for the box to render the new text. */
+                                                  requestAnimationFrame(() => {
+                                                      const textarea = findComposerTextarea();
+                                                      textarea?.focus();
+                                                      textarea?.setSelectionRange(
+                                                          text.length,
+                                                          text.length,
+                                                      );
+                                                  });
+                                              },
+                                          )}
+                                      ></${VirAiChatTimeline}>
                                   `}
                             ${approval}
                         </div>
@@ -1356,7 +1485,21 @@ export const VirAiChat = defineAppElement<{
         `;
 
         return html`
-            <div class="column" data-chat-column>
+            <div
+                class="column"
+                data-chat-column
+                ${listen('click', (event) => {
+                    if (
+                        getSelection()?.type === 'Range' ||
+                        event.composedPath().some((target) => {
+                            return target instanceof Element && target.matches(interactiveSelector);
+                        })
+                    ) {
+                        return;
+                    }
+                    findComposerTextarea()?.focus();
+                })}
+            >
                 ${header}
                 <div
                     class="content"
@@ -1402,6 +1545,19 @@ export const VirAiChat = defineAppElement<{
                           `
                         : nothing}
                 </div>
+                ${state.openedAttachment
+                    ? html`
+                          <${VirAiChatAttachmentViewer.assign({
+                              attachment: state.openedAttachment,
+                          })}
+                              ${listen(VirAiChatAttachmentViewer.events.closed, () => {
+                                  updateState({
+                                      openedAttachment: undefined,
+                                  });
+                              })}
+                          ></${VirAiChatAttachmentViewer}>
+                      `
+                    : nothing}
             </div>
         `;
     },

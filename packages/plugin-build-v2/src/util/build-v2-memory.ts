@@ -40,6 +40,11 @@ export const buildV2Memory = {
         key: 'agent-storm:build-v2:composer-drafts',
         valueShape: '',
     }),
+    /** The PR each thread last opened its Diff and Review tabs for, keyed by thread id. */
+    reviewTabsPrUrl: defineFolderSetting({
+        key: 'agent-storm:build-v2:review-tabs-pr-url',
+        valueShape: '',
+    }),
     /** Each chat's uploaded attachments, keyed by `toComposerDraftKey`. */
     composerAttachments: defineFolderSetting({
         key: 'agent-storm:build-v2:composer-attachments',

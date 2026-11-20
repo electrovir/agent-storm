@@ -67,28 +67,30 @@ enum ApprovalDecision {
 }
 
 model Thread {
-  id                String       @id @default(cuid(2))
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @default(now()) @updatedAt
-  deactivatedAt     DateTime?
-  repoPath          String
-  cwd               String
-  worktreeBranch    String?
-  provider          AiProvider
-  model             String
+  id                  String           @id @default(cuid(2))
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @default(now()) @updatedAt
+  deactivatedAt       DateTime?
+  repoPath            String
+  cwd                 String
+  worktreeBranch      String?
+  provider            AiProvider
+  model               String
   /// Null for the model's default effort.
-  effort            ReasoningEffort?
-  runtimeMode       RuntimeMode      @default(fullAccess)
+  effort              ReasoningEffort?
+  runtimeMode         RuntimeMode      @default(fullAccess)
   /// The provider's id for a faster service tier. Null for standard speed.
-  speedTier         String?
-  title             String
-  status            ThreadStatus
+  speedTier           String?
+  title               String
+  status              ThreadStatus
   /// The provider's own id for the conversation: Claude's session id or Codex's thread id.
-  providerSessionId String?
+  providerSessionId   String?
   /// Set when the agent finishes a reply, and cleared once the thread is on screen.
-  hasUnreadReply    Boolean      @default(false)
+  hasUnreadReply      Boolean          @default(false)
   /// Set once the user or an agent renames the thread, which stops automatic titles replacing it.
-  hasCustomTitle    Boolean      @default(false)
+  hasCustomTitle      Boolean          @default(false)
+  /// Background tasks, such as sub-agents, still running after the agent's reply ended.
+  backgroundTaskCount Int              @default(0)
 
   items    ThreadItem[]
   requests ApprovalRequest[]

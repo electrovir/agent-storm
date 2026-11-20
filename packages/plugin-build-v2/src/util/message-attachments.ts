@@ -41,6 +41,18 @@ export type MessageAttachment = {
     isPastedText: boolean;
 };
 
+/** Reads an upload's name and kind back out of its path. */
+export function toMessageAttachment(path: string): MessageAttachment {
+    const name = path.replace(uploadPathRegExp, '$1');
+    return {
+        path,
+        name,
+        tag: toAttachmentTag(name),
+        isImage: imageExtensions.includes(extractExtension(name).extension.toLowerCase()),
+        isPastedText: name === pastedTextFilename,
+    };
+}
+
 /** Splits off the upload paths the composer appends to a message, one per line, after its text. */
 export function splitMessageAttachments(message: string) {
     const lines = message.split('\n');
@@ -48,15 +60,6 @@ export function splitMessageAttachments(message: string) {
 
     return {
         text: lines.slice(0, firstAttachmentIndex).join('\n'),
-        attachments: lines.slice(firstAttachmentIndex).map((path): MessageAttachment => {
-            const name = path.replace(uploadPathRegExp, '$1');
-            return {
-                path,
-                name,
-                tag: toAttachmentTag(name),
-                isImage: imageExtensions.includes(extractExtension(name).extension.toLowerCase()),
-                isPastedText: name === pastedTextFilename,
-            };
-        }),
+        attachments: lines.slice(firstAttachmentIndex).map((path) => toMessageAttachment(path)),
     };
 }

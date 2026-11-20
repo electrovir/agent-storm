@@ -32,6 +32,7 @@
     "dependencies": {
         "@agent-storm/common": "^0.4.0",
         "@agent-storm/core": "^0.4.0",
+        "@agent-storm/plugin-build-v2": "^0.4.0",
         "@agent-storm/plugin-review": "^0.4.0",
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",

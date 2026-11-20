@@ -34,11 +34,13 @@ import {
     detectComposerTrigger,
     insertComposerCommand,
     listComposerMenuCommands,
+    splitComposerCommandMentions,
 } from '../../util/composer-commands.js';
 import {type composerShortcutActions} from '../../util/composer-shortcuts.js';
 import {collectDroppedFiles} from '../../util/file-drop.js';
+import {toMessageAttachment, type MessageAttachment} from '../../util/message-attachments.js';
 import {attachmentCardStyles, renderAttachmentCardContent} from './attachment-card.js';
-import {VirAiChatCommandMenu} from './vir-ai-chat-command-menu.element.js';
+import {findCommandMentionColor, VirAiChatCommandMenu} from './vir-ai-chat-command-menu.element.js';
 import {
     VirAiChatModelPicker,
     type ModelSelection,
@@ -131,6 +133,8 @@ export const VirAiChatComposer = defineAppElement<{
         textPasted: defineElementEvent<string>(),
         /** The removed attachment's id. */
         attachmentRemoved: defineElementEvent<string>(),
+        /** An uploaded attachment was clicked. */
+        attachmentOpened: defineElementEvent<Readonly<MessageAttachment>>(),
         /** The command menu opened, so `commands` should be read again. */
         commandsRequested: defineElementEvent<void>(),
     },
@@ -195,6 +199,10 @@ export const VirAiChatComposer = defineAppElement<{
         ${attachmentCardStyles}
 
         .attachment {
+            &.uploaded {
+                cursor: pointer;
+            }
+
             &.uploading > :not(.status, .remove) {
                 opacity: 0.4;
             }
@@ -233,21 +241,45 @@ export const VirAiChatComposer = defineAppElement<{
             }
         }
 
-        textarea {
-            field-sizing: content;
+        .editor {
+            position: relative;
+        }
+
+        textarea,
+        .highlights {
             box-sizing: border-box;
             width: 100%;
-            min-height: 3.5em;
-            max-height: 208px;
             padding: 14px 16px 8px;
             font: inherit;
             font-size: 14px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            overflow-y: auto;
+        }
+
+        .highlights {
+            position: absolute;
+            inset: 0;
+            color: transparent;
+            pointer-events: none;
+
+            & mark {
+                color: transparent;
+                border-radius: 4px;
+            }
+        }
+
+        textarea {
+            position: relative;
+            display: block;
+            field-sizing: content;
+            min-height: 3.5em;
+            max-height: 208px;
             color: inherit;
             background: none;
             border: none;
             outline: none;
             resize: none;
-            overflow-y: auto;
 
             &::placeholder {
                 color: ${viraThemeByKeys.grey.foreground.placeholder.foreground.value};
@@ -563,8 +595,18 @@ export const VirAiChatComposer = defineAppElement<{
                         attachment: true,
                         image: !!attachment.imageUrl,
                         uploading: !attachment.path,
+                        uploaded: !!attachment.path,
                     })}
                     ${tooltip(attachment.name)}
+                    ${listen('click', () => {
+                        if (attachment.path) {
+                            dispatch(
+                                new events.attachmentOpened({
+                                    detail: toMessageAttachment(attachment.path),
+                                }),
+                            );
+                        }
+                    })}
                 >
                     ${renderAttachmentCardContent(attachment)}
                     ${attachment.path
@@ -582,7 +624,9 @@ export const VirAiChatComposer = defineAppElement<{
                     })}
                         class="remove"
                         aria-label="Remove ${attachment.name}"
-                        ${listen('click', () => {
+                        ${listen('click', (event) => {
+                            /** Keeps the card under the button from opening the attachment. */
+                            event.stopPropagation();
                             dispatch(
                                 new events.attachmentRemoved({
                                     detail: attachment.id,
@@ -593,6 +637,31 @@ export const VirAiChatComposer = defineAppElement<{
                 </div>
             `;
         });
+
+        /**
+         * Painted behind the message box, which has no background, so the tags' colors show through
+         * it. The highlights keep whitespace like the box does, so the `<mark>` template must not
+         * be reformatted onto its own lines.
+         */
+        const highlights = [
+            ...splitComposerCommandMentions({
+                text: inputs.text,
+                commands: inputs.commands || [],
+            }).map((part) => {
+                if (!part.command) {
+                    return part.text;
+                }
+                const color = findCommandMentionColor(part.command);
+                const style = css`
+                    background-color: ${color};
+                    box-shadow: 0 0 0 2px ${color};
+                `;
+                // prettier-ignore
+                return html`<mark style=${style}>${part.text}</mark>`;
+            }),
+            /** Gives a trailing newline its own line, as the message box does. */
+            ' ',
+        ];
 
         return html`
             ${trigger
@@ -640,125 +709,137 @@ export const VirAiChatComposer = defineAppElement<{
                           <div class="attachments">${attachmentCards}</div>
                       `
                     : nothing}
-                <textarea
-                    rows="2"
-                    data-testid="composer-editor"
-                    aria-label=${inputs.questionAction ? 'Your own answer' : 'Message'}
-                    placeholder=${inputs.placeholder}
-                    .value=${inputs.text}
-                    ${listen('input', (event) => {
-                        const textarea = extractEventTarget(event, HTMLTextAreaElement);
-                        updateState({
-                            historyIndex: undefined,
-                        });
-                        trackCaret(textarea, true);
-                        dispatch(
-                            new events.textChange({
-                                detail: textarea.value,
-                            }),
-                        );
-                    })}
-                    ${listen('click', (event) => {
-                        trackCaret(extractEventTarget(event, HTMLTextAreaElement), true);
-                    })}
-                    ${listen('keyup', (event) => {
-                        trackCaret(extractEventTarget(event, HTMLTextAreaElement), true);
-                    })}
-                    ${listen('focus', (event) => {
-                        trackCaret(extractEventTarget(event, HTMLTextAreaElement), true);
-                    })}
-                    ${listen('blur', (event) => {
-                        trackCaret(extractEventTarget(event, HTMLTextAreaElement), false);
-                    })}
-                    ${listen('paste', (event) => {
-                        if (inputs.questionAction || !event.clipboardData) {
-                            return;
-                        }
-                        const files = collectDroppedFiles(event.clipboardData);
-                        if (files.length) {
-                            event.preventDefault();
+                <div class="editor">
+                    <div class="highlights" aria-hidden="true">${highlights}</div>
+                    <textarea
+                        rows="2"
+                        data-testid="composer-editor"
+                        aria-label=${inputs.questionAction ? 'Your own answer' : 'Message'}
+                        placeholder=${inputs.placeholder}
+                        .value=${inputs.text}
+                        ${listen('input', (event) => {
+                            const textarea = extractEventTarget(event, HTMLTextAreaElement);
+                            updateState({
+                                historyIndex: undefined,
+                            });
+                            trackCaret(textarea, true);
                             dispatch(
-                                new events.filesPicked({
-                                    detail: files,
+                                new events.textChange({
+                                    detail: textarea.value,
                                 }),
                             );
-                            return;
-                        }
-                        const pasted = event.clipboardData.getData('text/plain');
-                        if (pasted.length < minPastedAttachmentLength) {
-                            return;
-                        }
-                        event.preventDefault();
-                        dispatch(
-                            new events.textPasted({
-                                detail: pasted,
-                            }),
-                        );
-                    })}
-                    ${listen('keydown', (event) => {
-                        if (event.isComposing) {
-                            return;
-                        }
-                        const hasModifier =
-                            event.shiftKey || event.metaKey || event.ctrlKey || event.altKey;
-                        const menuKeyAction =
-                            trigger && !hasModifier ? menuKeyActions[event.key] : undefined;
-                        if (menuKeyAction) {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            menuKeyAction();
-                            return;
-                        } else if (
-                            matchesShortcut({
-                                event,
-                                shortcuts: inputs.shortcuts.interrupt,
-                            })
-                        ) {
-                            if (inputs.isRunning) {
-                                event.preventDefault();
-                                stop();
+                        })}
+                        ${listen('scroll', (event) => {
+                            const highlightsElement = host.shadowRoot.querySelector('.highlights');
+                            if (highlightsElement) {
+                                highlightsElement.scrollTop = extractEventTarget(
+                                    event,
+                                    HTMLTextAreaElement,
+                                ).scrollTop;
                             }
-                            return;
-                        }
-                        const isArrowKey = event.key === 'ArrowUp' || event.key === 'ArrowDown';
-                        if (
-                            isArrowKey &&
-                            !hasModifier &&
-                            stepHistory({
-                                textarea: extractEventTarget(event, HTMLTextAreaElement),
-                                isOlder: event.key === 'ArrowUp',
-                            })
-                        ) {
+                        })}
+                        ${listen('click', (event) => {
+                            trackCaret(extractEventTarget(event, HTMLTextAreaElement), true);
+                        })}
+                        ${listen('keyup', (event) => {
+                            trackCaret(extractEventTarget(event, HTMLTextAreaElement), true);
+                        })}
+                        ${listen('focus', (event) => {
+                            trackCaret(extractEventTarget(event, HTMLTextAreaElement), true);
+                        })}
+                        ${listen('blur', (event) => {
+                            trackCaret(extractEventTarget(event, HTMLTextAreaElement), false);
+                        })}
+                        ${listen('paste', (event) => {
+                            if (inputs.questionAction || !event.clipboardData) {
+                                return;
+                            }
+                            const files = collectDroppedFiles(event.clipboardData);
+                            if (files.length) {
+                                event.preventDefault();
+                                dispatch(
+                                    new events.filesPicked({
+                                        detail: files,
+                                    }),
+                                );
+                                return;
+                            }
+                            const pasted = event.clipboardData.getData('text/plain');
+                            if (pasted.length < minPastedAttachmentLength) {
+                                return;
+                            }
                             event.preventDefault();
-                            return;
-                        }
-                        const isWorktreeShortcut = matchesShortcut({
-                            event,
-                            shortcuts: inputs.shortcuts.sendInWorktree,
-                        });
-                        if (
-                            isWorktreeShortcut &&
-                            inputs.canSendInWorktree &&
-                            !inputs.questionAction
-                        ) {
-                            event.preventDefault();
-                            submit({
-                                isInWorktree: true,
-                            });
-                        } else if (
-                            isWorktreeShortcut ||
-                            matchesShortcut({
+                            dispatch(
+                                new events.textPasted({
+                                    detail: pasted,
+                                }),
+                            );
+                        })}
+                        ${listen('keydown', (event) => {
+                            if (event.isComposing) {
+                                return;
+                            }
+                            const hasModifier =
+                                event.shiftKey || event.metaKey || event.ctrlKey || event.altKey;
+                            const menuKeyAction =
+                                trigger && !hasModifier ? menuKeyActions[event.key] : undefined;
+                            if (menuKeyAction) {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                menuKeyAction();
+                                return;
+                            } else if (
+                                matchesShortcut({
+                                    event,
+                                    shortcuts: inputs.shortcuts.interrupt,
+                                })
+                            ) {
+                                if (inputs.isRunning) {
+                                    event.preventDefault();
+                                    stop();
+                                }
+                                return;
+                            }
+                            const isArrowKey = event.key === 'ArrowUp' || event.key === 'ArrowDown';
+                            if (
+                                isArrowKey &&
+                                !hasModifier &&
+                                stepHistory({
+                                    textarea: extractEventTarget(event, HTMLTextAreaElement),
+                                    isOlder: event.key === 'ArrowUp',
+                                })
+                            ) {
+                                event.preventDefault();
+                                return;
+                            }
+                            const isWorktreeShortcut = matchesShortcut({
                                 event,
-                                shortcuts: inputs.shortcuts.send,
-                            })
-                        ) {
-                            event.preventDefault();
-                            submit({
-                                isInWorktree: false,
+                                shortcuts: inputs.shortcuts.sendInWorktree,
                             });
-                        }
-                    })}
-                ></textarea>
+                            if (
+                                isWorktreeShortcut &&
+                                inputs.canSendInWorktree &&
+                                !inputs.questionAction
+                            ) {
+                                event.preventDefault();
+                                submit({
+                                    isInWorktree: true,
+                                });
+                            } else if (
+                                isWorktreeShortcut ||
+                                matchesShortcut({
+                                    event,
+                                    shortcuts: inputs.shortcuts.send,
+                                })
+                            ) {
+                                event.preventDefault();
+                                submit({
+                                    isInWorktree: false,
+                                });
+                            }
+                        })}
+                    ></textarea>
+                </div>
                 <input
                     type="file"
                     multiple
@@ -814,7 +895,7 @@ export const VirAiChatComposer = defineAppElement<{
                             model: inputs.model,
                             effort: inputs.effort,
                             speedTier: inputs.speedTier,
-                            isDisabled: inputs.isRunning || inputs.isBusy,
+                            isDisabled: inputs.isBusy,
                         })}
                             ${listen(VirAiChatModelPicker.events.modelChange, (event) => {
                                 dispatch(

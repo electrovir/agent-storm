@@ -16,6 +16,64 @@ function preserveLineBreaks(text: string) {
         .join('');
 }
 
+const unmarkedTagPattern = /^<(\/?)(?:a|code|pre)[\s>]/;
+
+/**
+ * Wraps words matching a mark's text, outside links and code. Each mark wraps one word, in order,
+ * so a command mention only counted as a message's first word isn't marked again later.
+ */
+function markWords({
+    markupHtml,
+    marks,
+}: Readonly<{
+    markupHtml: string;
+    marks: ReadonlyArray<Readonly<ChatMarkdownMark>>;
+}>) {
+    return markupHtml.split(/(<[^<>]*>)/).reduce(
+        (result, part, index) => {
+            if (index % 2) {
+                const unmarkedTag = unmarkedTagPattern.exec(part);
+                return {
+                    ...result,
+                    html: result.html + part,
+                    unmarkedDepth:
+                        result.unmarkedDepth + (unmarkedTag ? (unmarkedTag[1] ? -1 : 1) : 0),
+                };
+            } else if (result.unmarkedDepth) {
+                return {
+                    ...result,
+                    html: result.html + part,
+                };
+            } else {
+                return part.split(/(\s+)/).reduce((wordResult, word) => {
+                    const mark = wordResult.remainingMarks.find((entry) => {
+                        return entry.text === word;
+                    });
+                    return mark
+                        ? {
+                              ...wordResult,
+                              html:
+                                  wordResult.html +
+                                  `<mark style="background-color: ${mark.color}; box-shadow: 0 0 0 2px ${mark.color};">${word}</mark>`,
+                              remainingMarks: wordResult.remainingMarks.filter((entry) => {
+                                  return entry !== mark;
+                              }),
+                          }
+                        : {
+                              ...wordResult,
+                              html: wordResult.html + word,
+                          };
+                }, result);
+            }
+        },
+        {
+            html: '',
+            unmarkedDepth: 0,
+            remainingMarks: marks,
+        },
+    ).html;
+}
+
 function wrapCodeBlocks(markupHtml: string) {
     return markupHtml.replaceAll(codeBlockPattern, (_match, language = 'text', code) => {
         return [
@@ -39,7 +97,6 @@ export const chatMarkdownStyles = css`
         word-break: break-word;
 
         &.is-block {
-            font-size: 14px;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
@@ -71,25 +128,30 @@ export const chatMarkdownStyles = css`
         }
 
         & h1 {
-            font-size: 1.25rem;
+            font-size: calc(20em / 14);
         }
 
         & h2 {
-            font-size: 1.125rem;
+            font-size: calc(18em / 14);
         }
 
         & h3 {
-            font-size: 1rem;
+            font-size: calc(16em / 14);
         }
 
         & h4,
         & h5,
         & h6 {
-            font-size: 0.875rem;
+            font-size: 1em;
         }
 
         & h6 {
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+        }
+
+        & mark {
+            color: inherit;
+            border-radius: 4px;
         }
 
         & ul,
@@ -215,18 +277,36 @@ export const chatMarkdownStyles = css`
     }
 `;
 
+/** A word `renderChatMarkdown` highlights, and its CSS background color. */
+export type ChatMarkdownMark = {
+    text: string;
+    color: string;
+};
+
 /** Renders Markdown inside the `chat-markdown` root that `chatMarkdownStyles` targets. */
 export function renderChatMarkdown({
     text,
     className,
     isInline,
     hasLineBreaks,
+    marks,
 }: Readonly<{
     text: string;
     className?: string;
     isInline?: boolean;
     hasLineBreaks?: boolean;
+    marks?: ReadonlyArray<Readonly<ChatMarkdownMark>> | undefined;
 }>) {
+    const markupHtml = wrapCodeBlocks(
+        micromark(hasLineBreaks ? preserveLineBreaks(text) : text, {
+            extensions: [
+                gfm(),
+            ],
+            htmlExtensions: [
+                gfmHtml(),
+            ],
+        }),
+    );
     return html`
         <div
             class=${classMap({
@@ -240,16 +320,12 @@ export function renderChatMarkdown({
             })}
         >
             ${unsafeHTML(
-                wrapCodeBlocks(
-                    micromark(hasLineBreaks ? preserveLineBreaks(text) : text, {
-                        extensions: [
-                            gfm(),
-                        ],
-                        htmlExtensions: [
-                            gfmHtml(),
-                        ],
-                    }),
-                ),
+                marks?.length
+                    ? markWords({
+                          markupHtml,
+                          marks,
+                      })
+                    : markupHtml,
             )}
         </div>
     `;

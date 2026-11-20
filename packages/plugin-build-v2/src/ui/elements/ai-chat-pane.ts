@@ -4,9 +4,11 @@ import {
     type PaneDefinition,
     type PaneRenderParams,
 } from '@agent-storm/core/frontend';
+import {extractErrorMessage} from '@augment-vir/common';
 import {html, keyed, listen} from 'element-vir';
 import {defineShape} from 'object-shape-tester';
 import {createSizedIcon, LucideMessageSquareIcon} from 'vira';
+import {buildV2Client} from '../../util/build-v2-client.js';
 import {findBuildV2State, removeThread, storeThread} from '../../util/build-v2-state.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
 
@@ -84,4 +86,22 @@ export const aiChatPane: PaneDefinition<typeof aiChatTabStateShape> = {
         return true;
     },
     render: renderAiChat,
+    menuEntries({tabState}) {
+        return tabState.threadId
+            ? [
+                  {
+                      content: 'Restart',
+                      async onClick() {
+                          try {
+                              await buildV2Client.call('restartThread', {
+                                  threadId: tabState.threadId,
+                              });
+                          } catch (error) {
+                              window.alert(extractErrorMessage(error));
+                          }
+                      },
+                  },
+              ]
+            : [];
+    },
 };

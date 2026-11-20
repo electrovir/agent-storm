@@ -1,7 +1,9 @@
-import {defineAppElement} from '@agent-storm/core/frontend';
+import {defineAppElement, spinAnimationCss, spinKeyframesCss} from '@agent-storm/core/frontend';
+import {type AnyDuration} from 'date-vir';
 import {
     classMap,
     css,
+    defineElementEvent,
     html,
     listen,
     nothing,
@@ -9,15 +11,26 @@ import {
     type TemplateResult,
 } from 'element-vir';
 import {
+    createSizedIcon,
     LucideChevronRightIcon,
     LucideCircleAlertIcon,
+    LucideQuoteIcon,
     tooltip,
+    ViraButton,
+    ViraColorVariant,
     ViraIcon,
+    ViraSize,
     viraThemeByKeys,
     type ViraIconSvg,
 } from 'vira';
-import {ThreadItemKind, ThreadItemStatus, type ThreadItem} from '../../build-v2-api.js';
-import {splitMessageAttachments} from '../../util/message-attachments.js';
+import {
+    ThreadItemKind,
+    ThreadItemStatus,
+    type ComposerCommand,
+    type ThreadItem,
+} from '../../build-v2-api.js';
+import {splitComposerCommandMentions} from '../../util/composer-commands.js';
+import {splitMessageAttachments, type MessageAttachment} from '../../util/message-attachments.js';
 import {
     buildTimeline,
     summarizeWork,
@@ -26,7 +39,8 @@ import {
 } from '../../util/thread-timeline.js';
 import {countDiffLines, diffLineStyles, renderDiffLines} from './diff-lines.js';
 import {chatMarkdownStyles, renderChatMarkdown} from './markdown-styles.js';
-import {workItemDisplays} from './thread-display.js';
+import {workingIcon, workItemDisplays} from './thread-display.js';
+import {findCommandMentionColor} from './vir-ai-chat-command-menu.element.js';
 import {VirAiChatSentAttachment} from './vir-ai-chat-sent-attachment.element.js';
 
 function isFailedStatus(status: ThreadItemStatus) {
@@ -47,17 +61,30 @@ function renderIcon({icon, isFailed}: Readonly<{icon: ViraIconSvg; isFailed?: bo
     `;
 }
 
+function renderSpinner() {
+    return html`
+        <${ViraIcon.assign({
+            icon: workingIcon,
+        })}
+            class="spinner"
+        ></${ViraIcon}>
+    `;
+}
+
 function renderWorkLogLine({
     icon,
     label,
     trailing,
+    isWorking,
 }: Readonly<{
     icon: HtmlInterpolation;
     label: HtmlInterpolation;
     trailing: HtmlInterpolation;
+    isWorking?: boolean | undefined;
 }>) {
     return html`
         <div class="work-line">
+            ${isWorking ? renderSpinner() : nothing}
             <span class="icon-cell">${icon}</span>
             <span class="line-label">${label}</span>
             ${trailing}
@@ -90,17 +117,150 @@ function stopPropagation(event: Event) {
     event.stopPropagation();
 }
 
-/** A thread's messages and work logs, in timeline order. */
+const quoteIcon = createSizedIcon(LucideQuoteIcon, 14);
+
+const quotePopoverDelay = {
+    milliseconds: 300,
+} as const satisfies AnyDuration;
+
+/** How close the quote button's center may get to the timeline's sides, so it stays in view. */
+const quotePopoverEdgeInset = 48;
+
+/** Where the quote button sits, relative to the timeline, and the text it quotes. */
+type QuoteSelection = Readonly<{
+    text: string;
+    top: number;
+    left: number;
+}>;
+
+/** The page's selection when both of its ends are inside assistant messages of this timeline. */
+function readQuoteSelection(
+    host: Readonly<HTMLElement> & {
+        shadowRoot: ShadowRoot;
+    },
+) {
+    const selection = getSelection();
+    /**
+     * `getRangeAt` and `isCollapsed` don't see into shadow roots (WebKit reports a selection made
+     * inside one as collapsed), so only the composed range knows where the selection is.
+     */
+    const composedRange = selection?.rangeCount
+        ? selection.getComposedRanges({
+              shadowRoots: [
+                  host.shadowRoot,
+              ],
+          })[0]
+        : undefined;
+    if (!selection || !composedRange || composedRange.collapsed) {
+        return undefined;
+    }
+    const isInAssistantMessages = [
+        composedRange.startContainer,
+        composedRange.endContainer,
+    ].every((node) => {
+        const element = node instanceof Element ? node : node.parentElement;
+        return (
+            !!element && host.shadowRoot.contains(element) && !!element.closest('.assistant-entry')
+        );
+    });
+    const text = selection.toString().trim();
+    if (!isInAssistantMessages || !text) {
+        return undefined;
+    }
+    const range = document.createRange();
+    range.setStart(composedRange.startContainer, composedRange.startOffset);
+    range.setEnd(composedRange.endContainer, composedRange.endOffset);
+    const rangeRect = range.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    return {
+        text,
+        /** Below the selection, where it doesn't cover the iOS selection menu. */
+        top: rangeRect.bottom - hostRect.top,
+        left: Math.min(
+            Math.max(rangeRect.left + rangeRect.width / 2 - hostRect.left, quotePopoverEdgeInset),
+            hostRect.width - quotePopoverEdgeInset,
+        ),
+    };
+}
+
+/**
+ * A thread's messages and work logs, in timeline order. Selecting text in an assistant message
+ * shows a button that emits it as `quoteRequested`.
+ */
 export const VirAiChatTimeline = defineAppElement<{
     items: ReadonlyArray<Readonly<ThreadItem>>;
     isRunning: boolean;
+    backgroundTaskCount: number;
+    /** The commands and skills highlighted where a user message mentions them. */
+    commands: ReadonlyArray<Readonly<ComposerCommand>> | undefined;
 }>()({
     tagName: 'vir-ai-chat-timeline',
+    events: {
+        /** The selected assistant message text. */
+        quoteRequested: defineElementEvent<string>(),
+        attachmentOpened: defineElementEvent<Readonly<MessageAttachment>>(),
+    },
     state() {
         return {
             /** Work logs and work items the user opened or closed, by key or item id. */
             expanded: {} as Readonly<Record<string, boolean>>,
+            quoteSelection: undefined as QuoteSelection | undefined,
+            removeSelectionListener: (() => {}) as () => void,
         };
+    },
+    init({host, updateState}) {
+        /**
+         * Waits for the selection to stop changing and the pointer to come up, so the button
+         * doesn't chase a drag.
+         */
+        let pendingShow: ReturnType<typeof setTimeout> | undefined;
+        let isPointerHeld = false;
+        function scheduleShow() {
+            clearTimeout(pendingShow);
+            if (isPointerHeld) {
+                return;
+            }
+            pendingShow = setTimeout(() => {
+                const quoteSelection = readQuoteSelection(host);
+                if (quoteSelection) {
+                    updateState({
+                        quoteSelection,
+                    });
+                }
+            }, quotePopoverDelay.milliseconds);
+        }
+        function trackSelection() {
+            if (host.instanceState.quoteSelection) {
+                updateState({
+                    quoteSelection: undefined,
+                });
+            }
+            scheduleShow();
+        }
+        function holdPointer() {
+            isPointerHeld = true;
+            clearTimeout(pendingShow);
+        }
+        function releasePointer() {
+            isPointerHeld = false;
+            scheduleShow();
+        }
+        document.addEventListener('selectionchange', trackSelection);
+        document.addEventListener('pointerdown', holdPointer, true);
+        document.addEventListener('pointerup', releasePointer, true);
+        document.addEventListener('pointercancel', releasePointer, true);
+        updateState({
+            removeSelectionListener() {
+                clearTimeout(pendingShow);
+                document.removeEventListener('selectionchange', trackSelection);
+                document.removeEventListener('pointerdown', holdPointer, true);
+                document.removeEventListener('pointerup', releasePointer, true);
+                document.removeEventListener('pointercancel', releasePointer, true);
+            },
+        });
+    },
+    cleanup({state}) {
+        state.removeSelectionListener();
     },
     styles: css`
         ${chatMarkdownStyles}
@@ -108,7 +268,24 @@ export const VirAiChatTimeline = defineAppElement<{
 
         :host {
             display: block;
+            position: relative;
+            font-size: 16px;
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+        }
+
+        .quote-popover {
+            position: absolute;
+            z-index: 20;
+            margin-top: 6px;
+            transform: translateX(-50%);
+        }
+
+        ${spinKeyframesCss}
+
+        .spinner {
+            flex-shrink: 0;
+            color: ${viraThemeByKeys.pink.foreground.body.foreground.value};
+            ${spinAnimationCss}
         }
 
         @keyframes live-shine {
@@ -133,7 +310,6 @@ export const VirAiChatTimeline = defineAppElement<{
             margin: 0;
             padding: 32px 0;
             text-align: center;
-            font-size: 14px;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
@@ -454,16 +630,16 @@ export const VirAiChatTimeline = defineAppElement<{
             & .working-text {
                 display: flex;
                 align-items: center;
+                gap: 6px;
                 height: 24px;
                 padding-inline: 4px;
-                font-size: 14px;
                 white-space: nowrap;
                 font-variant-numeric: tabular-nums;
                 color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
             }
         }
     `,
-    render({inputs, state, updateState}) {
+    render({inputs, state, updateState, dispatch, events}) {
         const timeline = buildTimeline(inputs.items);
         const hasLiveItem = inputs.items.some((item) => {
             return item.status === ThreadItemStatus.InProgress;
@@ -602,6 +778,7 @@ export const VirAiChatTimeline = defineAppElement<{
                             isExpanded: isOpen,
                             isVisible: canExpand,
                         }),
+                        isWorking: item.status === ThreadItemStatus.InProgress,
                     })}
                     ${body}
                 </div>
@@ -657,6 +834,7 @@ export const VirAiChatTimeline = defineAppElement<{
                                           </span>
                                       `,
                                       trailing: nothing,
+                                      isWorking: true,
                                   })}
                               </div>
                           `
@@ -713,7 +891,18 @@ export const VirAiChatTimeline = defineAppElement<{
                                               return html`
                                                   <${VirAiChatSentAttachment.assign({
                                                       attachment,
-                                                  })}></${VirAiChatSentAttachment}>
+                                                  })}
+                                                      ${listen(
+                                                          VirAiChatSentAttachment.events.opened,
+                                                          () => {
+                                                              dispatch(
+                                                                  new events.attachmentOpened({
+                                                                      detail: attachment,
+                                                                  }),
+                                                              );
+                                                          },
+                                                      )}
+                                                  ></${VirAiChatSentAttachment}>
                                               `;
                                           })}
                                       </div>
@@ -725,6 +914,21 @@ export const VirAiChatTimeline = defineAppElement<{
                                           ${renderChatMarkdown({
                                               text: message.text,
                                               hasLineBreaks: true,
+                                              marks: splitComposerCommandMentions({
+                                                  text: message.text,
+                                                  commands: inputs.commands || [],
+                                              }).flatMap((part) => {
+                                                  return part.command
+                                                      ? [
+                                                            {
+                                                                text: part.text,
+                                                                color: findCommandMentionColor(
+                                                                    part.command,
+                                                                ).cssText,
+                                                            },
+                                                        ]
+                                                      : [];
+                                              }),
                                           })}
                                       </div>
                                   `
@@ -792,16 +996,58 @@ export const VirAiChatTimeline = defineAppElement<{
                           <p class="empty">Send a message to start the conversation.</p>
                       `}
                 ${timeline.map((entry) => entryRenderers[entry.kind](entry))}
-                ${inputs.isRunning && !hasLiveItem && !liveWorkKey
+                ${(inputs.isRunning && !hasLiveItem && !liveWorkKey) ||
+                (!inputs.isRunning && inputs.backgroundTaskCount)
                     ? html`
                           <div class="working">
                               <div class="working-inner">
-                                  <div class="working-text">Working...</div>
+                                  <div class="working-text">
+                                      ${renderSpinner()}
+                                      ${inputs.backgroundTaskCount
+                                          ? `Waiting on ${inputs.backgroundTaskCount} background ${inputs.backgroundTaskCount === 1 ? 'task' : 'tasks'}...`
+                                          : 'Working...'}
+                                  </div>
                               </div>
                           </div>
                       `
                     : nothing}
             </div>
+            ${state.quoteSelection
+                ? html`
+                      <div
+                          class="quote-popover"
+                          style=${css`
+                              top: ${state.quoteSelection.top}px;
+                              left: ${state.quoteSelection.left}px;
+                          `}
+                      >
+                          <${ViraButton.assign({
+                              text: 'Quote',
+                              icon: quoteIcon,
+                              buttonSize: ViraSize.Small,
+                              color: ViraColorVariant.Neutral,
+                          })}
+                              ${listen('pointerdown', (event) => {
+                                  /**
+                                   * Acts on press: a tap on iOS clears the selection before
+                                   * `click`, which removes this button first.
+                                   */
+                                  event.preventDefault();
+                                  const text = state.quoteSelection?.text;
+                                  if (!text) {
+                                      return;
+                                  }
+                                  getSelection()?.removeAllRanges();
+                                  dispatch(
+                                      new events.quoteRequested({
+                                          detail: text,
+                                      }),
+                                  );
+                              })}
+                          ></${ViraButton}>
+                      </div>
+                  `
+                : nothing}
         `;
     },
 });

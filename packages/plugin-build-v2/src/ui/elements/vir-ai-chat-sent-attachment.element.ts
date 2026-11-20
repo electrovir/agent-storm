@@ -1,5 +1,5 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {asyncProp, classMap, css, html} from 'element-vir';
+import {asyncProp, classMap, css, defineElementEvent, html, listen} from 'element-vir';
 import {tooltip} from 'vira';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {toImageThumbnailUrl} from '../../util/file-drop.js';
@@ -43,12 +43,16 @@ async function loadPreview({path, name, isImage, isPastedText}: Readonly<Message
 
 /**
  * A file attached to a sent message, as the same card the composer showed. Shows only the name when
- * the upload can't be read back, such as after the OS clears its temp folder.
+ * the upload can't be read back, such as after the OS clears its temp folder. Clicking it emits
+ * `opened`.
  */
 export const VirAiChatSentAttachment = defineAppElement<{
     attachment: Readonly<MessageAttachment>;
 }>()({
     tagName: 'vir-ai-chat-sent-attachment',
+    events: {
+        opened: defineElementEvent<void>(),
+    },
     state() {
         return {
             preview: asyncProp({
@@ -62,10 +66,22 @@ export const VirAiChatSentAttachment = defineAppElement<{
         :host {
             display: flex;
         }
+
+        .attachment {
+            cursor: pointer;
+        }
     `,
-    render({inputs, state}) {
+    render({inputs, state, dispatch, events}) {
         state.preview.update(inputs.attachment);
         const preview = state.preview.isResolved() ? state.preview.value : undefined;
+
+        function open() {
+            dispatch(
+                new events.opened({
+                    detail: undefined,
+                }),
+            );
+        }
 
         return html`
             <div
@@ -73,7 +89,17 @@ export const VirAiChatSentAttachment = defineAppElement<{
                     attachment: true,
                     image: !!preview?.imageUrl,
                 })}
+                role="button"
+                tabindex="0"
+                aria-label="Open ${inputs.attachment.name}"
                 ${tooltip(inputs.attachment.name)}
+                ${listen('click', open)}
+                ${listen('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        open();
+                    }
+                })}
             >
                 ${renderAttachmentCardContent({
                     name: inputs.attachment.name,

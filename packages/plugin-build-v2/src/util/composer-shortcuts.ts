@@ -31,13 +31,13 @@ export const composerShortcutActions = {
             [KeyboardPlatform.Mac]: [
                 {
                     code: 'Enter',
-                    metaKey: true,
+                    altKey: true,
                 },
             ],
             [KeyboardPlatform.Other]: [
                 {
                     code: 'Enter',
-                    ctrlKey: true,
+                    altKey: true,
                 },
             ],
         },

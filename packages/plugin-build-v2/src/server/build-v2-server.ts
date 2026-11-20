@@ -1,5 +1,16 @@
-import {definePluginServer, type PluginCallHandlers} from '@agent-storm/core/server';
-import {awaitedForEach, createCuid2, extractErrorMessage, log} from '@augment-vir/common';
+// cspell:words unarchive unarchived unarchives unarchiving
+import {
+    definePluginServer,
+    type HostedProcessAttachment,
+    type PluginCallHandlers,
+} from '@agent-storm/core/server';
+import {
+    awaitedForEach,
+    createCuid2,
+    extractErrorMessage,
+    log,
+    wrapPromiseInTimeout,
+} from '@augment-vir/common';
 import {gitTimeout, hasErrorCode, normalizePath, runCommand} from 'agent-storm-util';
 import {convertDuration, createUtcFullDate, toJsDate} from 'date-vir';
 import {randomUUID} from 'node:crypto';
@@ -28,6 +39,7 @@ import {createClaudeProvider} from './providers/claude-provider.js';
 import {codexProvider} from './providers/codex-provider.js';
 import {
     type ProviderAdapter,
+    type ProviderProcessHost,
     type ProviderSession,
     type ProviderSink,
 } from './providers/provider-session.js';
@@ -40,14 +52,34 @@ import {
     isPlaceholderWorktreeName,
     parseGeneratedTitle,
 } from './thread-names.js';
-import {createThreadStore} from './thread-store.js';
+import {createThreadStore, interruptedTurnNotice} from './thread-store.js';
 
 const ok = {
     ok: true,
 } as const;
 
+/** Prefixes a thread's id to name its provider process in the daemon. */
+const hostedProcessIdPrefix = 'build-v2:';
+
 /** A repo's Claude skill that makes a worktree for a new thread and opens a PR from it. */
 const openWorktreeSkillName = 'open-worktree';
+
+/** Statuses of a thread that's mid-turn. */
+const busyThreadStatuses: Readonly<Record<ThreadStatus, boolean>> = {
+    [ThreadStatus.Idle]: false,
+    [ThreadStatus.Running]: true,
+    [ThreadStatus.NeedsApproval]: true,
+    [ThreadStatus.Failed]: false,
+};
+
+async function isFolderMissing(folder: string) {
+    return await stat(folder).then(
+        () => false,
+        (error: unknown) => {
+            return hasErrorCode(error, 'ENOENT');
+        },
+    );
+}
 
 export default definePluginServer({
     api: buildV2Api,
@@ -57,7 +89,19 @@ export default definePluginServer({
             prismaClient,
             emit,
         });
-        const interruptedThreads = await store.settleInterruptedWork();
+        const liveThreadIds = (
+            await host.listHostedProcessIds().catch((error: unknown) => {
+                log.warning(
+                    `Listing AI Chat processes in the daemon failed: ${extractErrorMessage(error)}`,
+                );
+                return [];
+            })
+        )
+            .filter((processId) => processId.startsWith(hostedProcessIdPrefix))
+            .map((processId) => processId.slice(hostedProcessIdPrefix.length));
+        const busyThreads = await store.settleInterruptedWork({
+            liveThreadIds,
+        });
 
         const providers: Readonly<Record<AiProvider, ProviderAdapter>> = {
             [AiProvider.Claude]: createClaudeProvider(createClaudeSessionStore(prismaClient)),
@@ -80,6 +124,10 @@ export default definePluginServer({
         >();
         /** Each thread's running provider, by thread id. */
         const sessions = new Map<string, Promise<ProviderSession>>();
+        /** Each thread's connection to its provider process in the daemon, by thread id. */
+        const hostedAttachments = new Map<string, HostedProcessAttachment>();
+        /** Called with whether the thread's next attach started a new process. */
+        const attachListeners = new Map<string, (isNew: boolean) => void>();
         /** The turn each thread's latest message started, which its new items belong to. */
         const turnIds = new Map<string, string>();
         /** Requests waiting on the user, by request id. */
@@ -180,6 +228,51 @@ export default definePluginServer({
             );
         }
 
+        /** Shows `request` in the thread and waits for the user's answer. */
+        async function openThreadRequest({
+            threadId,
+            request,
+            signal,
+        }: Readonly<{
+            threadId: string;
+            request: Readonly<
+                Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason' | 'questions'>
+            >;
+            signal: AbortSignal | undefined;
+        }>) {
+            if (signal?.aborted) {
+                return {
+                    decision: ApprovalDecision.Decline,
+                    answers: [],
+                };
+            }
+            const {id} = await store.addRequest({
+                ...request,
+                threadId,
+            });
+            const resolution = new Promise<
+                Readonly<{
+                    decision: ApprovalDecision;
+                    answers: ReadonlyArray<string>;
+                }>
+            >((resolve) => {
+                pendingApprovals.set(id, {
+                    threadId,
+                    questionCount: request.questions.length,
+                    resolve,
+                });
+            });
+            signal?.addEventListener('abort', async () => {
+                if (pendingApprovals.has(id)) {
+                    await settleApproval(id, ApprovalDecision.Decline);
+                }
+            });
+            await store.updateThread(threadId, {
+                status: ThreadStatus.NeedsApproval,
+            });
+            return await resolution;
+        }
+
         /**
          * A session's sink. Once the thread moves on to another session (or none), whatever the old
          * one still reports is dropped.
@@ -195,37 +288,17 @@ export default definePluginServer({
                 >,
                 signal: AbortSignal | undefined,
             ) {
-                if (!isCurrent() || signal?.aborted) {
+                if (!isCurrent()) {
                     return {
                         decision: ApprovalDecision.Decline,
                         answers: [],
                     };
                 }
-                const {id} = await store.addRequest({
-                    ...request,
+                return await openThreadRequest({
                     threadId,
+                    request,
+                    signal,
                 });
-                const resolution = new Promise<
-                    Readonly<{
-                        decision: ApprovalDecision;
-                        answers: ReadonlyArray<string>;
-                    }>
-                >((resolve) => {
-                    pendingApprovals.set(id, {
-                        threadId,
-                        questionCount: request.questions.length,
-                        resolve,
-                    });
-                });
-                signal?.addEventListener('abort', async () => {
-                    if (pendingApprovals.has(id)) {
-                        await settleApproval(id, ApprovalDecision.Decline);
-                    }
-                });
-                await store.updateThread(threadId, {
-                    status: ThreadStatus.NeedsApproval,
-                });
-                return await resolution;
             }
 
             return {
@@ -246,14 +319,34 @@ export default definePluginServer({
                         });
                     }
                 },
+                async findItem(providerItemId) {
+                    return await store.findProviderItem({
+                        threadId,
+                        providerItemId,
+                    });
+                },
                 async setStatus(status) {
                     if (!isCurrent()) {
                         return;
                     }
+                    if (!busyThreadStatuses[status]) {
+                        /** A provider that reconnected mid-turn can miss an item's end. */
+                        await store.failUnfinishedItems(threadId);
+                    }
                     await store.updateThread(threadId, {
                         status,
+                        /**
+                         * A provider that died mid-task never reports its tasks ending. An idle
+                         * thread keeps its count: Claude reports a turn's result while background
+                         * commands still run.
+                         */
+                        ...(status === ThreadStatus.Failed
+                            ? {
+                                  backgroundTaskCount: 0,
+                              }
+                            : {}),
                     });
-                    if (status !== ThreadStatus.Running && status !== ThreadStatus.NeedsApproval) {
+                    if (!busyThreadStatuses[status]) {
                         void generateThreadTitle({
                             threadId,
                         });
@@ -262,6 +355,18 @@ export default definePluginServer({
                             log.warning(
                                 `Finishing thread ${threadId}'s turn failed: ${extractErrorMessage(error)}`,
                             );
+                        });
+                    }
+                },
+                async reportStall() {
+                    if (isCurrent()) {
+                        await recoverStalledThread(threadId);
+                    }
+                },
+                async setBackgroundTaskCount(backgroundTaskCount) {
+                    if (isCurrent()) {
+                        await store.updateThread(threadId, {
+                            backgroundTaskCount,
                         });
                     }
                 },
@@ -308,7 +413,47 @@ export default definePluginServer({
                         sessions.delete(threadId);
                     }
                 },
+                releaseSession() {
+                    if (isCurrent()) {
+                        /** Not awaited: this stops the session that is reporting it. */
+                        releaseSession(threadId).catch((error: unknown) => {
+                            log.warning(
+                                `Releasing thread ${threadId}'s session failed: ${extractErrorMessage(error)}`,
+                            );
+                        });
+                    }
+                },
             } satisfies ProviderSink;
+        }
+
+        function createProcessHost(threadId: string): ProviderProcessHost {
+            return {
+                async attach(params) {
+                    const attachment = await host.attachHostedProcess({
+                        ...params,
+                        processId: `${hostedProcessIdPrefix}${threadId}`,
+                    });
+                    hostedAttachments.set(threadId, attachment);
+                    attachListeners.get(threadId)?.(attachment.isNew);
+                    attachListeners.delete(threadId);
+                    return attachment;
+                },
+            };
+        }
+
+        /** Stops the thread's provider, process included. */
+        async function releaseSession(threadId: string) {
+            const session = sessions.get(threadId);
+            sessions.delete(threadId);
+            hostedAttachments.delete(threadId);
+            (await session?.catch(() => undefined))?.stop();
+            await host
+                .killHostedProcess(`${hostedProcessIdPrefix}${threadId}`)
+                .catch((error: unknown) => {
+                    log.warning(
+                        `Stopping thread ${threadId}'s AI process failed: ${extractErrorMessage(error)}`,
+                    );
+                });
         }
 
         async function ensureSession(threadId: string) {
@@ -330,6 +475,7 @@ export default definePluginServer({
                     providerSessionId: details.providerSessionId,
                     sink: createSink(threadId, session),
                     agentTools: agentToolServer.connect(threadId),
+                    processHost: createProcessHost(threadId),
                 });
             });
             sessions.set(threadId, session.current);
@@ -337,7 +483,8 @@ export default definePluginServer({
                 return await session.current;
             } catch (error) {
                 if (sessions.get(threadId) === session.current) {
-                    sessions.delete(threadId);
+                    /** A start that failed after attaching leaves its daemon process running. */
+                    await releaseSession(threadId);
                 }
                 throw error;
             }
@@ -347,9 +494,7 @@ export default definePluginServer({
             const {updatedAt} = await store.findThread(threadId);
             afterTurnActions.delete(threadId);
             await declineThreadApprovals(threadId);
-            const session = sessions.get(threadId);
-            sessions.delete(threadId);
-            (await session?.catch(() => undefined))?.stop();
+            await releaseSession(threadId);
             await store.failUnfinishedItems(threadId);
             /**
              * Declining the last pending request above marks the thread running again. Stopping
@@ -358,8 +503,27 @@ export default definePluginServer({
              */
             await store.updateThread(threadId, {
                 status: ThreadStatus.Idle,
+                backgroundTaskCount: 0,
                 updatedAt: toJsDate(createUtcFullDate(updatedAt)),
             });
+        }
+
+        async function recoverStalledThread(threadId: string) {
+            try {
+                await stopSession(threadId);
+                await addNotice({
+                    threadId,
+                    text: 'The AI stopped responding, so Agent Storm restarted it and is continuing the turn.',
+                });
+                await sendMessage({
+                    threadId,
+                    text: 'Your process stopped responding, so Agent Storm restarted it. Everything it was still running, background agents included, was stopped. Pick up where you left off.',
+                });
+            } catch (error) {
+                log.warning(
+                    `Restarting stalled thread ${threadId} failed: ${extractErrorMessage(error)}`,
+                );
+            }
         }
 
         async function moveThreadToNewWorktree({
@@ -830,8 +994,17 @@ export default definePluginServer({
                 } else {
                     await store.updateThread(threadId, {
                         status: ThreadStatus.Idle,
+                        backgroundTaskCount: 0,
                     });
                 }
+                return ok;
+            },
+            async restartThread({threadId}) {
+                await stopSession(threadId);
+                await addNotice({
+                    threadId,
+                    text: 'Stopped the AI process. The next message starts a new one.',
+                });
                 return ok;
             },
             async resolveRequest({requestId, decision, answers}) {
@@ -862,19 +1035,49 @@ export default definePluginServer({
                     thread: await store.findThread(threadId),
                 };
             },
+            async moveToFolder({threadId, folder: rawFolder}) {
+                const folder = normalizePath(rawFolder);
+                const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
+                if (!folderInfo) {
+                    throw new Error(`${folder} isn't a folder in Agent Storm's sidebar.`);
+                }
+                await stopSession(threadId);
+                await store.updateThread(threadId, {
+                    repoPath: folderInfo.parentRepoPath
+                        ? normalizePath(folderInfo.parentRepoPath)
+                        : folder,
+                    cwd: folder,
+                    /** Set only for a worktree the thread made, which archiving may delete. */
+                    worktreeBranch: null,
+                });
+                await addNotice({
+                    threadId,
+                    text: `Moved to ${folder}.`,
+                });
+                return {
+                    thread: await store.findThread(threadId),
+                };
+            },
             async setThreadModel({threadId, provider, model, effort, speedTier}) {
                 const previous = await store.findThread(threadId);
-                if (
-                    previous.status === ThreadStatus.Running ||
-                    previous.status === ThreadStatus.NeedsApproval
-                ) {
-                    throw new Error('Wait for the thread to finish before switching models.');
-                }
-                /** The next message starts the provider again, resuming on the new model. */
-                const session = sessions.get(threadId);
-                sessions.delete(threadId);
-                (await session?.catch(() => undefined))?.stop();
                 const isNewProvider = provider !== previous.provider;
+                const isRunning = busyThreadStatuses[previous.status];
+                if (isRunning && isNewProvider) {
+                    throw new Error('Wait for the thread to finish before switching providers.');
+                }
+                if (isRunning) {
+                    /** Releasing the session would end the turn, so the live session switches. */
+                    await (
+                        await sessions.get(threadId)?.catch(() => undefined)
+                    )?.setModel({
+                        model,
+                        effort: effort ?? undefined,
+                        speedTier: speedTier || undefined,
+                    });
+                } else {
+                    /** The next message starts the provider again, resuming on the new model. */
+                    await releaseSession(threadId);
+                }
                 const thread = await store.updateThread(threadId, {
                     provider,
                     model,
@@ -919,10 +1122,57 @@ export default definePluginServer({
                 await store.markThreadRead(threadId);
                 return ok;
             },
-            async archiveThread({threadId}) {
+            async archiveThread({threadId, deleteWorktree}) {
+                const worktreeThread = deleteWorktree
+                    ? await store.findThread(threadId)
+                    : undefined;
                 await stopSession(threadId);
                 await store.archiveThread(threadId);
+                if (worktreeThread?.worktreeBranch) {
+                    const isWorktreeShared = (await store.listThreads()).some((other) => {
+                        return other.cwd === worktreeThread.cwd;
+                    });
+                    if (!isWorktreeShared) {
+                        await host.deleteWorktree({
+                            worktreePath: worktreeThread.cwd,
+                        });
+                    }
+                }
                 return ok;
+            },
+            async listArchivedThreads() {
+                return {
+                    threads: await store.listArchivedThreads(),
+                };
+            },
+            async unarchiveThread({threadId}) {
+                const archived = await store.findArchivedThread(threadId);
+                /**
+                 * Done before unarchiving, since the deleted-worktree sweep would archive the
+                 * thread again while its folder is still missing.
+                 */
+                const worktreePath =
+                    archived.worktreeBranch && (await isFolderMissing(archived.cwd))
+                        ? (
+                              await host.createWorktree({
+                                  folder: archived.repoPath,
+                                  name: archived.worktreeBranch,
+                              })
+                          ).worktreePath
+                        : undefined;
+                const thread = await store.unarchiveThread({
+                    threadId,
+                    cwd: worktreePath ? normalizePath(worktreePath) : undefined,
+                });
+                if (worktreePath) {
+                    await addNotice({
+                        threadId,
+                        text: `Unarchived into a new worktree of branch ${archived.worktreeBranch} at ${worktreePath}.`,
+                    });
+                }
+                return {
+                    thread,
+                };
             },
         };
 
@@ -932,7 +1182,18 @@ export default definePluginServer({
                 calls,
                 findThread: store.findThread,
                 listFolders: host.listFolders,
-                deleteWorktree: host.deleteWorktree,
+                async requestApproval({threadId, signal, ...request}) {
+                    const {decision} = await openThreadRequest({
+                        threadId,
+                        request: {
+                            ...request,
+                            kind: ApprovalKind.Permission,
+                            questions: [],
+                        },
+                        signal,
+                    });
+                    return decision;
+                },
                 runAfterTurn(threadId, action) {
                     afterTurnActions.set(threadId, [
                         ...(afterTurnActions.get(threadId) || []),
@@ -941,6 +1202,7 @@ export default definePluginServer({
                 },
             },
             instructions: agentToolInstructions,
+            dataDir,
         });
 
         /**
@@ -953,16 +1215,9 @@ export default definePluginServer({
                 const orphanedThreadIds = (
                     await Promise.all(
                         threads.map(async (thread) => {
-                            if (!thread.worktreeBranch) {
-                                return undefined;
-                            }
-                            const isMissing = await stat(thread.cwd).then(
-                                () => false,
-                                (error: unknown) => {
-                                    return hasErrorCode(error, 'ENOENT');
-                                },
-                            );
-                            return isMissing ? thread.id : undefined;
+                            return thread.worktreeBranch && (await isFolderMissing(thread.cwd))
+                                ? thread.id
+                                : undefined;
                         }),
                     )
                 ).filter((threadId) => threadId != undefined);
@@ -996,22 +1251,98 @@ export default definePluginServer({
         );
 
         /** Like a restored AI terminal pane, a thread a restart cut off is told to continue. */
-        interruptedThreads.forEach(({threadId, turnMessages}) => {
-            if (archivedOnStartThreadIds.includes(threadId)) {
+        async function resumeThread({
+            threadId,
+            turnMessages,
+        }: Readonly<{threadId: string; turnMessages: ReadonlyArray<string>}>) {
+            await sendMessage({
+                threadId,
+                text: buildResumeMessage([...turnMessages]),
+            });
+        }
+
+        /**
+         * Takes over a busy thread's provider process, which kept working in the daemon while this
+         * server restarted. When the process turns out to be gone, the turn is resumed instead.
+         */
+        async function reattachThread({
+            threadId,
+            turnId,
+            turnMessages,
+        }: Readonly<{threadId: string; turnId: string; turnMessages: ReadonlyArray<string>}>) {
+            turnIds.set(threadId, turnId);
+            const isNew = new Promise<boolean>((resolve) => {
+                attachListeners.set(threadId, resolve);
+            });
+            try {
+                await ensureSession(threadId);
+                if (
+                    !(await wrapPromiseInTimeout(
+                        {
+                            seconds: 30,
+                        },
+                        isNew,
+                    ))
+                ) {
+                    return;
+                }
+            } catch (error) {
+                log.warning(`Reattaching thread ${threadId} failed: ${extractErrorMessage(error)}`);
+            }
+            attachListeners.delete(threadId);
+            await stopSession(threadId);
+            await addNotice({
+                threadId,
+                text: interruptedTurnNotice,
+            });
+            await resumeThread({
+                threadId,
+                turnMessages,
+            });
+        }
+
+        /**
+         * An idle thread's process can still be working, as when a background command ends and
+         * starts a reply, so it needs a listener too.
+         */
+        liveThreadIds
+            .filter((threadId) => {
+                return (
+                    !archivedOnStartThreadIds.includes(threadId) &&
+                    !busyThreads.some((thread) => thread.threadId === threadId)
+                );
+            })
+            .forEach((threadId) => {
+                ensureSession(threadId).catch((error: unknown) => {
+                    log.warning(
+                        `Reattaching thread ${threadId} failed: ${extractErrorMessage(error)}`,
+                    );
+                });
+            });
+
+        busyThreads.forEach((thread) => {
+            if (archivedOnStartThreadIds.includes(thread.threadId)) {
                 return;
             }
-            sendMessage({
-                threadId,
-                text: buildResumeMessage(turnMessages),
-            }).catch((error: unknown) => {
-                log.warning(`Resuming thread ${threadId} failed: ${extractErrorMessage(error)}`);
-            });
+            (thread.isLive ? reattachThread(thread) : resumeThread(thread)).catch(
+                (error: unknown) => {
+                    log.warning(
+                        `Resuming thread ${thread.threadId} failed: ${extractErrorMessage(error)}`,
+                    );
+                },
+            );
         });
 
         return {
             calls,
             async stop() {
                 clearInterval(deletedWorktreeSweep);
+                /**
+                 * Providers keep running in the daemon, so nothing stopping below may reach them: a
+                 * decline answered on the way out would stop the turn this restart should spare.
+                 */
+                hostedAttachments.forEach((attachment) => attachment.detach());
+                hostedAttachments.clear();
                 [...pendingApprovals.values()].forEach((pending) => {
                     pending.resolve({
                         decision: ApprovalDecision.Decline,

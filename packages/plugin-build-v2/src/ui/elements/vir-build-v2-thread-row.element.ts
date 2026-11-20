@@ -1,4 +1,5 @@
-import {type FolderInfo} from '@agent-storm/common';
+// cspell:words unarchive unarchived unarchives unarchiving
+import {type FolderInfo, WatchModeStatus} from '@agent-storm/common';
 import {
     defineAppElement,
     getPrRingDisplay,
@@ -8,41 +9,49 @@ import {
     spinAnimationCss,
     spinKeyframesCss,
 } from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
 import {extractEventTarget} from '@augment-vir/web';
 import {classMap, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
     createColoredIcon,
     createSizedIcon,
+    LucideEyeIcon,
+    LucideEyeOffIcon,
     LucideGitBranchIcon,
     PopoverAnchor,
     PopoverTrigger,
     renderMenuItemEntries,
     tooltip,
     ViraIcon,
+    type ViraIconSvg,
     ViraMenuTrigger,
     viraThemeByKeys,
+    ViraThemeColorName,
 } from 'vira';
-import {ThreadStatus, type Thread} from '../../build-v2-api.js';
-import {sidebarStatusDisplays} from './thread-display.js';
+import {type Thread, ThreadStatus} from '../../build-v2-api.js';
+import {
+    backgroundTaskSidebarStatusDisplay,
+    questionSidebarStatusDisplay,
+    sidebarStatusDisplays,
+} from './thread-display.js';
 
-const branchIcon = createColoredIcon(createSizedIcon(LucideGitBranchIcon, 14), {
+const branchIcon = createColoredIcon(createSizedIcon(LucideGitBranchIcon, 12), {
     'vira-icon-stroke-color': viraThemeByKeys.grey.foreground['non-body'].foreground.value,
 });
 
-const minuteMs = 60_000;
-const hourMs = 60 * minuteMs;
-const dayMs = 24 * hourMs;
-
-function compactTimeLabel(timestamp: number) {
-    const elapsed = Date.now() - timestamp;
-    return elapsed < minuteMs
-        ? 'now'
-        : elapsed < hourMs
-          ? `${Math.floor(elapsed / minuteMs)}m`
-          : elapsed < dayMs
-            ? `${Math.floor(elapsed / hourMs)}h`
-            : `${Math.floor(elapsed / dayMs)}d`;
+function createWatchModeIcon(icon: Readonly<ViraIconSvg>, color: ViraThemeColorName) {
+    return createColoredIcon(createSizedIcon(icon, 14), {
+        'vira-icon-stroke-color': viraThemeByKeys[color].foreground.header.foreground.value,
+    });
 }
+
+const watchModeIcons: Record<WatchModeStatus, ViraIconSvg> = {
+    /** Only shown when watch mode stopped on its own, so its message says why. */
+    [WatchModeStatus.Off]: createWatchModeIcon(LucideEyeOffIcon, ViraThemeColorName.grey),
+    [WatchModeStatus.Watching]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.grey),
+    [WatchModeStatus.Working]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.blue),
+    [WatchModeStatus.Paused]: createWatchModeIcon(LucideEyeIcon, ViraThemeColorName.yellow),
+};
 
 /** One thread in the Build V2 sidebar: its title, status, and latest activity. */
 export const VirBuildV2ThreadRow = defineAppElement<{
@@ -50,12 +59,15 @@ export const VirBuildV2ThreadRow = defineAppElement<{
     /** The folder the thread runs in, which carries its PR status. */
     folderInfo: Readonly<FolderInfo> | undefined;
     isActive: boolean;
+    /** Shows the row dimmed, and clicking it unarchives the thread instead of selecting it. */
+    isArchived: boolean;
 }>()({
     tagName: 'vir-build-v2-thread-row',
     events: {
         selected: defineElementEvent<void>(),
         renamed: defineElementEvent<string>(),
         archived: defineElementEvent<void>(),
+        unarchived: defineElementEvent<void>(),
     },
     state() {
         return {
@@ -118,6 +130,15 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                     opacity: 1;
                 }
             }
+
+            &.archived {
+                opacity: 0.5;
+
+                &:hover,
+                &:focus-visible {
+                    opacity: 1;
+                }
+            }
         }
 
         .top {
@@ -135,7 +156,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             overflow: hidden;
             white-space: nowrap;
             text-overflow: ellipsis;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
             transition: opacity 120ms;
 
@@ -159,7 +180,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             border-radius: 4px;
             outline: none;
             font: inherit;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
             /** The sidebar turns off text selection, which Safari also applies to typing. */
             user-select: text;
@@ -188,7 +209,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             align-items: center;
             justify-content: flex-end;
             gap: 4px;
-            font-size: 12px;
+            font-size: 11px;
             font-variant-numeric: tabular-nums;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
 
@@ -201,13 +222,21 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             }
         }
 
-        .folder-status {
+        .folder-status,
+        .watch-status {
             display: inline-flex;
             align-items: center;
             justify-content: center;
             width: 16px;
             height: 16px;
             flex-shrink: 0;
+        }
+
+        .message-count {
+            flex-shrink: 0;
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
 
         .unread-dot {
@@ -220,7 +249,11 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         ${spinKeyframesCss}
     `,
     render({inputs, state, updateState, dispatch, events}) {
-        const display = sidebarStatusDisplays[inputs.thread.status];
+        const display = inputs.thread.isAskingQuestion
+            ? questionSidebarStatusDisplay
+            : inputs.thread.status === ThreadStatus.Idle && inputs.thread.backgroundTaskCount
+              ? backgroundTaskSidebarStatusDisplay
+              : sidebarStatusDisplays[inputs.thread.status];
         const shouldRecede = display.shouldRecede && !inputs.isActive;
         const statusIcon = inputs.folderInfo?.prUrl
             ? getPrRingDisplay(inputs.folderInfo)
@@ -247,7 +280,20 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             );
         }
 
+        function unarchive() {
+            dispatch(
+                new events.unarchived({
+                    detail: undefined,
+                }),
+            );
+        }
+
+        const activate = inputs.isArchived ? unarchive : select;
+
         function startRename() {
+            if (inputs.isArchived) {
+                return;
+            }
             updateState({
                 renameText: inputs.thread.title,
             });
@@ -343,8 +389,9 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                         'menu-open': state.isMenuOpen,
                         'dim-while-running':
                             shouldRecede && inputs.thread.status === ThreadStatus.Running,
+                        archived: inputs.isArchived,
                     })}
-                    ${listen('click', select)}
+                    ${listen('click', activate)}
                     ${listen('dblclick', startRename)}
                     ${listen('keydown', (event) => {
                         if (
@@ -355,27 +402,13 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                             ].includes(event.key)
                         ) {
                             event.preventDefault();
-                            select();
+                            activate();
                         }
                     })}
                 >
                     <div class="top">
                         ${title}
                         <span class="trailing">
-                            ${statusIcon?.icon
-                                ? html`
-                                      <span
-                                          class="folder-status"
-                                          ${statusIcon.tooltip
-                                              ? tooltip(statusIcon.tooltip, sidebarTooltipOptions)
-                                              : nothing}
-                                      >
-                                          <${ViraIcon.assign({
-                                              icon: statusIcon.icon,
-                                          })}></${ViraIcon}>
-                                      </span>
-                                  `
-                                : nothing}
                             <span
                                 class=${classMap({
                                     status: true,
@@ -413,22 +446,85 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                                                     ></span>
                                                 `
                                               : nothing}
-                                          ${compactTimeLabel(inputs.thread.updatedAt)}
                                       `}
                             </span>
+                            ${inputs.folderInfo &&
+                            (inputs.folderInfo.watchMode.status !== WatchModeStatus.Off ||
+                                inputs.folderInfo.watchMode.message)
+                                ? html`
+                                      <span
+                                          class="watch-status"
+                                          ${tooltip(
+                                              [
+                                                  inputs.folderInfo.watchMode.status ===
+                                                  WatchModeStatus.Off
+                                                      ? 'Watch mode stopped.'
+                                                      : 'Watch mode is on.',
+                                                  inputs.folderInfo.watchMode.message,
+                                              ]
+                                                  .filter(check.isTruthy)
+                                                  .join(' '),
+                                              sidebarTooltipOptions,
+                                          )}
+                                      >
+                                          <${ViraIcon.assign({
+                                              icon: watchModeIcons[
+                                                  inputs.folderInfo.watchMode.status
+                                              ],
+                                          })}></${ViraIcon}>
+                                      </span>
+                                  `
+                                : nothing}
+                            ${inputs.isArchived
+                                ? html`
+                                      <span
+                                          class="message-count"
+                                          ${tooltip(
+                                              `${inputs.thread.userMessageCount} user ${inputs.thread.userMessageCount === 1 ? 'message' : 'messages'}`,
+                                              sidebarTooltipOptions,
+                                          )}
+                                      >
+                                          ${inputs.thread.userMessageCount > 99
+                                              ? '99+'
+                                              : inputs.thread.userMessageCount}
+                                      </span>
+                                  `
+                                : statusIcon?.icon
+                                ? html`
+                                      <span
+                                          class="folder-status"
+                                          ${statusIcon.tooltip
+                                              ? tooltip(statusIcon.tooltip, sidebarTooltipOptions)
+                                              : nothing}
+                                      >
+                                          <${ViraIcon.assign({
+                                              icon: statusIcon.icon,
+                                          })}></${ViraIcon}>
+                                      </span>
+                                  `
+                                : nothing}
                         </span>
                     </div>
                 </div>
-                ${renderMenuItemEntries([
-                    {
-                        content: 'Rename',
-                        onClick: startRename,
-                    },
-                    {
-                        content: 'Archive',
-                        onClick: archive,
-                    },
-                ])}
+                ${renderMenuItemEntries(
+                    inputs.isArchived
+                        ? [
+                              {
+                                  content: 'Unarchive',
+                                  onClick: unarchive,
+                              },
+                          ]
+                        : [
+                              {
+                                  content: 'Rename',
+                                  onClick: startRename,
+                              },
+                              {
+                                  content: 'Archive',
+                                  onClick: archive,
+                              },
+                          ],
+                )}
             </${ViraMenuTrigger}>
         `;
     },

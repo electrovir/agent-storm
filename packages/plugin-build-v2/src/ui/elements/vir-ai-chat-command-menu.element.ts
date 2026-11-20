@@ -16,7 +16,8 @@ import {
 } from '../../build-v2-api.js';
 import {composerCommandSigns, describeComposerCommandOrigin} from '../../util/composer-commands.js';
 
-const sourceTagColors: Readonly<Record<ComposerCommandSource, ViraThemeColorName>> = {
+/** The color of a command's origin tag, also used to highlight the command in the message box. */
+export const sourceTagColors: Readonly<Record<ComposerCommandSource, ViraThemeColorName>> = {
     [ComposerCommandSource.BuiltIn]: ViraThemeColorName.grey,
     [ComposerCommandSource.Repo]: ViraThemeColorName.blue,
     [ComposerCommandSource.Personal]: ViraThemeColorName.green,
@@ -24,6 +25,11 @@ const sourceTagColors: Readonly<Record<ComposerCommandSource, ViraThemeColorName
     [ComposerCommandSource.Plugin]: ViraThemeColorName.purple,
     [ComposerCommandSource.Other]: ViraThemeColorName.tan,
 };
+
+/** The background behind a command's name where a message mentions it. */
+export function findCommandMentionColor(command: Readonly<ComposerCommand>) {
+    return viraThemeByKeys[sourceTagColors[command.source]]['on-self'].body.background.value;
+}
 
 /**
  * The commands and skills matching the word typed at the composer's caret, shown above the

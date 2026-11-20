@@ -4,6 +4,8 @@ import {assertValidShape} from 'object-shape-tester';
 import {type JSONSchema, mapSchemaToShape} from 'schema-vir';
 import {
     AiProvider,
+    ApprovalDecision,
+    type ApprovalRequest,
     type buildV2Api,
     ReasoningEffort,
     RuntimeMode,
@@ -17,7 +19,14 @@ export type AgentToolContext = Readonly<{
     calls: PluginCallHandlers<typeof buildV2Api>;
     findThread: ThreadStore['findThread'];
     listFolders: PluginServerHost['listFolders'];
-    deleteWorktree: PluginServerHost['deleteWorktree'];
+    /** Asks the thread's user to approve something and waits, whatever the thread's runtime mode. */
+    requestApproval(
+        params: Readonly<
+            Pick<ApprovalRequest, 'threadId' | 'title' | 'detail' | 'reason'> & {
+                signal: AbortSignal | undefined;
+            }
+        >,
+    ): Promise<ApprovalDecision>;
     /**
      * Runs `action` once the thread's current turn ends. A tool that stops the thread's own session
      * waits for this, since stopping it mid-turn would end the very call running the tool.
@@ -34,12 +43,19 @@ export type AgentTool = Readonly<{
     };
     /** Lets the tool run without asking the user, whatever the thread's runtime mode. */
     isReadOnly: boolean;
+    /**
+     * The tool asks the user itself, in every runtime mode, so providers run it without their own
+     * prompt.
+     */
+    asksForApproval?: boolean | undefined;
     run(
         params: Readonly<{
             /** The id of the thread whose agent called the tool. */
             callerId: string;
             input: unknown;
             context: AgentToolContext;
+            /** Aborts when the agent stops waiting for the tool. */
+            signal: AbortSignal;
         }>,
     ): Promise<unknown>;
 }>;
@@ -50,13 +66,14 @@ function defineAgentTool<const Schema extends AgentTool['inputSchema']>({
     run,
     ...tool
 }: Readonly<
-    Pick<AgentTool, 'name' | 'description' | 'isReadOnly'> & {
+    Pick<AgentTool, 'name' | 'description' | 'isReadOnly' | 'asksForApproval'> & {
         inputSchema: Schema;
         run(
             params: Readonly<{
                 callerId: string;
                 input: ReturnType<typeof mapSchemaToShape<Schema>>['runtimeType'];
                 context: AgentToolContext;
+                signal: AbortSignal;
             }>,
         ): Promise<unknown>;
     }
@@ -191,8 +208,8 @@ const speedTierSchema = {
 /** What both providers show their agent about Agent Storm's tools as a whole. */
 export const agentToolInstructions = [
     'Agent Storm is the app running this chat. These tools act on its chat threads, this one included, and on the folders in its sidebar.',
-    'Before changing files in a repo that has worktrees in the sidebar (see list_folders), move this thread into its own worktree with move_to_worktree, unless it is in one already.',
-    "Tools that restart or stop this thread's session (move_to_worktree, archive_thread on this thread, and configure_thread changing this thread's model) take effect when your turn ends, so call them last and then end your turn.",
+    "Before changing files, find this thread's folder with list_folders. In a plain checkout (isWorktreeRoot false), change files right there, and use move_to_worktree only when the user asks for a worktree. In a worktree root (isWorktreeRoot true), move this thread into its own worktree with move_to_worktree first, unless it is in one already.",
+    "Tools that restart or stop this thread's session (move_to_worktree, move_to_folder, archive_thread on this thread, and configure_thread changing this thread's model) take effect when your turn ends, so call them last and then end your turn.",
 ].join(' ');
 
 export const agentTools: ReadonlyArray<AgentTool> = [
@@ -326,9 +343,10 @@ export const agentTools: ReadonlyArray<AgentTool> = [
         description: [
             "Moves this thread into a new git worktree of its checkout, on a new branch, and runs the repo's post-worktree command there.",
             'The move happens when your turn ends, and the thread works in the worktree from then on, so call this last and then end your turn.',
-            'Fails if this thread is already in its own worktree.',
+            'Asks the user to approve the move first, and fails if they decline or if this thread is already in its own worktree.',
         ].join(' '),
         isReadOnly: false,
+        asksForApproval: true,
         inputSchema: {
             type: 'object',
             additionalProperties: false,
@@ -340,9 +358,20 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 },
             },
         },
-        async run({callerId, input, context}) {
-            if ((await context.findThread(callerId)).worktreeBranch) {
+        async run({callerId, input, context, signal}) {
+            const thread = await context.findThread(callerId);
+            if (thread.worktreeBranch) {
                 throw new Error('This thread is already in its own worktree.');
+            }
+            const decision = await context.requestApproval({
+                threadId: callerId,
+                title: 'Move this thread to a new worktree',
+                detail: thread.cwd,
+                reason: 'Makes a new git worktree of this folder, on a new branch, and moves this thread into it.',
+                signal,
+            });
+            if (decision === ApprovalDecision.Decline) {
+                throw new Error('The user declined moving this thread to a new worktree.');
             }
             context.runAfterTurn(callerId, async () => {
                 const {thread} = await context.calls.moveToWorktree({
@@ -366,9 +395,60 @@ export const agentTools: ReadonlyArray<AgentTool> = [
         },
     }),
     defineAgentTool({
+        name: 'move_to_folder',
+        description: [
+            "Moves this thread into another folder from Agent Storm's sidebar, such as a different repo's checkout, keeping its conversation.",
+            'The move happens when your turn ends, and the thread works in that folder from then on, so call this last and then end your turn.',
+        ].join(' '),
+        isReadOnly: false,
+        inputSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                folder: {
+                    type: 'string',
+                    description:
+                        "The folder's path, from list_folders or a thread's cwd from list_threads.",
+                },
+                continuationPrompt: {
+                    type: 'string',
+                    description:
+                        'Sent to this thread once it is in the folder, to carry on the work there. Omit to wait for the user.',
+                },
+            },
+            required: [
+                'folder',
+            ],
+        },
+        async run({callerId, input, context}) {
+            const folders = await context.listFolders();
+            if (!folders.some((folder) => folder.path === input.folder)) {
+                throw new Error(`${input.folder} isn't a folder in Agent Storm's sidebar.`);
+            }
+            context.runAfterTurn(callerId, async () => {
+                const {thread} = await context.calls.moveToFolder({
+                    threadId: callerId,
+                    folder: input.folder,
+                });
+                if (input.continuationPrompt) {
+                    await context.calls.sendMessage({
+                        threadId: callerId,
+                        text: [
+                            `This thread moved to ${thread.cwd}. Work there, using paths under that folder.`,
+                            input.continuationPrompt,
+                        ].join('\n\n'),
+                    });
+                }
+            });
+            return {
+                message: 'This thread moves when your turn ends. End your turn now.',
+            };
+        },
+    }),
+    defineAgentTool({
         name: 'create_thread',
         description:
-            "Starts a new thread and sends it its first message. Returns once the thread has started, so a failed start shows in its status. Unset settings default to this thread's.",
+            "Starts a new thread and sends it its first message. Returns once the thread has started, so a failed start shows in its status. Unset settings default to this thread's, except an unset speed tier, which is standard speed.",
         isReadOnly: false,
         inputSchema: {
             type: 'object',
@@ -411,6 +491,8 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                     base: caller,
                     input,
                 }),
+                /** Fast mode costs more, so it stays with the thread it was turned on in. */
+                speedTier: input.speedTier || null,
                 runtimeMode,
                 text: input.text,
                 isInWorktree: !!input.isInWorktree,
@@ -548,12 +630,8 @@ export const agentTools: ReadonlyArray<AgentTool> = [
             async function archive() {
                 await context.calls.archiveThread({
                     threadId,
+                    deleteWorktree: input.deleteWorktree,
                 });
-                if (input.deleteWorktree) {
-                    await context.deleteWorktree({
-                        worktreePath: thread.cwd,
-                    });
-                }
             }
             if (threadId !== callerId) {
                 await archive();
@@ -571,7 +649,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
         name: 'configure_thread',
         description: [
             "Changes a thread's provider, model, effort, speed tier, or runtime mode. Unset settings stay as they are.",
-            "A new model applies from the thread's next message. For this thread it applies when your turn ends; another thread must not be running.",
+            "A new model applies from the thread's next message. For this thread it applies when your turn ends. A running thread can't switch provider.",
             'A new runtime mode applies right away.',
         ].join(' '),
         isReadOnly: false,
@@ -629,6 +707,6 @@ export const agentTools: ReadonlyArray<AgentTool> = [
 ];
 
 /** The tools that run without asking. */
-export const readOnlyAgentToolNames = agentTools
-    .filter((tool) => tool.isReadOnly)
+export const unpromptedAgentToolNames = agentTools
+    .filter((tool) => tool.isReadOnly || tool.asksForApproval)
     .map((tool) => tool.name);

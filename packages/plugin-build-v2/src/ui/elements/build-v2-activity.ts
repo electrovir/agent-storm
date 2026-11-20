@@ -1,5 +1,15 @@
-import {toPaneGroupKey} from '@agent-storm/common';
-import {defineActivity, updateTabState, VirPaneGroup} from '@agent-storm/core/frontend';
+import {diffPaneId, PrStatus, reviewPaneId, SplitEdge, toPaneGroupKey} from '@agent-storm/common';
+import {
+    addTab,
+    createTabId,
+    defineActivity,
+    findShownTabIdOfKind,
+    selectTab,
+    splitTab,
+    updateTabState,
+    VirPaneGroup,
+    type TabLayout,
+} from '@agent-storm/core/frontend';
 import {getObjectTypedEntries} from '@augment-vir/common';
 import {css, html, keyed, listen, nothing} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
@@ -14,6 +24,56 @@ import {
 import {aiChatPane} from './ai-chat-pane.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
 import {VirBuildV2Sidebar} from './vir-build-v2-sidebar.element.js';
+
+/** PR statuses that wait on the viewer's own review. */
+const isAwaitingViewerReview: Readonly<Record<PrStatus, boolean>> = {
+    [PrStatus.None]: false,
+    [PrStatus.AwaitingReview]: true,
+    [PrStatus.ReviewStarted]: true,
+    [PrStatus.ReReviewRequested]: true,
+    [PrStatus.UnresolvedComments]: false,
+    [PrStatus.ChangesRequested]: false,
+    [PrStatus.Approved]: false,
+    [PrStatus.OthersRequestedChanges]: false,
+    [PrStatus.AwaitingOtherReviews]: false,
+    [PrStatus.ChecksFailed]: false,
+    [PrStatus.ReadyToMerge]: false,
+    [PrStatus.Merged]: false,
+    [PrStatus.Closed]: false,
+};
+
+/** Shows the Diff tab in the active group, with the Review tab split off to its right. */
+function showReviewTabs(layout: Readonly<TabLayout>) {
+    const groupId = layout.activeGroupId;
+    const reviewTabId = createTabId(reviewPaneId);
+    const withReview = findShownTabIdOfKind(layout, reviewPaneId)
+        ? layout
+        : splitTab(
+              addTab(layout, {
+                  tab: {
+                      id: reviewTabId,
+                      kind: reviewPaneId,
+                  },
+                  groupId,
+                  isBackground: true,
+              }),
+              {
+                  tabId: reviewTabId,
+                  groupId,
+                  edge: SplitEdge.Right,
+              },
+          );
+    const diffTabId = findShownTabIdOfKind(withReview, diffPaneId);
+    return diffTabId
+        ? selectTab(withReview, diffTabId)
+        : addTab(withReview, {
+              tab: {
+                  id: createTabId(diffPaneId),
+                  kind: diffPaneId,
+              },
+              groupId,
+          });
+}
 
 /**
  * Chat threads with Claude and Codex, listed by repo, one open at a time. Each thread has its own
@@ -85,6 +145,39 @@ export const buildV2Activity = defineActivity({
         const isCwdGone = !!thread?.cwd && !!folderInfo.size && !folderInfo.has(thread.cwd);
         const folder = thread ? (!isCwdGone && thread.cwd) || thread.repoPath : draftRepoPath || '';
         const scope = `build-v2:${threadId || newThreadSubPath}`;
+        const folderPr = folderInfo.get(folder);
+        const isReviewWanted = !!folderPr?.prUrl && isAwaitingViewerReview[folderPr.prStatus];
+        /**
+         * A thread usually has its layout well before its PR waits on the viewer, so `defaultTabs`
+         * alone would miss it. Done once per PR so closing the tabs keeps them closed.
+         */
+        if (
+            thread &&
+            folderPr?.prUrl &&
+            isReviewWanted &&
+            context.uiLayout.value.layout &&
+            buildV2Memory.reviewTabsPrUrl.readFolder(thread.id) !== folderPr.prUrl
+        ) {
+            buildV2Memory.reviewTabsPrUrl.writeFolder({
+                folder: thread.id,
+                value: folderPr.prUrl,
+            });
+            context.uiLayout.updateTabLayout({
+                folder: toPaneGroupKey({
+                    folder,
+                    scope,
+                }),
+                update(current) {
+                    return current && showReviewTabs(current);
+                },
+            });
+        }
+        const chatTab = {
+            kind: aiChatPane.id,
+            state: {
+                threadId: threadId || '',
+            },
+        };
 
         return keyed(
             `${scope}:${folder}`,
@@ -94,29 +187,56 @@ export const buildV2Activity = defineActivity({
                     active: true,
                     context,
                     scope,
-                    defaultTabs: [
-                        {
-                            kind: aiChatPane.id,
-                            state: {
-                                threadId: threadId || '',
-                            },
-                        },
-                    ],
+                    /** A PR waiting on the viewer opens on its diff, with the Review tab beside it. */
+                    defaultTabs: isReviewWanted
+                        ? [
+                              [
+                                  {
+                                      kind: diffPaneId,
+                                  },
+                                  chatTab,
+                              ],
+                              [
+                                  {
+                                      kind: reviewPaneId,
+                                  },
+                              ],
+                          ]
+                        : [
+                              [
+                                  chatTab,
+                              ],
+                          ],
                 })}
                     ${listen(VirAiChat.events.threadCreated, async (event) => {
                         if (threadId) {
                             return;
                         }
                         const newThreadId = event.detail.thread.id;
+                        const draftLayoutKey = toPaneGroupKey({
+                            folder,
+                            scope,
+                        });
+                        const draftLayout = context.uiLayout.getTabLayout(draftLayoutKey);
+                        /**
+                         * The thread keeps the draft's tabs and splits. Its AI Chat tab already
+                         * points at the new thread, so this copy happens before that's cleared.
+                         */
+                        context.uiLayout.updateTabLayout({
+                            folder: toPaneGroupKey({
+                                folder: event.detail.thread.cwd || event.detail.thread.repoPath,
+                                scope: `build-v2:${newThreadId}`,
+                            }),
+                            update(current) {
+                                return current ? undefined : draftLayout;
+                            },
+                        });
                         /**
                          * The AI Chat tab has already stored the new thread in its own state, so
                          * the draft's next thread would open on this one without clearing it.
                          */
                         context.uiLayout.updateTabLayout({
-                            folder: toPaneGroupKey({
-                                folder,
-                                scope,
-                            }),
+                            folder: draftLayoutKey,
                             update(current) {
                                 return (
                                     current &&

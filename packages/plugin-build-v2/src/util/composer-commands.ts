@@ -221,6 +221,32 @@ export function listComposerMenuCommands({
 }
 
 /**
+ * Splits `text` into whitespace and words, pairing each word that names one of `commands` with it.
+ * Matching follows the menu: a skill matches after either sign anywhere, and a command matches only
+ * as the message's first word.
+ */
+export function splitComposerCommandMentions({
+    text,
+    commands,
+}: Readonly<{
+    text: string;
+    commands: ReadonlyArray<Readonly<ComposerCommand>>;
+}>) {
+    return text.split(/(\s+)/).map((part, index) => {
+        return {
+            text: part,
+            command: commands.find((command) => {
+                return command.kind === ComposerCommandKind.Skill
+                    ? Object.values(composerCommandSigns).some((sign) => {
+                          return part === `${sign}${command.name}`;
+                      })
+                    : !index && part === `${composerCommandSigns[command.kind]}${command.name}`;
+            }),
+        };
+    });
+}
+
+/**
  * Replaces `trigger`'s word with `command` and a space, reusing a space already after the word.
  * Returns the new text and the caret after the inserted space.
  */

@@ -177,8 +177,9 @@ export const workItemDisplays: Record<
 };
 
 const statusIconSize = 12;
-const workingIcon = createSizedIcon(LucideLoaderIcon, statusIconSize);
+export const workingIcon = createSizedIcon(LucideLoaderIcon, statusIconSize);
 const approvalIcon = createSizedIcon(LucideShieldQuestionMarkIcon, statusIconSize);
+const questionIcon = createSizedIcon(LucideMessageCircleQuestionMarkIcon, statusIconSize);
 const failedIcon = createSizedIcon(LucideCircleAlertIcon, statusIconSize);
 
 /** How a thread's status shows in its sidebar row and in its project's folder row. */
@@ -249,5 +250,38 @@ export const sidebarStatusDisplays: Record<
             color: 'red',
             label: ', failed',
         },
+    },
+};
+
+/** Replaces the approval status of a thread whose every pending request is a question. */
+export const questionStatusDisplay = {
+    ...threadStatusDisplays[ThreadStatus.NeedsApproval],
+    label: 'Waiting for your answer',
+};
+
+/** Replaces the idle status in the sidebar while background tasks the agent started still run. */
+export const backgroundTaskSidebarStatusDisplay: (typeof sidebarStatusDisplays)[ThreadStatus] = {
+    ...sidebarStatusDisplays[ThreadStatus.Running],
+    status: {
+        label: undefined,
+        tooltip: 'Background tasks the AI started are still running.',
+        icon: workingIcon,
+        isSpinning: true,
+        color: 'pink',
+    },
+};
+
+/**
+ * Replaces the approval status in the sidebar for a thread whose every pending request is a
+ * question.
+ */
+export const questionSidebarStatusDisplay: (typeof sidebarStatusDisplays)[ThreadStatus] = {
+    ...sidebarStatusDisplays[ThreadStatus.NeedsApproval],
+    status: {
+        label: 'Question',
+        tooltip: undefined,
+        icon: questionIcon,
+        isSpinning: false,
+        color: 'yellow',
     },
 };

@@ -1,5 +1,5 @@
 import {definePluginApi} from '@agent-storm/common';
-import {defineShape, enumShape, nullableShape} from 'object-shape-tester';
+import {defineShape, enumShape, nullableShape, optionalShape} from 'object-shape-tester';
 
 export const buildV2PluginId = 'build-v2';
 
@@ -103,6 +103,15 @@ export const threadShape = defineShape({
     status: enumShape(ThreadStatus),
     /** The agent finished a reply since the thread was last on screen. */
     hasUnreadReply: false,
+    /**
+     * Every request the thread waits on is a question for the user rather than an action to
+     * approve.
+     */
+    isAskingQuestion: false,
+    /** Background tasks, such as sub-agents, the agent still waits on after its reply ended. */
+    backgroundTaskCount: 0,
+    /** Messages the user sent in the thread. */
+    userMessageCount: 0,
     /** Epoch milliseconds. */
     createdAt: 0,
     /** Epoch milliseconds of the thread's latest activity, which orders the sidebar. */
@@ -267,6 +276,23 @@ export const buildV2Api = definePluginApi({
                 ],
             }),
         },
+        /** Every archived thread, latest activity first. */
+        listArchivedThreads: {
+            requestShape: defineShape({}),
+            responseShape: defineShape({
+                threads: [
+                    threadShape,
+                ],
+            }),
+        },
+        /**
+         * Brings an archived thread back to the sidebar. When archiving deleted its worktree, first
+         * checks the thread's branch out into a new worktree.
+         */
+        unarchiveThread: {
+            requestShape: threadRequestShape,
+            responseShape: threadResponseShape,
+        },
         /** The models the provider offers, as its CLI lists them. */
         listModels: {
             requestShape: defineShape({
@@ -365,6 +391,14 @@ export const buildV2Api = definePluginApi({
             requestShape: threadRequestShape,
             responseShape: okResponseShape,
         },
+        /**
+         * Stops the thread's AI process, ending any running turn, so the thread's next message
+         * starts a new one.
+         */
+        restartThread: {
+            requestShape: threadRequestShape,
+            responseShape: okResponseShape,
+        },
         resolveRequest: {
             requestShape: defineShape({
                 requestId: '',
@@ -385,6 +419,17 @@ export const buildV2Api = definePluginApi({
             requestShape: defineShape({
                 threadId: '',
                 requestId: nullableShape(''),
+            }),
+            responseShape: threadResponseShape,
+        },
+        /**
+         * Stops the thread's session and resumes it in another folder from the sidebar, which can
+         * belong to a different repo.
+         */
+        moveToFolder: {
+            requestShape: defineShape({
+                threadId: '',
+                folder: '',
             }),
             responseShape: threadResponseShape,
         },
@@ -429,7 +474,17 @@ export const buildV2Api = definePluginApi({
         },
         /** Stops the thread and hides it from the sidebar. */
         archiveThread: {
-            requestShape: threadRequestShape,
+            requestShape: defineShape({
+                threadId: '',
+                /**
+                 * Also deletes the thread's worktree folder, uncommitted changes included, when the
+                 * thread made that worktree itself and no other thread works in it. Its branch
+                 * stays.
+                 */
+                deleteWorktree: optionalShape(false, {
+                    alsoUndefined: true,
+                }),
+            }),
             responseShape: okResponseShape,
         },
     },

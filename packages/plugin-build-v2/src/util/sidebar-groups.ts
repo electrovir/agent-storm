@@ -66,7 +66,7 @@ function filterByRecency(
         days: -7,
     });
     return groups.filter((group) => {
-        /** The sidebar never holds archived threads, so any thread means the folder is in use. */
+        /** Any thread means the folder is in use, archived ones included while they're shown. */
         if (group.threads.length) {
             return true;
         }

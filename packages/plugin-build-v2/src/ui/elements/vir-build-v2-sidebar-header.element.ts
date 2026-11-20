@@ -50,6 +50,7 @@ export const VirBuildV2SidebarHeader = defineAppElement<{
     hasSearchResult: boolean;
     sidebarSorting: SidebarSorting | undefined;
     onlyShowRecent: boolean | undefined;
+    showArchived: boolean;
     themeClient: Readonly<ViraThemeClient>;
 }>()({
     tagName: 'vir-build-v2-sidebar-header',
@@ -57,6 +58,7 @@ export const VirBuildV2SidebarHeader = defineAppElement<{
         addFolderRequest: defineElementEvent<void>(),
         sortingSelect: defineElementEvent<SidebarSorting>(),
         hideInactiveChange: defineElementEvent<boolean>(),
+        showArchivedChange: defineElementEvent<boolean>(),
         settingsRequest: defineElementEvent<void>(),
     },
     hostClasses: {
@@ -186,6 +188,17 @@ export const VirBuildV2SidebarHeader = defineAppElement<{
                                 dispatch(
                                     new events.hideInactiveChange({
                                         detail: !inputs.onlyShowRecent,
+                                    }),
+                                );
+                            },
+                        },
+                        {
+                            content: 'Show Archived',
+                            iconOverride: inputs.showArchived ? LucideCheckIcon : undefined,
+                            onClick() {
+                                dispatch(
+                                    new events.showArchivedChange({
+                                        detail: !inputs.showArchived,
                                     }),
                                 );
                             },

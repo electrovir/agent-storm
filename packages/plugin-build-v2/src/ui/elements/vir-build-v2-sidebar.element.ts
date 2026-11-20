@@ -1,3 +1,4 @@
+// cspell:words unarchive unarchived unarchives unarchiving
 import {
     hideRepoEndpoint,
     settingsEndpoint,
@@ -16,6 +17,11 @@ import {
     type ActivityRoute,
     type AppContext,
 } from '@agent-storm/core/frontend';
+import {
+    getFolderVerdictStatuses,
+    reviewActivityId,
+    type ReviewState,
+} from '@agent-storm/plugin-review';
 import {extractErrorMessage} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {classMap, css, html, listen, nothing} from 'element-vir';
@@ -36,8 +42,11 @@ import {type Thread} from '../../build-v2-api.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {buildV2Memory} from '../../util/build-v2-memory.js';
 import {
+    confirmThreadArchive,
     findThreadRepos,
+    loadArchivedThreads,
     loadThreads,
+    markThreadArchived,
     newThreadSubPath,
     storeThread,
     type BuildV2State,
@@ -50,8 +59,8 @@ import {VirBuildV2AddFolderModal} from './vir-build-v2-add-folder-modal.element.
 import {VirBuildV2SidebarHeader} from './vir-build-v2-sidebar-header.element.js';
 import {VirBuildV2ThreadRow} from './vir-build-v2-thread-row.element.js';
 
-const chevronIcon = createSizedIcon(LucideChevronDownIcon, 12);
-const newThreadIcon = createSizedIcon(LucideSquarePenIcon, 14);
+const chevronIcon = createSizedIcon(LucideChevronDownIcon, 10);
+const newThreadIcon = createSizedIcon(LucideSquarePenIcon, 12);
 
 /** The Build V2 tab's sidebar: every thread, grouped under its repo, with a new-thread button each. */
 export const VirBuildV2Sidebar = defineAppElement<{
@@ -66,6 +75,8 @@ export const VirBuildV2Sidebar = defineAppElement<{
             collapsedRepoPaths: [] as ReadonlyArray<string>,
             searchQuery: '',
             isAddFolderModalOpen: false,
+            /** The title of the thread being unarchived, which can take a while to check out. */
+            unarchivingTitle: undefined as string | undefined,
         };
     },
     styles: css`
@@ -191,7 +202,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
             overflow: hidden;
             white-space: nowrap;
             text-overflow: ellipsis;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
         }
 
@@ -213,7 +224,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
 
         .thread-count {
             flex-shrink: 0;
-            font-size: 12px;
+            font-size: 11px;
             font-variant-numeric: tabular-nums;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
         }
@@ -278,15 +289,29 @@ export const VirBuildV2Sidebar = defineAppElement<{
     `,
     render({inputs, state, updateState}) {
         const threads = inputs.buildV2State.threads.value;
+        const archivedThreads = inputs.buildV2State.archivedThreads.value;
         const loadError = inputs.buildV2State.loadError.value;
         const draftRepoPath = inputs.buildV2State.draftRepoPath.value;
         const activeThreadId =
             inputs.route.subPaths[0] === newThreadSubPath ? undefined : inputs.route.subPaths[0];
         const allGroups = groupThreadsByRepo({
             repos: findThreadRepos(inputs.context),
-            threads: threads || [],
+            threads: [
+                ...(threads || []),
+                ...(archivedThreads || []),
+            ],
         });
         const snapshot = inputs.context.folderData.value.snapshot;
+        /** The Review tab's sent verdict shows on the ring before GitHub's next poll reports it. */
+        const reviewState = inputs.context.activityStates[reviewActivityId] satisfies unknown as
+            | ReviewState
+            | undefined;
+        const prStatusOverrides = reviewState
+            ? getFolderVerdictStatuses({
+                  prReviews: reviewState.prReviews.value,
+                  folderInfo: inputs.context.folderData.value.folderInfo,
+              })
+            : {};
         const groups = arrangeRepoGroups({
             groups: allGroups,
             folderInfo: inputs.context.folderData.value.folderInfo,
@@ -350,6 +375,30 @@ export const VirBuildV2Sidebar = defineAppElement<{
             ]);
         }
 
+        function isArchived(thread: Readonly<Thread>) {
+            return !!archivedThreads?.some((archived) => archived.id === thread.id);
+        }
+
+        async function unarchiveThread(thread: Readonly<Thread>) {
+            /** A second click would recreate the same missing worktree again. */
+            if (state.unarchivingTitle) {
+                return;
+            }
+            updateState({
+                unarchivingTitle: thread.title || 'New thread',
+            });
+            await runAction(async () => {
+                const unarchived = await buildV2Client.call('unarchiveThread', {
+                    threadId: thread.id,
+                });
+                storeThread(inputs.buildV2State, unarchived.thread);
+                selectThread(unarchived.thread);
+            });
+            updateState({
+                unarchivingTitle: undefined,
+            });
+        }
+
         return html`
             <${VirBuildV2SidebarHeader.assign({
                 mobileModal: inputs.context.screenSize === ScreenSize.Mobile,
@@ -357,6 +406,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
                 hasSearchResult: isSearching && !!groups.length,
                 sidebarSorting: snapshot?.settings.sidebarSorting,
                 onlyShowRecent: snapshot?.settings.onlyShowRecent,
+                showArchived: !!archivedThreads,
                 themeClient: inputs.context.themeClient,
             })}
                 ${listen(VirSidebarSearch.events.searchQueryChange, (event) => {
@@ -364,10 +414,12 @@ export const VirBuildV2Sidebar = defineAppElement<{
                         searchQuery: event.detail,
                     });
                 })}
-                ${listen(VirSidebarSearch.events.searchSubmit, () => {
+                ${listen(VirSidebarSearch.events.searchSubmit, async () => {
                     const [firstGroup] = groups;
                     const [firstThread] = firstGroup?.threads || [];
-                    if (firstThread) {
+                    if (firstThread && isArchived(firstThread)) {
+                        await unarchiveThread(firstThread);
+                    } else if (firstThread) {
                         selectThread(firstThread);
                     } else if (firstGroup) {
                         startDraft(firstGroup.repo.path);
@@ -387,6 +439,14 @@ export const VirBuildV2Sidebar = defineAppElement<{
                     await updateSettings({
                         onlyShowRecent: event.detail,
                     });
+                })}
+                ${listen(VirBuildV2SidebarHeader.events.showArchivedChange, async (event) => {
+                    if (event.detail) {
+                        inputs.buildV2State.archivedThreads.setValue([]);
+                        await loadArchivedThreads(inputs.buildV2State);
+                    } else {
+                        inputs.buildV2State.archivedThreads.setValue(undefined);
+                    }
                 })}
                 ${listen(VirBuildV2SidebarHeader.events.settingsRequest, () => {
                     inputs.context.openSettings({
@@ -414,6 +474,11 @@ export const VirBuildV2Sidebar = defineAppElement<{
                 ${state.actionError
                     ? html`
                           <div class="message error">${state.actionError}</div>
+                      `
+                    : nothing}
+                ${state.unarchivingTitle
+                    ? html`
+                          <div class="message">Unarchiving "${state.unarchivingTitle}"…</div>
                       `
                     : nothing}
                 ${threads || loadError
@@ -593,20 +658,35 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                     </${ViraMenuTrigger}>
                                     <ul>
                                         ${group.threads.map((thread) => {
+                                            const folderInfo =
+                                                inputs.context.folderData.value.folderInfo.get(
+                                                    thread.cwd,
+                                                );
+                                            const prStatus = prStatusOverrides[thread.cwd];
                                             return html`
                                                 <li data-sidebar-search-result>
                                                     <${VirBuildV2ThreadRow.assign({
                                                         thread,
                                                         folderInfo:
-                                                            inputs.context.folderData.value.folderInfo.get(
-                                                                thread.cwd,
-                                                            ),
+                                                            folderInfo && prStatus
+                                                                ? {
+                                                                      ...folderInfo,
+                                                                      prStatus,
+                                                                  }
+                                                                : folderInfo,
                                                         isActive: thread.id === activeThreadId,
+                                                        isArchived: isArchived(thread),
                                                     })}
                                                         ${listen(
                                                             VirBuildV2ThreadRow.events.selected,
                                                             () => {
                                                                 selectThread(thread);
+                                                            },
+                                                        )}
+                                                        ${listen(
+                                                            VirBuildV2ThreadRow.events.unarchived,
+                                                            async () => {
+                                                                await unarchiveThread(thread);
                                                             },
                                                         )}
                                                         ${listen(
@@ -631,22 +711,25 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                         ${listen(
                                                             VirBuildV2ThreadRow.events.archived,
                                                             async () => {
+                                                                if (
+                                                                    !confirmThreadArchive({
+                                                                        context: inputs.context,
+                                                                        thread,
+                                                                    })
+                                                                ) {
+                                                                    return;
+                                                                }
                                                                 await runAction(async () => {
                                                                     await buildV2Client.call(
                                                                         'archiveThread',
                                                                         {
                                                                             threadId: thread.id,
+                                                                            deleteWorktree: true,
                                                                         },
                                                                     );
-                                                                    inputs.buildV2State.threads.setValue(
-                                                                        inputs.buildV2State.threads.value?.filter(
-                                                                            (existing) => {
-                                                                                return (
-                                                                                    existing.id !==
-                                                                                    thread.id
-                                                                                );
-                                                                            },
-                                                                        ),
+                                                                    markThreadArchived(
+                                                                        inputs.buildV2State,
+                                                                        thread.id,
                                                                     );
                                                                     if (
                                                                         thread.id === activeThreadId

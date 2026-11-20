@@ -1,3 +1,4 @@
+import {PrStatus} from '@agent-storm/common';
 import {type AppContext} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
 import {Observable} from 'element-vir';
@@ -31,6 +32,10 @@ export function createBuildV2State() {
         repoActivityAtMs: new Observable<ReadonlyMap<string, number>>({
             defaultValue: new Map(),
         }),
+        /** Every archived thread while the sidebar shows them. Undefined while it doesn't. */
+        archivedThreads: new Observable<ReadonlyArray<Readonly<Thread>> | undefined>({
+            defaultValue: undefined,
+        }),
         loadError: new Observable<string | undefined>({
             defaultValue: undefined,
         }),
@@ -44,6 +49,39 @@ export type BuildV2State = ReturnType<typeof createBuildV2State>;
 /** The Build V2 activity's state. Undefined while the plugin is off. */
 export function findBuildV2State({activityStates}: Readonly<Pick<AppContext, 'activityStates'>>) {
     return activityStates[buildV2ActivityId] satisfies unknown as BuildV2State | undefined;
+}
+
+/**
+ * Asks the user before archiving a thread would delete a worktree whose branch isn't merged yet.
+ * Returns `true` when the archive should go ahead, including when there's nothing to ask about.
+ */
+export function confirmThreadArchive({
+    context,
+    thread,
+}: Readonly<{
+    context: Pick<AppContext, 'activityStates' | 'folderData'>;
+    thread: Readonly<Thread>;
+}>) {
+    const folderInfo = context.folderData.value.folderInfo.get(thread.cwd);
+    /** Mirrors the server's `archiveThread`, which keeps a worktree another thread works in. */
+    const isWorktreeShared = !!findBuildV2State(context)?.threads.value?.some((other) => {
+        return other.id !== thread.id && other.cwd === thread.cwd;
+    });
+    if (
+        !thread.worktreeBranch ||
+        !folderInfo ||
+        folderInfo.prStatus === PrStatus.Merged ||
+        isWorktreeShared
+    ) {
+        return true;
+    }
+    return globalThis.confirm(
+        [
+            `Archiving this thread also deletes its worktree, but its branch "${thread.worktreeBranch}" hasn't been merged yet.`,
+            thread.cwd,
+            'Uncommitted changes in the worktree will be lost. The branch itself stays. Archive anyway?',
+        ].join('\n\n'),
+    );
 }
 
 /** Loads the thread list again, replacing whatever the state had. */
@@ -67,9 +105,29 @@ export async function loadThreads(state: Readonly<BuildV2State>) {
     }
 }
 
-/** Adds or replaces one thread in the state's list, such as one a call just returned. */
+/** Loads the archived thread list again, unless the sidebar stopped showing it meanwhile. */
+export async function loadArchivedThreads(state: Readonly<BuildV2State>) {
+    try {
+        const {threads} = await buildV2Client.call('listArchivedThreads', {});
+        if (state.archivedThreads.value) {
+            state.archivedThreads.setValue(threads);
+        }
+    } catch (error) {
+        state.loadError.setValue(extractErrorMessage(error));
+    }
+}
+
+/**
+ * Adds or replaces one thread in the state's list, such as one a call just returned, and drops it
+ * from the archived list, since the server only sends changes to threads that aren't archived.
+ */
 export function storeThread(state: Readonly<BuildV2State>, thread: Readonly<Thread>) {
     state.threads.setValue(upsertThread(state.threads.value || [], thread));
+    if (state.archivedThreads.value?.some((archived) => archived.id === thread.id)) {
+        state.archivedThreads.setValue(
+            state.archivedThreads.value.filter((archived) => archived.id !== thread.id),
+        );
+    }
     if (thread.updatedAt > (state.repoActivityAtMs.value.get(thread.repoPath) || 0)) {
         state.repoActivityAtMs.setValue(
             new Map([
@@ -88,6 +146,18 @@ export function removeThread(state: Readonly<BuildV2State>, threadId: string) {
     state.threads.setValue(state.threads.value?.filter((thread) => thread.id !== threadId));
 }
 
+/** Moves one thread from the state's list to the archived list, when the sidebar shows that list. */
+export function markThreadArchived(state: Readonly<BuildV2State>, threadId: string) {
+    const thread = state.threads.value?.find((existing) => existing.id === threadId);
+    removeThread(state, threadId);
+    if (thread && state.archivedThreads.value) {
+        state.archivedThreads.setValue([
+            thread,
+            ...state.archivedThreads.value,
+        ]);
+    }
+}
+
 /** Loads the thread list and keeps it current from the server's events. Returns the remover. */
 export function startThreadSync(state: Readonly<BuildV2State>) {
     void loadThreads(state);
@@ -96,11 +166,14 @@ export function startThreadSync(state: Readonly<BuildV2State>) {
             storeThread(state, thread);
         }),
         buildV2Client.listen('threadArchived', ({threadId}) => {
-            removeThread(state, threadId);
+            markThreadArchived(state, threadId);
         }),
     ];
     const removeReconnectListener = buildV2Client.listenToReconnect(() => {
         void loadThreads(state);
+        if (state.archivedThreads.value) {
+            void loadArchivedThreads(state);
+        }
     });
     return () => {
         removeReconnectListener();

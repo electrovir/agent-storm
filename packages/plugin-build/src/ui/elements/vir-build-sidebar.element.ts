@@ -1,4 +1,4 @@
-import {diffPaneId, PrStatus, touchRepoEndpoint} from '@agent-storm/common';
+import {diffPaneId, PrStatus, reviewPaneId, touchRepoEndpoint} from '@agent-storm/common';
 import {
     type ActivityRoute,
     type AppContext,
@@ -6,6 +6,7 @@ import {
     fetchApi,
     ScreenSize,
 } from '@agent-storm/core/frontend';
+import {buildV2ActivityId, findBuildV2State} from '@agent-storm/plugin-build-v2';
 import {findReviewState, getFolderVerdictStatuses} from '@agent-storm/plugin-review';
 import {HttpMethod} from '@rest-vir/api';
 import {css, html, listen} from 'element-vir';
@@ -34,6 +35,15 @@ export const VirBuildSidebar = defineAppElement<{
             min-height: 0;
         }
     `,
+    init({inputs}) {
+        /**
+         * Build V2 otherwise loads only once its tab opens, and its threads are what hide
+         * worktrees.
+         */
+        inputs.context.plugins.requestContributions([
+            buildV2ActivityId,
+        ]);
+    },
     render({inputs}) {
         const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
         const prStatusOverrides = getFolderVerdictStatuses({
@@ -46,6 +56,10 @@ export const VirBuildSidebar = defineAppElement<{
                 activeFolder: inputs.activeFolder,
                 folderData: inputs.context.folderData,
                 prStatusOverrides,
+                /** Build V2 threads manage their own worktrees, so Build lists only the rest. */
+                hiddenFolderPaths: findBuildV2State(inputs.context)
+                    ?.threads.value?.filter((thread) => !!thread.worktreeBranch)
+                    .map((thread) => thread.cwd),
                 themeClient: inputs.context.themeClient,
                 hideBorder: isMobile,
                 mobileModal: isMobile,
@@ -75,15 +89,24 @@ export const VirBuildSidebar = defineAppElement<{
                     const folderInfo = inputs.context.folderData.value.folderInfo;
                     const folder = folderInfo.get(event.detail);
                     if (folder) {
-                        /** A folder's first visit opens on its diff once its manual review is ready. */
+                        /**
+                         * A folder's first visit opens on its diff once its manual review is ready,
+                         * with the Review tab in the other pane. Diff goes last so its pane is the
+                         * active one.
+                         */
                         if (
                             (prStatusOverrides[event.detail] || folder.prStatus) ===
                                 PrStatus.ReviewStarted &&
                             !inputs.context.uiLayout.value.layout?.tabLayouts[event.detail]
                         ) {
-                            inputs.context.uiLayout.showPaneTab({
-                                folder: event.detail,
-                                kind: diffPaneId,
+                            [
+                                reviewPaneId,
+                                diffPaneId,
+                            ].forEach((kind) => {
+                                inputs.context.uiLayout.showPaneTab({
+                                    folder: event.detail,
+                                    kind,
+                                });
                             });
                         }
                         inputs.route.navigate(subPathsForFolder(folder, folderInfo));

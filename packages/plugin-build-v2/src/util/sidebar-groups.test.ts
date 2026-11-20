@@ -26,6 +26,9 @@ function createGroup({
         title: threadTitle || '',
         status: ThreadStatus.Idle,
         hasUnreadReply: false,
+        isAskingQuestion: false,
+        backgroundTaskCount: 0,
+        userMessageCount: 0,
         createdAt: 0,
         updatedAt,
     };

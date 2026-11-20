@@ -1,8 +1,10 @@
+import {folderInfoShape} from '@agent-storm/common';
 import {type PluginCallHandlers} from '@agent-storm/core/server';
 import {assert, assertWrap} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {
     AiProvider,
+    ApprovalDecision,
     type buildV2Api,
     ReasoningEffort,
     RuntimeMode,
@@ -24,6 +26,9 @@ const baseThread: Thread = {
     title: 'Caller',
     status: ThreadStatus.Running,
     hasUnreadReply: false,
+    isAskingQuestion: false,
+    backgroundTaskCount: 0,
+    userMessageCount: 0,
     createdAt: 0,
     updatedAt: 0,
 };
@@ -70,6 +75,18 @@ function createTestContext(
                 thread: baseThread,
             };
         },
+        moveToFolder(request) {
+            requests.push({
+                call: 'moveToFolder',
+                request,
+            });
+            return {
+                thread: {
+                    ...baseThread,
+                    cwd: request.folder,
+                },
+            };
+        },
         moveToWorktree(request) {
             requests.push({
                 call: 'moveToWorktree',
@@ -102,12 +119,12 @@ function createTestContext(
         listFolders() {
             return Promise.resolve([]);
         },
-        deleteWorktree(request) {
+        requestApproval({signal, ...request}) {
             requests.push({
-                call: 'deleteWorktree',
+                call: 'requestApproval',
                 request,
             });
-            return Promise.resolve();
+            return Promise.resolve(ApprovalDecision.Approve);
         },
         runAfterTurn(threadId, action) {
             afterTurnActions.push(action);
@@ -129,6 +146,7 @@ async function runTool({
         callerId: baseThread.id,
         input,
         context,
+        signal: new AbortController().signal,
     });
 }
 
@@ -151,6 +169,38 @@ describe('create_thread', () => {
                     model: baseThread.model,
                     effort: baseThread.effort,
                     speedTier: baseThread.speedTier,
+                    runtimeMode: baseThread.runtimeMode,
+                    text: 'Fix the build.',
+                    isInWorktree: false,
+                    isStartAwaited: true,
+                },
+            },
+        ]);
+    });
+
+    it('starts at standard speed even when the caller is in fast mode', async () => {
+        const {context, requests} = createTestContext([
+            {
+                ...baseThread,
+                speedTier: 'fast',
+            },
+        ]);
+        await runTool({
+            name: 'create_thread',
+            input: {
+                text: 'Fix the build.',
+            },
+            context,
+        });
+        assert.deepEquals(requests, [
+            {
+                call: 'createThread',
+                request: {
+                    repoPath: baseThread.repoPath,
+                    provider: baseThread.provider,
+                    model: baseThread.model,
+                    effort: baseThread.effort,
+                    speedTier: null,
                     runtimeMode: baseThread.runtimeMode,
                     text: 'Fix the build.',
                     isInWorktree: false,
@@ -234,7 +284,7 @@ describe('interrupt_thread', () => {
 });
 
 describe('move_to_worktree', () => {
-    it('moves only once the turn ends, then sends the continuation prompt', async () => {
+    it('asks the user, moves only once the turn ends, then sends the continuation prompt', async () => {
         const {context, requests, afterTurnActions} = createTestContext();
         await runTool({
             name: 'move_to_worktree',
@@ -251,10 +301,102 @@ describe('move_to_worktree', () => {
                 callsAfterTurn: requests.map(({call}) => call),
             },
             {
-                callsDuringTurn: [],
+                callsDuringTurn: [
+                    'requestApproval',
+                ],
                 callsAfterTurn: [
+                    'requestApproval',
                     'moveToWorktree',
                     'sendMessage',
+                ],
+            },
+        );
+    });
+
+    it('stays put when the user declines', async () => {
+        const {context, afterTurnActions} = createTestContext();
+        await assert.throws(
+            runTool({
+                name: 'move_to_worktree',
+                input: {},
+                context: {
+                    ...context,
+                    requestApproval() {
+                        return Promise.resolve(ApprovalDecision.Decline);
+                    },
+                },
+            }),
+            {
+                matchMessage: 'declined',
+            },
+        );
+        assert.isEmpty(afterTurnActions);
+    });
+});
+
+describe('move_to_folder', () => {
+    const listedFolder = {
+        ...folderInfoShape.default,
+        path: '/repos/other',
+    };
+
+    it("refuses a folder that isn't in the sidebar", async () => {
+        const {context, afterTurnActions} = createTestContext();
+        await assert.throws(
+            runTool({
+                name: 'move_to_folder',
+                input: {
+                    folder: '/repos/unknown',
+                },
+                context: {
+                    ...context,
+                    listFolders() {
+                        return Promise.resolve([
+                            listedFolder,
+                        ]);
+                    },
+                },
+            }),
+            {
+                matchMessage: "isn't a folder",
+            },
+        );
+        assert.isEmpty(afterTurnActions);
+    });
+
+    it('moves only once the turn ends', async () => {
+        const {context, requests, afterTurnActions} = createTestContext();
+        await runTool({
+            name: 'move_to_folder',
+            input: {
+                folder: listedFolder.path,
+            },
+            context: {
+                ...context,
+                listFolders() {
+                    return Promise.resolve([
+                        listedFolder,
+                    ]);
+                },
+            },
+        });
+        const callsDuringTurn = requests.map(({call}) => call);
+        await Promise.all(afterTurnActions.map(async (action) => await action()));
+        assert.deepEquals(
+            {
+                callsDuringTurn,
+                requestsAfterTurn: requests,
+            },
+            {
+                callsDuringTurn: [],
+                requestsAfterTurn: [
+                    {
+                        call: 'moveToFolder',
+                        request: {
+                            threadId: baseThread.id,
+                            folder: listedFolder.path,
+                        },
+                    },
                 ],
             },
         );
@@ -268,7 +410,7 @@ const worktreeThread: Thread = {
 };
 
 describe('archive_thread', () => {
-    it('archives this thread and deletes its worktree only once the turn ends', async () => {
+    it('archives this thread with its worktree only once the turn ends', async () => {
         const {context, requests, afterTurnActions} = createTestContext([
             worktreeThread,
             otherThread,
@@ -294,12 +436,7 @@ describe('archive_thread', () => {
                         call: 'archiveThread',
                         request: {
                             threadId: worktreeThread.id,
-                        },
-                    },
-                    {
-                        call: 'deleteWorktree',
-                        request: {
-                            worktreePath: worktreeThread.cwd,
+                            deleteWorktree: true,
                         },
                     },
                 ],

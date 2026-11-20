@@ -8,7 +8,6 @@ import {
     LucidePenLineIcon,
     LucideShieldCheckIcon,
     LucideShieldOffIcon,
-    tooltip,
     ViraIcon,
     viraShadows,
     viraThemeByKeys,
@@ -196,8 +195,8 @@ export const VirAiChatPermissions = defineAppElement<{
                     }
 
                     &[aria-checked='true'] {
-                        color: ${textColor};
-                        background-color: ${selectedBackground};
+                        color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
+                        background-color: ${focusColor};
                     }
                 }
             }
@@ -266,7 +265,6 @@ export const VirAiChatPermissions = defineAppElement<{
             <button
                 type="button"
                 class="chip"
-                ${tooltip(`Permissions: ${shown.label}. ${shown.description}`)}
                 aria-label=${`Permissions: ${shown.label}`}
                 aria-haspopup="menu"
                 aria-expanded=${state.isOpen}
@@ -329,7 +327,6 @@ export const VirAiChatPermissions = defineAppElement<{
                                           type="button"
                                           role="menuitemradio"
                                           data-mode=${runtimeMode}
-                                          ${tooltip(display.label)}
                                           aria-label=${display.label}
                                           aria-checked=${runtimeMode === inputs.runtimeMode}
                                           ${listen('click', () => {
