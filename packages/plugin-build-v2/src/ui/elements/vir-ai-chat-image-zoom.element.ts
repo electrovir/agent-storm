@@ -78,7 +78,7 @@ export const VirAiChatImageZoom = defineAppElement<{
         return {
             view: fittedImageView as Readonly<ImageView>,
             /** Pointers pressed on the image, by pointer id, at their latest position. */
-            pointers: {} as Readonly<Record<number, Readonly<Point>>>,
+            pointers: {} as Readonly<Record<string, Readonly<Point>>>,
             /** Where the current press started. Unset once it moves far enough to be a drag. */
             pressStart: undefined as Readonly<Point> | undefined,
             /** Turns clicks into zooming out. */
@@ -166,8 +166,9 @@ export const VirAiChatImageZoom = defineAppElement<{
             });
 
             updateState({
+                /** Object keys are strings, so a numeric id would never match. */
                 pointers: omitObjectKeys(host.instanceState.pointers, [
-                    event.pointerId,
+                    `${event.pointerId}`,
                 ]),
                 pressStart: undefined,
                 view: isClick ? clickedView : host.instanceState.view,
@@ -193,7 +194,7 @@ export const VirAiChatImageZoom = defineAppElement<{
                     updateState({
                         pointers: {
                             ...host.instanceState.pointers,
-                            [event.pointerId]: point,
+                            [`${event.pointerId}`]: point,
                         },
                         /** A second finger turns the press into a pinch, never a click. */
                         pressStart: getObjectTypedValues(host.instanceState.pointers).length
@@ -216,7 +217,7 @@ export const VirAiChatImageZoom = defineAppElement<{
                     };
                     const pointers = {
                         ...host.instanceState.pointers,
-                        [event.pointerId]: point,
+                        [`${event.pointerId}`]: point,
                     };
                     const pressStart =
                         host.instanceState.pressStart &&
