@@ -76,13 +76,14 @@ export class FrameDecoder {
  * reports {@link StatusEntry.isRunningCommand}, without which the review init command could be typed
  * into a shell that's busy running something else. Version 6 applies {@link AttachHandshake.env}; an
  * earlier daemon ignores it, so a launch that asked for an environment would silently run without
- * it.
+ * it. Version 7 hosts the AI Chat's provider processes ({@link DaemonAction.ProcessAttach}), which
+ * an earlier daemon rejects as unknown actions.
  *
  * The version is reported on {@link StatusResponse} rather than through a dedicated action because
  * `Status` is the only introspection action every historical daemon understands — see
  * {@link DaemonAction.Shutdown} for why probing with a new action would be destructive.
  */
-export const daemonProtocolVersion = 6;
+export const daemonProtocolVersion = 7;
 
 export enum DaemonAction {
     Attach = 'attach',
@@ -101,6 +102,13 @@ export enum DaemonAction {
      */
     VerifyLaunch = 'verify-launch',
     Shutdown = 'shutdown',
+    /**
+     * Attaches to a process the daemon hosts outside any terminal, starting it first when the
+     * handshake says how. Data frames carry its stdin and stdout.
+     */
+    ProcessAttach = 'process-attach',
+    ProcessList = 'process-list',
+    ProcessKill = 'process-kill',
 }
 
 /**
@@ -206,7 +214,40 @@ export type ShutdownHandshake = {
     action: DaemonAction.Shutdown;
 };
 
+/** How to start a hosted process. */
+export type HostedProcessSpawn = {
+    command: string;
+    args: string[];
+    cwd: string;
+    env: Record<string, string>;
+};
+
+export type ProcessAttachHandshake = {
+    action: DaemonAction.ProcessAttach;
+    processId: string;
+    /** Starts the process when none runs as `processId`. Unset fails the attach instead. */
+    spawn?: HostedProcessSpawn | undefined;
+    /**
+     * The process writes JSON-RPC, one message per stdout line. Requests it sent that no stdin line
+     * has answered yet are sent again to each newly attached client, since the client they went to
+     * may have died before answering.
+     */
+    isJsonRpc?: boolean | undefined;
+};
+
+export type ProcessListHandshake = {
+    action: DaemonAction.ProcessList;
+};
+
+export type ProcessKillHandshake = {
+    action: DaemonAction.ProcessKill;
+    processId: string;
+};
+
 export type ClientHandshake =
+    | ProcessAttachHandshake
+    | ProcessListHandshake
+    | ProcessKillHandshake
     | AttachHandshake
     | StatusHandshake
     | RestartHandshake
@@ -247,6 +288,26 @@ export type StatusResponse = {
      * on this response instead of its own action.
      */
     protocolVersion?: number | undefined;
+};
+
+export type ProcessAttachResponse = {
+    ok: true;
+    /** False when the process was already running, so the client is taking it over mid-flight. */
+    isNew: boolean;
+};
+
+export type ProcessListResponse = {
+    ok: true;
+    processIds: string[];
+};
+
+/** Sent to a hosted process's attached client when the process ends. */
+export type ProcessExitNotification = {
+    type: 'process-exit';
+    exitCode: number | null;
+    signal: string | null;
+    /** The end of what the process wrote to stderr. */
+    stderr: string;
 };
 
 export type SimpleResponse = {

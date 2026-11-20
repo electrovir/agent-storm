@@ -41,6 +41,27 @@ export type PaneSessionTarget = Readonly<{
 }>;
 
 /**
+ * A process the pty daemon runs for a plugin, outside any terminal, so it outlives the app's
+ * server.
+ */
+export type HostedProcessAttachment = Readonly<{
+    /** False when the process was already running, so this attach took it over mid-flight. */
+    isNew: boolean;
+    write(data: Buffer | string): void;
+    /** Stops listening to the process without stopping it. */
+    detach(): void;
+}>;
+
+/** How a hosted process ended. */
+export type HostedProcessExit = Readonly<{
+    /** Null when the process was killed by a signal or the daemon dropped the connection. */
+    exitCode: number | null;
+    signal: string | null;
+    /** The end of what the process wrote to stderr. */
+    stderr: string;
+}>;
+
+/**
  * The app's own state and machinery a plugin's server part reaches through, so the plugin never
  * imports the app's server. Every listener registration returns a function that removes it, which a
  * plugin must call from its `stop`.
@@ -77,7 +98,10 @@ export type PluginServerHost = Readonly<{
             }
         >,
     ): PrStatus | undefined;
-    /** Records a branch's PR in the app's PR cache without refreshing any folder. */
+    /**
+     * Records a branch's PR in the app's PR cache, and refreshes the sidebar entry of each folder
+     * on the branch that doesn't show that PR yet.
+     */
     recordBranchPr(
         params: Readonly<
             RepoSlug & {
@@ -85,7 +109,9 @@ export type PluginServerHost = Readonly<{
                 prInfo: Readonly<BranchPrInfo>;
             }
         >,
-    ): void;
+    ): Promise<void>;
+    /** Whether any running plugin's `isFolderBusy` says an agent it runs is mid-turn in the folder. */
+    isFolderBusyInPlugins(folder: string): Promise<boolean>;
     /** Undefined unless the app has paused its GitHub calls, as after a rate limit. */
     readGitHubPause(): {reason: GitHubPollingDisableReason; resumeAtMs: number} | undefined;
     /**
@@ -93,6 +119,33 @@ export type PluginServerHost = Readonly<{
      * so the app's calls and the plugin's stop spending the same budget.
      */
     pauseGitHubForRateLimit(message: string): Promise<void>;
+    /**
+     * Attaches to the daemon-hosted process `processId`, starting it from `spawn` when none runs.
+     * The process's stdout written while nobody was attached arrives first. `onExit` also fires
+     * when the daemon drops the connection for another reason, such as another attach taking the
+     * process over, but never after `detach`.
+     */
+    attachHostedProcess(
+        params: Readonly<{
+            processId: string;
+            spawn: Readonly<{
+                command: string;
+                args: string[];
+                cwd: string;
+                env: Record<string, string>;
+            }>;
+            /**
+             * The process speaks JSON-RPC, one message per line. Its requests a previous attach got
+             * but never answered are sent again on the next attach.
+             */
+            isJsonRpc?: boolean | undefined;
+            onStdout(data: Buffer): void;
+            onExit(exit: HostedProcessExit): void;
+        }>,
+    ): Promise<HostedProcessAttachment>;
+    listHostedProcessIds(): Promise<string[]>;
+    /** Kills the hosted process and everything it started. Does nothing when it isn't running. */
+    killHostedProcess(processId: string): Promise<void>;
     /** Every folder the pty daemon holds a pane in. */
     listPaneFolders(): Promise<string[]>;
     killFolderPanes(params: Readonly<{folder: string}>): Promise<void>;
@@ -181,4 +234,9 @@ export type PluginFolderHooks = Readonly<{
         | undefined;
     /** The folder's watch mode state. */
     readWatchMode?: ((folder: string) => FolderInfo['watchMode']) | undefined;
+    /**
+     * Whether an agent the plugin runs outside the folder's terminal tabs is mid-turn in the
+     * folder, so automation that commits or pushes there, like watch mode, waits for it.
+     */
+    isFolderBusy?: ((folder: string) => MaybePromise<boolean>) | undefined;
 }>;

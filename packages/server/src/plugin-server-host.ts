@@ -2,9 +2,15 @@ import {type PluginServerHost} from '@agent-storm/core/server';
 import {wait} from '@augment-vir/common';
 import {normalizePath} from 'agent-storm-util';
 import {dirname} from 'node:path';
-import {readBranchPrStatus, recordBranchPr} from './branch-prs.js';
+import {readBranchPrStatus} from './branch-prs.js';
 import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
-import {fetchPaneStatuses, killFolderPanes} from './daemon/daemon-client.js';
+import {
+    attachHostedProcess,
+    fetchPaneStatuses,
+    killFolderPanes,
+    killHostedProcess,
+    listHostedProcessIds,
+} from './daemon/daemon-client.js';
 import {forgetFolderActivity} from './folder-activity.js';
 import {
     getCachedFolders,
@@ -12,6 +18,7 @@ import {
     pauseGitHubForRateLimit,
     readGitHubPause,
     recordFolderPrStatus,
+    recordFoldersBranchPr,
     refreshFolderInfoNow,
 } from './folder-info.js';
 import {loadFolderSettings} from './folder-settings.js';
@@ -30,6 +37,7 @@ import {
     sendPaneText,
     spawnPane,
 } from './pane-launch.js';
+import {isFolderBusyInPlugins} from './plugin-folder-hooks.js';
 import {getLivePaneSessionIds, getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
 import {
     createFolderSession,
@@ -49,9 +57,13 @@ export const pluginServerHost: PluginServerHost = {
     listenToNewFolderPrs,
     recordFolderPrStatus,
     readBranchPrStatus,
-    recordBranchPr,
+    recordBranchPr: recordFoldersBranchPr,
+    isFolderBusyInPlugins,
     readGitHubPause,
     pauseGitHubForRateLimit,
+    attachHostedProcess,
+    listHostedProcessIds,
+    killHostedProcess,
     async listPaneFolders() {
         return (await fetchPaneStatuses()).map((pane) => pane.folder);
     },

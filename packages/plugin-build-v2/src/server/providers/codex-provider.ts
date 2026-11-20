@@ -23,7 +23,12 @@ import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
 import {syncedSkillsFolder} from './claude-commands.js';
 import {codexDecisions, describeCodexItem} from './codex-items.js';
 import {startCodexRpc, type CodexRpc} from './codex-rpc.js';
-import {type ProviderAdapter, type ProviderItem} from './provider-session.js';
+import {
+    type ProviderAdapter,
+    type ProviderItem,
+    type ProviderSession,
+    type SessionModelSettings,
+} from './provider-session.js';
 
 const threadResponseShape = defineShape({
     thread: {
@@ -63,6 +68,11 @@ const turnNotificationShape = defineShape({
             },
         ),
     },
+});
+
+/** The turn an item or delta notification belongs to. */
+const turnIdParamsShape = defineShape({
+    turnId: '',
 });
 
 const errorNotificationShape = defineShape({
@@ -234,7 +244,7 @@ const codexRuntimeModes: Readonly<
  */
 export const codexProvider: ProviderAdapter = {
     async listModels({cwd}) {
-        const rpc = startCodexRpc({
+        const rpc = await startCodexRpc({
             cwd,
             onNotification() {},
             onRequest(method) {
@@ -275,7 +285,7 @@ export const codexProvider: ProviderAdapter = {
     },
     /** Codex's own slash commands aren't listed: it reads them only from its terminal UI. */
     async listCommands({cwd}) {
-        const rpc = startCodexRpc({
+        const rpc = await startCodexRpc({
             cwd,
             onNotification() {},
             onRequest(method) {
@@ -326,7 +336,7 @@ export const codexProvider: ProviderAdapter = {
             text: '',
         };
         const turn = Promise.withResolvers<void>();
-        const rpc = startCodexRpc({
+        const rpc = await startCodexRpc({
             cwd,
             onNotification(method, params) {
                 if (
@@ -385,6 +395,7 @@ export const codexProvider: ProviderAdapter = {
         sink,
         agentTools,
         env,
+        processHost,
     }) {
         const state: {
             runtimeMode: RuntimeMode;
@@ -392,8 +403,15 @@ export const codexProvider: ProviderAdapter = {
             isStopped: boolean;
             /** The latest description of each item, which a file change's approval shows. */
             items: Map<string, ProviderItem>;
+            /** Codex takes these per turn, so a change mid-turn applies from the next message. */
+            modelSettings: SessionModelSettings;
         } = {
             runtimeMode,
+            modelSettings: {
+                model,
+                effort,
+                speedTier,
+            },
             turnId: undefined,
             isStopped: false,
             items: new Map(),
@@ -519,10 +537,19 @@ export const codexProvider: ProviderAdapter = {
             },
         };
 
-        const rpc = startCodexRpc({
+        const rpc = await startCodexRpc({
             cwd,
             env,
+            processHost,
             async onNotification(method, params) {
+                /** Codex taken over mid-turn only names the turn in what it sends next. */
+                if (
+                    !state.turnId &&
+                    method !== 'turn/completed' &&
+                    checkValidShape(params, turnIdParamsShape, extraKeys)
+                ) {
+                    state.turnId = params.turnId;
+                }
                 await notificationHandlers[method]?.(params);
             },
             async onRequest(method, params) {
@@ -541,6 +568,10 @@ export const codexProvider: ProviderAdapter = {
         });
 
         try {
+            if (!rpc.isNew && providerSessionId) {
+                /** Already initialized, with the thread loaded, by the server before a restart. */
+                return createSession(providerSessionId);
+            }
             await initializeCodexRpc(rpc);
             const threadOptions = {
                 cwd,
@@ -567,18 +598,29 @@ export const codexProvider: ProviderAdapter = {
                     : threadOptions,
             );
             assertValidShape(threadResponse, threadResponseShape, extraKeys);
-            const codexThreadId = threadResponse.thread.id;
-            await sink.setProviderSessionId(codexThreadId);
+            await sink.setProviderSessionId(threadResponse.thread.id);
+            return createSession(threadResponse.thread.id);
+        } catch (error) {
+            state.isStopped = true;
+            rpc.stop();
+            throw error;
+        }
 
+        function createSession(codexThreadId: string): ProviderSession {
             return {
                 async send({text}) {
                     const turnResponse = await rpc.request('turn/start', {
                         threadId: codexThreadId,
                         ...codexRuntimeModes[state.runtimeMode],
-                        serviceTier: speedTier || 'default',
-                        ...(effort
+                        serviceTier: state.modelSettings.speedTier || 'default',
+                        ...(state.modelSettings.model
                             ? {
-                                  effort,
+                                  model: state.modelSettings.model,
+                              }
+                            : {}),
+                        ...(state.modelSettings.effort
+                            ? {
+                                  effort: state.modelSettings.effort,
                               }
                             : {}),
                         input: [
@@ -595,6 +637,9 @@ export const codexProvider: ProviderAdapter = {
                 setRuntimeMode(newRuntimeMode) {
                     state.runtimeMode = newRuntimeMode;
                 },
+                setModel(settings) {
+                    state.modelSettings = settings;
+                },
                 async interrupt() {
                     if (state.turnId) {
                         await rpc.request('turn/interrupt', {
@@ -608,10 +653,6 @@ export const codexProvider: ProviderAdapter = {
                     rpc.stop();
                 },
             };
-        } catch (error) {
-            state.isStopped = true;
-            rpc.stop();
-            throw error;
         }
     },
 };

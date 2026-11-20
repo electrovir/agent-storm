@@ -5,8 +5,11 @@ import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {CallToolRequestSchema, ListToolsRequestSchema} from '@modelcontextprotocol/sdk/types.js';
 import {type AnyDuration} from 'date-vir';
-import {randomUUID} from 'node:crypto';
-import {createServer} from 'node:http';
+import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto';
+import {readFile, writeFile} from 'node:fs/promises';
+import {createServer, type Server} from 'node:http';
+import {join} from 'node:path';
+import {checkValidShape, defineShape} from 'object-shape-tester';
 import {type AgentTool, type AgentToolContext} from './agent-tools.js';
 
 /** The MCP server name both providers list Agent Storm's tools under. */
@@ -25,21 +28,71 @@ export type AgentToolConnection = Readonly<{
 }>;
 
 /**
- * Serves `tools` over MCP's streamable HTTP transport on a random localhost port. Each request's
- * bearer token picks the thread the tools act as.
+ * What lets a provider process started before a restart keep reaching the tools: the port it was
+ * given and the secret its token was signed with.
+ */
+const savedServerShape = defineShape({
+    port: 0,
+    secret: '',
+});
+
+async function readSavedServer(path: string) {
+    try {
+        const saved: unknown = JSON.parse(await readFile(path, 'utf-8'));
+        return checkValidShape(saved, savedServerShape) ? saved : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+async function listen(httpServer: Server, port: number) {
+    await new Promise<void>((resolve, reject) => {
+        httpServer.once('error', reject);
+        httpServer.listen(port, '127.0.0.1', () => {
+            httpServer.off('error', reject);
+            resolve();
+        });
+    });
+}
+
+/**
+ * Serves `tools` over MCP's streamable HTTP transport on localhost, on the same port as the last
+ * run when it is still free. Each request's bearer token picks the thread the tools act as, and
+ * stays valid across restarts.
  */
 export async function startAgentToolServer({
     tools,
     context,
     instructions,
+    dataDir,
 }: Readonly<{
     tools: ReadonlyArray<AgentTool>;
     context: AgentToolContext;
     /** What both providers show their agent about the tools as a whole. */
     instructions: string;
+    /** Where the port and token secret are kept between runs. */
+    dataDir: string;
 }>) {
-    const threadIdsByToken = new Map<string, string>();
-    const tokensByThreadId = new Map<string, string>();
+    const savedServerPath = join(dataDir, 'agent-tool-server.json');
+    const savedServer = await readSavedServer(savedServerPath);
+    const secret = savedServer?.secret || randomBytes(32).toString('hex');
+
+    function signThreadId(threadId: string) {
+        return createHmac('sha256', secret).update(threadId).digest('hex');
+    }
+
+    /** The thread a `<thread id>.<signature>` token names, when its signature is valid. */
+    function readTokenThreadId(token: string) {
+        const separatorIndex = token.lastIndexOf('.');
+        const threadId = token.slice(0, separatorIndex);
+        const signature = Buffer.from(token.slice(separatorIndex + 1));
+        const expected = Buffer.from(signThreadId(threadId));
+        return separatorIndex > 0 &&
+            signature.length === expected.length &&
+            timingSafeEqual(signature, expected)
+            ? threadId
+            : undefined;
+    }
 
     function createMcpServer(callerId: string) {
         const mcpServer = new McpServer(
@@ -64,13 +117,13 @@ export async function startAgentToolServer({
                         inputSchema: tool.inputSchema,
                         /** Codex asks the user before any tool without this hint. */
                         annotations: {
-                            readOnlyHint: tool.isReadOnly,
+                            readOnlyHint: tool.isReadOnly || !!tool.asksForApproval,
                         },
                     };
                 }),
             };
         });
-        mcpServer.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+        mcpServer.server.setRequestHandler(CallToolRequestSchema, async (request, {signal}) => {
             const tool = tools.find((entry) => entry.name === request.params.name);
             try {
                 if (!tool) {
@@ -80,6 +133,7 @@ export async function startAgentToolServer({
                     callerId,
                     input: request.params.arguments || {},
                     context,
+                    signal,
                 });
                 return {
                     content: [
@@ -106,7 +160,7 @@ export async function startAgentToolServer({
 
     const httpServer = createServer(async (request, response) => {
         const token = request.headers.authorization?.replace(/^Bearer /, '');
-        const callerId = token ? threadIdsByToken.get(token) : undefined;
+        const callerId = token ? readTokenThreadId(token) : undefined;
         if (!callerId) {
             response.writeHead(401).end();
             return;
@@ -131,25 +185,34 @@ export async function startAgentToolServer({
         }
     });
 
-    await new Promise<void>((resolve, reject) => {
-        httpServer.once('error', reject);
-        httpServer.listen(0, '127.0.0.1', resolve);
-    });
+    try {
+        await listen(httpServer, savedServer?.port || 0);
+    } catch {
+        /** Something else took the port, so sessions from the last run lose the tools. */
+        await listen(httpServer, 0);
+    }
     const address = httpServer.address();
     if (!address || check.isString(address)) {
         throw new Error('The Agent Storm tool server did not get a port.');
     }
+    await writeFile(
+        savedServerPath,
+        JSON.stringify({
+            port: address.port,
+            secret,
+        }),
+        {
+            mode: 0o600,
+        },
+    );
     const url = `http://127.0.0.1:${address.port}/mcp`;
 
     return {
         /** The connection a session of the thread uses, the same one each time. */
         connect(threadId: string) {
-            const token = tokensByThreadId.get(threadId) || randomUUID();
-            tokensByThreadId.set(threadId, token);
-            threadIdsByToken.set(token, threadId);
             return {
                 url,
-                token,
+                token: `${threadId}.${signThreadId(threadId)}`,
             };
         },
         async stop() {

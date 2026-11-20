@@ -7,6 +7,12 @@ import {createServer, type Socket} from 'node:net';
 import {daemonSocket} from '../file-paths.js';
 import {createDaemonLog} from './daemon-log.js';
 import {
+    attachHostedProcess,
+    killAllHostedProcesses,
+    killHostedProcess,
+    listHostedProcessIds,
+} from './process-pool.js';
+import {
     DaemonAction,
     daemonProtocolVersion,
     encodeControlFrame,
@@ -19,6 +25,10 @@ import {
     type ClientHandshake,
     type ErrorResponse,
     type ExitNotification,
+    type ProcessAttachHandshake,
+    type ProcessAttachResponse,
+    type ProcessExitNotification,
+    type ProcessListResponse,
     type SimpleResponse,
     type StatusResponse,
     type VerifyLaunchResponse,
@@ -114,10 +124,80 @@ function handleAttach({
     });
 }
 
+function handleProcessAttach({
+    socket,
+    decoder,
+    handshake: {processId, spawn, isJsonRpc},
+}: Readonly<{
+    socket: Socket;
+    decoder: FrameDecoder;
+    handshake: Readonly<ProcessAttachHandshake>;
+}>): void {
+    /** Set once the response is sent, so output from the attach itself can't precede it. */
+    const earlyOutput: Buffer[] = [];
+    const state = {
+        isResponded: false,
+    };
+    const attached = attachHostedProcess({
+        processId,
+        spawnOptions: spawn,
+        isJsonRpc: !!isJsonRpc,
+        client: {
+            onStdout(data) {
+                if (state.isResponded) {
+                    socket.write(encodeDataFrame(data));
+                } else {
+                    earlyOutput.push(data);
+                }
+            },
+            onExit({exitCode, signal, stderr}) {
+                const notification: ProcessExitNotification = {
+                    type: 'process-exit',
+                    exitCode,
+                    signal,
+                    stderr,
+                };
+                socket.end(encodeControlFrame(notification));
+            },
+            onReplaced() {
+                socket.end();
+            },
+        },
+    });
+    if (!attached) {
+        reply(socket, {
+            ok: false,
+            error: `No hosted process: ${processId}`,
+        });
+        return;
+    }
+    const response: ProcessAttachResponse = {
+        ok: true,
+        isNew: attached.isNew,
+    };
+    socket.write(encodeControlFrame(response));
+    state.isResponded = true;
+    earlyOutput.forEach((data) => socket.write(encodeDataFrame(data)));
+    socket.on('data', (chunk) => {
+        decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)).forEach((frame) => {
+            if (frame.type === FrameType.Data) {
+                attached.write(frame.payload);
+            }
+        });
+    });
+    socket.on('close', () => attached.detach());
+    socket.on('error', (error) => {
+        log(`socket error on process attach: ${error.message}`);
+        attached.detach();
+    });
+}
+
 /** Sends the one reply a non-attach action gets, then closes the socket. */
 function reply(
     socket: Socket,
-    response: Readonly<SimpleResponse | StatusResponse | VerifyLaunchResponse | ErrorResponse>,
+    response: Readonly<
+        SimpleResponse | StatusResponse | VerifyLaunchResponse | ProcessListResponse | ErrorResponse
+    >,
 ) {
     socket.write(encodeControlFrame(response));
     socket.end();
@@ -137,6 +217,17 @@ type HandshakeHandler<Action extends DaemonAction> = (
 
 const handshakeHandlers: {[Action in DaemonAction]: HandshakeHandler<Action>} = {
     [DaemonAction.Attach]: handleAttach,
+    [DaemonAction.ProcessAttach]: handleProcessAttach,
+    [DaemonAction.ProcessList]({socket}) {
+        reply(socket, {
+            ok: true,
+            processIds: listHostedProcessIds(),
+        });
+    },
+    [DaemonAction.ProcessKill]({socket, handshake}) {
+        killHostedProcess(handshake.processId);
+        reply(socket, okResponse);
+    },
     [DaemonAction.Status]({socket}) {
         reply(socket, {
             ok: true,
@@ -273,6 +364,7 @@ setInterval(
 function shutdown(signal: string): void {
     log(`${signal} received, shutting down`);
     killAllPanes();
+    killAllHostedProcesses();
     server.close(() => {
         if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
             try {
@@ -288,6 +380,7 @@ function shutdown(signal: string): void {
 function forceShutdown(reason: string): void {
     log(`force shutdown: ${reason}`);
     killAllPanes();
+    killAllHostedProcesses();
     if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
         try {
             unlinkSync(daemonSocket.path);

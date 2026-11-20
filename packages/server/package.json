@@ -25,7 +25,7 @@
     "scripts": {
         "compile": "virmator compile",
         "docs": "virmator docs",
-        "start": "tsx --watch src/index.ts",
+        "start": "tsx --watch --disable-warning=CLAUDE_SDK_CAN_USE_TOOL_SHADOWED src/index.ts",
         "test": "virmator test node",
         "test:docs": "virmator docs check",
         "test:update": "npm test update"

@@ -14,6 +14,10 @@ import {
     type ColorsNotification,
     type ErrorResponse,
     type ExitNotification,
+    type HostedProcessSpawn,
+    type ProcessAttachResponse,
+    type ProcessExitNotification,
+    type ProcessListResponse,
     type ResizeNotification,
     type SimpleResponse,
     type StatusEntry,
@@ -183,6 +187,121 @@ export async function verifyLaunchSignature({
         signature,
     });
     return response.isValid;
+}
+
+export async function listHostedProcessIds() {
+    const response = await singleShot<ProcessListResponse>({
+        action: DaemonAction.ProcessList,
+    });
+    return response.processIds;
+}
+
+export async function killHostedProcess(processId: string): Promise<void> {
+    await singleShot<SimpleResponse>({
+        action: DaemonAction.ProcessKill,
+        processId,
+    });
+}
+
+/**
+ * Attaches to the daemon-hosted process `processId`, starting it from `spawn` when none runs.
+ * `onExit` also fires, without an exit code, when the daemon drops the connection for any other
+ * reason, such as another attach taking the process over. It never fires after `detach`.
+ */
+export async function attachHostedProcess({
+    processId,
+    spawn,
+    isJsonRpc,
+    onStdout,
+    onExit,
+}: Readonly<{
+    processId: string;
+    spawn: Readonly<HostedProcessSpawn>;
+    isJsonRpc?: boolean | undefined;
+    onStdout: (data: Buffer) => void;
+    onExit: (exit: Readonly<Omit<ProcessExitNotification, 'type'>>) => void;
+}>) {
+    const socket = await connect();
+    const decoder = new FrameDecoder();
+    const state = {
+        isResponded: false,
+        isClosed: false,
+    };
+    function close(exit: Readonly<Omit<ProcessExitNotification, 'type'>>) {
+        if (state.isClosed) {
+            return;
+        }
+        state.isClosed = true;
+        socket.destroy();
+        onExit(exit);
+    }
+
+    socket.write(
+        encodeControlFrame({
+            action: DaemonAction.ProcessAttach,
+            processId,
+            spawn,
+            isJsonRpc,
+        }),
+    );
+
+    const response = await wrapPromiseInTimeout(
+        daemonReplyTimeout,
+        new Promise<ProcessAttachResponse>((resolve, reject) => {
+            socket.on('data', (chunk) => {
+                decoder
+                    .push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+                    .forEach((frame) => {
+                        if (frame.type === FrameType.Data) {
+                            onStdout(frame.payload);
+                            return;
+                        }
+                        const parsed = JSON.parse(frame.payload.toString('utf-8')) as
+                            | ProcessAttachResponse
+                            | ErrorResponse
+                            | ProcessExitNotification;
+                        if ('type' in parsed) {
+                            close(parsed);
+                        } else if (parsed.ok) {
+                            state.isResponded = true;
+                            resolve(parsed);
+                        } else {
+                            reject(new Error(parsed.error));
+                        }
+                    });
+            });
+            socket.once('error', reject);
+            socket.once('close', () => {
+                if (!state.isResponded) {
+                    reject(new Error('Daemon socket closed before process attach response.'));
+                    return;
+                }
+                close({
+                    exitCode: null,
+                    signal: null,
+                    stderr: '',
+                });
+            });
+        }),
+        'PTY daemon did not answer process attach',
+    ).catch((error: unknown) => {
+        state.isClosed = true;
+        socket.destroy();
+        throw error;
+    });
+
+    return {
+        isNew: response.isNew,
+        write(data: Buffer | string) {
+            if (!state.isClosed) {
+                socket.write(encodeDataFrame(data));
+            }
+        },
+        detach() {
+            state.isClosed = true;
+            socket.end();
+        },
+    };
 }
 
 export async function shutdownDaemon(): Promise<void> {

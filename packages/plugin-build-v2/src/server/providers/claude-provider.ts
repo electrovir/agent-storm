@@ -11,7 +11,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import {check} from '@augment-vir/assert';
 import {arrayToObject, extractErrorMessage} from '@augment-vir/common';
-import {convertDuration} from 'date-vir';
+import {convertDuration, type AnyDuration} from 'date-vir';
 import {homedir} from 'node:os';
 import {checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
 import {
@@ -40,7 +40,17 @@ import {
     readOnlyClaudeTools,
     type ClaudeToolDescription,
 } from './claude-items.js';
-import {type ProviderAdapter, type ProviderSink} from './provider-session.js';
+import {spawnHostedClaudeProcess} from './hosted-claude-process.js';
+import {filterStringEnv, type ProviderAdapter, type ProviderSink} from './provider-session.js';
+
+/**
+ * How long a working session may send nothing before it counts as stalled. Claude Code streams
+ * every reply and reports a running command's progress, so a healthy session is never this quiet.
+ * It outlasts `agentToolTimeout`, the longest an Agent Storm tool call can keep it waiting.
+ */
+const stallTimeout = {
+    minutes: 15,
+} as const satisfies AnyDuration;
 
 const askUserQuestionInputShape = defineShape({
     questions: [
@@ -395,6 +405,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             sink,
             agentTools,
             env,
+            processHost,
         }) {
             const state = {
                 runtimeMode,
@@ -407,6 +418,20 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 sessionApprovals: new Set<string>(),
                 wasInterrupted: false,
                 isStopped: false,
+                hasAuthFailed: false,
+                /** Live background tasks, which can outlive the reply that started them. */
+                backgroundTaskIds: [] as string[],
+                /** A reply is streaming, rather than the session only waiting on background tasks. */
+                isReplying: false,
+                /**
+                 * The thread isn't known to show as running, so a reply starting must mark it. A
+                 * session that took over a process from before a restart can't know.
+                 */
+                isSettled: true,
+                /** Epoch milliseconds of the latest message from Claude Code or the user. */
+                lastActivityAt: Date.now(),
+                /** Approvals and questions waiting on the user, which no stall timeout applies to. */
+                userRequestCount: 0,
                 /** Settles once every earlier `send` has queued its message. */
                 previousSend: Promise.resolve() as Promise<unknown>,
             };
@@ -431,6 +456,16 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 );
             };
 
+            async function waitForUser<Answer>(request: Promise<Answer>) {
+                state.userRequestCount++;
+                try {
+                    return await request;
+                } finally {
+                    state.userRequestCount--;
+                    state.lastActivityAt = Date.now();
+                }
+            }
+
             const canUseTool: CanUseTool = async (toolName, input, {signal, toolUseID, title}) => {
                 const approvalKey = createApprovalKey(toolName, input);
                 const allowed = {
@@ -448,27 +483,29 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         allowExtraKeys: true,
                     })
                 ) {
-                    const answers = await sink.askQuestions(
-                        {
-                            title: 'Question',
-                            reason: title || '',
-                            questions: input.questions.map(
-                                ({multiSelect, options, ...question}) => {
-                                    return {
-                                        ...question,
-                                        isMultiSelect: !!multiSelect,
-                                        options: options.map((option) => {
-                                            return {
-                                                label: option.label,
-                                                description: option.description || '',
-                                                preview: option.preview || '',
-                                            };
-                                        }),
-                                    };
-                                },
-                            ),
-                        },
-                        signal,
+                    const answers = await waitForUser(
+                        sink.askQuestions(
+                            {
+                                title: 'Question',
+                                reason: title || '',
+                                questions: input.questions.map(
+                                    ({multiSelect, options, ...question}) => {
+                                        return {
+                                            ...question,
+                                            isMultiSelect: !!multiSelect,
+                                            options: options.map((option) => {
+                                                return {
+                                                    label: option.label,
+                                                    description: option.description || '',
+                                                    preview: option.preview || '',
+                                                };
+                                            }),
+                                        };
+                                    },
+                                ),
+                            },
+                            signal,
+                        ),
                     );
                     if (!answers) {
                         state.declinedToolIds.add(toolUseID);
@@ -501,18 +538,20 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         name: toolName,
                         input,
                     });
-                    const decision = await sink.requestApproval(
-                        {
-                            kind: claudeApprovalKinds[tool.kind],
-                            title: tool.title || toolName,
-                            detail: tool.text,
-                            /** Claude writes a plain-words summary of what each command does. */
-                            reason:
-                                (check.isString(input.description) && input.description) ||
-                                title ||
-                                '',
-                        },
-                        signal,
+                    const decision = await waitForUser(
+                        sink.requestApproval(
+                            {
+                                kind: claudeApprovalKinds[tool.kind],
+                                title: tool.title || toolName,
+                                detail: tool.text,
+                                /** Claude writes a plain-words summary of what each command does. */
+                                reason:
+                                    (check.isString(input.description) && input.description) ||
+                                    title ||
+                                    '',
+                            },
+                            signal,
+                        ),
                     );
                     const results: Readonly<Record<ApprovalDecision, () => PermissionResult>> = {
                         [ApprovalDecision.Approve]() {
@@ -567,6 +606,13 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                     /** Overrides `fastMode` in the user's settings. */
                     settings: {
                         fastMode: speedTier === claudeFastSpeedTier,
+                        /**
+                         * The SDK deletes `NODE_OPTIONS` from the environment it spawns Claude
+                         * with. Settings `env` puts it back for the agent's own commands.
+                         */
+                        env: filterStringEnv({
+                            NODE_OPTIONS: (env || process.env).NODE_OPTIONS,
+                        }),
                     },
                     sessionStore,
                     /**
@@ -580,6 +626,12 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                     /** Lets the thread switch to Full access later without a restart. */
                     allowDangerouslySkipPermissions: true,
                     canUseTool,
+                    spawnClaudeCodeProcess(spawnOptions) {
+                        return spawnHostedClaudeProcess({
+                            processHost,
+                            spawnOptions,
+                        });
+                    },
                     mcpServers: {
                         [agentToolServerName]: {
                             type: 'http',
@@ -614,25 +666,61 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 if (message.type === 'system') {
                     if (message.subtype === 'init') {
                         await sink.setProviderSessionId(message.session_id);
+                        state.isReplying = true;
+                        /** A finished background task starts a reply no user message sent. */
+                        if (state.isSettled) {
+                            state.isSettled = false;
+                            await sink.setStatus(ThreadStatus.Running);
+                        }
+                    } else if (message.subtype === 'background_tasks_changed') {
+                        const activeTasks = message.tasks.filter((task) => !task.ambient);
+                        state.backgroundTaskIds = activeTasks
+                            /**
+                             * A background command, such as a dev server, can run for as long as
+                             * the session does, so only agents keep the thread working. Commands
+                             * still count toward the indicator an idle thread shows.
+                             */
+                            .filter((task) => task.task_type !== 'local_bash')
+                            .map((task) => task.task_id);
+                        await sink.setBackgroundTaskCount(activeTasks.length);
                     } else if (message.subtype === 'mirror_error') {
                         await sink.addNotice(`Saving the transcript failed: ${message.error}`);
                     }
                 } else if (message.type === 'stream_event') {
                     await handleStreamEvent(message.event);
                 } else if (message.type === 'assistant') {
+                    if (message.error === 'authentication_failed') {
+                        state.hasAuthFailed = true;
+                    }
                     await handleAssistantMessage(message.message);
                 } else if (message.type === 'user') {
                     await handleToolResults(message.message.content);
                 } else if (message.type === 'result') {
+                    state.isReplying = false;
                     if (message.subtype === 'success' || state.wasInterrupted) {
-                        await sink.setStatus(ThreadStatus.Idle);
+                        /**
+                         * The result arrives while background tasks still run. Each one's end
+                         * starts another reply, whose result settles the thread.
+                         */
+                        if (state.wasInterrupted || !state.backgroundTaskIds.length) {
+                            state.isSettled = true;
+                            await sink.setStatus(ThreadStatus.Idle);
+                        }
                     } else {
                         await sink.addNotice(
                             message.errors.join('\n') || `Claude stopped: ${message.subtype}.`,
                         );
+                        state.isSettled = true;
                         await sink.setStatus(ThreadStatus.Failed);
                     }
                     state.wasInterrupted = false;
+                    if (state.hasAuthFailed) {
+                        /**
+                         * Claude Code keeps the credentials it started with, so a revoked token
+                         * fails every later turn until a new process reads the user's new login.
+                         */
+                        sink.releaseSession();
+                    }
                 }
             }
 
@@ -641,6 +729,13 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             ) {
                 if (event.type === 'message_start') {
                     state.streamMessageId = event.message.id;
+                } else if (!state.streamMessageId) {
+                    /**
+                     * A session that reconnects mid-message never sees that message's start, so its
+                     * blocks can't get the ids the finished `assistant` message saves them under.
+                     * That message still saves them, just without streaming.
+                     */
+                    return;
                 } else if (event.type === 'content_block_start') {
                     const kind =
                         event.content_block.type === 'text'
@@ -722,14 +817,13 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         .filter(check.isObject)
                         .map(async (block) => {
                             const toolUseId = block.tool_use_id;
-                            const tool = check.isString(toolUseId)
-                                ? state.toolItems.get(toolUseId)
-                                : undefined;
-                            if (
-                                block.type !== 'tool_result' ||
-                                !check.isString(toolUseId) ||
-                                !tool
-                            ) {
+                            if (block.type !== 'tool_result' || !check.isString(toolUseId)) {
+                                return;
+                            }
+                            /** A tool call from before this server restarted is only saved. */
+                            const tool =
+                                state.toolItems.get(toolUseId) || (await sink.findItem(toolUseId));
+                            if (!tool) {
                                 return;
                             }
                             state.toolItems.delete(toolUseId);
@@ -749,6 +843,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             async function readMessages(sessionSink: ProviderSink) {
                 try {
                     for await (const message of claudeQuery) {
+                        state.lastActivityAt = Date.now();
                         await handleMessage(message);
                     }
                 } catch (error) {
@@ -757,9 +852,36 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         await sessionSink.setStatus(ThreadStatus.Failed);
                     }
                 } finally {
+                    clearInterval(stallCheck);
                     sessionSink.endSession();
                 }
             }
+
+            const stallCheck = setInterval(
+                () => {
+                    if (
+                        (!state.isReplying && !state.backgroundTaskIds.length) ||
+                        state.userRequestCount ||
+                        Date.now() - state.lastActivityAt <
+                            convertDuration(stallTimeout, {
+                                milliseconds: true,
+                            }).milliseconds
+                    ) {
+                        return;
+                    }
+                    clearInterval(stallCheck);
+                    void sink.reportStall();
+                },
+                convertDuration(
+                    {
+                        minutes: 1,
+                    },
+                    {
+                        milliseconds: true,
+                    },
+                ).milliseconds,
+            );
+            stallCheck.unref();
 
             void readMessages(sink);
 
@@ -779,6 +901,8 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                      * Looking up the commands takes a moment, so a later message without a mention
                      * waits for it rather than reaching Claude first.
                      */
+                    state.isReplying = true;
+                    state.lastActivityAt = Date.now();
                     const queued = state.previousSend.then(async () => {
                         messages.push(await content);
                     });
@@ -787,14 +911,33 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 },
                 async interrupt() {
                     state.wasInterrupted = true;
-                    await claudeQuery.interrupt();
+                    /** Interrupting stops only the reply, never a background task. */
+                    await Promise.all([
+                        claudeQuery.interrupt(),
+                        ...state.backgroundTaskIds.map((taskId) => claudeQuery.stopTask(taskId)),
+                    ]);
+                    /** Without a reply to interrupt, no result arrives to settle the thread. */
+                    if (!state.isReplying) {
+                        state.wasInterrupted = false;
+                        state.isSettled = true;
+                        await sink.setStatus(ThreadStatus.Idle);
+                    }
                 },
                 async setRuntimeMode(newRuntimeMode) {
                     state.runtimeMode = newRuntimeMode;
                     await claudeQuery.setPermissionMode(claudePermissionModes[newRuntimeMode]);
                 },
+                async setModel(settings) {
+                    await claudeQuery.setModel(settings.model || undefined);
+                    await claudeQuery.applyFlagSettings({
+                        fastMode: settings.speedTier === claudeFastSpeedTier,
+                        /** `null` returns the session to the model's default effort. */
+                        effortLevel: (settings.effort && claudeEfforts[settings.effort]) || null,
+                    });
+                },
                 stop() {
                     state.isStopped = true;
+                    clearInterval(stallCheck);
                     messages.close();
                     claudeQuery.close();
                 },

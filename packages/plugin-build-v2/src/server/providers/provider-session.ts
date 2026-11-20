@@ -1,4 +1,10 @@
-import {type MaybePromise} from '@augment-vir/common';
+import {type HostedProcessAttachment, type PluginServerHost} from '@agent-storm/core/server';
+import {check} from '@augment-vir/assert';
+import {
+    getObjectTypedEntries,
+    type MaybePromise,
+    typedObjectFromEntries,
+} from '@augment-vir/common';
 import {
     type ApprovalDecision,
     type ApprovalRequest,
@@ -11,6 +17,25 @@ import {
 } from '../../build-v2-api.js';
 import {type AgentToolConnection} from '../agent-tool-server.js';
 
+/**
+ * Drops the unset variables a process's environment type allows, which a spawn handshake can't
+ * carry.
+ */
+export function filterStringEnv(env: Readonly<Record<string, string | undefined>>) {
+    return typedObjectFromEntries(
+        getObjectTypedEntries(env).filter(
+            (
+                entry,
+            ): entry is [
+                string,
+                string,
+            ] => {
+                return check.isString(entry[1]);
+            },
+        ),
+    );
+}
+
 /** An item as a provider describes it, before it belongs to a thread and turn. */
 export type ProviderItem = Readonly<
     Pick<ThreadItem, 'kind' | 'status' | 'title' | 'text'> & {
@@ -19,11 +44,34 @@ export type ProviderItem = Readonly<
     }
 >;
 
+/**
+ * Runs a thread's provider process in Agent Storm's daemon, so it outlives this server. Attaching
+ * again takes over the process already running for the thread.
+ */
+export type ProviderProcessHost = Readonly<{
+    attach(
+        params: Omit<Parameters<PluginServerHost['attachHostedProcess']>[0], 'processId'>,
+    ): Promise<HostedProcessAttachment>;
+}>;
+
 /** Where a provider session reports what its agent does. Bound to one thread. */
 export type ProviderSink = Readonly<{
     putItem(item: ProviderItem): MaybePromise<void>;
     appendDelta(params: Readonly<{providerItemId: string; delta: string}>): void;
+    /**
+     * The thread's item with this provider id as last saved, for an item a session before this
+     * server's restart started.
+     */
+    findItem(
+        providerItemId: string,
+    ): Promise<Pick<ProviderItem, 'kind' | 'title' | 'text'> | undefined>;
     setStatus(status: ThreadStatus): MaybePromise<void>;
+    setBackgroundTaskCount(count: number): MaybePromise<void>;
+    /**
+     * The provider's process stopped responding mid-work. Kills it and has the agent continue in a
+     * new one.
+     */
+    reportStall(): MaybePromise<void>;
     /** Records the id the provider resumes the conversation by. */
     setProviderSessionId(providerSessionId: string): MaybePromise<void>;
     /**
@@ -45,6 +93,20 @@ export type ProviderSink = Readonly<{
     addNotice(text: string): MaybePromise<void>;
     /** The provider's process ended, so the next message must start a new session. */
     endSession(): void;
+    /**
+     * Kills the provider's process once the current turn ends, so the next message starts a new
+     * one.
+     */
+    releaseSession(): void;
+}>;
+
+export type SessionModelSettings = Readonly<{
+    /** Empty for the provider's default model. */
+    model: string;
+    /** Unset for the model's default effort. */
+    effort: ReasoningEffort | undefined;
+    /** The model's faster service tier, by its id. Unset for standard speed. */
+    speedTier: string | undefined;
 }>;
 
 /** A running provider process for one thread. */
@@ -61,6 +123,15 @@ export type ProviderSession = Readonly<{
     ): MaybePromise<void>;
     interrupt(): Promise<void>;
     setRuntimeMode(runtimeMode: RuntimeMode): MaybePromise<void>;
+    /**
+     * Switches models within the same provider without ending the session. Claude applies it from
+     * its next request, mid-turn included. Codex applies it from the next message.
+     */
+    setModel(settings: SessionModelSettings): MaybePromise<void>;
+    /**
+     * Lets go of the provider's process without stopping it, which only the process host's kill
+     * does.
+     */
     stop(): void;
 }>;
 
@@ -106,6 +177,7 @@ export type ProviderAdapter = Readonly<{
             agentTools: AgentToolConnection;
             /** Replaces the environment the provider runs with. Unset inherits the server's. */
             env: Record<string, string> | undefined;
+            processHost: ProviderProcessHost;
         }>,
     ): Promise<ProviderSession>;
 }>;

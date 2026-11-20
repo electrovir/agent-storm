@@ -2,7 +2,9 @@ import {check} from '@augment-vir/assert';
 import {extractErrorMessage, log, type MaybePromise} from '@augment-vir/common';
 import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
+import {PassThrough} from 'node:stream';
 import {checkValidShape, defineShape, optionalShape, unknownShape} from 'object-shape-tester';
+import {filterStringEnv, type ProviderProcessHost} from './provider-session.js';
 
 /**
  * One line `codex app-server` writes: a response to our request, a request of its own, or a
@@ -31,34 +33,30 @@ const codexMessageShape = defineShape({
     ),
 });
 
-/** A connection to a `codex app-server` process, which speaks JSON-RPC over stdio. */
-export type CodexRpc = ReturnType<typeof startCodexRpc>;
+/** A connection to a `codex app-server` process. */
+export type CodexRpc = Awaited<ReturnType<typeof startCodexRpc>>;
 
-/**
- * Starts `codex app-server` in `cwd`. Answers each of its requests with `onRequest`'s result, or an
- * error when that throws.
- */
-export function startCodexRpc({
+const codexArgs = [
+    'app-server',
+];
+
+/** Same as the daemon-hosted `codex app-server`, but a child of this server that stops with it. */
+function spawnLocalCodex({
     cwd,
     env,
-    onNotification,
-    onRequest,
+    onStdout,
     onExit,
 }: Readonly<{
     cwd: string;
-    /** Replaces the environment Codex runs with. Unset inherits the server's. */
-    env?: Record<string, string> | undefined;
-    onNotification(method: string, params: unknown): MaybePromise<void>;
-    onRequest(method: string, params: unknown): Promise<unknown>;
-    onExit(reason: string): void;
+    env: Record<string, string> | undefined;
+    onStdout(data: Buffer): void;
+    onExit(exit: Readonly<{exitCode: number | null; signal: string | null; stderr: string}>): void;
 }>) {
     const child = spawn(
         /** Codex installs in too many places to pin a path, so it's found the way a shell finds it. */
         // eslint-disable-next-line sonarjs/no-os-command-from-path
         'codex',
-        [
-            'app-server',
-        ],
+        codexArgs,
         {
             cwd,
             env,
@@ -69,6 +67,60 @@ export function startCodexRpc({
             ],
         },
     );
+    const state = {
+        stderr: '',
+    };
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', (chunk: Buffer) => {
+        /** Keeps only the end, to explain an exit without holding every log line. */
+        state.stderr = (state.stderr + chunk.toString()).slice(-2000);
+    });
+    child.on('error', (error) => {
+        onExit({
+            exitCode: null,
+            signal: null,
+            stderr: `Codex failed to start: ${extractErrorMessage(error)}`,
+        });
+    });
+    child.on('exit', (exitCode, signal) => {
+        onExit({
+            exitCode,
+            signal,
+            stderr: state.stderr,
+        });
+    });
+    return {
+        isNew: true,
+        write(data: string) {
+            child.stdin.write(data);
+        },
+        detach() {
+            child.kill();
+        },
+    };
+}
+
+/**
+ * Starts `codex app-server` in `cwd`, in the daemon when `processHost` is set, where it may already
+ * be running from before this server restarted. Answers each of its requests with `onRequest`'s
+ * result, or an error when that throws.
+ */
+export async function startCodexRpc({
+    cwd,
+    env,
+    processHost,
+    onNotification,
+    onRequest,
+    onExit,
+}: Readonly<{
+    cwd: string;
+    /** Replaces the environment Codex runs with. Unset inherits the server's. */
+    env?: Record<string, string> | undefined;
+    processHost?: ProviderProcessHost | undefined;
+    onNotification(method: string, params: unknown): MaybePromise<void>;
+    onRequest(method: string, params: unknown): Promise<unknown>;
+    onExit(reason: string): void;
+}>) {
     const pending = new Map<
         number,
         {
@@ -77,14 +129,57 @@ export function startCodexRpc({
         }
     >();
     const state = {
-        nextId: 1,
+        /**
+         * Starts past any id a previous server used with the same process, so a late response to
+         * one of its requests can't settle one of these.
+         */
+        nextId: Date.now(),
         isExited: false,
-        stderr: '',
     };
+    const stdout = new PassThrough();
+
+    function handleExit({
+        exitCode,
+        signal,
+        stderr,
+    }: Readonly<{exitCode: number | null; signal: string | null; stderr: string}>) {
+        const exitCause = signal || (exitCode == undefined ? 'disconnected' : `code ${exitCode}`);
+        exit(
+            [
+                `Codex exited (${exitCause}).`,
+                stderr.trim(),
+            ]
+                .filter(Boolean)
+                .join('\n'),
+        );
+    }
+
+    const connection = processHost
+        ? await processHost.attach({
+              spawn: {
+                  command: 'codex',
+                  args: codexArgs,
+                  cwd,
+                  env: env || filterStringEnv(process.env),
+              },
+              isJsonRpc: true,
+              onStdout(data) {
+                  stdout.write(data);
+              },
+              onExit: handleExit,
+          })
+        : spawnLocalCodex({
+              cwd,
+              env,
+              onStdout(data) {
+                  stdout.write(data);
+              },
+              onExit: handleExit,
+          });
 
     function write(message: Readonly<Record<string, unknown>>) {
         if (!state.isExited) {
-            child.stdin.write(`${JSON.stringify(message)}\n`);
+            connection.write(`${JSON.stringify(message)}\n`);
         }
     }
 
@@ -97,23 +192,6 @@ export function startCodexRpc({
         pending.clear();
         onExit(reason);
     }
-
-    child.stderr.on('data', (chunk: Buffer) => {
-        /** Keeps only the end, to explain an exit without holding every log line. */
-        state.stderr = (state.stderr + chunk.toString()).slice(-2000);
-    });
-    child.on('error', (error) => exit(`Codex failed to start: ${extractErrorMessage(error)}`));
-    child.on('exit', (code, signal) => {
-        const exitCause = signal || `code ${code}`;
-        exit(
-            [
-                `Codex exited (${exitCause}).`,
-                state.stderr.trim(),
-            ]
-                .filter(Boolean)
-                .join('\n'),
-        );
-    });
 
     async function answerRequest({
         id,
@@ -182,7 +260,7 @@ export function startCodexRpc({
         current: Promise.resolve(),
     };
     createInterface({
-        input: child.stdout,
+        input: stdout,
     }).on('line', (line) => {
         lineQueue.current = lineQueue.current.then(async () => {
             try {
@@ -196,6 +274,8 @@ export function startCodexRpc({
     });
 
     return {
+        /** False when Codex was already running, so it has been initialized and has the thread. */
+        isNew: connection.isNew,
         async request(method: string, params: unknown) {
             if (state.isExited) {
                 throw new Error('Codex is not running.');
@@ -224,8 +304,10 @@ export function startCodexRpc({
                       }),
             });
         },
+        /** Lets go of Codex. Stops it unless it runs in the daemon. */
         stop() {
-            child.kill();
+            connection.detach();
+            exit('Codex was stopped.');
         },
     };
 }
