@@ -1,9 +1,15 @@
 import {SplitDirection, SplitEdge, type TabState} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
-import {clamp, getEnumValues, type PartialWithUndefined} from '@augment-vir/common';
+import {
+    clamp,
+    getEnumValues,
+    getObjectTypedValues,
+    type PartialWithUndefined,
+} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
 import {css, defineElementEvent, html, listen, nothing, type HtmlInterpolation} from 'element-vir';
 import {
+    LucidePanelRightIcon,
     LucidePlusIcon,
     PopoverAnchor,
     PopoverTrigger,
@@ -260,7 +266,8 @@ export const VirTabHost = defineAppElement<{
             flex-basis: 0;
             min-width: 0;
             min-height: 0;
-            overflow: hidden;
+            /* 'clip', not 'hidden': iOS scrolls a hidden box to reveal a focused input inside it. */
+            overflow: clip;
         }
 
         .split {
@@ -606,6 +613,10 @@ export const VirTabHost = defineAppElement<{
             });
         }
 
+        const hasSideBySideGroups = getObjectTypedValues(inputs.layout.splits).some(
+            (split) => split.direction === SplitDirection.Row,
+        );
+
         function renderStrip({
             tabIds,
             displayedTabId,
@@ -630,26 +641,30 @@ export const VirTabHost = defineAppElement<{
                     },
                 };
             });
-            const newTabEntries = inputs.newTabOptions.map((option): ViraMenuItemEntry => {
-                return {
-                    content: option.label,
-                    onClick() {
-                        if (option.openInstead) {
-                            option.openInstead();
-                            return;
-                        }
-                        dispatch(
-                            new events.newTabRequested({
-                                detail: {
-                                    kind: option.kind,
-                                    groupId,
-                                    state: option.state,
-                                },
-                            }),
-                        );
-                    },
-                };
-            });
+            function buildNewTabEntries(splitEdge: SplitEdge | undefined) {
+                return inputs.newTabOptions.map((option): ViraMenuItemEntry => {
+                    return {
+                        content: option.label,
+                        onClick() {
+                            if (option.openInstead) {
+                                option.openInstead();
+                                return;
+                            }
+                            dispatch(
+                                new events.newTabRequested({
+                                    detail: {
+                                        kind: option.kind,
+                                        groupId,
+                                        state: option.state,
+                                        splitEdge,
+                                    },
+                                }),
+                            );
+                        },
+                    };
+                });
+            }
+            const newTabEntries = buildNewTabEntries(undefined);
             /**
              * The strip's new-tab menu opens on presses that miss every tab. Stopped at the tabs,
              * before they reach the menu's trigger, so a tab's own menu doesn't open with it.
@@ -754,6 +769,24 @@ export const VirTabHost = defineAppElement<{
                             ></${ViraButton}>
                             ${renderMenuItemEntries(newTabEntries)}
                         </${ViraMenuTrigger}>
+                        ${hasSideBySideGroups || inputs.isMobile
+                            ? nothing
+                            : html`
+                                  <${ViraMenuTrigger.assign({})}>
+                                      <${ViraButton.assign({
+                                          buttonSize: ViraSize.Small,
+                                          buttonEmphasis: ViraEmphasis.Subtle,
+                                          color: ViraColorVariant.Neutral,
+                                          icon: LucidePanelRightIcon,
+                                      })}
+                                          slot=${ViraMenuTrigger.slotNames[
+                                              'vira-menu-trigger-trigger'
+                                          ]}
+                                          ${tooltip('New tab in right split')}
+                                      ></${ViraButton}>
+                                      ${renderMenuItemEntries(buildNewTabEntries(SplitEdge.Right))}
+                                  </${ViraMenuTrigger}>
+                              `}
                     </div>
                 </div>
             `;

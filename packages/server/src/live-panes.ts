@@ -1,5 +1,5 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
-import {awaitedForEach, extractErrorMessage, log, wrapInTry} from '@augment-vir/common';
+import {awaitedForEach, extractErrorMessage, log, wait, wrapInTry} from '@augment-vir/common';
 import {writeFileAtomically} from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
@@ -208,6 +208,13 @@ async function restorePanes(panes: ReadonlyArray<Readonly<LivePane>>) {
             } else {
                 await spawnPane(target);
             }
+            /**
+             * Each spawn returns before its shell and AI CLI finish starting, so spawning a few
+             * hundred panes back to back pegs every core until they all settle.
+             */
+            await wait({
+                milliseconds: 500,
+            });
         } catch (error) {
             log.warning(
                 `Failed to restore ${pane.kind} tab in ${pane.folder}: ${extractErrorMessage(error)}`,

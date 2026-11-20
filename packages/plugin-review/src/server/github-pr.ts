@@ -7,12 +7,15 @@ import {
     GitHubPrState,
     GitHubReaction,
     GitHubReviewState,
+    PrStatus,
     RawCheckContextType,
     RawCheckResult,
     RawCheckStatus,
     RawPrState,
     RawReviewState,
+    toOpenPrStatus,
 } from '@agent-storm/common';
+import {type RepoSlug} from '@agent-storm/core/server';
 import {check} from '@augment-vir/assert';
 import {chunkArray, getObjectTypedEntries, wrapInTry} from '@augment-vir/common';
 import {normalizePath, runGh} from 'agent-storm-util';
@@ -40,6 +43,32 @@ const maxThreads = 50;
 const maxThreadComments = 20;
 const maxConversationComments = 50;
 const maxReviews = 20;
+
+/**
+ * What {@link toOpenPrStatus} reads beyond the fields a PR query here asks for anyway, so a fetched
+ * PR can be shared with the sidebar through {@link shareFolderPrStatus}.
+ */
+export const prStatusFields =
+    'viewerDidAuthor viewerLatestReviewRequest { id } latestOpinionatedReviews(first: 20) { nodes { state viewerDidAuthor author { login } } }';
+
+/** The fields {@link prStatusFields} asks for. */
+export const rawPrStatusFields = {
+    viewerDidAuthor: false,
+    viewerLatestReviewRequest: nullableShape({
+        id: '',
+    }),
+    latestOpinionatedReviews: {
+        nodes: [
+            {
+                state: '',
+                viewerDidAuthor: false,
+                author: nullableShape({
+                    login: '',
+                }),
+            },
+        ],
+    },
+};
 
 /** Ten names is as many as github.com lists in a reaction's hover text before "and N more". */
 const reactionGroupFields =
@@ -86,27 +115,36 @@ const statusCheckRollupFields = [
 export const reviewRequestFields =
     'requestedReviewer { __typename ... on User { login avatarUrl } ... on Bot { login avatarUrl } ... on Mannequin { login avatarUrl } ... on Team { name avatarUrl } }';
 
+/**
+ * The open PR is asked for separately because closing a branch's old PR after opening its
+ * replacement makes the closed one the most recently updated.
+ */
 const prQuery = [
     'query($owner: String!, $name: String!, $branch: String!) {',
     '  repository(owner: $owner, name: $name) {',
-    '    pullRequests(headRefName: $branch, states: [OPEN, MERGED, CLOSED], first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {',
-    '      nodes {',
-    '        id number url title titleHTML body bodyHTML state isDraft baseRefName headRefName createdAt',
-    '        author { login avatarUrl }',
-    '        baseRepository { name owner { login } }',
-    `        commits(last: 1) { nodes { commit { ${statusCheckRollupFields} } } }`,
-    `        latestReviews(first: ${maxReviews}) { nodes { ${reviewFields} } }`,
-    `        reviewRequests(first: ${maxReviews}) { nodes { ${reviewRequestFields} } }`,
-    `        reviewThreads(first: ${maxThreads}) {`,
-    '          nodes {',
-    '            id path line isResolved isOutdated viewerCanResolve viewerCanUnresolve',
-    `            comments(first: ${maxThreadComments}) { nodes { ${commentFields} diffHunk } }`,
-    '          }',
-    '        }',
-    `        comments(first: ${maxConversationComments}) { nodes { ${commentFields} } }`,
-    '      }',
+    '    open: pullRequests(headRefName: $branch, states: [OPEN], first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {',
+    '      nodes { ...PrFields }',
+    '    }',
+    '    latest: pullRequests(headRefName: $branch, states: [OPEN, MERGED, CLOSED], first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {',
+    '      nodes { ...PrFields }',
     '    }',
     '  }',
+    '}',
+    'fragment PrFields on PullRequest {',
+    '  id number url title titleHTML body bodyHTML state isDraft baseRefName headRefName createdAt mergeStateStatus reviewDecision',
+    `  ${prStatusFields}`,
+    '  author { login avatarUrl }',
+    '  baseRepository { name owner { login } }',
+    `  commits(last: 1) { nodes { commit { ${statusCheckRollupFields} } } }`,
+    `  latestReviews(first: ${maxReviews}) { nodes { ${reviewFields} } }`,
+    `  reviewRequests(first: ${maxReviews}) { nodes { ${reviewRequestFields} } }`,
+    `  reviewThreads(first: ${maxThreads}) {`,
+    '    nodes {',
+    '      id path line isResolved isOutdated viewerCanResolve viewerCanUnresolve',
+    `      comments(first: ${maxThreadComments}) { nodes { ${commentFields} diffHunk } }`,
+    '    }',
+    '  }',
+    `  comments(first: ${maxConversationComments}) { nodes { ${commentFields} } }`,
     '}',
 ].join('\n');
 
@@ -439,6 +477,9 @@ export const rawPrShape = defineShape({
     baseRefName: '',
     headRefName: '',
     createdAt: '',
+    mergeStateStatus: '',
+    reviewDecision: nullableShape(''),
+    ...rawPrStatusFields,
     author: rawAuthorShape,
     baseRepository: nullableShape({
         name: '',
@@ -486,7 +527,12 @@ export const rawPrShape = defineShape({
 
 const prQueryResponseShape = defineShape({
     repository: nullableShape({
-        pullRequests: {
+        open: {
+            nodes: [
+                rawPrShape,
+            ],
+        },
+        latest: {
             nodes: [
                 rawPrShape,
             ],
@@ -795,17 +841,23 @@ async function queryFolderPr(folder: string) {
     if (!slug || !branch) {
         return null;
     }
-    const node = assertWrapValidShape(
+    const repository = assertWrapValidShape(
         await runGraphql(prQuery, {
             owner: slug.owner,
             name: slug.name,
             branch,
         }),
         prQueryResponseShape,
-    ).repository?.pullRequests.nodes[0];
+    ).repository;
+    const node = repository?.open.nodes[0] || repository?.latest.nodes[0];
     if (!node) {
         return null;
     }
+    await shareFolderPrStatus({
+        folder,
+        slug,
+        pr: node,
+    });
     const withReactions = await addReactionGroups({
         threads: node.reviewThreads.nodes,
         comments: node.comments.nodes,
@@ -817,6 +869,77 @@ async function queryFolderPr(folder: string) {
         },
         comments: {
             nodes: withReactions.comments,
+        },
+    });
+}
+
+const terminalPrStatuses: Readonly<Record<RawPrState, PrStatus | undefined>> = {
+    [RawPrState.Open]: undefined,
+    [RawPrState.Merged]: PrStatus.Merged,
+    [RawPrState.Closed]: PrStatus.Closed,
+};
+
+/**
+ * Shows a PR this plugin just fetched in the sidebar, which otherwise keeps what its own, much less
+ * frequent GitHub lookup last saw.
+ */
+export async function shareFolderPrStatus({
+    folder,
+    slug,
+    pr,
+}: Readonly<{
+    folder: string;
+    slug: Readonly<RepoSlug>;
+    pr: Readonly<
+        Omit<Parameters<typeof toOpenPrStatus>[0], 'headRef'> & {
+            url: string;
+            state: RawPrState;
+            headRefName: string;
+            baseRefName: string;
+            commits: Readonly<{
+                nodes: ReadonlyArray<
+                    Readonly<{
+                        commit: Readonly<{
+                            statusCheckRollup?:
+                                | Readonly<{
+                                      state: RawCheckResult;
+                                  }>
+                                | null
+                                | undefined;
+                        }>;
+                    }>
+                >;
+            }>;
+        }
+    >;
+}>) {
+    const status =
+        terminalPrStatuses[pr.state] ||
+        toOpenPrStatus({
+            ...pr,
+            headRef: {
+                target: {
+                    statusCheckRollup: pr.commits.nodes[0]?.commit.statusCheckRollup,
+                },
+            },
+        });
+    if (
+        readReviewHost().readBranchPrStatus({
+            ...slug,
+            branchName: pr.headRefName,
+            url: pr.url,
+        }) === status
+    ) {
+        return;
+    }
+    await readReviewHost().recordFolderPrStatus({
+        folder,
+        slug,
+        branchName: pr.headRefName,
+        prInfo: {
+            url: pr.url,
+            status,
+            baseBranch: pr.baseRefName,
         },
     });
 }

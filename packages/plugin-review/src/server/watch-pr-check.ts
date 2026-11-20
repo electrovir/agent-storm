@@ -20,6 +20,7 @@ import {check} from '@augment-vir/assert';
 import {
     getObjectTypedEntries,
     getObjectTypedKeys,
+    omitObjectKeys,
     removeDuplicates,
     typedObjectFromEntries,
 } from '@augment-vir/common';
@@ -36,7 +37,13 @@ import {
     recordShape,
     unionShape,
 } from 'object-shape-tester';
-import {mentionsAny, runGraphql} from './github-pr.js';
+import {
+    mentionsAny,
+    prStatusFields,
+    rawPrStatusFields,
+    runGraphql,
+    shareFolderPrStatus,
+} from './github-pr.js';
 import {readReviewHost} from './review-host.js';
 
 /** Gating jobs that only go green once everything else does, so they never count as failing work. */
@@ -90,6 +97,7 @@ const rawPrViewFields = {
     headRefName: '',
     headRefOid: '',
     baseRefName: '',
+    baseRefOid: '',
     author: rawLoginShape,
     isDraft: false,
     state: enumShape(RawPrState),
@@ -195,8 +203,12 @@ const rawCheckContextPageShape = defineShape({
 });
 
 const rawWatchedPrShape = defineShape({
-    /** `statusCheckRollup` is never filled here. The rollup is read from `commits` instead. */
-    ...rawPrViewFields,
+    /**
+     * `statusCheckRollup` is never filled here. The rollup is read from `commits` instead.
+     * `baseRefOid` is read from `baseRef` instead.
+     */
+    ...omitObjectKeys(rawPrViewFields, ['baseRefOid']),
+    ...rawPrStatusFields,
     author: nullableShape({
         __typename: enumShape(RawActorType),
         login: '',
@@ -230,6 +242,12 @@ const rawWatchedPrShape = defineShape({
             },
         ],
     },
+    /** The base branch's current tip. The PR's own `baseRefOid` stays where the PR was opened. */
+    baseRef: nullableShape({
+        target: nullableShape({
+            oid: '',
+        }),
+    }),
     /** Null once the fork it came from is deleted. */
     headRepository: nullableShape({
         nameWithOwner: '',
@@ -653,6 +671,7 @@ export function classifyPrCheck({
         checkedAt,
         branch: pr.headRefName,
         baseBranch: pr.baseRefName,
+        baseSha: pr.baseRefOid,
         headSha: pr.headRefOid,
         authorLogin,
         isDraft: pr.isDraft,
@@ -763,12 +782,13 @@ const checkContextFields = [
 const watchedPrQuery = [
     'query($owner: String!, $repo: String!, $branch: String!) {',
     '  repository(owner: $owner, name: $repo) {',
-    '    open: pullRequests(headRefName: $branch, states: [OPEN], first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...WatchedPr } }',
-    '    closed: pullRequests(headRefName: $branch, states: [MERGED, CLOSED], first: 10, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...WatchedPr } }',
+    '    open: pullRequests(headRefName: $branch, states: [OPEN], first: 3, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...WatchedPr } }',
+    '    closed: pullRequests(headRefName: $branch, states: [MERGED, CLOSED], first: 3, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { ...WatchedPr } }',
     '  }',
     '}',
     'fragment WatchedPr on PullRequest {',
-    '  number url title body headRefName headRefOid baseRefName isDraft state reviewDecision mergeStateStatus mergeable',
+    '  number url title body headRefName headRefOid baseRefName baseRef { target { oid } } isDraft state reviewDecision mergeStateStatus mergeable',
+    `  ${prStatusFields}`,
     '  headRepository { nameWithOwner }',
     '  author { __typename login }',
     '  assignees(first: 100) { nodes { login } }',
@@ -922,7 +942,7 @@ function buildBranchChangeQuery(branches: ReadonlyArray<string>) {
         '  repository(owner: $owner, name: $repo) {',
         ...branches.map((_branch, index) => {
             return [
-                `    branch${index}: pullRequests(headRefName: $branch${index}, states: [OPEN], first: 10, orderBy: {field: CREATED_AT, direction: DESC}) {`,
+                `    branch${index}: pullRequests(headRefName: $branch${index}, states: [OPEN], first: 3, orderBy: {field: CREATED_AT, direction: DESC}) {`,
                 '      nodes { number headRepository { nameWithOwner } updatedAt headRefOid mergeStateStatus reviewDecision headRef { target { ... on Commit { statusCheckRollup { state } } } } reviewThreads(first: 100) { nodes { isResolved } } }',
                 '    }',
             ].join('\n');
@@ -1121,6 +1141,14 @@ export async function fetchPrCheck({
     if (!pr) {
         return undefined;
     }
+    await shareFolderPrStatus({
+        folder,
+        slug: {
+            owner,
+            name: repoName,
+        },
+        pr,
+    });
     const headCommit = pr.commits.nodes[0]?.commit;
     const checkContextCacheKey = `${owner}/${repoName}>${branch}`;
     const cachedCheckContexts = checkContextCache.get(checkContextCacheKey);
@@ -1156,6 +1184,7 @@ export async function fetchPrCheck({
                         ? `app/${pr.author.login}`
                         : pr.author.login,
             },
+            baseRefOid: pr.baseRef?.target?.oid || '',
             assignees: pr.assignees.nodes,
             latestReviews: pr.latestReviews.nodes,
             reviews: pr.reviews.nodes,

@@ -28,6 +28,9 @@ const paneStalledIcon = createSizedIcon(LucideHourglassIcon, 12);
 const mergedCheckIcon = createColoredIcon(createSizedIcon(LucideCheckIcon, 14), {
     'vira-icon-stroke-color': viraThemeByKeys.green.foreground.header.foreground.value,
 });
+const closedXIcon = createColoredIcon(createSizedIcon(LucideXIcon, 14), {
+    'vira-icon-stroke-color': viraThemeByKeys.red.foreground.header.foreground.value,
+});
 
 /** Every sidebar tooltip's hover delay, much shorter than the browser's own `title` delay. */
 export const sidebarTooltipOptions: TooltipOptions = {
@@ -56,7 +59,7 @@ export const prStatusIcons: Record<PrStatus, ViraIconSvg | undefined> = {
     [PrStatus.ChecksFailed]: createPrRingIcon(Ring416Icon, ViraThemeColorName.red),
     [PrStatus.ReadyToMerge]: createPrRingIcon(Ring4Dot16Icon, ViraThemeColorName.green),
     [PrStatus.Merged]: mergedCheckIcon,
-    [PrStatus.Closed]: undefined,
+    [PrStatus.Closed]: closedXIcon,
 };
 
 /** Shown in place of an open PR's status while the checkout has changes the PR doesn't have yet. */

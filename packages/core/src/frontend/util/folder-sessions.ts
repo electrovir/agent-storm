@@ -50,9 +50,23 @@ export function createFolderSessions({
     /** Every pane group's sessions, so another group's live ones don't read as missing here. */
     const folderWide: {
         sessions: FolderSessions | undefined;
+        /** Watch mode's tab, which every pane group of the folder lists whatever its scope. */
+        watchSessionId: string;
     } = {
         sessions: undefined,
+        watchSessionId: '',
     };
+
+    function filterToScope(allSessions: Readonly<FolderSessions>) {
+        return mapEnumToObject(PaneKind, (kind) => {
+            return allSessions[kind].filter((session) => {
+                return (
+                    (session.scope || '') === (scope || '') ||
+                    (!!folderWide.watchSessionId && session.id === folderWide.watchSessionId)
+                );
+            });
+        });
+    }
 
     function update(partial: Partial<typeof observable.value>) {
         observable.setValue({
@@ -71,11 +85,7 @@ export function createFolderSessions({
         try {
             const allSessions = await request;
             folderWide.sessions = allSessions;
-            const sessions = mapEnumToObject(PaneKind, (kind) => {
-                return allSessions[kind].filter((session) => {
-                    return (session.scope || '') === (scope || '');
-                });
-            });
+            const sessions = filterToScope(allSessions);
             update({
                 sessions,
                 error: undefined,
@@ -103,10 +113,24 @@ export function createFolderSessions({
         reportError,
         /** Picks up changes the server made on its own, like the AI a restarted tab launched with. */
         reload,
-        /** Reloads the list for a live session it's missing. */
-        sync(sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>) {
-            const {reloadedSessionIds} = observable.value;
+        /** Reloads the list for a live session it's missing, and lists watch mode's current tab. */
+        sync({
+            sessionStatuses,
+            watchSessionId,
+        }: Readonly<{
+            sessionStatuses: ReadonlyArray<Readonly<PaneSessionStatus>>;
+            watchSessionId: string;
+        }>) {
             const sessions = folderWide.sessions;
+            if (watchSessionId !== folderWide.watchSessionId) {
+                folderWide.watchSessionId = watchSessionId;
+                if (sessions) {
+                    update({
+                        sessions: filterToScope(sessions),
+                    });
+                }
+            }
+            const {reloadedSessionIds} = observable.value;
             /**
              * A tab the server opened on its own, like watch mode's, appears as a live session
              * first.

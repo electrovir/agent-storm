@@ -114,7 +114,7 @@ Do not record it when ESLint, `tsc`, Prettier, or cspell already enforces it, wh
 2. Its commits skipped this file's review, so review them before pushing. Review, then commit, anything it left uncommitted.
 3. Push with `git push --force-with-lease`.
 
-If the conflict cannot be resolved without a product decision, stop and report it.
+If the conflict cannot be resolved without a product decision, stop and report it. A base that already has the same or an overlapping change is not a product decision, even when the two sides express the same facts differently: take the base's version of anything both sides cover, drop this branch's duplicate of it and update this branch's tests to match, keep what this branch adds beyond the base, and push. Never leave a conflict unresolved because the PR looks redundant; report that in your summary instead.
 
 ## Opening the PR
 

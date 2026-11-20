@@ -55,6 +55,17 @@ export async function applyPluginPrStatusOverrides({
     );
 }
 
+/** Whether any running plugin's `isFolderBusy` is true for the folder. */
+export async function isFolderBusyInPlugins(folder: string) {
+    return (
+        await Promise.all(
+            getObjectTypedValues(pluginFolderHooks.byPluginId).map(async (hooks) => {
+                return !!(await hooks.isFolderBusy?.(folder));
+            }),
+        )
+    ).some(Boolean);
+}
+
 /** The first running plugin's answer for the folder's watch mode, or `fallback` when none has one. */
 export function readPluginWatchMode({
     folder,

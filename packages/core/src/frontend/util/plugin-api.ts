@@ -3,13 +3,14 @@ import {
     type SchemaSettingKey,
     type SessionMeta,
     type Settings,
+    type SplitEdge,
     type TabState,
 } from '@agent-storm/common';
 import {assertWrap} from '@augment-vir/assert';
 import {type PartialWithUndefined} from '@augment-vir/common';
 import {type HtmlInterpolation, type ObservableBase} from 'element-vir';
 import {defineShape, type Shape} from 'object-shape-tester';
-import {type ViraIconSvg, type ViraThemeClient} from 'vira';
+import {type ViraIconSvg, type ViraMenuItemEntry, type ViraThemeClient} from 'vira';
 import {type FolderDataObservable} from './folder-data.js';
 import {type FolderSessionsObservable} from './folder-sessions.js';
 import {type KeyboardShortcut, type ShortcutAction} from './keyboard-shortcuts.js';
@@ -331,6 +332,8 @@ export type NewTabRequest = Readonly<{
     /** Undefined on mobile, which has no groups of its own. */
     groupId: string | undefined;
     state?: Readonly<TabState> | undefined;
+    /** Splits the tab off on this edge of its group instead of adding it to the group's strip. */
+    splitEdge?: SplitEdge | undefined;
 }>;
 
 /** What a pane group's parent hands each extension, by the extension's id. */
@@ -477,6 +480,13 @@ export type PaneDefinition<TabStateShape extends Shape = typeof noTabStateShape>
         defaultPlacement(
             params: Readonly<Pick<PaneGroupView, 'extensionInputs'>>,
         ): DefaultTabPlacement | undefined;
+        /** Extra entries in the tab's right-click menu, between Rename and Close. */
+        menuEntries(
+            params: Readonly<{
+                tabState: Readonly<TabStateShape['runtimeType']>;
+                context: AppContext;
+            }>,
+        ): ReadonlyArray<ViraMenuItemEntry>;
     }>;
 
 /** Any pane definition, as registries hold them. */

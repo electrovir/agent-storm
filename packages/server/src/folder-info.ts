@@ -14,6 +14,7 @@ import {
 import {check} from '@augment-vir/assert';
 import {
     awaitedBlockingMap,
+    awaitedFilter,
     awaitedForEach,
     extractErrorMessage,
     getEnumValues,
@@ -65,6 +66,7 @@ type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 const offWatchMode: FolderInfo['watchMode'] = {
     status: WatchModeStatus.Off,
     message: '',
+    sessionId: '',
 };
 
 /**
@@ -1024,6 +1026,33 @@ export async function recordFolderPrStatus({
     });
     persistGithubCache();
     await applyGitInfoChange(folder);
+}
+
+/**
+ * Records a branch's PR found outside its repo's own lookup, like by the Review tab's PR lists, and
+ * rebuilds every sidebar folder on that branch that doesn't show the PR yet. Without the rebuild,
+ * an idle worktree's sidebar entry, and the {@link listenToNewFolderPrs} listeners watch mode starts
+ * from, wait for the sweep's next read of that folder.
+ */
+export async function recordFoldersBranchPr(
+    params: Readonly<
+        RepoSlug & {
+            branchName: string;
+            prInfo: Readonly<PrInfo>;
+        }
+    >,
+) {
+    recordBranchPr(params);
+    const folders = await awaitedFilter(
+        Array.from(cache.values()).filter((info) => {
+            return info.branch === params.branchName && info.prUrl !== params.prInfo.url;
+        }),
+        async (info) => {
+            const slug = await getRepoSlug(info.path);
+            return slug?.owner === params.owner && slug.name === params.name;
+        },
+    );
+    await Promise.all(folders.map((info) => applyGitInfoChange(normalizePath(info.path))));
 }
 
 /**

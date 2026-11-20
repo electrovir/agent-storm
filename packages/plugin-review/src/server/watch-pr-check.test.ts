@@ -32,6 +32,7 @@ const baseRawPr: RawPrView = {
     headRefName: 'feature',
     headRefOid: 'abc1234',
     baseRefName: 'dev',
+    baseRefOid: 'def5678',
     author: {
         login: 'pr-author',
     },

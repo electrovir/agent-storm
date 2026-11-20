@@ -59,7 +59,7 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
          * Tabs asked for before their folder's layout exists, applied when the folder creates it.
          * Kept out of the observable since folders read them while rendering.
          */
-        showRequests: Readonly<Record<string, string>>;
+        showRequests: Readonly<Record<string, ReadonlyArray<string>>>;
         /** Selections read from local storage, so rendering doesn't parse it again each time. */
         storedSelections: Readonly<Record<string, Readonly<TabSelection> | undefined>>;
     } = {
@@ -398,7 +398,8 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
         },
         /**
          * Shows a tab of `kind` in a folder's layout (see {@link showTabKind}), or once the folder
-         * creates its layout when it has none yet.
+         * creates its layout when it has none yet. Requests made before then are all applied, in
+         * order, so the last one decides the active group.
          */
         showPaneTab({
             folder,
@@ -417,17 +418,20 @@ export function createUiLayout(folderData: Readonly<Pick<FolderDataObservable, '
             } else {
                 tracking.showRequests = {
                     ...tracking.showRequests,
-                    [folder]: kind,
+                    [folder]: [
+                        ...(tracking.showRequests[folder] || []),
+                        kind,
+                    ],
                 };
             }
         },
-        /** The tab asked for by `showPaneTab` before `folder`'s layout existed, cleared on read. */
-        takeShowRequest(folder: string) {
-            const kind = tracking.showRequests[folder];
+        /** The tabs asked for by `showPaneTab` before `folder`'s layout existed, cleared on read. */
+        takeShowRequests(folder: string) {
+            const kinds = tracking.showRequests[folder] || [];
             tracking.showRequests = omitObjectKeys(tracking.showRequests, [
                 folder,
             ]);
-            return kind;
+            return kinds;
         },
         destroy() {
             removeListener();

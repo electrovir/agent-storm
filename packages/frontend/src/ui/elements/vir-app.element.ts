@@ -103,9 +103,10 @@ export const VirApp = defineAppElement()({
             /*
              * If the layout ever overflows the visible viewport (e.g. during the keyboard's open
              * animation, before the new height is measured), clip it here instead of letting the
-             * document scroll the tab bar off-screen.
+             * document scroll the tab bar off-screen. 'clip', not 'hidden', because iOS scrolls a
+             * hidden box to reveal a focused input inside it.
              */
-            overflow: hidden;
+            overflow: clip;
         }
     `,
     init({state, updateState, host}) {

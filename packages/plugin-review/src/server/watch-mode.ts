@@ -215,6 +215,7 @@ export function getWatchModeInfo(folder: string) {
             entry?.status === WatchModeStatus.Off && isSettledStop(entry.message)
                 ? ''
                 : entry?.message || '',
+        sessionId: entry?.watchSessionId || '',
     };
 }
 
@@ -473,6 +474,29 @@ async function watchAssignedCheckouts({
                 });
             }),
     );
+}
+
+/**
+ * Turns watch mode on in a worktree whose branch just got its first PR. Only a folder watch mode
+ * has never tracked qualifies, so turning watch mode off, or it stopping on its own, sticks.
+ */
+async function watchNewWorktreePr(info: Readonly<FolderInfo>) {
+    const folder = normalizePath(info.path);
+    if (
+        !info.parentRepoPath ||
+        !info.prUrl ||
+        finishedPrStatuses[info.prStatus] ||
+        isReviewFolder(folder) ||
+        (await isAutoWatchModeDisabled()) ||
+        watchState.entries[folder]
+    ) {
+        return;
+    }
+    log.info(`Watching ${folder} for its new PR ${info.prUrl}.`);
+    await setWatchMode({
+        folder,
+        isEnabled: true,
+    });
 }
 
 /** Undefined when git fails. */
@@ -880,7 +904,7 @@ async function startPass({
         folder,
         kind: PaneKind.Ai,
         sessionId,
-        text: `Agent-storm watch mode pass for: ${orderedTasks.join(', ')}. Read this pass's new file ${passFilePath} and follow ${watchModeInstructionsPath} for its tasks and PR check.`,
+        text: `Agent-storm watch mode pass for: ${orderedTasks.join(', ')}. Read this pass's new file ${passFilePath} and follow ${watchModeInstructionsPath} for its tasks and PR check. Re-read that file every pass, since it changes.`,
     });
     await updateEntry(folder, {
         status: WatchModeStatus.Working,
@@ -1017,6 +1041,8 @@ async function compactWatchSession({
 function createIdleStateKey(prCheck: Readonly<PrCheck>) {
     return JSON.stringify([
         prCheck.headSha,
+        /** A conflict the last pass couldn't resolve can change when the base moves. */
+        prCheck.isConflicted ? prCheck.baseSha : '',
         prCheck.needs,
         prCheck.failingChecks,
         prCheck.unresolvedThreads.map((thread) => `${thread.id} ${thread.status}`),
@@ -1108,15 +1134,14 @@ async function checkFolder({
         : '';
     /**
      * The batched change check reads less than a full check does, such as no thread reactions, so a
-     * full check still runs now and then. Pending checks are counted per check to catch stuck
-     * ones.
+     * full check still runs now and then. A skipped check still counts toward the stuck-checks
+     * limit, since the change key covers the rollup state and so changes once the checks finish.
      */
     if (
         prChangeKey &&
         prChangeKey === entry.prChangeKey &&
         !finishedPass &&
         (entry.status === WatchModeStatus.Watching || !!entry.resumeMessage) &&
-        !entry.pendingPolls &&
         Date.now() - entry.fullCheckAt <
             convertDuration(
                 {
@@ -1127,11 +1152,16 @@ async function checkFolder({
                 },
             ).milliseconds
     ) {
-        if (entry.resumeMessage) {
+        if (entry.resumeMessage || entry.pendingPolls) {
             await updateEntry(folder, {
-                status: WatchModeStatus.Watching,
-                message: entry.resumeMessage,
-                resumeMessage: '',
+                pendingPolls: entry.pendingPolls && entry.pendingPolls + 1,
+                ...(entry.resumeMessage
+                    ? {
+                          status: WatchModeStatus.Watching,
+                          message: entry.resumeMessage,
+                          resumeMessage: '',
+                      }
+                    : {}),
             });
         }
         return;
@@ -1183,6 +1213,27 @@ async function checkFolder({
             });
             return;
         }
+        const noPrIdleStateKey = JSON.stringify([
+            WatchTask.OpenPr,
+            await runGit(folder, [
+                'rev-parse',
+                'HEAD',
+            ]),
+            local.isDirty,
+        ]);
+        /** A pass that chose not to open the PR would otherwise be started again on every check. */
+        if (
+            (finishedPass && !isPassExited ? noPrIdleStateKey : entry.idleStateKey) ===
+            noPrIdleStateKey
+        ) {
+            await updateEntry(folder, {
+                idleStateKey: noPrIdleStateKey,
+                status: WatchModeStatus.Watching,
+                message:
+                    'The last pass opened no PR. Waiting for a new commit or local change. Check the Watch tab.',
+            });
+            return;
+        }
         await startPass({
             deps,
             folder,
@@ -1202,16 +1253,6 @@ async function checkFolder({
             folder,
             message: `PR #${prCheck.number} was ${closedState.description}.`,
             closedPrNumber: prCheck.number,
-        });
-        /** The sidebar's own PR polling can lag this lookup by many minutes. */
-        await readReviewHost().recordFolderPrStatus({
-            folder,
-            slug,
-            branchName: branch,
-            prInfo: {
-                url: prCheck.url,
-                status: closedState.prStatus,
-            },
         });
         return;
     }
@@ -1565,7 +1606,8 @@ async function runFolder(folder: string) {
         } else if (
             (await readReviewHost().getPaneSessionStatusLookup())(folder).some((session) => {
                 return session.kind === PaneKind.Ai && busyPaneStatuses[session.status];
-            })
+            }) ||
+            (await readReviewHost().isFolderBusyInPlugins(folder))
         ) {
             /**
              * Another tab may be mid-rebase or mid-push, so the branch can look broken until it
@@ -1739,6 +1781,13 @@ export async function startWatchMode(deps: Readonly<WatchModeDeps>) {
                   await watchAssignedCheckouts({
                       deps,
                       pullRequests,
+                  });
+              }),
+              readReviewHost().listenToNewFolderPrs((info) => {
+                  void watchNewWorktreePr(info).catch((error: unknown) => {
+                      log.warning(
+                          `Failed to start watch mode for ${info.path}'s new PR: ${extractErrorMessage(error)}`,
+                      );
                   });
               }),
           ];

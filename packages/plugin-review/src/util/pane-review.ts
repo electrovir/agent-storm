@@ -12,7 +12,7 @@ import {
     type FolderSessionsObservable,
     type UiLayoutObservable,
 } from '@agent-storm/core/frontend';
-import {extractErrorMessage, pickObjectKeys} from '@augment-vir/common';
+import {extractErrorMessage, pickObjectKeys, wait} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {convertDuration} from 'date-vir';
 import {Observable} from 'element-vir';
@@ -201,9 +201,22 @@ export function createPaneReview({
                 buildPrError: undefined,
             });
         } catch (error) {
+            const failedLookup = observable.value.buildPrLookup;
             update({
                 buildPrError: extractErrorMessage(error),
             });
+            /**
+             * Otherwise only a different PR in the folder list looks it up again, so a failure such
+             * as a server restart would leave the Diff tab's manual review unreachable for good.
+             */
+            await wait({
+                seconds: 10,
+            });
+            if (observable.value.buildPrLookup === failedLookup) {
+                update({
+                    buildPrLookup: undefined,
+                });
+            }
         }
     }
 

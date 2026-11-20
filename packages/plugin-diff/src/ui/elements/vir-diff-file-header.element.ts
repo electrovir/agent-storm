@@ -112,7 +112,6 @@ export const VirDiffFileHeader = defineAppElement<{
                           buttonSize: ViraSize.Small,
                           color: ViraColorVariant.Neutral,
                       })}
-                          ${tooltip('Move the whole file across the index')}
                           ${listen('click', () => {
                               dispatch(
                                   new events.stageFile({

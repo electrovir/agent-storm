@@ -573,7 +573,7 @@ export const settingsJsonSchema = {
             default: false,
             title: 'Disable automatic watch mode',
             description:
-                'When on, watch mode only runs where you turn it on. Agent-storm stops turning it on for checkouts of PRs assigned to you, for a checkout once its `/manual-review here` verdict posts, and for folders it paused while they had nothing to do.',
+                'When on, watch mode only runs where you turn it on. Agent-storm stops turning it on for checkouts of PRs assigned to you, for a worktree once its branch gets its first PR, for a checkout once its `/manual-review here` verdict posts, and for folders it paused while they had nothing to do.',
         },
         /** Intentionally absent from `required` so configs written by older builds still load. */
         disableAutoManualReview: {
@@ -754,6 +754,8 @@ export const folderInfoShape = defineShape({
         status: enumShape(WatchModeStatus),
         /** Why watch mode stopped or paused, or what it's waiting on. */
         message: '',
+        /** Watch mode's AI tab, shown in every pane group of the folder. Empty when it has none. */
+        sessionId: '',
     },
 });
 

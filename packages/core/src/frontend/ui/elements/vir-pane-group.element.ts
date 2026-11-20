@@ -46,10 +46,12 @@ import {
     createTabId,
     createTabLayout,
     findSessionPaneKind,
+    findTabGroupId,
     isTabLayoutConsistent,
     listDisplayedTabIds,
     renameTab,
     showTabKind,
+    splitTab,
     splitTabLayout,
     syncSessionTabs,
     toSessionTabId,
@@ -128,8 +130,13 @@ export const VirPaneGroup = defineAppElement<{
      * terminals, which still open in the folder. Empty for the folder's own pane group.
      */
     scope?: string | undefined;
-    /** What a pane group with no saved layout starts with, instead of the folder's defaults. */
-    defaultTabs?: ReadonlyArray<Readonly<Pick<PaneTab, 'kind' | 'state'>>> | undefined;
+    /**
+     * What a pane group with no saved layout starts with, instead of the folder's defaults: one
+     * list of tabs per group, each showing its first tab.
+     */
+    defaultTabs?:
+        | ReadonlyArray<ReadonlyArray<Readonly<Pick<PaneTab, 'kind' | 'state'>>>>
+        | undefined;
 }>()({
     tagName: 'vir-pane-group',
     state() {
@@ -247,7 +254,10 @@ export const VirPaneGroup = defineAppElement<{
         const sessions = folderSessions.value.sessions;
         const sessionError = folderSessions.value.error;
 
-        folderSessions.sync(info?.sessionStatuses || []);
+        folderSessions.sync({
+            sessionStatuses: info?.sessionStatuses || [],
+            watchSessionId: info?.watchMode.sessionId || '',
+        });
 
         const folderNameBar = isMobile
             ? html`
@@ -310,19 +320,19 @@ export const VirPaneGroup = defineAppElement<{
         }
         const initialLayout =
             baseLayout ||
-            [
-                uiLayout.takeShowRequest(layoutKey),
-            ].reduce(
-                (layout: Readonly<TabLayout>, kind) => (kind ? showTabKind(layout, kind) : layout),
+            uiLayout.takeShowRequests(layoutKey).reduce(
+                (layout: Readonly<TabLayout>, kind) => showTabKind(layout, kind),
                 inputs.defaultTabs
-                    ? createTabLayout([
-                          inputs.defaultTabs.map((tab) => {
-                              return {
-                                  ...tab,
-                                  id: createTabId(tab.kind),
-                              };
+                    ? createTabLayout(
+                          inputs.defaultTabs.map((groupTabs) => {
+                              return groupTabs.map((tab) => {
+                                  return {
+                                      ...tab,
+                                      id: createTabId(tab.kind),
+                                  };
+                              });
                           }),
-                      ])
+                      )
                     : createDefaultTabLayout({
                           sessions,
                           panes: inputs.context.panes,
@@ -561,19 +571,30 @@ export const VirPaneGroup = defineAppElement<{
             });
         }
 
-        async function openNewTab({kind, groupId, state: tabState}: NewTabRequest) {
+        async function openNewTab({kind, groupId, state: tabState, splitEdge}: NewTabRequest) {
+            function placeTab(current: Readonly<TabLayout>, tab: Readonly<PaneTab>) {
+                const added = addTab(current, {
+                    tab,
+                    groupId,
+                });
+                const addedGroupId = findTabGroupId(added, tab.id);
+                return splitEdge && addedGroupId
+                    ? splitTab(added, {
+                          tabId: tab.id,
+                          groupId: addedGroupId,
+                          edge: splitEdge,
+                      })
+                    : added;
+            }
             const paneKind = findSessionPaneKind(kind);
             if (!paneKind) {
                 writeLayout((current) => {
-                    return addTab(current, {
-                        tab: {
-                            id: createTabId(kind),
-                            kind,
-                            state: tabState && {
-                                ...tabState,
-                            },
+                    return placeTab(current, {
+                        id: createTabId(kind),
+                        kind,
+                        state: tabState && {
+                            ...tabState,
                         },
-                        groupId,
                     });
                 });
                 return;
@@ -587,15 +608,12 @@ export const VirPaneGroup = defineAppElement<{
                 sessionToFocus: sessionId,
             });
             writeLayout((current) => {
-                return addTab(current, {
-                    tab: {
-                        id: toSessionTabId({
-                            kind: paneKind,
-                            sessionId,
-                        }),
-                        kind,
-                    },
-                    groupId,
+                return placeTab(current, {
+                    id: toSessionTabId({
+                        kind: paneKind,
+                        sessionId,
+                    }),
+                    kind,
                 });
             });
         }
@@ -769,6 +787,10 @@ export const VirPaneGroup = defineAppElement<{
                             }
                         },
                     },
+                    ...(definition.menuEntries?.({
+                        tabState,
+                        context: inputs.context,
+                    }) || []),
                     {
                         content: 'Close',
                         onClick() {

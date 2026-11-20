@@ -562,20 +562,22 @@ function createPrQueue({
                 trustedBotLogins: (await readReviewHost().loadSettings()).forges[ForgeType.Github]
                     .trustedBotLogins,
             });
-            cache.pullRequests
-                .filter((pr) => pr.branchName)
-                .forEach((pr) => {
-                    readReviewHost().recordBranchPr({
-                        owner: pr.owner,
-                        name: pr.repoName,
-                        branchName: pr.branchName,
-                        prInfo: {
-                            url: pr.url,
-                            status: pr.prStatus,
-                            baseBranch: pr.baseBranchName || undefined,
-                        },
-                    });
-                });
+            await Promise.all(
+                cache.pullRequests
+                    .filter((pr) => pr.branchName)
+                    .map(async (pr) => {
+                        await readReviewHost().recordBranchPr({
+                            owner: pr.owner,
+                            name: pr.repoName,
+                            branchName: pr.branchName,
+                            prInfo: {
+                                url: pr.url,
+                                status: pr.prStatus,
+                                baseBranch: pr.baseBranchName || undefined,
+                            },
+                        });
+                    }),
+            );
             cache.latestQueryCost = pages.reduce((total, page) => total + page.rateLimit.cost, 0);
             cache.updatedAt = Date.now();
             cache.fetchStartedAt = startedAt;
