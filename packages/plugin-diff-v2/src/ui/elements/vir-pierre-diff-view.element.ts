@@ -1,4 +1,5 @@
-import {defineAppElement} from '@agent-storm/core/frontend';
+import {FontRole} from '@agent-storm/common';
+import {defineAppElement, fontSizeVar} from '@agent-storm/core/frontend';
 import {
     toDisplayedOldContent,
     type DiffCodeViewParams,
@@ -55,6 +56,10 @@ export const VirPierreDiffView = defineAppElement<
             min-width: 0;
             min-height: 0;
             overflow: auto;
+            --diffs-font-size: ${fontSizeVar({
+                role: FontRole.Code,
+                fallback: '10px',
+            })};
         }
     `,
     cleanup({state}) {

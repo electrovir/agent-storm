@@ -5,6 +5,7 @@ import {viraThemeByKeys} from 'vira';
 import {type GitDiffFile} from '../../diff-api.js';
 import {type RenderDiffCodeView} from '../../util/diff-code-view.js';
 import {blurDiffEditorOnScroll} from './diff-editor.js';
+import {probeScrollJumps} from './diff-scroll-probe.js';
 import {VirDiffReviewFile} from './vir-diff-review-file.element.js';
 
 /**
@@ -58,6 +59,7 @@ export const VirDiffReview = defineAppElement<{
     },
     init({host}) {
         blurDiffEditorOnScroll(host);
+        probeScrollJumps(host, 'review');
     },
     styles: css`
         :host {

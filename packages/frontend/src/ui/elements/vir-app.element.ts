@@ -86,7 +86,13 @@ export const VirApp = defineAppElement()({
         :host {
             display: flex;
             flex-direction: row;
-            position: relative;
+            /*
+             * Fixed to the visual viewport's offset so the app stays on screen when iOS pans the
+             * visual viewport to reveal a focused input.
+             */
+            position: fixed;
+            top: var(--app-viewport-offset-top, 0px);
+            left: 0;
             width: 100%;
             /*
              * iOS Safari's 100dvh doesn't consistently shrink when the on-screen keyboard opens, so

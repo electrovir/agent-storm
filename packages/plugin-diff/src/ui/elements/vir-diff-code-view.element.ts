@@ -15,6 +15,7 @@ import {
     type RenderedDiff,
 } from './diff-editor.js';
 import {toRulerMarks, type RulerMark} from './diff-ruler.js';
+import {probeScrollJumps} from './diff-scroll-probe.js';
 import {chunkSelectionsAtPointer, type SelectedChunk} from './diff-selection.js';
 
 /**
@@ -157,6 +158,7 @@ export const VirDiffCodeView = defineAppElement<{
     `,
     init({host}) {
         blurDiffEditorOnScroll(host);
+        probeScrollJumps(host, 'code-view');
     },
     cleanup({state}) {
         state.rendered?.editor?.destroy();

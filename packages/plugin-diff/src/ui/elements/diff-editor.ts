@@ -655,7 +655,11 @@ export function blurDiffEditorOnScroll(host: Readonly<HTMLElement>) {
     /**
      * CodeMirror re-sets a focused editor's DOM selection whenever scrolling redraws the lines
      * around its cursor, and Safari answers that by scrolling the caret back into view, so
-     * scrolling past the cursor kept yanking the view back to it.
+     * scrolling past the cursor kept yanking the view back to it. Blurring alone leaves the DOM
+     * selection behind: once the cursor's line scrolls out of the rendered viewport, WebKit moves
+     * that selection onto `.cm-content` itself and Safari scrolls it into view, jumping to the top
+     * of the file. Clearing it leaves nothing to scroll to, and the cursor still lives in the
+     * editor's state.
      */
     function blurFocusedEditor() {
         const focused = host.shadowRoot?.activeElement;
@@ -665,6 +669,7 @@ export function blurDiffEditorOnScroll(host: Readonly<HTMLElement>) {
             editorContent.classList.contains('cm-content')
         ) {
             editorContent.blur();
+            editorContent.ownerDocument.getSelection()?.removeAllRanges();
         }
     }
     host.addEventListener('wheel', blurFocusedEditor, {

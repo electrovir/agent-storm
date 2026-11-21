@@ -1,8 +1,11 @@
 import {FontRole} from '@agent-storm/common';
 import {defineAppElement, fontFamilyVar, fontSizeVar} from '@agent-storm/core/frontend';
+import {assertWrap} from '@augment-vir/assert';
 import {colorCss} from '@electrovir/color';
 import {css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
 import {
+    popover,
+    PopoverManager,
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
@@ -11,6 +14,7 @@ import {
     viraShadows,
     viraThemeByKeys,
 } from 'vira';
+import {createPointPopoverStyles} from './point-popover-styles.js';
 
 /** An open comment composer, placed in viewport coordinates beside the button that opened it. */
 export type CommentDraft = Readonly<{
@@ -39,11 +43,15 @@ export const VirDiffCommentComposer = defineAppElement<{
         save: defineElementEvent<undefined>(),
         cancel: defineElementEvent<undefined>(),
     },
+    state() {
+        return {
+            popoverManager: new PopoverManager(),
+        };
+    },
     styles: css`
-        /* Fixed for the same reason the pane's right-click menu is: it is placed from a pointer. */
+        ${createPointPopoverStyles(css`.comment-composer`)}
+
         .comment-composer {
-            position: fixed;
-            z-index: 4;
             display: flex;
             flex-direction: column;
             gap: 6px;
@@ -83,7 +91,7 @@ export const VirDiffCommentComposer = defineAppElement<{
             gap: 6px;
         }
     `,
-    render({inputs, dispatch, events}) {
+    render({inputs, state, dispatch, events, host}) {
         const canSave = !inputs.draft.isSaving && !!inputs.draft.body.trim();
 
         function save() {
@@ -105,13 +113,23 @@ export const VirDiffCommentComposer = defineAppElement<{
         }
 
         return html`
-            <div
-                class="comment-composer"
+            <span
+                class="point-anchor"
                 style=${css`
                     left: ${inputs.draft.x}px;
                     top: ${inputs.draft.y}px;
                 `}
-            >
+                ${popover(state.popoverManager, {
+                    trigger: true,
+                    getPopover() {
+                        return assertWrap.instanceOf(
+                            host.shadowRoot.querySelector('.comment-composer'),
+                            HTMLElement,
+                        );
+                    },
+                })}
+            ></span>
+            <div class="comment-composer" popover="manual">
                 <div class="comment-composer-title">
                     ${inputs.draft.commentId ? 'Edit comment' : 'Comment'} on
                     ${inputs.draft.line ? `line ${inputs.draft.line}` : 'this file'}

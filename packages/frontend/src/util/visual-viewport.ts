@@ -1,7 +1,8 @@
 /**
  * Writes the visual viewport's height, which excludes the on-screen keyboard, to an
- * `--app-viewport-height` CSS variable on `host` and on the document element, now and whenever it
- * changes. Returns the disconnect. Does nothing in browsers without the Visual Viewport API.
+ * `--app-viewport-height` CSS variable on `host` and on the document element, and its offset from
+ * the layout viewport's top to an `--app-viewport-offset-top` variable on `host`, now and whenever
+ * they change. Returns the disconnect. Does nothing in browsers without the Visual Viewport API.
  */
 export function trackVisualViewportHeight(host: HTMLElement) {
     /**
@@ -29,6 +30,12 @@ export function trackVisualViewportHeight(host: HTMLElement) {
          */
         host.style.setProperty('--app-viewport-height', value);
         document.documentElement.style.setProperty('--app-viewport-height', value);
+        /**
+         * Focusing an input near the bottom (the AI chat composer) makes iOS pan the visual
+         * viewport down to keep it above the keyboard, and the pan outlives the app shrinking to
+         * fit, so the app's top would sit above the screen without following the pan.
+         */
+        host.style.setProperty('--app-viewport-offset-top', `${viewport?.offsetTop ?? 0}px`);
     }
     updateViewportHeight();
     viewport.addEventListener('resize', updateViewportHeight);

@@ -1,9 +1,11 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
+import {assertWrap} from '@augment-vir/assert';
 import {css, defineElementEvent, html, listen} from 'element-vir';
-import {renderMenuItemEntries, ViraMenu} from 'vira';
+import {popover, PopoverManager, renderMenuItemEntries, ViraMenu} from 'vira';
 import {canDiscardSide} from '../../util/diff-status.js';
 import {type HunkMenu} from './diff-pane-requests.js';
 import {stageScopeLabel} from './diff-selection.js';
+import {createPointPopoverStyles} from './point-popover-styles.js';
 import {stageActionLabels} from './vir-diff-file-header.element.js';
 
 /**
@@ -20,6 +22,11 @@ export const VirDiffHunkMenu = defineAppElement<{
         undo: defineElementEvent<HunkMenu>(),
         close: defineElementEvent<undefined>(),
     },
+    state() {
+        return {
+            popoverManager: new PopoverManager(),
+        };
+    },
     styles: css`
         /*
          * Catches the click that dismisses the menu, wherever it lands. Fixed so a click outside
@@ -31,18 +38,13 @@ export const VirDiffHunkMenu = defineAppElement<{
             z-index: 3;
         }
 
-        /*
-         * Positioned in viewport coordinates from the pointer that opened it, which is why it is
-         * fixed: the pane scrolls and the editor is a scroll container of its own, so anchoring to
-         * either would need the offsets recomputed on every scroll.
-         */
+        ${createPointPopoverStyles(css`.menu-popover`)}
+
         ${ViraMenu} {
-            position: fixed;
-            z-index: 4;
             min-width: 160px;
         }
     `,
-    render({inputs, dispatch, events}) {
+    render({inputs, state, dispatch, events, host}) {
         const scopeText = stageScopeLabel(inputs.menu.selections).text;
 
         function close() {
@@ -62,38 +64,51 @@ export const VirDiffHunkMenu = defineAppElement<{
                     close();
                 })}
             ></div>
-            <${ViraMenu}
+            <span
+                class="point-anchor"
                 style=${css`
                     left: ${inputs.menu.x}px;
                     top: ${inputs.menu.y}px;
                 `}
-            >
-                ${renderMenuItemEntries([
-                    {
-                        content: `${stageActionLabels[inputs.menu.target.side]} ${scopeText}`,
-                        hideIcon: true,
-                        onClick() {
-                            dispatch(
-                                new events.stage({
-                                    detail: inputs.menu,
-                                }),
-                            );
-                        },
+                ${popover(state.popoverManager, {
+                    trigger: true,
+                    getPopover() {
+                        return assertWrap.instanceOf(
+                            host.shadowRoot.querySelector('.menu-popover'),
+                            HTMLElement,
+                        );
                     },
-                    {
-                        content: `Undo ${scopeText}`,
-                        hideIcon: true,
-                        hidden: !canDiscardSide[inputs.menu.target.side],
-                        onClick() {
-                            dispatch(
-                                new events.undo({
-                                    detail: inputs.menu,
-                                }),
-                            );
+                })}
+            ></span>
+            <div class="menu-popover" popover="manual">
+                <${ViraMenu}>
+                    ${renderMenuItemEntries([
+                        {
+                            content: `${stageActionLabels[inputs.menu.target.side]} ${scopeText}`,
+                            hideIcon: true,
+                            onClick() {
+                                dispatch(
+                                    new events.stage({
+                                        detail: inputs.menu,
+                                    }),
+                                );
+                            },
                         },
-                    },
-                ])}
-            </${ViraMenu}>
+                        {
+                            content: `Undo ${scopeText}`,
+                            hideIcon: true,
+                            hidden: !canDiscardSide[inputs.menu.target.side],
+                            onClick() {
+                                dispatch(
+                                    new events.undo({
+                                        detail: inputs.menu,
+                                    }),
+                                );
+                            },
+                        },
+                    ])}
+                </${ViraMenu}>
+            </div>
         `;
     },
 });
