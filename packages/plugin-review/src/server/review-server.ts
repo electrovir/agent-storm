@@ -1,4 +1,6 @@
+import {buildV2ExportsKey, ManualReviewStatus, ThreadOrigin} from '@agent-storm/common';
 import {definePluginServer} from '@agent-storm/core/server';
+import {check} from '@augment-vir/assert';
 import {instanceName, normalizePath} from 'agent-storm-util';
 import {reviewApi} from '../review-api.js';
 import {
@@ -22,7 +24,7 @@ import {
     startPostedVerdictWatch,
     stopPrQueues,
 } from './github-review-queue.js';
-import {readManualReviewState} from './manual-review-state.js';
+import {listenToManualReviewState, readManualReviewState} from './manual-review-state.js';
 import {startReviewAutoStart} from './review-auto-start.js';
 import {
     addReviewComment,
@@ -32,7 +34,7 @@ import {
 } from './review-comments.js';
 import {readReviewExplanations} from './review-explanations.js';
 import {findManualReviewCopy, sweepDeletingReviewFolders} from './review-folders.js';
-import {setReviewHost} from './review-host.js';
+import {readReviewBuildV2, setReviewBuildV2, setReviewHost} from './review-host.js';
 import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
 
 const ok = {
@@ -41,13 +43,47 @@ const ok = {
 
 export default definePluginServer({
     api: reviewApi,
-    async start({host}) {
+    async start({host, waitForPlugin}) {
         setReviewHost(host);
+        setReviewBuildV2(async () => await waitForPlugin(buildV2ExportsKey));
+
+        async function sendToReviewThread({
+            folder,
+            prompt,
+            prUrl,
+        }: Readonly<{
+            folder: string;
+            prompt: string;
+            prUrl: string;
+        }>) {
+            return await (
+                await readReviewBuildV2()
+            ).sendToPluginThread({
+                cwd: normalizePath(folder),
+                origin: ThreadOrigin.Review,
+                prUrl,
+                text: prompt,
+            });
+        }
+
         void sweepDeletingReviewFolders();
         const stops = [
             startFolderPrCacheReset(),
             startPostedVerdictWatch(),
             await startWatchMode(host),
+            listenToManualReviewState(async (changedEntries) => {
+                /** The Approve and Request Changes buttons hold their status until the post lands. */
+                await Promise.all(
+                    changedEntries
+                        .filter(({entry}) => entry.status === ManualReviewStatus.PostFailed)
+                        .map(({entry}) => {
+                            return host.holdPrStatus({
+                                url: entry.prUrl || '',
+                                status: undefined,
+                            });
+                        }),
+                );
+            }),
             /**
              * A named instance is a debug copy using the user's own GitHub login, which shouldn't
              * start reviews of the user's real PRs.
@@ -56,7 +92,7 @@ export default definePluginServer({
                 ? []
                 : [
                       startReviewAutoStart({
-                          launchFolderSession: host.launchFolderSession,
+                          sendToReviewThread,
                           runReviewInitCmd,
                       }),
                   ]),
@@ -65,6 +101,13 @@ export default definePluginServer({
             calls: {
                 async setWatchMode(request) {
                     await setWatchMode(request);
+                    return ok;
+                },
+                async holdPrStatus({url, status}) {
+                    await host.holdPrStatus({
+                        url,
+                        status: status || undefined,
+                    });
                     return ok;
                 },
                 async closeEditorWindow(request) {
@@ -127,6 +170,34 @@ export default definePluginServer({
                         folder: await findManualReviewCopy(normalizePath(folder)),
                     };
                 },
+                async sendToReviewThread(request) {
+                    return {
+                        threadId: (await sendToReviewThread(request)).id,
+                    };
+                },
+                async readReviewThreads({folder}) {
+                    const threads = await Promise.all(
+                        [
+                            ThreadOrigin.Review,
+                            ThreadOrigin.Watch,
+                        ].map(async (origin) => {
+                            return await (
+                                await readReviewBuildV2()
+                            ).findPluginThread({
+                                cwd: normalizePath(folder),
+                                origin,
+                            });
+                        }),
+                    );
+                    return {
+                        threads: threads.filter(check.isDefined).map((thread) => {
+                            return {
+                                threadId: thread.id,
+                                origin: thread.origin,
+                            };
+                        }),
+                    };
+                },
                 async readManualReviewState(request) {
                     return {
                         review: await readManualReviewState(request),
@@ -157,6 +228,7 @@ export default definePluginServer({
                 stops.forEach((stop) => stop());
                 stopPrQueues();
                 setReviewHost(undefined);
+                setReviewBuildV2(undefined);
             },
         };
     },

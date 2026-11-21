@@ -1,4 +1,3 @@
-// cspell:words haspopup
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {getEnumValues} from '@augment-vir/common';
@@ -9,11 +8,15 @@ import {
     LucideChevronDownIcon,
     LucideSearchIcon,
     LucideZapIcon,
+    PopoverAnchor,
+    PopoverTrigger,
     tooltip,
     ViraIcon,
     ViraMenuItem,
+    ViraPopoverTrigger,
     viraShadows,
     viraThemeByKeys,
+    type PopoverManager,
 } from 'vira';
 import {
     AiProvider,
@@ -86,26 +89,8 @@ export const VirAiChatModelPicker = defineAppElement<{
             showsOlderModels: false,
             /** The effort row the keyboard is on. Undefined while it is on the model rows. */
             effortIndex: undefined as number | undefined,
-            removeOutsidePointerListener: undefined as (() => void) | undefined,
+            popoverManager: undefined as PopoverManager | undefined,
         };
-    },
-    init({host, updateState}) {
-        function closeOnOutsidePointer(event: PointerEvent) {
-            if (host.instanceState.isOpen && !event.composedPath().includes(host)) {
-                updateState({
-                    isOpen: false,
-                });
-            }
-        }
-        globalThis.document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-        updateState({
-            removeOutsidePointerListener() {
-                globalThis.document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-            },
-        });
-    },
-    cleanup({state}) {
-        state.removeOutsidePointerListener?.();
     },
     styles() {
         const textColor = viraThemeByKeys.grey.foreground.body.foreground.value;
@@ -119,7 +104,6 @@ export const VirAiChatModelPicker = defineAppElement<{
             :host {
                 display: flex;
                 min-width: 0;
-                position: relative;
                 font-size: 14px;
                 color: ${textColor};
             }
@@ -147,20 +131,9 @@ export const VirAiChatModelPicker = defineAppElement<{
                 color: ${mutedColor};
 
                 &:hover,
-                &[aria-expanded='true'] {
+                &.open {
                     background-color: ${hoverBackground};
                     color: ${textColor};
-                }
-
-                &:focus-visible {
-                    outline: 2px solid ${viraThemeByKeys.blue.foreground.body.foreground.value};
-                    outline-offset: -2px;
-                }
-
-                &:disabled {
-                    cursor: default;
-                    opacity: 0.6;
-                    pointer-events: none;
                 }
 
                 & .model-label {
@@ -184,11 +157,6 @@ export const VirAiChatModelPicker = defineAppElement<{
             }
 
             .popover {
-                position: absolute;
-                bottom: 100%;
-                left: 0;
-                z-index: 130;
-                margin-bottom: 4px;
                 display: flex;
                 flex-direction: column;
                 max-width: calc(100vw - 32px);
@@ -461,14 +429,6 @@ export const VirAiChatModelPicker = defineAppElement<{
             focusSearch();
         }
 
-        function close() {
-            updateState({
-                isOpen: false,
-                query: '',
-                effortIndex: undefined,
-            });
-        }
-
         function emitModelChange({
             row,
             effort,
@@ -499,7 +459,7 @@ export const VirAiChatModelPicker = defineAppElement<{
             row,
             effort,
         }: Readonly<{row: PickerRow; effort: ReasoningEffort | undefined}>) {
-            close();
+            state.popoverManager?.hide();
             emitModelChange({
                 row,
                 effort,
@@ -554,11 +514,6 @@ export const VirAiChatModelPicker = defineAppElement<{
 
         function handleKeydown(event: KeyboardEvent) {
             if (event.isComposing) {
-                return;
-            } else if (event.key === 'Escape') {
-                event.preventDefault();
-                event.stopPropagation();
-                close();
                 return;
             } else if (event.composedPath()[0] instanceof HTMLButtonElement) {
                 /** A focused button handles its own Enter, which must not also pick a model. */
@@ -628,58 +583,77 @@ export const VirAiChatModelPicker = defineAppElement<{
         }
 
         return html`
-            <button
-                type="button"
-                class="model-button"
-                aria-label=${[
-                    modelName,
-                    selectedEffort && reasoningEffortLabels[selectedEffort],
-                    selectedSpeedTier?.name,
-                ]
-                    .filter(check.isTruthy)
-                    .join(' ')}
-                aria-haspopup="dialog"
-                aria-expanded=${state.isOpen}
-                ?disabled=${inputs.isDisabled}
-                ${listen('click', () => {
-                    if (inputs.isDisabled) {
-                        return;
-                    }
+            <${ViraPopoverTrigger.assign({
+                trigger: PopoverTrigger.Click,
+                popoverAnchor: PopoverAnchor.Left,
+                keepOpenAfterInteraction: true,
+                useInsideFocus: true,
+                isDisabled: inputs.isDisabled,
+                popoverOffset: {
+                    vertical: 4,
+                },
+            })}
+                ${listen(ViraPopoverTrigger.events.init, (event) => {
                     updateState({
-                        isOpen: !state.isOpen,
+                        popoverManager: event.detail.popoverManager,
+                    });
+                })}
+                ${listen(ViraPopoverTrigger.events.openChange, (event) => {
+                    updateState({
+                        isOpen: event.detail,
                         query: '',
                         railProvider: inputs.provider,
                         highlightedIndex: 0,
                         showsOlderModels: !!selectedRow?.model.isLegacy,
                         effortIndex: undefined,
                     });
-                    focusSearch();
+                    if (event.detail) {
+                        focusSearch();
+                    }
                 })}
             >
-                <${ViraIcon.assign({
-                    icon: providerIcons[inputs.provider],
-                })}></${ViraIcon}>
-                <span class="model-label">
-                    ${modelName}${selectedEffort ? ` ${reasoningEffortLabels[selectedEffort]}` : ''}
+                <span
+                    class="model-button ${state.isOpen ? 'open' : ''}"
+                    slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-trigger']}
+                    aria-label=${[
+                        modelName,
+                        selectedEffort && reasoningEffortLabels[selectedEffort],
+                        selectedSpeedTier?.name,
+                    ]
+                        .filter(check.isTruthy)
+                        .join(' ')}
+                >
+                    <${ViraIcon.assign({
+                        icon: providerIcons[inputs.provider],
+                    })}></${ViraIcon}>
+                    <span class="model-label">
+                        ${modelName}${selectedEffort
+                            ? ` ${reasoningEffortLabels[selectedEffort]}`
+                            : ''}
+                    </span>
+                    ${selectedSpeedTier
+                        ? html`
+                              <${ViraIcon.assign({
+                                  icon: zapIcon,
+                              })}
+                                  class="zap"
+                              ></${ViraIcon}>
+                          `
+                        : nothing}
+                    <${ViraIcon.assign({
+                        icon: chevronIcon,
+                    })}
+                        class="chevron"
+                    ></${ViraIcon}>
                 </span>
-                ${selectedSpeedTier
-                    ? html`
-                          <${ViraIcon.assign({
-                              icon: zapIcon,
-                          })}
-                              class="zap"
-                          ></${ViraIcon}>
-                      `
-                    : nothing}
-                <${ViraIcon.assign({
-                    icon: chevronIcon,
-                })}
-                    class="chevron"
-                ></${ViraIcon}>
-            </button>
             ${state.isOpen
                 ? html`
-                      <div class="popover" role="dialog" ${listen('keydown', handleKeydown)}>
+                      <div
+                          class="popover"
+                          slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-popover']}
+                          role="dialog"
+                          ${listen('keydown', handleKeydown)}
+                      >
                           <div class="columns">
                               <div class="rail" aria-label="Providers">
                                   ${providers.map((provider) => {
@@ -873,6 +847,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                       </div>
                   `
                 : nothing}
+            </${ViraPopoverTrigger}>
         `;
     },
 });

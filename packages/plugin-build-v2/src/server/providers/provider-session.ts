@@ -1,4 +1,5 @@
 import {type HostedProcessAttachment, type PluginServerHost} from '@agent-storm/core/server';
+import {type UsageRecordInput} from '@agent-storm/plugin-usage/src/usage-exports.js';
 import {check} from '@augment-vir/assert';
 import {
     getObjectTypedEntries,
@@ -9,6 +10,7 @@ import {
     type ApprovalDecision,
     type ApprovalRequest,
     type ComposerCommand,
+    type McpServer,
     type ProviderModel,
     type ReasoningEffort,
     type RuntimeMode,
@@ -42,6 +44,20 @@ export type ProviderItem = Readonly<
         /** The provider's own id for the item, which later updates to the same item reuse. */
         providerItemId: string;
     }
+>;
+
+/** What one model response spent. A repeated `dedupeKey` replaces the earlier record. */
+export type ProviderUsage = Readonly<
+    Pick<
+        UsageRecordInput,
+        | 'dedupeKey'
+        | 'model'
+        | 'inputTokens'
+        | 'outputTokens'
+        | 'cacheReadTokens'
+        | 'cacheWriteTokens'
+        | 'reasoningTokens'
+    >
 >;
 
 /**
@@ -91,6 +107,10 @@ export type ProviderSink = Readonly<{
         signal?: AbortSignal | undefined,
     ): Promise<string[] | undefined>;
     addNotice(text: string): MaybePromise<void>;
+    /** Logs a model response's tokens in the Usage plugin, when it runs. Never throws. */
+    recordUsage(usage: ProviderUsage): MaybePromise<void>;
+    /** The provider says its plan's rate limits changed, so Usage reads them again. */
+    reportRateLimitsChanged(): void;
     /** The provider's process ended, so the next message must start a new session. */
     endSession(): void;
     /**
@@ -109,8 +129,44 @@ export type SessionModelSettings = Readonly<{
     speedTier: string | undefined;
 }>;
 
+/** Lists and changes the MCP servers a provider's session connects to. */
+export type McpControl = Readonly<{
+    /** Leaves out Agent Storm's own tool server, which the session can't work without. */
+    listServers(): Promise<McpServer[]>;
+    setServerEnabled(params: Readonly<{serverName: string; isEnabled: boolean}>): Promise<void>;
+    reconnectServer(serverName: string): Promise<void>;
+    /**
+     * Starts signing in to a server. The user finishes at `authUrl`, after which the provider
+     * connects the server itself. `authUrl` is empty when the server needed no sign-in.
+     */
+    signIn(serverName: string): Promise<
+        Readonly<{
+            authUrl: string;
+            /** Whether the sign-in page redirects to a localhost address on the server's machine. */
+            isCallbackExpected: boolean;
+        }>
+    >;
+    /**
+     * Finishes a sign-in with the localhost address its sign-in page redirected to, for a browser
+     * that can't reach that address itself.
+     */
+    submitSignInCallbackUrl(
+        params: Readonly<{
+            serverName: string;
+            callbackUrl: string;
+        }>,
+    ): Promise<void>;
+    /**
+     * Connects servers added to the config since the session started, which it otherwise only reads
+     * at startup. Unset where a session can't take new servers.
+     */
+    loadNewServers?: (() => Promise<void>) | undefined;
+}>;
+
 /** A running provider process for one thread. */
 export type ProviderSession = Readonly<{
+    /** Unset for a provider whose MCP servers Agent Storm can't manage. */
+    mcp?: McpControl | undefined;
     send(
         params: Readonly<{
             text: string;
@@ -142,6 +198,19 @@ export type ProviderAdapter = Readonly<{
             cwd: string;
         }>,
     ): Promise<ProviderModel[]>;
+    /**
+     * Starts the provider's CLI in `cwd` to manage its MCP servers without a thread's session,
+     * until `close`. Unset for a provider whose MCP servers Agent Storm can't manage.
+     */
+    openMcpControl?:
+        | ((
+              params: Readonly<{
+                  cwd: string;
+                  /** Replaces the environment the provider runs with. Unset inherits the server's. */
+                  env: Record<string, string> | undefined;
+              }>,
+          ) => Promise<McpControl & Readonly<{close(): void}>>)
+        | undefined;
     /** Starts the provider's CLI in `cwd` only long enough to ask it for its commands and skills. */
     listCommands(
         params: Readonly<{

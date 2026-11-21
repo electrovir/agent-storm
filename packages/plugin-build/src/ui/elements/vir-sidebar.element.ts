@@ -1,4 +1,4 @@
-import {type FolderInfo, PaneStatus, type PrStatus, SidebarSorting} from '@agent-storm/common';
+import {type FolderInfo, PaneStatus, SidebarSorting} from '@agent-storm/common';
 import {
     defineAppElement,
     type FolderDataObservable,
@@ -143,11 +143,6 @@ export const VirSidebar = defineAppElement<{
     mobileModal?: boolean | undefined;
     /** Folders to leave out of the list entirely, even from search results. */
     hiddenFolderPaths?: ReadonlyArray<string> | undefined;
-    /**
-     * PR statuses to show instead of the polled ones, by folder path, while GitHub catches up with
-     * a verdict that was just sent.
-     */
-    prStatusOverrides?: Readonly<Record<string, PrStatus>> | undefined;
     /** App-owned Vira theme client, used by the options menu's theme switcher. */
     themeClient: Readonly<ViraThemeClient>;
     /** Shown beside the brand mark. */
@@ -333,17 +328,9 @@ export const VirSidebar = defineAppElement<{
          * wins over the hide-inactive filter (search spans active and inactive repos alike).
          */
         const trimmedSearchQuery = state.searchQuery.trim();
-        const shownFolders = state.folders
-            .filter((folder) => !inputs.hiddenFolderPaths?.includes(folder.path))
-            .map((folder) => {
-                const prStatus = inputs.prStatusOverrides?.[folder.path];
-                return prStatus
-                    ? {
-                          ...folder,
-                          prStatus,
-                      }
-                    : folder;
-            });
+        const shownFolders = state.folders.filter(
+            (folder) => !inputs.hiddenFolderPaths?.includes(folder.path),
+        );
         const visibleFolders = trimmedSearchQuery
             ? filterBySearch(shownFolders, trimmedSearchQuery)
             : state.onlyShowRecent

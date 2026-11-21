@@ -38,6 +38,20 @@ describe(parseGeneratedTitle.name, () => {
     it('is undefined when the model cannot tell what the work is', () => {
         assert.isUndefined(parseGeneratedTitle('"UNKNOWN."'));
     });
+
+    it('is undefined when the model answers the conversation instead', () => {
+        assert.isUndefined(
+            parseGeneratedTitle(
+                'Nothing has changed yet. I measured the scope and stopped before building.',
+            ),
+        );
+    });
+
+    it('is undefined for a long single-sentence reply', () => {
+        assert.isUndefined(
+            parseGeneratedTitle('Port every legacy insurance report to the per-payer system'),
+        );
+    });
 });
 
 describe(isPlaceholderWorktreeName.name, () => {

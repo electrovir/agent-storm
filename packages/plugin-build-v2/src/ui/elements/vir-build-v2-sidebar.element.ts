@@ -17,11 +17,6 @@ import {
     type ActivityRoute,
     type AppContext,
 } from '@agent-storm/core/frontend';
-import {
-    getFolderVerdictStatuses,
-    reviewActivityId,
-    type ReviewState,
-} from '@agent-storm/plugin-review';
 import {extractErrorMessage} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {classMap, css, html, listen, nothing} from 'element-vir';
@@ -161,14 +156,14 @@ export const VirBuildV2Sidebar = defineAppElement<{
             flex-grow: 1;
             box-sizing: border-box;
             width: 100%;
-            height: 28px;
+            height: 22px;
             align-items: center;
             gap: 10px;
             padding: 0 5px;
             background: transparent;
             font: inherit;
             text-align: left;
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            color: ${viraThemeByKeys.grey.foreground['highest-contrast'].foreground.value};
 
             &:hover {
                 background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background
@@ -299,16 +294,6 @@ export const VirBuildV2Sidebar = defineAppElement<{
             ],
         });
         const snapshot = inputs.context.folderData.value.snapshot;
-        /** The Review tab's sent verdict shows on the ring before GitHub's next poll reports it. */
-        const reviewState = inputs.context.activityStates[reviewActivityId] satisfies unknown as
-            | ReviewState
-            | undefined;
-        const prStatusOverrides = reviewState
-            ? getFolderVerdictStatuses({
-                  prReviews: reviewState.prReviews.value,
-                  folderInfo: inputs.context.folderData.value.folderInfo,
-              })
-            : {};
         const groups = arrangeRepoGroups({
             groups: allGroups,
             folderInfo: inputs.context.folderData.value.folderInfo,
@@ -355,6 +340,12 @@ export const VirBuildV2Sidebar = defineAppElement<{
             });
         }
 
+        /** A worktree root's changes show on each worktree's thread instead. */
+        function isRepoDirty(repoPath: string) {
+            const info = inputs.context.folderData.value.folderInfo.get(repoPath);
+            return !!info && !info.isWorktreeRoot && info.git.dirty;
+        }
+
         function startDraft(repoPath: string) {
             touchFolder(repoPath);
             inputs.buildV2State.draftRepoPath.setValue(repoPath);
@@ -363,13 +354,21 @@ export const VirBuildV2Sidebar = defineAppElement<{
             ]);
         }
 
-        function selectThread(thread: Readonly<Thread>) {
+        /** Opening a thread counts as reading it, even when its AI chat pane isn't shown. */
+        async function selectThread(thread: Readonly<Thread>) {
             touchFolder(thread.repoPath);
             inputs.buildV2State.draftRepoPath.setValue(undefined);
             buildV2Memory.selectedThread.write(thread.id);
             inputs.route.navigate([
                 thread.id,
             ]);
+            if (thread.hasUnreadReply) {
+                await runAction(async () => {
+                    await buildV2Client.call('markThreadRead', {
+                        threadId: thread.id,
+                    });
+                });
+            }
         }
 
         function isArchived(thread: Readonly<Thread>) {
@@ -389,7 +388,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
                     threadId: thread.id,
                 });
                 storeThread(inputs.buildV2State, unarchived.thread);
-                selectThread(unarchived.thread);
+                await selectThread(unarchived.thread);
             });
             updateState({
                 unarchivingTitle: undefined,
@@ -411,11 +410,11 @@ export const VirBuildV2Sidebar = defineAppElement<{
                         searchQuery: event.detail,
                     });
                 })}
-                ${listen(VirSidebarSearch.events.searchSubmit, () => {
+                ${listen(VirSidebarSearch.events.searchSubmit, async () => {
                     const [firstGroup] = groups;
                     const [firstThread] = firstGroup?.threads || [];
                     if (firstThread) {
-                        selectThread(firstThread);
+                        await selectThread(firstThread);
                     } else if (firstGroup) {
                         startDraft(firstGroup.repo.path);
                     }
@@ -578,7 +577,11 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                             ]}
                                         >
                                             <span class="project-label">
-                                                <span class="project-name">${group.repo.name}</span>
+                                                <span class="project-name">
+                                                    ${group.repo.name}${isRepoDirty(group.repo.path)
+                                                        ? '*'
+                                                        : ''}
+                                                </span>
                                                 ${threadCount > 1
                                                     ? html`
                                                           <span class="thread-count">
@@ -659,29 +662,30 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                     </${ViraMenuTrigger}>
                                     <ul>
                                         ${group.threads.map((thread) => {
-                                            const folderInfo =
-                                                inputs.context.folderData.value.folderInfo.get(
-                                                    thread.cwd,
-                                                );
-                                            const prStatus = prStatusOverrides[thread.cwd];
                                             return html`
                                                 <li data-sidebar-search-result>
                                                     <${VirBuildV2ThreadRow.assign({
                                                         thread,
                                                         folderInfo:
-                                                            folderInfo && prStatus
-                                                                ? {
-                                                                      ...folderInfo,
-                                                                      prStatus,
-                                                                  }
-                                                                : folderInfo,
+                                                            inputs.context.folderData.value.folderInfo.get(
+                                                                thread.cwd,
+                                                            ),
                                                         isActive: thread.id === activeThreadId,
                                                         isArchived: isArchived(thread),
+                                                        sideChats:
+                                                            inputs.buildV2State.sideChats.value.filter(
+                                                                (sideChat) => {
+                                                                    return (
+                                                                        sideChat.parentThreadId ===
+                                                                        thread.id
+                                                                    );
+                                                                },
+                                                            ),
                                                     })}
                                                         ${listen(
                                                             VirBuildV2ThreadRow.events.selected,
-                                                            () => {
-                                                                selectThread(thread);
+                                                            async () => {
+                                                                await selectThread(thread);
                                                             },
                                                         )}
                                                         ${listen(

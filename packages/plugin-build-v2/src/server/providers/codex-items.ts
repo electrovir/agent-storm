@@ -8,7 +8,7 @@ import {
     type Shape,
 } from 'object-shape-tester';
 import {ApprovalDecision, ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
-import {type ProviderItem} from './provider-session.js';
+import {type ProviderItem, type ProviderUsage} from './provider-session.js';
 
 type CodexItemDescription = Pick<ProviderItem, 'kind' | 'title' | 'text'>;
 
@@ -199,3 +199,58 @@ export const codexDecisions: Readonly<Record<ApprovalDecision, string>> = {
     [ApprovalDecision.ApproveForSession]: 'acceptForSession',
     [ApprovalDecision.Decline]: 'decline',
 };
+
+const tokenUsageBreakdownShape = defineShape({
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+});
+
+const tokenUsageNotificationShape = defineShape({
+    threadId: '',
+    turnId: '',
+    tokenUsage: {
+        last: tokenUsageBreakdownShape,
+        total: tokenUsageBreakdownShape,
+    },
+});
+
+/**
+ * What the model response a `thread/tokenUsage/updated` notification reports spent. Codex counts
+ * cached input inside its input tokens and reasoning inside its output tokens.
+ */
+export function readCodexTokenUsage({
+    params,
+    model,
+}: Readonly<{
+    params: unknown;
+    model: string;
+}>): ProviderUsage | undefined {
+    if (
+        !checkValidShape(params, tokenUsageNotificationShape, {
+            allowExtraKeys: true,
+        })
+    ) {
+        return undefined;
+    }
+    return {
+        /** The thread's running total only grows, so it tells the turn's responses apart. */
+        dedupeKey: [
+            'codex-usage',
+            params.threadId,
+            params.turnId,
+            params.tokenUsage.total.totalTokens,
+        ].join(':'),
+        model,
+        inputTokens: Math.max(
+            0,
+            params.tokenUsage.last.inputTokens - params.tokenUsage.last.cachedInputTokens,
+        ),
+        outputTokens: params.tokenUsage.last.outputTokens,
+        cacheReadTokens: params.tokenUsage.last.cachedInputTokens,
+        cacheWriteTokens: 0,
+        reasoningTokens: params.tokenUsage.last.reasoningOutputTokens,
+    };
+}

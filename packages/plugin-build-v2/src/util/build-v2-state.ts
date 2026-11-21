@@ -2,7 +2,7 @@ import {PrStatus} from '@agent-storm/common';
 import {type AppContext} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
 import {Observable} from 'element-vir';
-import {buildV2PluginId, type Thread} from '../build-v2-api.js';
+import {buildV2PluginId, ThreadOrigin, type Thread} from '../build-v2-api.js';
 import {buildV2Client} from './build-v2-client.js';
 import {buildV2Memory} from './build-v2-memory.js';
 import {findPathName, upsertThread, type ThreadRepo} from './thread-timeline.js';
@@ -24,6 +24,10 @@ export function createBuildV2State() {
         /** Every thread that isn't archived. Undefined until the first list loads. */
         threads: new Observable<ReadonlyArray<Readonly<Thread>> | undefined>({
             defaultValue: undefined,
+        }),
+        /** Every `ThreadOrigin.SideChat` thread that isn't archived. */
+        sideChats: new Observable<ReadonlyArray<Readonly<Thread>>>({
+            defaultValue: [],
         }),
         /**
          * Repo path → epoch milliseconds of its latest thread activity, archived threads included,
@@ -91,8 +95,9 @@ export async function confirmThreadArchive({
 /** Loads the thread list again, replacing whatever the state had. */
 export async function loadThreads(state: Readonly<BuildV2State>) {
     try {
-        const {threads, repoActivity} = await buildV2Client.call('listThreads', {});
+        const {threads, sideChats, repoActivity} = await buildV2Client.call('listThreads', {});
         state.threads.setValue(threads);
+        state.sideChats.setValue(sideChats);
         state.repoActivityAtMs.setValue(
             new Map(
                 repoActivity.map(({repoPath, updatedAt}) => {
@@ -126,6 +131,13 @@ export async function loadArchivedThreads(state: Readonly<BuildV2State>) {
  * from the archived list, since the server only sends changes to threads that aren't archived.
  */
 export function storeThread(state: Readonly<BuildV2State>, thread: Readonly<Thread>) {
+    if (thread.origin === ThreadOrigin.SideChat) {
+        state.sideChats.setValue(upsertThread(state.sideChats.value, thread));
+        return;
+    } else if (thread.origin !== ThreadOrigin.User) {
+        /** Other plugins show the threads they start themselves. */
+        return;
+    }
     state.threads.setValue(upsertThread(state.threads.value || [], thread));
     if (state.archivedThreads.value?.some((archived) => archived.id === thread.id)) {
         state.archivedThreads.setValue(
@@ -179,6 +191,11 @@ export function startThreadSync(state: Readonly<BuildV2State>) {
         }),
         buildV2Client.listen('threadArchived', ({threadId}) => {
             markThreadArchived(state, threadId);
+            if (state.sideChats.value.some((sideChat) => sideChat.id === threadId)) {
+                state.sideChats.setValue(
+                    state.sideChats.value.filter((sideChat) => sideChat.id !== threadId),
+                );
+            }
         }),
     ];
     const removeReconnectListener = buildV2Client.listenToReconnect(() => {

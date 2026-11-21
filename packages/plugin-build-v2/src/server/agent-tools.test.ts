@@ -9,6 +9,7 @@ import {
     ReasoningEffort,
     RuntimeMode,
     type Thread,
+    ThreadOrigin,
     ThreadStatus,
 } from '../build-v2-api.js';
 import {type AgentToolContext, agentTools} from './agent-tools.js';
@@ -28,6 +29,7 @@ const baseThread: Thread = {
     hasUnreadReply: false,
     isAskingQuestion: false,
     backgroundTaskCount: 0,
+    origin: ThreadOrigin.User,
     userMessageCount: 0,
     lastUserMessageAt: 0,
     createdAt: 0,
@@ -55,6 +57,7 @@ function createTestContext(
                 threads: [
                     ...threads,
                 ],
+                sideChats: [],
                 repoActivity: [],
             };
         },

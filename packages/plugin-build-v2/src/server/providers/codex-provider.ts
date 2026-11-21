@@ -21,7 +21,8 @@ import {
 import {parseReasoningEffort, parseReasoningEfforts} from '../../util/reasoning-effort.js';
 import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
 import {syncedSkillsFolder} from './claude-commands.js';
-import {codexDecisions, describeCodexItem} from './codex-items.js';
+import {codexDecisions, describeCodexItem, readCodexTokenUsage} from './codex-items.js';
+import {findLegacyCodexModelIds} from './codex-models.js';
 import {startCodexRpc, type CodexRpc} from './codex-rpc.js';
 import {
     type ProviderAdapter,
@@ -34,6 +35,10 @@ const threadResponseShape = defineShape({
     thread: {
         id: '',
     },
+    /** The model the thread runs, which names the default model when none was picked. */
+    model: optionalShape(nullableShape(''), {
+        alsoUndefined: true,
+    }),
 });
 
 const turnResponseShape = defineShape({
@@ -258,27 +263,29 @@ export const codexProvider: ProviderAdapter = {
                 limit: 100,
             });
             assertValidShape(response, modelListResponseShape, extraKeys);
-            return response.data
-                .filter((model) => !model.hidden)
-                .map((model) => {
-                    return {
-                        id: model.model,
-                        name: model.displayName,
-                        description: model.description,
-                        isDefault: model.isDefault,
-                        isLegacy: false,
-                        supportedEfforts: parseReasoningEfforts(
-                            model.supportedReasoningEfforts.map((option) => option.reasoningEffort),
-                        ),
-                        defaultEffort: parseReasoningEffort(model.defaultReasoningEffort),
-                        speedTiers: (model.serviceTiers || []).map((tier) => {
-                            return {
-                                id: tier.id,
-                                name: tier.name,
-                            };
-                        }),
-                    };
-                });
+            const visibleModels = response.data.filter((model) => !model.hidden);
+            const legacyModelIds = findLegacyCodexModelIds(
+                visibleModels.map((model) => model.model),
+            );
+            return visibleModels.map((model) => {
+                return {
+                    id: model.model,
+                    name: model.displayName,
+                    description: model.description,
+                    isDefault: model.isDefault,
+                    isLegacy: legacyModelIds.includes(model.model),
+                    supportedEfforts: parseReasoningEfforts(
+                        model.supportedReasoningEfforts.map((option) => option.reasoningEffort),
+                    ),
+                    defaultEffort: parseReasoningEffort(model.defaultReasoningEffort),
+                    speedTiers: (model.serviceTiers || []).map((tier) => {
+                        return {
+                            id: tier.id,
+                            name: tier.name,
+                        };
+                    }),
+                };
+            });
         } finally {
             rpc.stop();
         }
@@ -405,6 +412,11 @@ export const codexProvider: ProviderAdapter = {
             items: Map<string, ProviderItem>;
             /** Codex takes these per turn, so a change mid-turn applies from the next message. */
             modelSettings: SessionModelSettings;
+            /**
+             * The model Codex said the thread runs when it started it, for usage while no model is
+             * picked. Empty for a process taken over from before a restart, which said it then.
+             */
+            startedModel: string;
         } = {
             runtimeMode,
             modelSettings: {
@@ -415,6 +427,7 @@ export const codexProvider: ProviderAdapter = {
             turnId: undefined,
             isStopped: false,
             items: new Map(),
+            startedModel: '',
         };
         const notificationHandlers: Readonly<
             Record<string, (params: unknown) => Promise<void> | void>
@@ -449,6 +462,18 @@ export const codexProvider: ProviderAdapter = {
                 ) {
                     await sink.addNotice(params.error.message);
                 }
+            },
+            async 'thread/tokenUsage/updated'(params) {
+                const usage = readCodexTokenUsage({
+                    params,
+                    model: state.modelSettings.model || state.startedModel || 'codex',
+                });
+                if (usage) {
+                    await sink.recordUsage(usage);
+                }
+            },
+            'account/rateLimits/updated'() {
+                sink.reportRateLimitsChanged();
             },
             'item/agentMessage/delta': appendDelta,
             'item/reasoning/summaryTextDelta': appendDelta,
@@ -561,7 +586,8 @@ export const codexProvider: ProviderAdapter = {
             },
             onExit(reason) {
                 sink.endSession();
-                if (!state.isStopped) {
+                /** An idle process that exits cost no work, and the next message starts a new one. */
+                if (!state.isStopped && state.turnId) {
                     void reportExit(reason);
                 }
             },
@@ -598,6 +624,7 @@ export const codexProvider: ProviderAdapter = {
                     : threadOptions,
             );
             assertValidShape(threadResponse, threadResponseShape, extraKeys);
+            state.startedModel = threadResponse.model || '';
             await sink.setProviderSessionId(threadResponse.thread.id);
             return createSession(threadResponse.thread.id);
         } catch (error) {

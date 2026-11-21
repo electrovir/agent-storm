@@ -1,9 +1,13 @@
 import {diffPaneId, PrStatus, reviewPaneId, SplitEdge, toPaneGroupKey} from '@agent-storm/common';
 import {
     addTab,
+    closeTab,
     createTabId,
     defineActivity,
     findShownTabIdOfKind,
+    findTabGroupId,
+    listGroupIds,
+    moveTab,
     selectTab,
     splitTab,
     updateTabState,
@@ -43,37 +47,81 @@ const isAwaitingViewerReview: Readonly<Record<PrStatus, boolean>> = {
     [PrStatus.Closed]: false,
 };
 
-/** Shows the Diff tab in the active group, with the Review tab split off to its right. */
+/**
+ * Shows the tab of `kind` in `groupId`, moving it there from another group or adding one when the
+ * layout has none.
+ */
+function placeTabOfKind(
+    layout: Readonly<TabLayout>,
+    {
+        kind,
+        groupId,
+        index,
+    }: Readonly<{
+        kind: string;
+        groupId: string;
+        index: number;
+    }>,
+) {
+    const tabId = findShownTabIdOfKind(layout, kind);
+    if (!tabId) {
+        return addTab(layout, {
+            tab: {
+                id: createTabId(kind),
+                kind,
+            },
+            groupId,
+            index,
+        });
+    }
+    return findTabGroupId(layout, tabId) === groupId
+        ? selectTab(layout, tabId)
+        : moveTab(layout, {
+              tabId,
+              groupId,
+              index,
+          });
+}
+
+/**
+ * Shows the Diff tab in the leftmost group and the Review tab in the rightmost one. Review only
+ * splits off into a new group when the layout has just one, so it never adds a third column.
+ */
 function showReviewTabs(layout: Readonly<TabLayout>) {
-    const groupId = layout.activeGroupId;
-    const reviewTabId = createTabId(reviewPaneId);
-    const withReview = findShownTabIdOfKind(layout, reviewPaneId)
-        ? layout
+    const [leftGroupId] = listGroupIds(layout);
+    if (!leftGroupId) {
+        return layout;
+    }
+    const withDiff = placeTabOfKind(layout, {
+        kind: diffPaneId,
+        groupId: leftGroupId,
+        index: 0,
+    });
+    const groupIds = listGroupIds(withDiff);
+    const rightGroupId = groupIds.length > 1 ? groupIds.at(-1) : undefined;
+    const reviewTabId = findShownTabIdOfKind(withDiff, reviewPaneId) || createTabId(reviewPaneId);
+    const withReview = rightGroupId
+        ? placeTabOfKind(withDiff, {
+              kind: reviewPaneId,
+              groupId: rightGroupId,
+              index: withDiff.groups[rightGroupId]?.tabIds.length ?? 0,
+          })
         : splitTab(
-              addTab(layout, {
+              addTab(withDiff, {
                   tab: {
                       id: reviewTabId,
                       kind: reviewPaneId,
                   },
-                  groupId,
-                  isBackground: true,
+                  groupId: leftGroupId,
               }),
               {
                   tabId: reviewTabId,
-                  groupId,
+                  groupId: leftGroupId,
                   edge: SplitEdge.Right,
               },
           );
     const diffTabId = findShownTabIdOfKind(withReview, diffPaneId);
-    return diffTabId
-        ? selectTab(withReview, diffTabId)
-        : addTab(withReview, {
-              tab: {
-                  id: createTabId(diffPaneId),
-                  kind: diffPaneId,
-              },
-              groupId,
-          });
+    return diffTabId ? selectTab(withReview, diffTabId) : withReview;
 }
 
 /**
@@ -146,6 +194,58 @@ export const buildV2Activity = defineActivity({
         const isCwdGone = !!thread?.cwd && !!folderInfo.size && !folderInfo.has(thread.cwd);
         const folder = thread ? (!isCwdGone && thread.cwd) || thread.repoPath : draftRepoPath || '';
         const scope = `build-v2:${threadId || newThreadSubPath}`;
+        const layoutKey = toPaneGroupKey({
+            folder,
+            scope,
+        });
+        /**
+         * An extra AI Chat tab in a thread's tabs is a side chat, so its thread stays out of the
+         * sidebar and never retitles itself. A tab holding another sidebar thread closes, since
+         * that thread would otherwise show under both entries.
+         */
+        const strayChatTabs = threadId
+            ? getObjectTypedEntries(context.uiLayout.getTabLayout(layoutKey)?.tabs || {}).filter(
+                  ([
+                      ,
+                      tab,
+                  ]) => {
+                      return (
+                          tab.kind === aiChatPane.id &&
+                          tab.state?.threadId !== threadId &&
+                          !tab.state?.parentThreadId
+                      );
+                  },
+              )
+            : [];
+        if (strayChatTabs.length) {
+            context.uiLayout.updateTabLayout({
+                folder: layoutKey,
+                update(current) {
+                    return (
+                        current &&
+                        strayChatTabs.reduce(
+                            (
+                                layout,
+                                [
+                                    tabId,
+                                    tab,
+                                ],
+                            ) => {
+                                return tab.state?.threadId
+                                    ? closeTab(layout, tabId)
+                                    : updateTabState(layout, {
+                                          tabId,
+                                          state: {
+                                              parentThreadId: threadId,
+                                          },
+                                      });
+                            },
+                            current,
+                        )
+                    );
+                },
+            });
+        }
         const folderPr = folderInfo.get(folder);
         const isReviewWanted = !!folderPr?.prUrl && isAwaitingViewerReview[folderPr.prStatus];
         /**
@@ -210,15 +310,11 @@ export const buildV2Activity = defineActivity({
                           ],
                 })}
                     ${listen(VirAiChat.events.threadCreated, async (event) => {
+                        const newThreadId = event.detail.thread.id;
                         if (threadId) {
                             return;
                         }
-                        const newThreadId = event.detail.thread.id;
-                        const draftLayoutKey = toPaneGroupKey({
-                            folder,
-                            scope,
-                        });
-                        const draftLayout = context.uiLayout.getTabLayout(draftLayoutKey);
+                        const draftLayout = context.uiLayout.getTabLayout(layoutKey);
                         /**
                          * The thread keeps the draft's tabs and splits. Its AI Chat tab already
                          * points at the new thread, so this copy happens before that's cleared.
@@ -237,7 +333,7 @@ export const buildV2Activity = defineActivity({
                          * the draft's next thread would open on this one without clearing it.
                          */
                         context.uiLayout.updateTabLayout({
-                            folder: draftLayoutKey,
+                            folder: layoutKey,
                             update(current) {
                                 return (
                                     current &&

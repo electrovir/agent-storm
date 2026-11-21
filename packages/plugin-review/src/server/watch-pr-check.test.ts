@@ -713,6 +713,9 @@ describe(toBranchChangeKeys.name, () => {
             target: {
                 statusCheckRollup: {
                     state: RawCheckResult.Success,
+                    contexts: {
+                        totalCount: 1,
+                    },
                 },
             },
         },

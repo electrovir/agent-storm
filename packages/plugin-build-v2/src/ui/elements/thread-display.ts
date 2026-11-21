@@ -22,6 +22,7 @@ import {
     ThreadItemKind,
     ThreadItemStatus,
     ThreadStatus,
+    type Thread,
     type ThreadItem,
 } from '../../build-v2-api.js';
 
@@ -190,8 +191,8 @@ export const sidebarStatusDisplays: Record<
         status?: Readonly<{
             /** Icon-only statuses show no label. */
             label: string | undefined;
-            /** Explains an icon-only status on hover. */
-            tooltip: string | undefined;
+            /** Explains the status on hover. */
+            tooltip: string;
             icon: ViraIconSvg;
             isSpinning: boolean;
             color: ViraThemeColorName;
@@ -226,7 +227,7 @@ export const sidebarStatusDisplays: Record<
     [ThreadStatus.NeedsApproval]: {
         status: {
             label: 'Approval',
-            tooltip: undefined,
+            tooltip: 'The AI is waiting for you to approve a command, edit, or permission.',
             icon: approvalIcon,
             isSpinning: false,
             color: 'yellow',
@@ -240,7 +241,8 @@ export const sidebarStatusDisplays: Record<
     [ThreadStatus.Failed]: {
         status: {
             label: 'Failed',
-            tooltip: undefined,
+            tooltip:
+                'The AI session ended with an error. Open the thread to see why. Your next message starts a new session.',
             icon: failedIcon,
             isSpinning: false,
             color: 'red',
@@ -279,9 +281,26 @@ export const questionSidebarStatusDisplay: (typeof sidebarStatusDisplays)[Thread
     ...sidebarStatusDisplays[ThreadStatus.NeedsApproval],
     status: {
         label: 'Question',
-        tooltip: undefined,
+        tooltip: 'The AI asked you a question and is waiting for your answer.',
         icon: questionIcon,
         isSpinning: false,
         color: 'yellow',
     },
 };
+
+/** Whether the sidebar shows `thread` with a spinner: its AI or its background tasks still work. */
+export function isThreadWorking(thread: Readonly<Pick<Thread, 'status' | 'backgroundTaskCount'>>) {
+    return (
+        thread.status === ThreadStatus.Running ||
+        (thread.status === ThreadStatus.Idle && !!thread.backgroundTaskCount)
+    );
+}
+
+/** The sidebar's spinner for a thread one of whose side chats still works. */
+export const sideChatSidebarStatus = {
+    label: undefined,
+    tooltip: 'An AI Chat tab in this thread is still working.',
+    icon: workingIcon,
+    isSpinning: true,
+    color: 'pink',
+} as const;

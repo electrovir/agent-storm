@@ -4,6 +4,7 @@ import {
     gitHubPrShape,
     GitHubReaction,
     manualReviewStateShape,
+    PrStatus,
     pullRequestBranchShape,
     pullRequestRefShape,
     reviewCommentShape,
@@ -11,6 +12,7 @@ import {
     reviewPrShape,
     reviewQueuePrShape,
     reviewQueueResponseShape,
+    ThreadOrigin,
 } from '@agent-storm/common';
 import {defineShape, enumShape, nullableShape, recordShape} from 'object-shape-tester';
 
@@ -50,6 +52,17 @@ export const reviewApi = definePluginApi({
             requestShape: defineShape({
                 folder: '',
                 isEnabled: false,
+            }),
+            responseShape: okResponseShape,
+        },
+        /**
+         * Shows `status` on the PR's rings everywhere right away, until GitHub shows it too. Null
+         * drops it.
+         */
+        holdPrStatus: {
+            requestShape: defineShape({
+                url: '',
+                status: nullableShape(enumShape(PrStatus)),
             }),
             responseShape: okResponseShape,
         },
@@ -200,6 +213,33 @@ export const reviewApi = definePluginApi({
             responseShape: defineShape({
                 /** Null until a review folder exists for the folder's branch. */
                 folder: nullableShape(''),
+            }),
+        },
+        /**
+         * Sends `prompt` to the folder's review thread, a Build V2 thread hidden from Build V2's
+         * own list, starting one with the folder's default model when it has none.
+         */
+        sendToReviewThread: {
+            requestShape: defineShape({
+                folder: '',
+                prompt: '',
+                /** The PR the review is of, which the thread's usage is logged against. */
+                prUrl: '',
+            }),
+            responseShape: defineShape({
+                threadId: '',
+            }),
+        },
+        /** The folder's newest review and watch mode threads. */
+        readReviewThreads: {
+            requestShape: folderRequestShape,
+            responseShape: defineShape({
+                threads: [
+                    defineShape({
+                        threadId: '',
+                        origin: enumShape(ThreadOrigin),
+                    }),
+                ],
             }),
         },
         /** Where the manual-review skill says the review of one PR branch stands. */

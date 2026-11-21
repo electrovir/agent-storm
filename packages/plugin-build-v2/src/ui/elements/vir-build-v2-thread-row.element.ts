@@ -31,8 +31,10 @@ import {
 import {type Thread, ThreadStatus} from '../../build-v2-api.js';
 import {
     backgroundTaskSidebarStatusDisplay,
+    isThreadWorking,
     questionSidebarStatusDisplay,
     sidebarStatusDisplays,
+    sideChatSidebarStatus,
 } from './thread-display.js';
 
 const branchIcon = createColoredIcon(createSizedIcon(LucideGitBranchIcon, 12), {
@@ -61,6 +63,8 @@ export const VirBuildV2ThreadRow = defineAppElement<{
     isActive: boolean;
     /** Shows the row dimmed, with Unarchive in its menu instead of Rename and Archive. */
     isArchived: boolean;
+    /** The thread's side chats, whose spinner and new-reply dot the row shows too. */
+    sideChats: ReadonlyArray<Readonly<Thread>>;
 }>()({
     tagName: 'vir-build-v2-thread-row',
     events: {
@@ -94,16 +98,16 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             display: flex;
             box-sizing: border-box;
             width: 100%;
-            min-height: 28px;
+            min-height: 22px;
             align-items: center;
-            padding: 2px 5px 2px 17px;
+            padding: 1px 5px 1px 20px;
             overflow: hidden;
             cursor: pointer;
             user-select: none;
             -webkit-user-select: none;
             outline: none;
             text-align: left;
-            color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
+            color: ${viraThemeByKeys.grey.foreground['small-body'].foreground.value};
 
             &:hover,
             &.menu-open {
@@ -145,7 +149,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             display: flex;
             flex-grow: 1;
             min-width: 0;
-            min-height: 24px;
+            min-height: 20px;
             align-items: flex-start;
             gap: 10px;
         }
@@ -153,15 +157,11 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         .title {
             flex-grow: 1;
             min-width: 0;
-            padding: 4px 0;
+            padding: 2px 0;
             overflow-wrap: anywhere;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: 400;
             transition: opacity 120ms;
-
-            &.light {
-                font-weight: 400;
-            }
 
             &.receded {
                 opacity: 0.75;
@@ -200,7 +200,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             display: flex;
             flex-shrink: 0;
             min-width: 32px;
-            height: 24px;
+            height: 20px;
             align-items: center;
             justify-content: flex-end;
             gap: 6px;
@@ -218,10 +218,21 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             &.has-status {
                 font-weight: 500;
             }
+        }
 
-            &.spinning ${ViraIcon} {
-                ${spinAnimationCss}
-            }
+        .leading {
+            position: absolute;
+            top: 1px;
+            left: 4px;
+            display: flex;
+            width: 12px;
+            height: 20px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .spinner ${ViraIcon} {
+            ${spinAnimationCss}
         }
 
         .folder-status,
@@ -256,6 +267,15 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             : inputs.thread.status === ThreadStatus.Idle && inputs.thread.backgroundTaskCount
               ? backgroundTaskSidebarStatusDisplay
               : sidebarStatusDisplays[inputs.thread.status];
+        /** Spinning statuses sit in the row's left padding so they never shift the title. */
+        const ownSpinnerStatus = display.status?.isSpinning ? display.status : undefined;
+        const spinnerStatus =
+            ownSpinnerStatus ||
+            (inputs.sideChats.some(isThreadWorking) ? sideChatSidebarStatus : undefined);
+        const trailingStatus = ownSpinnerStatus ? undefined : display.status;
+        const hasUnreadReply =
+            inputs.thread.hasUnreadReply ||
+            inputs.sideChats.some((sideChat) => sideChat.hasUnreadReply);
         const shouldRecede = display.shouldRecede && !inputs.isActive;
         const statusIcon = inputs.folderInfo?.prUrl
             ? getPrRingDisplay(inputs.folderInfo)
@@ -319,11 +339,13 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                       <span
                           class=${classMap({
                               title: true,
-                              light: display.shouldRecede,
                               receded: shouldRecede,
                           })}
                       >
-                          ${inputs.thread.title || 'New thread'}
+                          ${inputs.thread.title || 'New thread'}${inputs.thread.cwd !==
+                              inputs.thread.repoPath && inputs.folderInfo?.git.dirty
+                              ? '*'
+                              : ''}
                       </span>
                   `
                 : html`
@@ -407,47 +429,68 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                         }
                     })}
                 >
+                    ${spinnerStatus
+                        ? html`
+                              <span
+                                  class="leading spinner"
+                                  ${spinnerStatus.tooltip
+                                      ? tooltip(spinnerStatus.tooltip, {
+                                            delay: {
+                                                milliseconds: 300,
+                                            },
+                                        })
+                                      : nothing}
+                                  style=${css`
+                                      color: ${viraThemeByKeys[spinnerStatus.color].foreground.body
+                                          .foreground.value};
+                                  `}
+                              >
+                                  <${ViraIcon.assign({
+                                      icon: spinnerStatus.icon,
+                                  })}></${ViraIcon}>
+                              </span>
+                          `
+                        : hasUnreadReply && !inputs.isActive
+                          ? html`
+                                <span class="leading">
+                                    <span
+                                        class="unread-dot"
+                                        role="img"
+                                        aria-label="New reply"
+                                    ></span>
+                                </span>
+                            `
+                          : nothing}
                     <div class="top">
                         ${title}
                         <span class="trailing">
                             <span
                                 class=${classMap({
                                     status: true,
-                                    'has-status': !!display.status,
-                                    spinning: !!display.status?.isSpinning,
+                                    'has-status': !!trailingStatus,
                                 })}
-                                ${display.status?.tooltip
-                                    ? tooltip(display.status.tooltip, {
+                                ${trailingStatus?.tooltip
+                                    ? tooltip(trailingStatus.tooltip, {
                                           delay: {
                                               milliseconds: 300,
                                           },
                                       })
                                     : nothing}
-                                style=${display.status
+                                style=${trailingStatus
                                     ? css`
-                                          color: ${viraThemeByKeys[display.status.color].foreground
+                                          color: ${viraThemeByKeys[trailingStatus.color].foreground
                                               .body.foreground.value};
                                       `
                                     : nothing}
                             >
-                                ${display.status
+                                ${trailingStatus
                                     ? html`
                                           <${ViraIcon.assign({
-                                              icon: display.status.icon,
+                                              icon: trailingStatus.icon,
                                           })}></${ViraIcon}>
-                                          ${display.status.label || nothing}
+                                          ${trailingStatus.label || nothing}
                                       `
-                                    : html`
-                                          ${inputs.thread.hasUnreadReply && !inputs.isActive
-                                              ? html`
-                                                    <span
-                                                        class="unread-dot"
-                                                        role="img"
-                                                        aria-label="New reply"
-                                                    ></span>
-                                                `
-                                              : nothing}
-                                      `}
+                                    : nothing}
                             </span>
                             ${inputs.folderInfo &&
                             (inputs.folderInfo.watchMode.status !== WatchModeStatus.Off ||

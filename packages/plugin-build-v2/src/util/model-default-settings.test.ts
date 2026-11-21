@@ -2,7 +2,11 @@ import {defaultSettings} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {AiProvider, buildV2PluginId, ReasoningEffort} from '../build-v2-api.js';
-import {readModelDefaults, writeModelDefaults, type ModelDefaults} from './model-defaults.js';
+import {
+    readModelDefaults,
+    writeModelDefaults,
+    type ModelDefaults,
+} from './model-default-settings.js';
 
 const defaults: ModelDefaults = {
     global: {

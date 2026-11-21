@@ -12,6 +12,7 @@ import {
     RuntimeMode,
     ThreadItemKind,
     ThreadItemStatus,
+    ThreadOrigin,
     ThreadStatus,
     userQuestionShape,
     type ApprovalRequest,
@@ -37,6 +38,9 @@ const threadSelect = {
     status: true,
     hasUnreadReply: true,
     backgroundTaskCount: true,
+    origin: true,
+    prUrl: true,
+    parentThreadId: true,
     requests: {
         where: {
             resolvedAt: null,
@@ -107,6 +111,7 @@ export function toThread({
     status,
     effort,
     runtimeMode,
+    origin,
     requests,
     items,
     _count,
@@ -122,6 +127,7 @@ export function toThread({
         provider: assertWrap.isEnumValue(provider, AiProvider),
         runtimeMode: assertWrap.isEnumValue(runtimeMode, RuntimeMode),
         status: assertWrap.isEnumValue(status, ThreadStatus),
+        origin: assertWrap.isEnumValue(origin, ThreadOrigin),
         isAskingQuestion:
             !!requests.length &&
             requests.every(
@@ -266,14 +272,42 @@ export function createThreadStore({
     return {
         findThread,
         updateThread,
+        /** The newest thread of `origin` in `cwd` that isn't archived. */
+        async findNewestThread({cwd, origin}: Readonly<Pick<Thread, 'cwd' | 'origin'>>) {
+            const row = await prismaClient.thread.findFirst({
+                where: {
+                    deactivatedAt: null,
+                    cwd,
+                    origin,
+                },
+                orderBy: {
+                    createdAt: 'desc',
+                },
+                select: threadSelect,
+            });
+            return row ? toThread(row) : undefined;
+        },
+        /** The user's threads, leaving out the ones other plugins started. */
         async listThreads() {
             return (
                 await prismaClient.thread.findMany({
                     where: {
                         deactivatedAt: null,
+                        origin: ThreadOrigin.User,
                     },
                     orderBy: {
                         updatedAt: 'desc',
+                    },
+                    select: threadSelect,
+                })
+            ).map(toThread);
+        },
+        async listSideChats() {
+            return (
+                await prismaClient.thread.findMany({
+                    where: {
+                        deactivatedAt: null,
+                        origin: ThreadOrigin.SideChat,
                     },
                     select: threadSelect,
                 })
@@ -293,7 +327,7 @@ export function createThreadStore({
                     | 'title'
                 > &
                     PartialWithUndefined<
-                        Pick<Thread, 'cwd'> & {
+                        Pick<Thread, 'cwd' | 'origin' | 'prUrl' | 'parentThreadId'> & {
                             hasCustomTitle: boolean;
                         }
                     >
@@ -306,6 +340,9 @@ export function createThreadStore({
                         effort: data.effort ?? null,
                         speedTier: data.speedTier || null,
                         cwd: data.cwd || data.repoPath,
+                        origin: data.origin || ThreadOrigin.User,
+                        prUrl: data.prUrl || null,
+                        parentThreadId: data.parentThreadId || null,
                         hasCustomTitle: !!data.hasCustomTitle,
                         status: ThreadStatus.Idle,
                     },
@@ -366,6 +403,9 @@ export function createThreadStore({
                 by: [
                     'repoPath',
                 ],
+                where: {
+                    origin: ThreadOrigin.User,
+                },
                 _max: {
                     updatedAt: true,
                 },

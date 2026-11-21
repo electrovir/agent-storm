@@ -6,9 +6,11 @@ import {
     withShortcutHint,
     type KeyboardShortcut,
 } from '@agent-storm/core/frontend';
+import {assertWrap} from '@augment-vir/assert';
 import {extractEventTarget} from '@augment-vir/web';
 import {classMap, css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
+    createAnchoredPopoverStyles,
     createSizedIcon,
     LucideArchiveIcon,
     LucideArrowUpIcon,
@@ -17,6 +19,8 @@ import {
     LucidePlusIcon,
     LucideSquareIcon,
     LucideXIcon,
+    popover,
+    PopoverManager,
     tooltip,
     ViraButton,
     ViraColorVariant,
@@ -41,6 +45,7 @@ import {collectDroppedFiles} from '../../util/file-drop.js';
 import {toMessageAttachment, type MessageAttachment} from '../../util/message-attachments.js';
 import {attachmentCardStyles, renderAttachmentCardContent} from './attachment-card.js';
 import {findCommandMentionColor, VirAiChatCommandMenu} from './vir-ai-chat-command-menu.element.js';
+import {VirAiChatMcp} from './vir-ai-chat-mcp.element.js';
 import {
     VirAiChatModelPicker,
     type ModelSelection,
@@ -105,6 +110,11 @@ export const VirAiChatComposer = defineAppElement<{
     /** Unset for standard speed. */
     speedTier: string | undefined;
     runtimeMode: RuntimeMode;
+    /**
+     * The thread whose MCP servers the MCP chip lists, which sending `/mcp` opens too. Unset hides
+     * the chip and sends `/mcp` to the provider.
+     */
+    mcpThreadId: string | undefined;
     /** The provider's commands and skills, for the `/` and `$` menu. Unset while they load. */
     commands: ReadonlyArray<Readonly<ComposerCommand>> | undefined;
     /** Focuses the message box each time this turns on. */
@@ -146,6 +156,9 @@ export const VirAiChatComposer = defineAppElement<{
             /** The unsent text to put back when Down steps past the newest `history` entry. */
             historyDraft: '',
             isFocused: false,
+            isMcpOpen: false,
+            /** Opens the command menu above the message box while there's a menu trigger. */
+            commandMenuPopover: new PopoverManager(),
             caret: 0,
             /** The `rangeStart` of the menu trigger the user closed the menu on. */
             dismissedTriggerStart: undefined as number | undefined,
@@ -165,13 +178,21 @@ export const VirAiChatComposer = defineAppElement<{
             z-index: 30;
         }
 
-        ${VirAiChatCommandMenu} {
-            position: absolute;
-            bottom: 100%;
-            left: 0;
-            right: 0;
+        ${createAnchoredPopoverStyles({
+            selector: css`.command-menu-popover`,
+            fallbacks: [
+                {
+                    name: 'vir-ai-chat-command-menu-below',
+                    styles: css``,
+                    flipBlock: true,
+                },
+            ],
+        })}
+
+        .command-menu-popover {
+            position-area: block-start;
+            width: anchor-size(width);
             margin-bottom: 6px;
-            z-index: 130;
         }
 
         .composer {
@@ -375,6 +396,47 @@ export const VirAiChatComposer = defineAppElement<{
         }
 
         /**
+         * Whether the caret sits on the box's top (or bottom) visual line, counting lines that soft
+         * wrap. Measures a hidden copy of the box with the text up to the caret: the caret is on
+         * the top line when that text is no taller than an empty box, and on the bottom line when
+         * it is as tall as the whole text.
+         */
+        function isCaretOnEdgeLine({
+            textarea,
+            isTop,
+        }: Readonly<{
+            textarea: HTMLTextAreaElement;
+            isTop: boolean;
+        }>) {
+            const measurer = document.createElement('textarea');
+            measurer.setAttribute('aria-hidden', 'true');
+            measurer.tabIndex = -1;
+            measurer.style.cssText = [
+                'position: absolute',
+                'visibility: hidden',
+                'pointer-events: none',
+                'field-sizing: fixed',
+                'min-height: 0',
+                'max-height: none',
+                'height: 0',
+                `width: ${textarea.offsetWidth}px`,
+            ].join(';');
+            textarea.after(measurer);
+
+            function measureHeight(text: string) {
+                measurer.value = text;
+                return measurer.scrollHeight;
+            }
+
+            const beforeCaretHeight = measureHeight(
+                textarea.value.slice(0, textarea.selectionStart),
+            );
+            const edgeHeight = measureHeight(isTop ? '' : textarea.value);
+            measurer.remove();
+            return beforeCaretHeight === edgeHeight;
+        }
+
+        /**
          * Swaps the box's text for the previous or next `history` entry once the caret sits on the
          * first or last line, like Up and Down in the Claude Code CLI. Returns whether it did.
          */
@@ -386,10 +448,14 @@ export const VirAiChatComposer = defineAppElement<{
             isOlder: boolean;
         }>) {
             const caret = textarea.selectionStart;
-            const isOnEdgeLine = !(
-                isOlder ? textarea.value.slice(0, caret) : textarea.value.slice(caret)
-            ).includes('\n');
-            if (inputs.questionAction || textarea.selectionEnd !== caret || !isOnEdgeLine) {
+            if (
+                inputs.questionAction ||
+                textarea.selectionEnd !== caret ||
+                !isCaretOnEdgeLine({
+                    textarea,
+                    isTop: isOlder,
+                })
+            ) {
                 return false;
             }
             const nextIndex = (state.historyIndex ?? inputs.history.length) + (isOlder ? -1 : 1);
@@ -566,6 +632,24 @@ export const VirAiChatComposer = defineAppElement<{
                 historyIndex: undefined,
             });
             const detail = inputs.text.trim();
+            /** Claude Code answers `/mcp` with only a count of its servers. */
+            if (
+                inputs.mcpThreadId &&
+                !isInWorktree &&
+                !inputs.questionAction &&
+                !inputs.attachments.length &&
+                detail === '/mcp'
+            ) {
+                dispatch(
+                    new events.textChange({
+                        detail: '',
+                    }),
+                );
+                updateState({
+                    isMcpOpen: true,
+                });
+                return;
+            }
             dispatch(
                 isInWorktree
                     ? new events.worktreeSubmitted({
@@ -666,6 +750,7 @@ export const VirAiChatComposer = defineAppElement<{
         return html`
             ${trigger
                 ? html`
+                      <div class="command-menu-popover" popover="manual">
                       <${VirAiChatCommandMenu.assign({
                           commands: menuCommands,
                           triggerKind: trigger.kind,
@@ -687,10 +772,20 @@ export const VirAiChatComposer = defineAppElement<{
                               });
                           })}
                       ></${VirAiChatCommandMenu}>
+                      </div>
                   `
                 : nothing}
             <div
                 class="composer"
+                ${popover(state.commandMenuPopover, {
+                    trigger: !!trigger,
+                    getPopover() {
+                        return assertWrap.instanceOf(
+                            host.shadowRoot.querySelector('.command-menu-popover'),
+                            HTMLElement,
+                        );
+                    },
+                })}
                 ${listen('keydown', (event) => {
                     if (
                         !event.repeat &&
@@ -905,6 +1000,20 @@ export const VirAiChatComposer = defineAppElement<{
                                 );
                             })}
                         ></${VirAiChatModelPicker}>
+                        ${inputs.mcpThreadId
+                            ? html`
+                                  <${VirAiChatMcp.assign({
+                                      threadId: inputs.mcpThreadId,
+                                      isOpen: state.isMcpOpen,
+                                  })}
+                                      ${listen(VirAiChatMcp.events.openChange, (event) => {
+                                          updateState({
+                                              isMcpOpen: event.detail,
+                                          });
+                                      })}
+                                  ></${VirAiChatMcp}>
+                              `
+                            : nothing}
                     </div>
                     <div class="actions">
                         ${inputs.canSendInWorktree && !inputs.questionAction && !showsStop

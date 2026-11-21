@@ -1,4 +1,4 @@
-// cspell:words haspopup menuitemradio
+// cspell:words menuitemradio
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
@@ -8,9 +8,13 @@ import {
     LucidePenLineIcon,
     LucideShieldCheckIcon,
     LucideShieldOffIcon,
+    PopoverAnchor,
+    PopoverTrigger,
     ViraIcon,
+    ViraPopoverTrigger,
     viraShadows,
     viraThemeByKeys,
+    type PopoverManager,
     type ViraIconSvg,
 } from 'vira';
 import {RuntimeMode} from '../../build-v2-api.js';
@@ -67,27 +71,8 @@ export const VirAiChatPermissions = defineAppElement<{
             isOpen: false,
             /** The mode the menu describes while it is hovered or focused, before a pick. */
             previewMode: undefined as RuntimeMode | undefined,
-            removeOutsidePointerListener: undefined as (() => void) | undefined,
+            popoverManager: undefined as PopoverManager | undefined,
         };
-    },
-    init({host, updateState}) {
-        function closeOnOutsidePointer(event: PointerEvent) {
-            if (host.instanceState.isOpen && !event.composedPath().includes(host)) {
-                updateState({
-                    isOpen: false,
-                    previewMode: undefined,
-                });
-            }
-        }
-        globalThis.document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-        updateState({
-            removeOutsidePointerListener() {
-                globalThis.document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-            },
-        });
-    },
-    cleanup({state}) {
-        state.removeOutsidePointerListener?.();
     },
     styles() {
         const textColor = viraThemeByKeys.grey.foreground.body.foreground.value;
@@ -99,7 +84,6 @@ export const VirAiChatPermissions = defineAppElement<{
             :host {
                 display: flex;
                 flex-shrink: 0;
-                position: relative;
                 font-size: 14px;
                 color: ${textColor};
             }
@@ -125,14 +109,9 @@ export const VirAiChatPermissions = defineAppElement<{
                 color: ${mutedColor};
 
                 &:hover,
-                &[aria-expanded='true'] {
+                &.open {
                     background-color: ${selectedBackground};
                     color: ${textColor};
-                }
-
-                &:focus-visible {
-                    outline: 2px solid ${focusColor};
-                    outline-offset: -2px;
                 }
 
                 & ${ViraIcon} {
@@ -145,11 +124,6 @@ export const VirAiChatPermissions = defineAppElement<{
             }
 
             .popover {
-                position: absolute;
-                bottom: 100%;
-                left: 0;
-                z-index: 130;
-                margin-bottom: 4px;
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
@@ -235,15 +209,8 @@ export const VirAiChatPermissions = defineAppElement<{
         const describedMode = state.previewMode || inputs.runtimeMode;
         const modes = Object.values(RuntimeMode);
 
-        function close() {
-            updateState({
-                isOpen: false,
-                previewMode: undefined,
-            });
-        }
-
         function pick(runtimeMode: RuntimeMode) {
-            close();
+            state.popoverManager?.hide();
             if (runtimeMode !== inputs.runtimeMode) {
                 dispatch(
                     new events.runtimeModeChange({
@@ -262,62 +229,69 @@ export const VirAiChatPermissions = defineAppElement<{
         }
 
         return html`
-            <button
-                type="button"
-                class="chip"
-                aria-label=${`Permissions: ${shown.label}`}
-                aria-haspopup="menu"
-                aria-expanded=${state.isOpen}
-                ${listen('click', () => {
+            <${ViraPopoverTrigger.assign({
+                trigger: PopoverTrigger.Click,
+                popoverAnchor: PopoverAnchor.Left,
+                keepOpenAfterInteraction: true,
+                useInsideFocus: true,
+                popoverOffset: {
+                    vertical: 4,
+                },
+            })}
+                ${listen(ViraPopoverTrigger.events.init, (event) => {
                     updateState({
-                        isOpen: !state.isOpen,
+                        popoverManager: event.detail.popoverManager,
+                    });
+                })}
+                ${listen(ViraPopoverTrigger.events.openChange, (event) => {
+                    updateState({
+                        isOpen: event.detail,
                         previewMode: undefined,
                     });
-                    focusMode(inputs.runtimeMode);
+                    if (event.detail) {
+                        focusMode(inputs.runtimeMode);
+                    }
                 })}
             >
-                <${ViraIcon.assign({
-                    icon: shown.icon,
-                })}></${ViraIcon}>
-                <span>${shown.label}</span>
-                <${ViraIcon.assign({
-                    icon: chevronIcon,
-                })}
-                    class="chevron"
-                ></${ViraIcon}>
-            </button>
-            ${state.isOpen
-                ? html`
-                      <div
-                          class="popover"
-                          role="menu"
-                          aria-label="Permissions"
-                          ${listen('keydown', (event) => {
-                              if (event.key === 'Escape') {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  close();
-                                  host.shadowRoot
-                                      .querySelector<HTMLButtonElement>('.chip')
-                                      ?.focus();
-                                  return;
-                              }
-                              const direction =
-                                  event.key === 'ArrowRight'
-                                      ? 1
-                                      : event.key === 'ArrowLeft'
-                                        ? -1
-                                        : undefined;
-                              const focused = modes.indexOf(
-                                  state.previewMode || inputs.runtimeMode,
-                              );
-                              const next = direction ? modes[focused + direction] : undefined;
-                              if (next) {
-                                  event.preventDefault();
-                                  focusMode(next);
-                              }
-                          })}
-                      >
+                <span
+                    class="chip ${state.isOpen ? 'open' : ''}"
+                    slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-trigger']}
+                    aria-label=${`Permissions: ${shown.label}`}
+                >
+                    <${ViraIcon.assign({
+                        icon: shown.icon,
+                    })}></${ViraIcon}>
+                    <span>${shown.label}</span>
+                    <${ViraIcon.assign({
+                        icon: chevronIcon,
+                    })}
+                        class="chevron"
+                    ></${ViraIcon}>
+                </span>
+                ${state.isOpen
+                    ? html`
+                          <div
+                              class="popover"
+                              slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-popover']}
+                              role="menu"
+                              aria-label="Permissions"
+                              ${listen('keydown', (event) => {
+                                  const direction =
+                                      event.key === 'ArrowRight'
+                                          ? 1
+                                          : event.key === 'ArrowLeft'
+                                            ? -1
+                                            : undefined;
+                                  const focused = modes.indexOf(
+                                      state.previewMode || inputs.runtimeMode,
+                                  );
+                                  const next = direction ? modes[focused + direction] : undefined;
+                                  if (next) {
+                                      event.preventDefault();
+                                      focusMode(next);
+                                  }
+                              })}
+                          >
                           <div class="heading">Permissions</div>
                           <div class="modes" role="group">
                               ${modes.map((runtimeMode) => {
@@ -367,7 +341,8 @@ export const VirAiChatPermissions = defineAppElement<{
                           </div>
                       </div>
                   `
-                : nothing}
+                    : nothing}
+            </${ViraPopoverTrigger}>
         `;
     },
 });

@@ -1,4 +1,5 @@
 export * from './api.js';
+export * from './build-v2-threads.js';
 export * from './enums.js';
 export * from './folder-settings.js';
 export * from './github-pr-status.js';

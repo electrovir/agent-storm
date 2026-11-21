@@ -22,6 +22,7 @@ export const reviewExtension: PaneGroupExtension<ReviewExtensionInputs, PaneRevi
             uiLayout: context.uiLayout,
             folderSessions,
             prReviews: findReviewState(context).prReviews,
+            folderData: context.folderData,
         });
     },
     sync({run, inputs, view, displayedTabIds, shownTabIds, prUrl}) {

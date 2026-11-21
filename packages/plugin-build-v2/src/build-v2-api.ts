@@ -1,7 +1,8 @@
-import {definePluginApi} from '@agent-storm/common';
+// cspell:words claudeai
+import {buildV2PluginId, definePluginApi, ThreadOrigin, ThreadStatus} from '@agent-storm/common';
 import {defineShape, enumShape, nullableShape, optionalShape} from 'object-shape-tester';
 
-export const buildV2PluginId = 'build-v2';
+export {aiChatPaneId, buildV2PluginId, ThreadOrigin, ThreadStatus} from '@agent-storm/common';
 
 /** The agent CLI a thread talks to. */
 export enum AiProvider {
@@ -34,15 +35,6 @@ export enum RuntimeMode {
     Auto = 'auto',
     /** Runs commands and edits without asking. */
     FullAccess = 'fullAccess',
-}
-
-export enum ThreadStatus {
-    Idle = 'idle',
-    Running = 'running',
-    /** Paused on at least one pending request the user must answer. */
-    NeedsApproval = 'needsApproval',
-    /** The provider's process failed. The next message starts it again. */
-    Failed = 'failed',
 }
 
 /** What one entry in a thread's timeline shows. */
@@ -110,6 +102,11 @@ export const threadShape = defineShape({
     isAskingQuestion: false,
     /** Background tasks, such as sub-agents, the agent still waits on after its reply ended. */
     backgroundTaskCount: 0,
+    origin: enumShape(ThreadOrigin),
+    /** The PR a `Review` or `Watch` thread works on. */
+    prUrl: nullableShape(''),
+    /** The thread whose tabs hold a `SideChat` thread. */
+    parentThreadId: nullableShape(''),
     /** Messages the user sent in the thread. */
     userMessageCount: 0,
     /**
@@ -248,6 +245,44 @@ export const composerCommandShape = defineShape({
 
 export type ComposerCommand = typeof composerCommandShape.runtimeType;
 
+/** Whether an MCP server's tools reach the agent. */
+export enum McpServerState {
+    Connected = 'connected',
+    /** Still connecting. */
+    Pending = 'pending',
+    Failed = 'failed',
+    /** The user has to sign in to the server before it connects. */
+    NeedsAuth = 'needsAuth',
+    Disabled = 'disabled',
+}
+
+export const mcpServerShape = defineShape({
+    name: '',
+    state: enumShape(McpServerState),
+    /** Why the server failed to connect. Empty otherwise. */
+    error: '',
+    /** Where the server is configured, such as `user`, `project`, or `claudeai`. */
+    scope: '',
+    /** The tools the server gives the agent while connected. */
+    toolCount: 0,
+});
+
+export type McpServer = typeof mcpServerShape.runtimeType;
+
+/** Whether the chat can list and toggle the MCP servers of each provider's threads. */
+export const mcpControlProviders: Readonly<Record<AiProvider, boolean>> = {
+    [AiProvider.Claude]: true,
+    [AiProvider.Codex]: false,
+};
+
+const mcpServersResponseShape = defineShape({
+    servers: [
+        mcpServerShape,
+    ],
+    /** Why the requested change failed, which leaves `servers` as they were. Empty on success. */
+    error: '',
+});
+
 const threadRequestShape = defineShape({
     threadId: '',
 });
@@ -269,6 +304,10 @@ export const buildV2Api = definePluginApi({
             requestShape: defineShape({}),
             responseShape: defineShape({
                 threads: [
+                    threadShape,
+                ],
+                /** Every `ThreadOrigin.SideChat` thread that isn't archived. */
+                sideChats: [
                     threadShape,
                 ],
                 /** Each repo's latest thread activity, archived threads included. */
@@ -321,6 +360,78 @@ export const buildV2Api = definePluginApi({
                 ],
             }),
         },
+        /**
+         * The MCP servers the thread's agent sees, from its running session. Without one, from a
+         * short-lived session in the thread's folder that waits for its servers to connect.
+         */
+        listMcpServers: {
+            requestShape: defineShape({
+                threadId: '',
+                /**
+                 * Also connects servers added to the config since the running session started,
+                 * which costs starting a short-lived CLI process.
+                 */
+                isNewServerLoadEnabled: false,
+            }),
+            responseShape: mcpServersResponseShape,
+        },
+        /**
+         * Turns an MCP server on or off for the thread's running session. Claude Code also saves it
+         * for the folder, so later sessions there start with it the same way.
+         */
+        setMcpServerEnabled: {
+            requestShape: defineShape({
+                threadId: '',
+                serverName: '',
+                isEnabled: false,
+            }),
+            responseShape: mcpServersResponseShape,
+        },
+        /** Connects an MCP server again, such as after it failed or the user signed in to it. */
+        reconnectMcpServer: {
+            requestShape: defineShape({
+                threadId: '',
+                serverName: '',
+            }),
+            responseShape: mcpServersResponseShape,
+        },
+        /**
+         * Starts signing in to an MCP server. The user finishes at `authUrl`, then the session that
+         * started the sign-in connects the server itself. `authUrl` is empty when the server needed
+         * no sign-in.
+         */
+        signInMcpServer: {
+            requestShape: defineShape({
+                threadId: '',
+                serverName: '',
+            }),
+            responseShape: defineShape({
+                servers: [
+                    mcpServerShape,
+                ],
+                /** Why the sign-in couldn't start. Empty on success. */
+                error: '',
+                authUrl: '',
+                /**
+                 * Whether the sign-in page redirects to a localhost address on the server's
+                 * machine, which a browser on another device can't reach. Passing that address to
+                 * `submitMcpSignInCallback` finishes the sign-in instead.
+                 */
+                isCallbackExpected: false,
+            }),
+        },
+        /**
+         * Finishes an MCP server's sign-in with the localhost address its sign-in page redirected
+         * to.
+         */
+        submitMcpSignInCallback: {
+            requestShape: defineShape({
+                threadId: '',
+                serverName: '',
+                callbackUrl: '',
+            }),
+            responseShape: mcpServersResponseShape,
+        },
         /** Starts a thread in the checkout and sends its first message. */
         createThread: {
             requestShape: defineShape({
@@ -354,6 +465,11 @@ export const buildV2Api = definePluginApi({
                  * its first message are saved.
                  */
                 isStartAwaited: nullableShape(false),
+                /**
+                 * Starts a `ThreadOrigin.SideChat` thread in this thread's tabs instead of a
+                 * `ThreadOrigin.User` one.
+                 */
+                parentThreadId: nullableShape(''),
             }),
             responseShape: threadResponseShape,
         },

@@ -460,20 +460,17 @@ export function addTab(
         tab,
         groupId,
         index,
-        isBackground,
     }: Readonly<
         {
             tab: Readonly<PaneTab>;
         } & PartialWithUndefined<{
             groupId: string;
             index: number;
-            /** Adds the tab without showing it, unless its group has nothing else to show. */
-            isBackground: boolean;
         }>
     >,
 ): TabLayout {
     if (layout.tabs[tab.id]) {
-        return isBackground ? layout : selectTab(layout, tab.id);
+        return selectTab(layout, tab.id);
     }
     const targetGroupId = [
         groupId,
@@ -484,7 +481,6 @@ export function addTab(
     if (!targetGroupId || !group) {
         return layout;
     }
-    const isShown = !isBackground || !group.activeTabId;
     return {
         ...layout,
         tabs: {
@@ -497,10 +493,10 @@ export function addTab(
             ...layout.groups,
             [targetGroupId]: {
                 tabIds: group.tabIds.toSpliced(index ?? group.tabIds.length, 0, tab.id),
-                activeTabId: isShown ? tab.id : group.activeTabId,
+                activeTabId: tab.id,
             },
         },
-        activeGroupId: isBackground ? layout.activeGroupId : targetGroupId,
+        activeGroupId: targetGroupId,
     };
 }
 
@@ -712,8 +708,9 @@ function findKindGroupId(layout: Readonly<TabLayout>, kind: string) {
 
 /**
  * Makes one session kind's tabs match the folder's sessions: tabs whose session is gone close, and
- * missing ones join the group already holding that kind's tabs (else the active group) without
- * being shown. Returns `layout` itself when nothing changed.
+ * missing ones are shown in the group already holding that kind's tabs, else in a new group split
+ * off to the right of the active group. The active group stays the same. Returns `layout` itself
+ * when nothing changed.
  */
 export function syncSessionTabs(
     layout: Readonly<TabLayout>,
@@ -737,16 +734,34 @@ export function syncSessionTabs(
         .filter((tab) => tab.kind === kind && !incomingIds.includes(tab.id))
         .reduce((current: Readonly<TabLayout>, tab) => closeTab(current, tab.id), layout);
     return incomingIds.reduce((current: Readonly<TabLayout>, tabId) => {
-        return current.tabs[tabId]
-            ? current
-            : addTab(current, {
-                  tab: {
-                      id: tabId,
-                      kind,
-                  },
-                  groupId: findKindGroupId(current, kind) ?? kindGroupId,
-                  isBackground: true,
-              });
+        if (current.tabs[tabId]) {
+            return current;
+        }
+        const tab = {
+            id: tabId,
+            kind,
+        };
+        const groupId = findKindGroupId(current, kind) ?? kindGroupId;
+        const placed =
+            groupId && current.groups[groupId]
+                ? addTab(current, {
+                      tab,
+                      groupId,
+                  })
+                : splitTab(
+                      addTab(current, {
+                          tab,
+                      }),
+                      {
+                          tabId,
+                          groupId: current.activeGroupId,
+                          edge: SplitEdge.Right,
+                      },
+                  );
+        return {
+            ...placed,
+            activeGroupId: current.activeGroupId,
+        };
     }, pruned);
 }
 

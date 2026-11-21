@@ -1,4 +1,5 @@
 import {defineAppElement, spinAnimationCss, spinKeyframesCss} from '@agent-storm/core/frontend';
+import {assertWrap} from '@augment-vir/assert';
 import {type AnyDuration} from 'date-vir';
 import {
     classMap,
@@ -11,10 +12,13 @@ import {
     type TemplateResult,
 } from 'element-vir';
 import {
+    createAnchoredPopoverStyles,
     createSizedIcon,
     LucideChevronRightIcon,
     LucideCircleAlertIcon,
     LucideQuoteIcon,
+    popover,
+    PopoverManager,
     tooltip,
     ViraButton,
     ViraColorVariant,
@@ -133,6 +137,45 @@ type QuoteSelection = Readonly<{
     left: number;
 }>;
 
+function isInAssistantMessage(node: Readonly<Node>, shadowRoot: Readonly<ShadowRoot>) {
+    const element = node instanceof Element ? node : node.parentElement;
+    return !!element && shadowRoot.contains(element) && !!element.closest('.assistant-entry');
+}
+
+/** Annotated because the recursion keeps TypeScript from inferring it. */
+function findPreviousText(walker: Readonly<TreeWalker>): Node | undefined {
+    const previous = walker.previousNode();
+    if (!previous) {
+        return undefined;
+    }
+    return previous.textContent?.trim() ? previous : findPreviousText(walker);
+}
+
+/**
+ * Triple-clicking a paragraph ends the range at offset 0 of the next block, which is often a work
+ * log outside the message, so that end is pulled back to the last text the selection covers.
+ */
+function readSelectionEnd(range: Readonly<StaticRange>, shadowRoot: ShadowRoot) {
+    if (range.endOffset || isInAssistantMessage(range.endContainer, shadowRoot)) {
+        return {
+            node: range.endContainer,
+            offset: range.endOffset,
+        };
+    }
+    const walker = document.createTreeWalker(shadowRoot, NodeFilter.SHOW_TEXT);
+    walker.currentNode = range.endContainer;
+    const previousText = findPreviousText(walker);
+    return previousText
+        ? {
+              node: previousText,
+              offset: previousText.textContent?.length ?? 0,
+          }
+        : {
+              node: range.endContainer,
+              offset: range.endOffset,
+          };
+}
+
 /** The page's selection when both of its ends are inside assistant messages of this timeline. */
 function readQuoteSelection(
     host: Readonly<HTMLElement> & {
@@ -154,22 +197,18 @@ function readQuoteSelection(
     if (!selection || !composedRange || composedRange.collapsed) {
         return undefined;
     }
+    const end = readSelectionEnd(composedRange, host.shadowRoot);
     const isInAssistantMessages = [
         composedRange.startContainer,
-        composedRange.endContainer,
-    ].every((node) => {
-        const element = node instanceof Element ? node : node.parentElement;
-        return (
-            !!element && host.shadowRoot.contains(element) && !!element.closest('.assistant-entry')
-        );
-    });
+        end.node,
+    ].every((node) => isInAssistantMessage(node, host.shadowRoot));
     const text = selection.toString().trim();
     if (!isInAssistantMessages || !text) {
         return undefined;
     }
     const range = document.createRange();
     range.setStart(composedRange.startContainer, composedRange.startOffset);
-    range.setEnd(composedRange.endContainer, composedRange.endOffset);
+    range.setEnd(end.node, end.offset);
     const rangeRect = range.getBoundingClientRect();
     const hostRect = host.getBoundingClientRect();
     return {
@@ -205,6 +244,7 @@ export const VirAiChatTimeline = defineAppElement<{
             /** Work logs and work items the user opened or closed, by key or item id. */
             expanded: {} as Readonly<Record<string, boolean>>,
             quoteSelection: undefined as QuoteSelection | undefined,
+            quotePopoverManager: new PopoverManager(),
             removeSelectionListener: (() => {}) as () => void,
         };
     },
@@ -273,11 +313,27 @@ export const VirAiChatTimeline = defineAppElement<{
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
-        .quote-popover {
+        .quote-anchor {
             position: absolute;
-            z-index: 20;
+            width: 0;
+            height: 0;
+        }
+
+        ${createAnchoredPopoverStyles({
+            selector: css`.quote-popover`,
+            fallbacks: [
+                {
+                    name: 'vir-ai-chat-quote-above',
+                    styles: css``,
+                    flipBlock: true,
+                },
+            ],
+        })}
+
+        .quote-popover {
+            position-area: block-end;
+            position-visibility: anchors-visible;
             margin-top: 6px;
-            transform: translateX(-50%);
         }
 
         ${spinKeyframesCss}
@@ -639,7 +695,7 @@ export const VirAiChatTimeline = defineAppElement<{
             }
         }
     `,
-    render({inputs, state, updateState, dispatch, events}) {
+    render({inputs, state, updateState, dispatch, events, host}) {
         const timeline = buildTimeline(inputs.items);
         const hasLiveItem = inputs.items.some((item) => {
             return item.status === ThreadItemStatus.InProgress;
@@ -1014,13 +1070,23 @@ export const VirAiChatTimeline = defineAppElement<{
             </div>
             ${state.quoteSelection
                 ? html`
-                      <div
-                          class="quote-popover"
+                      <span
+                          class="quote-anchor"
                           style=${css`
                               top: ${state.quoteSelection.top}px;
                               left: ${state.quoteSelection.left}px;
                           `}
-                      >
+                          ${popover(state.quotePopoverManager, {
+                              trigger: true,
+                              getPopover() {
+                                  return assertWrap.instanceOf(
+                                      host.shadowRoot.querySelector('.quote-popover'),
+                                      HTMLElement,
+                                  );
+                              },
+                          })}
+                      ></span>
+                      <div class="quote-popover" popover="manual">
                           <${ViraButton.assign({
                               text: 'Quote',
                               icon: quoteIcon,

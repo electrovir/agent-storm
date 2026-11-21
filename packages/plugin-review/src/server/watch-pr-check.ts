@@ -193,6 +193,7 @@ const rawCheckContextShape = defineShape(
 );
 
 const rawCheckContextPageShape = defineShape({
+    totalCount: 0,
     pageInfo: {
         hasNextPage: false,
         endCursor: nullableShape(''),
@@ -768,6 +769,7 @@ export function formatPrCheck(prCheck: Readonly<PrCheck>) {
 }
 
 const checkContextFields = [
+    'totalCount',
     'pageInfo { hasNextPage endCursor }',
     'nodes {',
     '  ... on CheckRun { name conclusion status startedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }',
@@ -857,7 +859,11 @@ async function fetchCheckContexts({
     ];
 }
 
-/** Rollup states no further check result can change while the head commit stays the same. */
+/**
+ * Rollup states that stay put until a check reruns. A rerun adds a context, and the rollup still
+ * counts the superseded failed runs, so it can stay `FAILURE` after the rerun passes. Only the
+ * context count shows the rerun.
+ */
 const finishedRollupStates: ReadonlyArray<RawCheckResult> = [
     RawCheckResult.Success,
     RawCheckResult.Failure,
@@ -873,6 +879,7 @@ const checkContextCache = new Map<
     {
         sha: string;
         state: RawCheckResult;
+        totalCount: number;
         contexts: ReadonlyArray<typeof rawCheckContextShape.runtimeType>;
     }
 >();
@@ -891,6 +898,10 @@ const branchChangeNodeShape = defineShape({
             partialShape({
                 statusCheckRollup: nullableShape({
                     state: '',
+                    /** A rerun adds a context without always changing `state`. */
+                    contexts: {
+                        totalCount: 0,
+                    },
                 }),
             }),
         ),
@@ -943,7 +954,7 @@ function buildBranchChangeQuery(branches: ReadonlyArray<string>) {
         ...branches.map((_branch, index) => {
             return [
                 `    branch${index}: pullRequests(headRefName: $branch${index}, states: [OPEN], first: 3, orderBy: {field: CREATED_AT, direction: DESC}) {`,
-                '      nodes { number headRepository { nameWithOwner } updatedAt headRefOid mergeStateStatus reviewDecision headRef { target { ... on Commit { statusCheckRollup { state } } } } reviewThreads(first: 100) { nodes { isResolved } } }',
+                '      nodes { number headRepository { nameWithOwner } updatedAt headRefOid mergeStateStatus reviewDecision headRef { target { ... on Commit { statusCheckRollup { state contexts { totalCount } } } } } reviewThreads(first: 100) { nodes { isResolved } } }',
                 '    }',
             ].join('\n');
         }),
@@ -1153,8 +1164,10 @@ export async function fetchPrCheck({
     const checkContextCacheKey = `${owner}/${repoName}>${branch}`;
     const cachedCheckContexts = checkContextCache.get(checkContextCacheKey);
     const checkContexts = headCommit?.statusCheckRollup
-        ? cachedCheckContexts?.sha === headCommit.oid &&
+        ? headCommit.statusCheckRollup.contexts.pageInfo.hasNextPage &&
+          cachedCheckContexts?.sha === headCommit.oid &&
           cachedCheckContexts.state === headCommit.statusCheckRollup.state &&
+          cachedCheckContexts.totalCount === headCommit.statusCheckRollup.contexts.totalCount &&
           finishedRollupStates.includes(headCommit.statusCheckRollup.state)
             ? cachedCheckContexts.contexts
             : await fetchCheckContexts({
@@ -1168,6 +1181,7 @@ export async function fetchPrCheck({
         checkContextCache.set(checkContextCacheKey, {
             sha: headCommit.oid,
             state: headCommit.statusCheckRollup.state,
+            totalCount: headCommit.statusCheckRollup.contexts.totalCount,
             contexts: checkContexts,
         });
     }

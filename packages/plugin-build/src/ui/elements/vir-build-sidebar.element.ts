@@ -7,7 +7,6 @@ import {
     ScreenSize,
 } from '@agent-storm/core/frontend';
 import {buildV2ActivityId, findBuildV2State} from '@agent-storm/plugin-build-v2';
-import {findReviewState, getFolderVerdictStatuses} from '@agent-storm/plugin-review';
 import {HttpMethod} from '@rest-vir/api';
 import {css, html, listen} from 'element-vir';
 import {buildMemory} from '../../util/build-memory.js';
@@ -46,16 +45,10 @@ export const VirBuildSidebar = defineAppElement<{
     },
     render({inputs}) {
         const isMobile = inputs.context.screenSize === ScreenSize.Mobile;
-        const prStatusOverrides = getFolderVerdictStatuses({
-            prReviews: findReviewState(inputs.context).prReviews.value,
-            folderInfo: inputs.context.folderData.value.folderInfo,
-        });
-
         return html`
             <${VirSidebar.assign({
                 activeFolder: inputs.activeFolder,
                 folderData: inputs.context.folderData,
-                prStatusOverrides,
                 /** Build V2 threads manage their own worktrees, so Build lists only the rest. */
                 hiddenFolderPaths: findBuildV2State(inputs.context)
                     ?.threads.value?.filter((thread) => !!thread.worktreeBranch)
@@ -95,8 +88,7 @@ export const VirBuildSidebar = defineAppElement<{
                          * active one.
                          */
                         if (
-                            (prStatusOverrides[event.detail] || folder.prStatus) ===
-                                PrStatus.ReviewStarted &&
+                            folder.prStatus === PrStatus.ReviewStarted &&
                             !inputs.context.uiLayout.value.layout?.tabLayouts[event.detail]
                         ) {
                             [

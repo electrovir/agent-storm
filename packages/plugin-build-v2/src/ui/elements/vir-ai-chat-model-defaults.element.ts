@@ -17,7 +17,7 @@ import {
     writeModelDefaults,
     type ModelDefault,
     type ModelDefaults,
-} from '../../util/model-defaults.js';
+} from '../../util/model-default-settings.js';
 import {readEffectiveEffort, reasoningEffortLabels} from '../../util/reasoning-effort.js';
 import {type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
 

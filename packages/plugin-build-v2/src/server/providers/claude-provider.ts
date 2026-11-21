@@ -1,21 +1,26 @@
+// cspell:words claudeai
 import {
     query,
     type CanUseTool,
+    type McpServerStatus as ClaudeMcpServerStatus,
     type EffortLevel,
     type HookCallback,
+    type McpServerConfig,
     type PermissionMode,
     type PermissionResult,
+    type Query,
     type SDKMessage,
     type SDKUserMessage,
     type SessionStore,
 } from '@anthropic-ai/claude-agent-sdk';
 import {check} from '@augment-vir/assert';
-import {arrayToObject, extractErrorMessage} from '@augment-vir/common';
+import {arrayToObject, extractErrorMessage, wait} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {homedir} from 'node:os';
-import {checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
+import {assertValidShape, checkValidShape, defineShape, optionalShape} from 'object-shape-tester';
 import {
     ApprovalDecision,
+    McpServerState,
     ReasoningEffort,
     RuntimeMode,
     ThreadItemKind,
@@ -36,12 +41,19 @@ import {
     claudeApprovalKinds,
     completeClaudeToolItem,
     describeClaudeToolUse,
+    readClaudeMessageUsage,
     readClaudeToolResultText,
     readOnlyClaudeTools,
     type ClaudeToolDescription,
 } from './claude-items.js';
+import {restoreClaudeTranscript} from './claude-transcript.js';
 import {spawnHostedClaudeProcess} from './hosted-claude-process.js';
-import {filterStringEnv, type ProviderAdapter, type ProviderSink} from './provider-session.js';
+import {
+    filterStringEnv,
+    type McpControl,
+    type ProviderAdapter,
+    type ProviderSink,
+} from './provider-session.js';
 
 /**
  * How long a working session may send nothing before it counts as stalled. Claude Code streams
@@ -296,6 +308,198 @@ function createMessageQueue() {
     };
 }
 
+const claudeMcpServerStates: Readonly<Record<ClaudeMcpServerStatus['status'], McpServerState>> = {
+    connected: McpServerState.Connected,
+    pending: McpServerState.Pending,
+    failed: McpServerState.Failed,
+    'needs-auth': McpServerState.NeedsAuth,
+    disabled: McpServerState.Disabled,
+};
+
+/** Claude Code's reply to starting an MCP server's sign-in. */
+const claudeMcpSignInReplyShape = defineShape({
+    authUrl: optionalShape('', {
+        alsoUndefined: true,
+    }),
+    callbackExpected: optionalShape(false, {
+        alsoUndefined: true,
+    }),
+});
+
+/**
+ * The SDK's `Query` sends Claude Code's MCP sign-in requests (`mcp_authenticate`,
+ * `mcp_oauth_callback_url`) but leaves these methods out of its type declarations.
+ */
+type ClaudeMcpSignInQuery = Query &
+    Readonly<{
+        mcpAuthenticate(serverName: string): Promise<unknown>;
+        mcpSubmitOAuthCallbackUrl(serverName: string, callbackUrl: string): Promise<unknown>;
+    }>;
+
+/**
+ * Claude Code saves a server turned on or off for the session's folder, so it stays that way in the
+ * folder's later sessions.
+ */
+function createClaudeMcpControl(claudeQuery: Query): McpControl {
+    return {
+        async listServers() {
+            return (
+                (await claudeQuery.mcpServerStatus())
+                    /**
+                     * A session started before `createClaudeEnv` turned claude.ai connectors off
+                     * still has them loaded.
+                     */
+                    .filter((server) => {
+                        return server.name !== agentToolServerName && server.scope !== 'claudeai';
+                    })
+                    .map((server) => {
+                        return {
+                            name: server.name,
+                            state: claudeMcpServerStates[server.status],
+                            error: server.error || '',
+                            scope: server.scope || '',
+                            toolCount: server.tools?.length ?? 0,
+                        };
+                    })
+            );
+        },
+        async setServerEnabled({serverName, isEnabled}) {
+            await claudeQuery.toggleMcpServer(serverName, isEnabled);
+        },
+        async reconnectServer(serverName) {
+            await claudeQuery.reconnectMcpServer(serverName);
+        },
+        async signIn(serverName) {
+            const reply = await (
+                claudeQuery satisfies Query as ClaudeMcpSignInQuery
+            ).mcpAuthenticate(serverName);
+            assertValidShape(reply, claudeMcpSignInReplyShape, {
+                allowExtraKeys: true,
+            });
+            return {
+                authUrl: reply.authUrl || '',
+                isCallbackExpected: !!reply.callbackExpected,
+            };
+        },
+        async submitSignInCallbackUrl({serverName, callbackUrl}) {
+            await (claudeQuery satisfies Query as ClaudeMcpSignInQuery).mcpSubmitOAuthCallbackUrl(
+                serverName,
+                callbackUrl,
+            );
+        },
+    };
+}
+
+/**
+ * Closes a Claude process once none of its MCP servers is still connecting. Connecting can refresh
+ * a server's OAuth token, and Slack's OAuth server replaces the refresh token on every refresh: a
+ * process killed after Slack answers but before Claude Code saves the answer loses the only valid
+ * refresh token, so the next refresh fails with `invalid_grant` and Claude Code signs every session
+ * out of Slack.
+ */
+async function closeClaudeQueryWhenMcpSettles({
+    claudeQuery,
+    prompt,
+}: Readonly<{
+    claudeQuery: Query;
+    prompt: Readonly<{
+        close(): void;
+    }>;
+}>) {
+    try {
+        await waitForMcpServersToSettle({
+            claudeQuery,
+            deadline:
+                Date.now() +
+                convertDuration(
+                    {
+                        minutes: 1,
+                    },
+                    {
+                        milliseconds: true,
+                    },
+                ).milliseconds,
+        });
+    } catch {
+        /** The process already exited, so it has nothing left to save. */
+    } finally {
+        prompt.close();
+        claudeQuery.close();
+    }
+}
+
+/** Recursive, so TypeScript needs the return type. */
+async function waitForMcpServersToSettle({
+    claudeQuery,
+    deadline,
+}: Readonly<{
+    claudeQuery: Query;
+    deadline: number;
+}>): Promise<void> {
+    const servers = await claudeQuery.mcpServerStatus();
+    if (Date.now() >= deadline || !servers.some((server) => server.status === 'pending')) {
+        return;
+    }
+    await wait({
+        milliseconds: 250,
+    });
+    await waitForMcpServersToSettle({
+        claudeQuery,
+        deadline,
+    });
+}
+
+/**
+ * The environment every Claude Code process gets. It turns off claude.ai connectors, so a session
+ * loads only the MCP servers the CLI itself is configured with.
+ */
+function createClaudeEnv(env: Readonly<Record<string, string>> | undefined) {
+    return {
+        ...(env || process.env),
+        ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
+    };
+}
+
+/**
+ * The MCP servers a Claude Code process started in `cwd` now would load, which a running session
+ * only reads when it starts. Leaves out the kinds `setMcpServers` can't take.
+ */
+async function readConfiguredMcpServers({
+    cwd,
+    env,
+}: Readonly<{
+    cwd: string;
+    env: Readonly<Record<string, string>> | undefined;
+}>) {
+    const prompt = createMessageQueue();
+    const claudeQuery = query({
+        prompt,
+        options: {
+            cwd,
+            env: createClaudeEnv(env),
+            persistSession: false,
+        },
+    });
+    try {
+        return (await claudeQuery.mcpServerStatus()).flatMap((server) => {
+            const config = server.config;
+            return config && config.type !== 'sdk' && config.type !== 'claudeai-proxy'
+                ? [
+                      {
+                          name: server.name,
+                          config,
+                      },
+                  ]
+                : [];
+        });
+    } finally {
+        void closeClaudeQueryWhenMcpSettles({
+            claudeQuery,
+            prompt,
+        });
+    }
+}
+
 /** What a session approved for the rest of the session: a whole tool, or one exact command. */
 function createApprovalKey(toolName: string, input: Readonly<Record<string, unknown>>) {
     return toolName === 'Bash' && check.isString(input.command)
@@ -315,6 +519,9 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 prompt,
                 options: {
                     cwd,
+                    env: createClaudeEnv(undefined),
+                    /** Skips connecting MCP servers, which listing models doesn't need. */
+                    strictMcpConfig: true,
                 },
             });
             try {
@@ -352,6 +559,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 prompt,
                 options: {
                     cwd,
+                    env: createClaudeEnv(undefined),
                 },
             });
             try {
@@ -371,21 +579,45 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                     origins,
                 });
             } finally {
-                prompt.close();
-                claudeQuery.close();
+                void closeClaudeQueryWhenMcpSettles({
+                    claudeQuery,
+                    prompt,
+                });
             }
+        },
+        openMcpControl({cwd, env}) {
+            const prompt = createMessageQueue();
+            const claudeQuery = query({
+                prompt,
+                options: {
+                    cwd,
+                    env: createClaudeEnv(env),
+                },
+            });
+            return Promise.resolve({
+                ...createClaudeMcpControl(claudeQuery),
+                close() {
+                    void closeClaudeQueryWhenMcpSettles({
+                        claudeQuery,
+                        prompt,
+                    });
+                },
+            });
         },
         async generateTitle({cwd, prompt}) {
             const claudeQuery = query({
                 prompt,
                 options: {
                     cwd,
+                    env: createClaudeEnv(undefined),
                     model: 'haiku',
                     tools: [],
                     maxTurns: 1,
                     persistSession: false,
                     /** Skips the user's hooks and the repo's CLAUDE.md, which a title doesn't need. */
                     settingSources: [],
+                    /** Skips connecting MCP servers, which a title doesn't need either. */
+                    strictMcpConfig: true,
                 },
             });
             for await (const message of claudeQuery) {
@@ -395,7 +627,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             }
             return '';
         },
-        start({
+        async start({
             cwd,
             model,
             effort,
@@ -407,6 +639,14 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             env,
             processHost,
         }) {
+            if (providerSessionId) {
+                await restoreClaudeTranscript({
+                    sessionStore,
+                    sessionId: providerSessionId,
+                    cwd,
+                    configDir: env?.CLAUDE_CONFIG_DIR || findClaudeConfigDir(),
+                });
+            }
             const state = {
                 runtimeMode,
                 /** The id of the message the stream events currently belong to. */
@@ -434,6 +674,14 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 userRequestCount: 0,
                 /** Settles once every earlier `send` has queued its message. */
                 previousSend: Promise.resolve() as Promise<unknown>,
+                /**
+                 * Servers `loadNewServers` added. Each `setMcpServers` call drops the ones it
+                 * doesn't name.
+                 */
+                addedMcpServers: {} satisfies Record<string, McpServerConfig> as Record<
+                    string,
+                    McpServerConfig
+                >,
             };
             const messages = createMessageQueue();
 
@@ -579,15 +827,26 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 }
             };
 
+            const agentToolMcpServers = {
+                [agentToolServerName]: {
+                    type: 'http',
+                    url: agentTools.url,
+                    headers: {
+                        Authorization: `Bearer ${agentTools.token}`,
+                    },
+                    timeout: convertDuration(agentToolTimeout, {
+                        milliseconds: true,
+                    }).milliseconds,
+                    /** Keeps the tools in the prompt instead of behind tool search. */
+                    alwaysLoad: true,
+                },
+            } satisfies Record<string, McpServerConfig>;
+
             const claudeQuery = query({
                 prompt: messages,
                 options: {
                     cwd,
-                    ...(env
-                        ? {
-                              env,
-                          }
-                        : {}),
+                    env: createClaudeEnv(env),
                     ...(model
                         ? {
                               model,
@@ -598,9 +857,17 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                               effort: claudeEfforts[effort],
                           }
                         : {}),
+                    /**
+                     * Not the `resume` option: with `sessionStore` set, the SDK resumes from a
+                     * temporary config folder that drops the user's plugins, skills, and
+                     * `CLAUDE.md`. `restoreClaudeTranscript` already put the transcript where
+                     * Claude Code looks.
+                     */
                     ...(providerSessionId
                         ? {
-                              resume: providerSessionId,
+                              extraArgs: {
+                                  resume: providerSessionId,
+                              },
                           }
                         : {}),
                     /** Overrides `fastMode` in the user's settings. */
@@ -632,20 +899,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                             spawnOptions,
                         });
                     },
-                    mcpServers: {
-                        [agentToolServerName]: {
-                            type: 'http',
-                            url: agentTools.url,
-                            headers: {
-                                Authorization: `Bearer ${agentTools.token}`,
-                            },
-                            timeout: convertDuration(agentToolTimeout, {
-                                milliseconds: true,
-                            }).milliseconds,
-                            /** Keeps the tools in the prompt instead of behind tool search. */
-                            alwaysLoad: true,
-                        },
-                    },
+                    mcpServers: agentToolMcpServers,
                     hooks: {
                         PreToolUse: [
                             {
@@ -659,6 +913,15 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             });
 
             async function handleMessage(message: SDKMessage) {
+                /** Before sub-agents' messages are skipped, since their tokens count too. */
+                if (message.type === 'assistant') {
+                    const usage = readClaudeMessageUsage(message.message);
+                    if (usage) {
+                        await sink.recordUsage(usage);
+                    }
+                } else if (message.type === 'rate_limit_event') {
+                    sink.reportRateLimitsChanged();
+                }
                 if ('parent_tool_use_id' in message && message.parent_tool_use_id) {
                     /** A sub-agent's own steps, which its `Task` tool call already stands for. */
                     return;
@@ -847,7 +1110,12 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         await handleMessage(message);
                     }
                 } catch (error) {
-                    if (!state.isStopped) {
+                    /**
+                     * An idle process that exits, such as one killed to restart it, cost no work,
+                     * and the thread's next message starts a new one.
+                     */
+                    const wasIdle = state.isSettled && !state.isReplying;
+                    if (!state.isStopped && !wasIdle) {
                         await sessionSink.addNotice(`Claude failed: ${extractErrorMessage(error)}`);
                         await sessionSink.setStatus(ThreadStatus.Failed);
                     }
@@ -886,6 +1154,38 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
             void readMessages(sink);
 
             return Promise.resolve({
+                mcp: {
+                    ...createClaudeMcpControl(claudeQuery),
+                    async loadNewServers() {
+                        const [
+                            configured,
+                            loaded,
+                        ] = await Promise.all([
+                            readConfiguredMcpServers({
+                                cwd,
+                                env,
+                            }),
+                            claudeQuery.mcpServerStatus(),
+                        ]);
+                        const loadedNames = loaded.map((server) => server.name);
+                        const newServers = configured.filter(
+                            (server) => !loadedNames.includes(server.name),
+                        );
+                        if (!newServers.length) {
+                            return;
+                        }
+                        state.addedMcpServers = newServers.reduce((servers, server) => {
+                            return {
+                                ...servers,
+                                [server.name]: server.config,
+                            };
+                        }, state.addedMcpServers);
+                        await claudeQuery.setMcpServers({
+                            ...agentToolMcpServers,
+                            ...state.addedMcpServers,
+                        });
+                    },
+                },
                 async send({text, userTextStart}) {
                     /** Skips asking Claude Code for its commands when no `$` could start a mention. */
                     const content = hasSkillMention(text.slice(userTextStart))

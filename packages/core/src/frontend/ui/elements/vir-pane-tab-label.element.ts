@@ -1,5 +1,5 @@
 import {PaneStatus, type AiDefinition} from '@agent-storm/common';
-import {css, html, nothing} from 'element-vir';
+import {css, html, nothing, type HtmlInterpolation} from 'element-vir';
 import {
     createSizedIcon,
     LucideHourglassIcon,
@@ -45,6 +45,8 @@ export const VirPaneTabLabel = defineAppElement<{
     icon: ViraIconSvg;
     /** Shown instead of `icon`. */
     ai?: Readonly<AiDefinition> | undefined;
+    /** Shown instead of `icon` and `ai`. */
+    iconContent?: HtmlInterpolation | undefined;
     /** When set, the label keeps room for the activity icon so tabs don't shift when it appears. */
     status?: PaneStatus | undefined;
 }>()({
@@ -81,7 +83,8 @@ export const VirPaneTabLabel = defineAppElement<{
     render({inputs}) {
         const indicator = inputs.status ? activityIndicators[inputs.status] : undefined;
         return html`
-            ${inputs.ai
+            ${inputs.iconContent ??
+            (inputs.ai
                 ? html`
                       <${VirAiAvatar.assign({
                           name: inputs.ai.name,
@@ -93,7 +96,7 @@ export const VirPaneTabLabel = defineAppElement<{
                       <${ViraIcon.assign({
                           icon: inputs.icon,
                       })}></${ViraIcon}>
-                  `}
+                  `)}
             <span>${inputs.label}</span>
             ${inputs.status
                 ? html`

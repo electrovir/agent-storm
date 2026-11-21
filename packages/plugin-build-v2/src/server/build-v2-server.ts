@@ -1,9 +1,12 @@
+import {type BuildV2ServerExports, type PluginThreadTarget} from '@agent-storm/common';
 // cspell:words unarchive unarchived unarchives unarchiving
 import {
     definePluginServer,
     type HostedProcessAttachment,
     type PluginCallHandlers,
 } from '@agent-storm/core/server';
+import {UsageProvider, UsageSource} from '@agent-storm/plugin-usage/src/usage-api.js';
+import {usageExportsKey} from '@agent-storm/plugin-usage/src/usage-exports.js';
 import {
     awaitedForEach,
     createCuid2,
@@ -25,19 +28,24 @@ import {
     type ComposerCommand,
     providerLabels,
     type ProviderModel,
+    RuntimeMode,
     ThreadItemKind,
     ThreadItemStatus,
+    ThreadOrigin,
     ThreadStatus,
 } from '../build-v2-api.js';
+import {readModelDefaults} from '../util/model-default-settings.js';
 import {startAgentToolServer} from './agent-tool-server.js';
 import {agentToolInstructions, agentTools} from './agent-tools.js';
 import {openBuildV2Database} from './build-v2-database.js';
 import {createClaudeSessionStore} from './claude-session-store.js';
 import {buildContextHandoff} from './context-handoff.js';
 import {readFolderEnv} from './folder-env.js';
+import {applyMcpChange} from './mcp-control.js';
 import {createClaudeProvider} from './providers/claude-provider.js';
 import {codexProvider} from './providers/codex-provider.js';
 import {
+    type McpControl,
     type ProviderAdapter,
     type ProviderProcessHost,
     type ProviderSession,
@@ -64,6 +72,18 @@ const hostedProcessIdPrefix = 'build-v2:';
 /** A repo's Claude skill that makes a worktree for a new thread and opens a PR from it. */
 const openWorktreeSkillName = 'open-worktree';
 
+const usageProviders: Readonly<Record<AiProvider, UsageProvider>> = {
+    [AiProvider.Claude]: UsageProvider.Claude,
+    [AiProvider.Codex]: UsageProvider.Codex,
+};
+
+const usageSources: Readonly<Record<ThreadOrigin, UsageSource>> = {
+    [ThreadOrigin.User]: UsageSource.BuildV2,
+    [ThreadOrigin.SideChat]: UsageSource.BuildV2,
+    [ThreadOrigin.Review]: UsageSource.Review,
+    [ThreadOrigin.Watch]: UsageSource.Review,
+};
+
 /** Statuses of a thread that's mid-turn. */
 const busyThreadStatuses: Readonly<Record<ThreadStatus, boolean>> = {
     [ThreadStatus.Idle]: false,
@@ -83,7 +103,7 @@ async function isFolderMissing(folder: string) {
 
 export default definePluginServer({
     api: buildV2Api,
-    async start({emit, dataDir, tempDir, host}) {
+    async start({emit, dataDir, tempDir, host, waitForPlugin}) {
         const prismaClient = await openBuildV2Database(dataDir);
         const store = createThreadStore({
             prismaClient,
@@ -124,6 +144,17 @@ export default definePluginServer({
         >();
         /** Each thread's running provider, by thread id. */
         const sessions = new Map<string, Promise<ProviderSession>>();
+        /**
+         * The short-lived MCP sessions of threads without a running one, kept open while the user
+         * signs in to a server, by thread id.
+         */
+        const mcpSignInSessions = new Map<
+            string,
+            Readonly<{
+                control: McpControl & Readonly<{close(): void}>;
+                closeTimer: NodeJS.Timeout;
+            }>
+        >();
         /** Each thread's connection to its provider process in the daemon, by thread id. */
         const hostedAttachments = new Map<string, HostedProcessAttachment>();
         /** Called with whether the thread's next attach started a new process. */
@@ -277,7 +308,11 @@ export default definePluginServer({
          * A session's sink. Once the thread moves on to another session (or none), whatever the old
          * one still reports is dropped.
          */
-        function createSink(threadId: string, session: {current?: Promise<ProviderSession>}) {
+        function createSink(
+            threadId: string,
+            session: {current?: Promise<ProviderSession>},
+            provider: AiProvider,
+        ) {
             function isCurrent() {
                 return !!session.current && sessions.get(threadId) === session.current;
             }
@@ -400,6 +435,40 @@ export default definePluginServer({
                     );
                     return decision === ApprovalDecision.Decline ? undefined : [...answers];
                 },
+                async recordUsage(usage) {
+                    try {
+                        const usageExports = await waitForPlugin(usageExportsKey);
+                        if (!usageExports) {
+                            return;
+                        }
+                        const thread = await store.findThread(threadId);
+                        await usageExports.recordUsage({
+                            ...usage,
+                            source: usageSources[thread.origin],
+                            provider: usageProviders[provider],
+                            repoPath: thread.repoPath,
+                            folder: thread.cwd,
+                            threadId,
+                            prUrl: thread.prUrl || undefined,
+                            label: thread.title,
+                        });
+                    } catch (error) {
+                        log.warning(
+                            `Logging thread ${threadId}'s usage failed: ${extractErrorMessage(error)}`,
+                        );
+                    }
+                },
+                reportRateLimitsChanged() {
+                    waitForPlugin(usageExportsKey)
+                        .then((usageExports) => {
+                            usageExports?.notifyRateLimitsChanged(usageProviders[provider]);
+                        })
+                        .catch((error: unknown) => {
+                            log.warning(
+                                `Telling the Usage plugin about new rate limits failed: ${extractErrorMessage(error)}`,
+                            );
+                        });
+                },
                 async addNotice(text) {
                     if (isCurrent()) {
                         await addNotice({
@@ -473,7 +542,7 @@ export default definePluginServer({
                     speedTier: details.speedTier,
                     runtimeMode: details.runtimeMode,
                     providerSessionId: details.providerSessionId,
-                    sink: createSink(threadId, session),
+                    sink: createSink(threadId, session, details.provider),
                     agentTools: agentToolServer.connect(threadId),
                     processHost: createProcessHost(threadId),
                 });
@@ -488,6 +557,102 @@ export default definePluginServer({
                 }
                 throw error;
             }
+        }
+
+        /** Keeps a thread's short-lived MCP session open for a while longer, for a sign-in. */
+        function holdMcpSignInSession(
+            threadId: string,
+            control: McpControl & Readonly<{close(): void}>,
+        ) {
+            clearTimeout(mcpSignInSessions.get(threadId)?.closeTimer);
+            const closeTimer = setTimeout(
+                () => {
+                    mcpSignInSessions.delete(threadId);
+                    control.close();
+                },
+                convertDuration(
+                    {
+                        minutes: 10,
+                    },
+                    {
+                        milliseconds: true,
+                    },
+                ).milliseconds,
+            );
+            closeTimer.unref();
+            mcpSignInSessions.set(threadId, {
+                control,
+                closeTimer,
+            });
+        }
+
+        /**
+         * Runs `use` on the MCP servers of the thread's running session. A thread without one uses
+         * a short-lived session in its folder instead of starting its own, which would skip handing
+         * a provider switch's earlier messages to the next one. `isSignIn` keeps that session open
+         * a while, since a sign-in's localhost callback reaches only the process that started it.
+         */
+        async function useThreadMcpControl<Result>({
+            threadId,
+            isSignIn,
+            use,
+        }: Readonly<{
+            threadId: string;
+            isSignIn: boolean;
+            use: (control: McpControl, isNewSession: boolean) => Promise<Result>;
+        }>) {
+            const running = (await sessions.get(threadId)?.catch(() => undefined))?.mcp;
+            if (running) {
+                return await use(running, false);
+            }
+            const held = mcpSignInSessions.get(threadId)?.control;
+            if (held) {
+                if (isSignIn) {
+                    holdMcpSignInSession(threadId, held);
+                }
+                return await use(held, false);
+            }
+            const details = await store.findSessionDetails(threadId);
+            const openMcpControl = providers[details.provider].openMcpControl;
+            if (!openMcpControl) {
+                throw new Error(
+                    `AI Chat can't manage ${providerLabels[details.provider]}'s MCP servers.`,
+                );
+            }
+            const control = await openMcpControl({
+                cwd: details.cwd,
+                env: await readFolderEnv(details.cwd),
+            });
+            if (isSignIn) {
+                holdMcpSignInSession(threadId, control);
+                return await use(control, true);
+            }
+            try {
+                return await use(control, true);
+            } finally {
+                control.close();
+            }
+        }
+
+        /** Makes `change` to the MCP servers of the thread's session, and lists them after. */
+        async function changeThreadMcpServers({
+            threadId,
+            change,
+        }: Readonly<{
+            threadId: string;
+            change: ((control: McpControl) => Promise<void>) | undefined;
+        }>) {
+            return await useThreadMcpControl({
+                threadId,
+                isSignIn: false,
+                async use(control, isNewSession) {
+                    return await applyMcpChange({
+                        control,
+                        change,
+                        isConnectAwaited: isNewSession,
+                    });
+                },
+            });
         }
 
         async function stopSession(threadId: string) {
@@ -770,17 +935,209 @@ export default definePluginServer({
             );
         }
 
+        async function createThread({
+            id: requestedId,
+            repoPath,
+            provider,
+            model,
+            effort,
+            speedTier,
+            runtimeMode,
+            text,
+            title,
+            isInWorktree,
+            isStartAwaited,
+            origin,
+            prUrl,
+            parentThreadId,
+        }: Readonly<
+            Parameters<PluginCallHandlers<typeof buildV2Api>['createThread']>[0] & {
+                origin: ThreadOrigin;
+                prUrl: string | undefined;
+            }
+        >) {
+            const customTitle = title?.trim();
+            const folder = normalizePath(repoPath);
+            /**
+             * The sidebar groups threads by `repoPath`, so a thread started in a worktree (such as
+             * from an AI Chat tab on a worktree folder) belongs to its main checkout.
+             */
+            const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
+            /**
+             * The skill runs inside `folder`, so from a worktree it could nest its new one there.
+             * The built-in move always makes a sibling.
+             */
+            const isOpenWorktreeSkillUsed =
+                isInWorktree &&
+                !folderInfo?.parentRepoPath &&
+                provider === AiProvider.Claude &&
+                !!(await stat(
+                    join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
+                ).catch(() => undefined));
+            const {id} = await store.createThread({
+                id: requestedId || createCuid2(),
+                repoPath: folderInfo?.parentRepoPath
+                    ? normalizePath(folderInfo.parentRepoPath)
+                    : folder,
+                cwd: folder,
+                provider,
+                model,
+                effort,
+                speedTier,
+                runtimeMode,
+                title: customTitle || createThreadTitle(text),
+                hasCustomTitle: !!customTitle || origin === ThreadOrigin.SideChat,
+                origin,
+                prUrl,
+                parentThreadId,
+            });
+            const firstMessage = isOpenWorktreeSkillUsed
+                ? `/${openWorktreeSkillName} ${text}`
+                : text;
+            const {order} = await recordMessage({
+                threadId: id,
+                text: firstMessage,
+            });
+            async function startThread() {
+                if (isInWorktree && !isOpenWorktreeSkillUsed) {
+                    /**
+                     * Waits for the generated title so the branch isn't named from raw message
+                     * text. Without one, the branch gets a placeholder name that a later title
+                     * replaces.
+                     */
+                    try {
+                        await moveThreadToNewWorktree({
+                            threadId: id,
+                            folder,
+                            title:
+                                customTitle ||
+                                (await generateThreadTitle({
+                                    threadId: id,
+                                    firstMessage: text,
+                                })) ||
+                                '',
+                        });
+                    } catch (error) {
+                        await addNotice({
+                            threadId: id,
+                            text: `Making a worktree failed, so this thread stays in ${folder}: ${extractErrorMessage(error)}`,
+                        });
+                    }
+                } else {
+                    void generateThreadTitle({
+                        threadId: id,
+                        firstMessage: text,
+                    });
+                }
+                await deliverMessage({
+                    threadId: id,
+                    text: firstMessage,
+                    order,
+                });
+            }
+            /**
+             * Unless awaited, the caller can select the new thread right away: making a worktree,
+             * generating its title, and starting the provider all take seconds.
+             */
+            const start = trackStart(
+                id,
+                startThread().catch(async (error: unknown) => {
+                    try {
+                        await store.updateThread(id, {
+                            status: ThreadStatus.Failed,
+                        });
+                        await addNotice({
+                            threadId: id,
+                            text: extractErrorMessage(error),
+                        });
+                    } catch (failureError) {
+                        log.warning(
+                            `Recording thread ${id}'s failed start failed: ${extractErrorMessage(failureError)}`,
+                        );
+                    }
+                }),
+            );
+            if (isStartAwaited) {
+                await start;
+            }
+            return {
+                thread: await store.findThread(id),
+            };
+        }
+
+        async function findPluginThread({cwd, origin}: PluginThreadTarget) {
+            return await store.findNewestThread({
+                cwd: normalizePath(cwd),
+                origin,
+            });
+        }
+
+        const pluginExports: BuildV2ServerExports = {
+            findPluginThread,
+            async sendToPluginThread({cwd, origin, prUrl, text}) {
+                const existing = await findPluginThread({
+                    cwd,
+                    origin,
+                });
+                if (existing) {
+                    await sendMessage({
+                        threadId: existing.id,
+                        text,
+                    });
+                    return await store.findThread(existing.id);
+                }
+                const folder = normalizePath(cwd);
+                const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
+                const modelDefaults = readModelDefaults(await host.loadSettings());
+                const modelDefault = modelDefaults.folders[
+                    folderInfo?.parentRepoPath ? normalizePath(folderInfo.parentRepoPath) : folder
+                ] ||
+                    modelDefaults.global || {
+                        provider: AiProvider.Claude,
+                        model: '',
+                        effort: undefined,
+                    };
+                return (
+                    await createThread({
+                        id: undefined,
+                        repoPath: folder,
+                        provider: modelDefault.provider,
+                        model: modelDefault.model,
+                        effort: modelDefault.effort,
+                        speedTier: undefined,
+                        runtimeMode: RuntimeMode.FullAccess,
+                        text,
+                        isInWorktree: false,
+                        isStartAwaited: false,
+                        origin,
+                        prUrl,
+                    })
+                ).thread;
+            },
+            async compactThread(threadId) {
+                if ((await store.findThread(threadId)).provider === AiProvider.Claude) {
+                    await sendMessage({
+                        threadId,
+                        text: '/compact',
+                    });
+                }
+            },
+        };
+
         const calls: PluginCallHandlers<typeof buildV2Api> = {
             async listThreads() {
                 const [
                     threads,
+                    sideChats,
                     repoActivity,
                 ] = await Promise.all([
                     store.listThreads(),
+                    store.listSideChats(),
                     store.listRepoActivity(),
                 ]);
                 return {
                     threads,
+                    sideChats,
                     repoActivity,
                 };
             },
@@ -849,123 +1206,83 @@ export default definePluginServer({
                     throw error;
                 }
             },
-            async createThread({
-                id: requestedId,
-                repoPath,
-                provider,
-                model,
-                effort,
-                speedTier,
-                runtimeMode,
-                text,
-                title,
-                isInWorktree,
-                isStartAwaited,
-            }) {
-                const customTitle = title?.trim();
-                const folder = normalizePath(repoPath);
-                /**
-                 * The sidebar groups threads by `repoPath`, so a thread started in a worktree (such
-                 * as from an AI Chat tab on a worktree folder) belongs to its main checkout.
-                 */
-                const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
-                /**
-                 * The skill runs inside `folder`, so from a worktree it could nest its new one
-                 * there. The built-in move always makes a sibling.
-                 */
-                const isOpenWorktreeSkillUsed =
-                    isInWorktree &&
-                    !folderInfo?.parentRepoPath &&
-                    provider === AiProvider.Claude &&
-                    !!(await stat(
-                        join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
-                    ).catch(() => undefined));
-                const {id} = await store.createThread({
-                    id: requestedId || createCuid2(),
-                    repoPath: folderInfo?.parentRepoPath
-                        ? normalizePath(folderInfo.parentRepoPath)
-                        : folder,
-                    cwd: folder,
-                    provider,
-                    model,
-                    effort,
-                    speedTier,
-                    runtimeMode,
-                    title: customTitle || createThreadTitle(text),
-                    hasCustomTitle: !!customTitle,
+            async listMcpServers({threadId, isNewServerLoadEnabled}) {
+                return await changeThreadMcpServers({
+                    threadId,
+                    change: isNewServerLoadEnabled
+                        ? async (control) => {
+                              await control.loadNewServers?.();
+                          }
+                        : undefined,
                 });
-                const firstMessage = isOpenWorktreeSkillUsed
-                    ? `/${openWorktreeSkillName} ${text}`
-                    : text;
-                const {order} = await recordMessage({
-                    threadId: id,
-                    text: firstMessage,
-                });
-                async function startThread() {
-                    if (isInWorktree && !isOpenWorktreeSkillUsed) {
-                        /**
-                         * Waits for the generated title so the branch isn't named from raw message
-                         * text. Without one, the branch gets a placeholder name that a later title
-                         * replaces.
-                         */
-                        try {
-                            await moveThreadToNewWorktree({
-                                threadId: id,
-                                folder,
-                                title:
-                                    customTitle ||
-                                    (await generateThreadTitle({
-                                        threadId: id,
-                                        firstMessage: text,
-                                    })) ||
-                                    '',
-                            });
-                        } catch (error) {
-                            await addNotice({
-                                threadId: id,
-                                text: `Making a worktree failed, so this thread stays in ${folder}: ${extractErrorMessage(error)}`,
-                            });
-                        }
-                    } else {
-                        void generateThreadTitle({
-                            threadId: id,
-                            firstMessage: text,
+            },
+            async setMcpServerEnabled({threadId, serverName, isEnabled}) {
+                return await changeThreadMcpServers({
+                    threadId,
+                    async change(control) {
+                        await control.setServerEnabled({
+                            serverName,
+                            isEnabled,
                         });
-                    }
-                    await deliverMessage({
-                        threadId: id,
-                        text: firstMessage,
-                        order,
-                    });
-                }
-                /**
-                 * Unless awaited, the caller can select the new thread right away: making a
-                 * worktree, generating its title, and starting the provider all take seconds.
-                 */
-                const start = trackStart(
-                    id,
-                    startThread().catch(async (error: unknown) => {
-                        try {
-                            await store.updateThread(id, {
-                                status: ThreadStatus.Failed,
-                            });
-                            await addNotice({
-                                threadId: id,
-                                text: extractErrorMessage(error),
-                            });
-                        } catch (failureError) {
-                            log.warning(
-                                `Recording thread ${id}'s failed start failed: ${extractErrorMessage(failureError)}`,
-                            );
-                        }
-                    }),
-                );
-                if (isStartAwaited) {
-                    await start;
-                }
-                return {
-                    thread: await store.findThread(id),
-                };
+                    },
+                });
+            },
+            async reconnectMcpServer({threadId, serverName}) {
+                return await changeThreadMcpServers({
+                    threadId,
+                    async change(control) {
+                        await control.reconnectServer(serverName);
+                    },
+                });
+            },
+            async signInMcpServer({threadId, serverName}) {
+                return await useThreadMcpControl({
+                    threadId,
+                    isSignIn: true,
+                    async use(control, isNewSession) {
+                        const signIn = await control.signIn(serverName).then(
+                            (reply) => {
+                                return {
+                                    ...reply,
+                                    error: '',
+                                };
+                            },
+                            (caught: unknown) => {
+                                return {
+                                    authUrl: '',
+                                    isCallbackExpected: false,
+                                    error: extractErrorMessage(caught),
+                                };
+                            },
+                        );
+                        return {
+                            ...(await applyMcpChange({
+                                control,
+                                change: undefined,
+                                isConnectAwaited: isNewSession,
+                            })),
+                            ...signIn,
+                        };
+                    },
+                });
+            },
+            async submitMcpSignInCallback({threadId, serverName, callbackUrl}) {
+                return await changeThreadMcpServers({
+                    threadId,
+                    async change(control) {
+                        await control.submitSignInCallbackUrl({
+                            serverName,
+                            callbackUrl,
+                        });
+                    },
+                });
+            },
+            async createThread(request) {
+                return await createThread({
+                    ...request,
+                    origin: request.parentThreadId ? ThreadOrigin.SideChat : ThreadOrigin.User,
+                    prUrl: undefined,
+                });
             },
             async readThread({threadId}) {
                 return await store.readThread(threadId);
@@ -1339,6 +1656,7 @@ export default definePluginServer({
 
         return {
             calls,
+            exports: pluginExports,
             async stop() {
                 clearInterval(deletedWorktreeSweep);
                 /**
@@ -1360,6 +1678,11 @@ export default definePluginServer({
                     }),
                 );
                 sessions.clear();
+                mcpSignInSessions.forEach((held) => {
+                    clearTimeout(held.closeTimer);
+                    held.control.close();
+                });
+                mcpSignInSessions.clear();
                 await agentToolServer.stop();
                 await prismaClient.$disconnect();
             },

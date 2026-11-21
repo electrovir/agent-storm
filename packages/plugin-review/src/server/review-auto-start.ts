@@ -4,7 +4,7 @@ import {
     createManualReviewPrompt,
     finishedPrStatuses,
     ManualReviewStatus,
-    PaneKind,
+    ThreadOrigin,
     type PullRequestRef,
     type ReviewQueuePr,
 } from '@agent-storm/common';
@@ -22,6 +22,7 @@ import {
 } from './github-review-queue.js';
 import {readManualReviewEntry, readManualReviewState} from './manual-review-state.js';
 import {readReviewHost} from './review-host.js';
+import {readReviewThreadStatus} from './review-threads.js';
 
 /** An unreadable settings file leaves automatic reviews on, like the setting's default. */
 async function isAutoManualReviewDisabled() {
@@ -33,8 +34,10 @@ async function isAutoManualReviewDisabled() {
 }
 
 export type ReviewAutoStartDeps = {
-    /** Types `prompt` into the folder's first AI tab, starting that tab first if it isn't running. */
-    launchFolderSession(params: Readonly<{folder: string; prompt: string}>): Promise<void>;
+    /** Sends `prompt` to the folder's review thread, starting one when it has none. */
+    sendToReviewThread(
+        params: Readonly<{folder: string; prompt: string; prUrl: string}>,
+    ): Promise<unknown>;
     /** Runs the repo's review init command in the review folder's shell tab. */
     runReviewInitCmd(pullRequest: Readonly<PullRequestRef>): Promise<void>;
 };
@@ -251,8 +254,9 @@ async function restartOutdatedReview({
             });
             return;
         }
-        await deps.launchFolderSession({
+        await deps.sendToReviewThread({
             folder,
+            prUrl: pullRequest.url,
             prompt: createManualReviewPrompt({
                 pullRequest,
                 folder,
@@ -291,7 +295,10 @@ async function retryFailedPost({
             !review.failedVerdict ||
             !review.folder ||
             busyPaneStatuses[
-                (await readReviewHost().getPaneStatusLookup())(review.folder, PaneKind.Ai)
+                await readReviewThreadStatus({
+                    folder: review.folder,
+                    origin: ThreadOrigin.Review,
+                })
             ]
         ) {
             return;
@@ -312,8 +319,9 @@ async function retryFailedPost({
                 sentAt: Date.now(),
             },
         };
-        await deps.launchFolderSession({
+        await deps.sendToReviewThread({
             folder: review.folder,
+            prUrl: pullRequest.url,
             prompt: createFolderReviewPrompt({
                 command: review.failedVerdict,
                 folder: review.folder,
@@ -413,7 +421,7 @@ async function autoStartReview({
         /**
          * The skill only records a review once its runner gets going, so a folder with anything in
          * it means a start is underway, or one that failed before recording, such as on GitHub's
-         * rate limit, once its AI tab has gone quiet.
+         * rate limit, once its review thread has gone quiet.
          */
         const isFolderEmpty = !(await readdir(folder).catch(() => [])).length;
         const isFailedStart =
@@ -421,7 +429,12 @@ async function autoStartReview({
             !isFolderEmpty &&
             (autoStartState.failedStartRetries[pullRequest.url] || 0) < maxFailedRetries &&
             hasLaunchCooledDown(pullRequest.url) &&
-            !busyPaneStatuses[(await readReviewHost().getPaneStatusLookup())(folder, PaneKind.Ai)];
+            !busyPaneStatuses[
+                await readReviewThreadStatus({
+                    folder,
+                    origin: ThreadOrigin.Review,
+                })
+            ];
         if (!isRestart && !isFailedStart && (review || !isFolderEmpty)) {
             return;
         }
@@ -441,8 +454,9 @@ async function autoStartReview({
                 [pullRequest.url]: (autoStartState.failedStartRetries[pullRequest.url] || 0) + 1,
             };
         }
-        await deps.launchFolderSession({
+        await deps.sendToReviewThread({
             folder,
+            prUrl: pullRequest.url,
             prompt: createManualReviewPrompt({
                 pullRequest,
                 folder,
@@ -463,7 +477,7 @@ async function autoStartReview({
     }
 }
 
-/** Reviews in the Build folder itself, so its first AI tab gets the prompt. */
+/** Reviews in the Build folder itself, so the folder's review thread gets the prompt. */
 async function autoStartBuildReview({
     folder,
     branchName,
@@ -488,8 +502,9 @@ async function autoStartBuildReview({
         ) {
             return;
         }
-        await deps.launchFolderSession({
+        await deps.sendToReviewThread({
             folder,
+            prUrl,
             prompt: createManualReviewPrompt({
                 pullRequest: {
                     owner: slug.owner,

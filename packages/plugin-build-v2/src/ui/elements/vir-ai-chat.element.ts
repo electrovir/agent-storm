@@ -25,8 +25,10 @@ import {
     AiProvider,
     ApprovalDecision,
     ApprovalKind,
+    mcpControlProviders,
     RuntimeMode,
     ThreadItemKind,
+    ThreadOrigin,
     ThreadStatus,
     type ApprovalRequest,
     type ComposerCommand,
@@ -129,6 +131,8 @@ export const VirAiChat = defineAppElement<{
     repoPath: string;
     /** Focuses the composer each time this turns on. */
     isShown: boolean;
+    /** Makes a new thread a `ThreadOrigin.SideChat` one in this thread's tabs. */
+    parentThreadId?: string | undefined;
 }>()({
     tagName: 'vir-ai-chat',
     events: {
@@ -819,6 +823,7 @@ export const VirAiChat = defineAppElement<{
                             text: message,
                             title: threadTitle || undefined,
                             isInWorktree,
+                            parentThreadId: inputs.parentThreadId,
                         });
                         pendingThreadCreations.set(id, creation);
                         /** Shown before the server replies, which then replaces it in the list. */
@@ -839,6 +844,11 @@ export const VirAiChat = defineAppElement<{
                                         hasUnreadReply: false,
                                         isAskingQuestion: false,
                                         backgroundTaskCount: 0,
+                                        origin: inputs.parentThreadId
+                                            ? ThreadOrigin.SideChat
+                                            : ThreadOrigin.User,
+                                        prUrl: undefined,
+                                        parentThreadId: inputs.parentThreadId,
                                         userMessageCount: 1,
                                         lastUserMessageAt: now,
                                         createdAt: now,
@@ -1120,6 +1130,10 @@ export const VirAiChat = defineAppElement<{
                     ? state.thread.speedTier || undefined
                     : draftSelection.speedTier,
                 runtimeMode: state.thread?.runtimeMode || state.runtimeMode,
+                mcpThreadId:
+                    state.thread && mcpControlProviders[state.thread.provider]
+                        ? state.thread.id
+                        : undefined,
                 commands,
                 isShown: inputs.isShown,
                 shortcuts: mapObjectValues(composerShortcutActions, (_name, action) => {

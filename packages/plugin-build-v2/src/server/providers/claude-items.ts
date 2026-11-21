@@ -2,7 +2,7 @@ import {check} from '@augment-vir/assert';
 import {ApprovalKind, ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
 import {agentToolServerName} from '../agent-tool-server.js';
 import {unpromptedAgentToolNames} from '../agent-tools.js';
-import {type ProviderItem} from './provider-session.js';
+import {type ProviderItem, type ProviderUsage} from './provider-session.js';
 
 /** A Claude tool call as a thread item, before its result arrives. */
 export type ClaudeToolDescription = Pick<ProviderItem, 'kind' | 'title' | 'text'>;
@@ -198,5 +198,35 @@ export function completeClaudeToolItem({
         ...tool,
         status,
         text,
+    };
+}
+
+/**
+ * What the API response behind an assistant message spent. Claude sends a response as one message
+ * per content block, all with the response's id, so the id keys its record. Undefined for Claude
+ * Code's own notices, which no model wrote.
+ */
+export function readClaudeMessageUsage(
+    message: Readonly<{
+        id: string;
+        model: string;
+        usage: Readonly<{
+            input_tokens: number;
+            output_tokens: number;
+            cache_read_input_tokens?: number | null | undefined;
+            cache_creation_input_tokens?: number | null | undefined;
+        }>;
+    }>,
+): ProviderUsage | undefined {
+    if (message.model === '<synthetic>') {
+        return undefined;
+    }
+    return {
+        dedupeKey: `claude-message:${message.id}`,
+        model: message.model,
+        inputTokens: message.usage.input_tokens,
+        outputTokens: message.usage.output_tokens,
+        cacheReadTokens: message.usage.cache_read_input_tokens ?? 0,
+        cacheWriteTokens: message.usage.cache_creation_input_tokens ?? 0,
     };
 }

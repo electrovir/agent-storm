@@ -66,6 +66,17 @@ enum ApprovalDecision {
   decline
 }
 
+/// Who started a thread. Only `user` threads show in the sidebar and to agent tools.
+enum ThreadOrigin {
+  user
+  /// Runs a PR review for the Review plugin.
+  review
+  /// Runs watch mode's passes for the Review plugin.
+  watch
+  /// An extra AI Chat tab in a thread's tabs. Keeps the title it starts with.
+  sideChat
+}
+
 model Thread {
   id                  String           @id @default(cuid(2))
   createdAt           DateTime         @default(now())
@@ -91,6 +102,11 @@ model Thread {
   hasCustomTitle      Boolean          @default(false)
   /// Background tasks, such as sub-agents, still running after the agent's reply ended.
   backgroundTaskCount Int              @default(0)
+  origin              ThreadOrigin     @default(user)
+  /// The PR a `review` or `watch` thread works on.
+  prUrl               String?
+  /// The thread whose tabs hold a `sideChat` thread.
+  parentThreadId      String?
 
   items    ThreadItem[]
   requests ApprovalRequest[]

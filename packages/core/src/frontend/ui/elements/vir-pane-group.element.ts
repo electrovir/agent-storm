@@ -49,6 +49,7 @@ import {
     findTabGroupId,
     isTabLayoutConsistent,
     listDisplayedTabIds,
+    moveTab,
     renameTab,
     showTabKind,
     splitTab,
@@ -573,10 +574,22 @@ export const VirPaneGroup = defineAppElement<{
 
         async function openNewTab({kind, groupId, state: tabState, splitEdge}: NewTabRequest) {
             function placeTab(current: Readonly<TabLayout>, tab: Readonly<PaneTab>) {
-                const added = addTab(current, {
-                    tab,
-                    groupId,
-                });
+                const targetGroup = groupId && current.groups[groupId];
+                /**
+                 * A new session's tab is usually placed already: the session list updates before
+                 * `create` resolves, and `syncSessionTabs` puts it beside that kind's other tabs.
+                 */
+                const added =
+                    current.tabs[tab.id] && groupId && targetGroup
+                        ? moveTab(current, {
+                              tabId: tab.id,
+                              groupId,
+                              index: targetGroup.tabIds.length,
+                          })
+                        : addTab(current, {
+                              tab,
+                              groupId,
+                          });
                 const addedGroupId = findTabGroupId(added, tab.id);
                 return splitEdge && addedGroupId
                     ? splitTab(added, {
@@ -761,6 +774,10 @@ export const VirPaneGroup = defineAppElement<{
                     <${VirPaneTabLabel.assign({
                         label,
                         icon: definition.icon,
+                        iconContent: definition.renderTabIcon?.({
+                            tabState,
+                            context: inputs.context,
+                        }),
                     })}
                         ${renderKindTooltip({
                             name: tab.name,

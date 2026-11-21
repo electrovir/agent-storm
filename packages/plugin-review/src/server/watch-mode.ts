@@ -1,4 +1,5 @@
 import {
+    ThreadStatus as AiThreadStatus,
     busyPaneStatuses,
     finishedPrStatuses,
     GitHubPollingDisableReason,
@@ -8,6 +9,7 @@ import {
     PrStatus,
     RawPrState,
     RawReviewDecision,
+    ThreadOrigin,
     WatchModeStatus,
     type FolderInfo,
     type PullRequestBranch,
@@ -20,6 +22,7 @@ import {
     getEnumValues,
     getObjectTypedEntries,
     log,
+    omitObjectKeys,
     PromiseQueue,
     removeDuplicates,
     typedObjectFromEntries,
@@ -56,7 +59,8 @@ import {
 } from './manual-review-state.js';
 import {hasReviewableChanges} from './push-review.js';
 import {isManualReviewHereCopy} from './review-folders.js';
-import {readReviewHost} from './review-host.js';
+import {readReviewBuildV2, readReviewHost} from './review-host.js';
+import {readReviewThreadStatus} from './review-threads.js';
 import {
     fetchPrCheck,
     formatPrCheck,
@@ -119,15 +123,13 @@ const watchEntryShape = defineShape({
      */
     idleStateKey: '',
     failureCount: 0,
-    /** Passes in a row whose Watch tab exited before finishing. */
+    /** Passes in a row whose Watch thread failed before finishing. */
     exitedPassCount: 0,
     /**
      * The PR whose closing or merge stopped watch mode, 0 otherwise. Watch mode turns back on once
      * the branch has a different open PR.
      */
     closedPrNumber: 0,
-    /** The AI tab passes run in. Empty until the first pass. */
-    watchSessionId: '',
     /** Unix milliseconds. */
     lastCheckAt: 0,
     /**
@@ -154,7 +156,7 @@ const watchEntryShape = defineShape({
     viewerReviewOwedReason: '',
     /** The `viewerReviewOwedAt` whose review request already left its note on the PR. */
     viewerReviewNotedAt: '',
-    /** The pass the Watch tab is running. */
+    /** The pass the Watch thread is running. */
     pass: nullableShape({
         /** Unix milliseconds. */
         sentAt: 0,
@@ -168,12 +170,6 @@ type WatchEntry = typeof watchEntryShape.runtimeType;
 export type WatchModeDeps = {
     /** The sidebar's folders. */
     listFolders(): Promise<ReadonlyArray<Readonly<FolderInfo>>>;
-    /** Starts the tab's process if it isn't running, the way opening its pane would. */
-    spawnPane(params: Readonly<{folder: string; kind: PaneKind; sessionId: string}>): Promise<void>;
-    /** Types `text` into a running tab and submits it. */
-    sendPaneText(
-        params: Readonly<{folder: string; kind: PaneKind; sessionId: string; text: string}>,
-    ): Promise<void>;
 };
 
 const watchState: {
@@ -215,7 +211,7 @@ export function getWatchModeInfo(folder: string) {
             entry?.status === WatchModeStatus.Off && isSettledStop(entry.message)
                 ? ''
                 : entry?.message || '',
-        sessionId: entry?.watchSessionId || '',
+        sessionId: '',
     };
 }
 
@@ -333,7 +329,6 @@ export async function setWatchMode({
     if (isEnabled) {
         await updateEntry(folder, {
             ...defaultEntry,
-            watchSessionId: watchState.entries[folder]?.watchSessionId || '',
             isEnabled: true,
             status: WatchModeStatus.Watching,
             message: 'Checking the PR.',
@@ -426,6 +421,80 @@ async function watchNewlyReviewedCheckouts({
                     isEnabled: true,
                 });
             }
+        }),
+    );
+}
+
+/** The ring status a posted verdict leaves its PR in until GitHub's own answer replaces it. */
+const postedVerdictPrStatuses: Readonly<Record<ManualReviewStatus, PrStatus | undefined>> = {
+    [ManualReviewStatus.Approved]: PrStatus.Approved,
+    [ManualReviewStatus.RequestedChanges]: PrStatus.ChangesRequested,
+    [ManualReviewStatus.Aborted]: undefined,
+    [ManualReviewStatus.Commented]: undefined,
+    [ManualReviewStatus.PostFailed]: undefined,
+    [ManualReviewStatus.Started]: undefined,
+};
+
+/**
+ * Shows a just-posted verdict on the rings of every folder with that PR without asking GitHub, and
+ * checks the watched ones right away, so watch mode doesn't sit on "waiting for your review" until
+ * its next scheduled check.
+ */
+async function applyPostedVerdicts({
+    deps,
+    changedEntries,
+}: Readonly<{
+    deps: Readonly<WatchModeDeps>;
+    changedEntries: ReadonlyArray<ListedManualReviewEntry>;
+}>) {
+    const verdictEntries = changedEntries.filter(({entry}) => {
+        return (
+            !entry.isPending &&
+            !!entry.prUrl &&
+            !!entry.status &&
+            !!postedVerdictPrStatuses[entry.status]
+        );
+    });
+    if (!verdictEntries.length) {
+        return;
+    }
+    const folders = await deps.listFolders();
+    await Promise.all(
+        verdictEntries.flatMap(({owner, repoName, branchName, entry}) => {
+            const status = entry.status && postedVerdictPrStatuses[entry.status];
+            return folders
+                .filter((folder) => !!status && folder.prUrl === entry.prUrl)
+                .map(async (folder) => {
+                    /** Unresolved threads outrank an approval, as they do in GitHub's own status. */
+                    if (
+                        status &&
+                        !(
+                            status === PrStatus.Approved &&
+                            folder.prStatus === PrStatus.UnresolvedComments
+                        )
+                    ) {
+                        await readReviewHost().recordFolderPrStatus({
+                            folder: folder.path,
+                            slug: {
+                                owner,
+                                name: repoName,
+                            },
+                            branchName,
+                            prInfo: {
+                                url: folder.prUrl || '',
+                                status,
+                                baseBranch: folder.prBaseBranch || undefined,
+                            },
+                        });
+                    }
+                    if (watchState.entries[folder.path]?.isEnabled) {
+                        await updateEntry(folder.path, {
+                            lastCheckAt: 0,
+                            fullCheckAt: 0,
+                        });
+                        await runFolder(folder.path);
+                    }
+                });
         }),
     );
 }
@@ -757,101 +826,39 @@ function findTicketCandidates(prCheck: Readonly<PrCheck> | undefined, branch: st
     );
 }
 
-async function ensureWatchSession({
-    folder,
-    entry,
-}: Readonly<{
-    folder: string;
-    entry: Readonly<WatchEntry>;
-}>) {
-    const sessions = await readReviewHost().getFolderSessions(folder);
-    if (sessions.ai.some((session) => session.id === entry.watchSessionId)) {
-        return entry.watchSessionId;
-    }
-    const created = (
-        await readReviewHost().createFolderSession({
-            folder,
-            kind: PaneKind.Ai,
-        })
-    ).ai.at(-1);
-    if (!created) {
-        throw new Error('Failed to create a Watch tab.');
-    }
-    await readReviewHost().renameFolderSession({
-        folder,
-        kind: PaneKind.Ai,
-        sessionId: created.id,
-        name: 'Watch',
-    });
-    await updateEntry(folder, {
-        watchSessionId: created.id,
-    });
-    return created.id;
-}
-
-async function readWatchSessionStatus({
-    folder,
-    sessionId,
-}: Readonly<{folder: string; sessionId: string}>) {
-    const lookup = await readReviewHost().getPaneSessionStatusLookup();
-    return (
-        lookup(folder).find((session) => {
-            return session.kind === PaneKind.Ai && session.sessionId === sessionId;
-        })?.status || PaneStatus.None
-    );
-}
-
 async function startPass({
-    deps,
     folder,
-    entry,
     tasks,
     prCheck,
     branch,
 }: Readonly<{
-    deps: Readonly<WatchModeDeps>;
     folder: string;
-    entry: Readonly<WatchEntry>;
     tasks: ReadonlyArray<WatchTask>;
     prCheck: Readonly<PrCheck> | undefined;
     branch: string;
 }>) {
-    const sessionId = await ensureWatchSession({
+    const threadStatus = await readReviewThreadStatus({
         folder,
-        entry,
+        origin: ThreadOrigin.Watch,
     });
-    const conversationId = (
-        await readReviewHost().findFolderSession({
-            folder,
-            kind: PaneKind.Ai,
-            sessionId,
-        })
-    )?.conversationId;
-    if (conversationId && (await readReviewHost().isClaudeAwaitingPermission(conversationId))) {
+    if (threadStatus === PaneStatus.Stalled) {
         await updateEntry(folder, {
             status: WatchModeStatus.Paused,
-            message: 'Waiting for you to answer the prompt in the Watch tab.',
+            message: "Waiting for you to answer the Watch thread's request.",
         });
         return;
-    } else if (
-        busyPaneStatuses[
-            await readWatchSessionStatus({
-                folder,
-                sessionId,
-            })
-        ]
-    ) {
+    } else if (busyPaneStatuses[threadStatus]) {
         await updateEntry(folder, {
             status: WatchModeStatus.Working,
-            message: 'Waiting for the Watch tab to finish what it is doing.',
+            message: 'Waiting for the Watch thread to finish what it is doing.',
         });
         return;
     }
     const orderedTasks = watchTaskOrder.filter((task) => tasks.includes(task));
     const ticketCandidates = findTicketCandidates(prCheck, branch);
     /**
-     * A new path every pass. With the same path each time, a long-running Watch tab answered from
-     * the copy it read in an earlier pass instead of reading the file again.
+     * A new path every pass. With the same path each time, a long-running Watch thread answered
+     * from the copy it read in an earlier pass instead of reading the file again.
      */
     const passDir = join(watchModePassDir, createPassFileName(folder));
     const passFilePath = join(passDir, `${Date.now()}.md`);
@@ -888,22 +895,16 @@ async function startPass({
             '',
         ].join('\n'),
     );
-    if (!(await readReviewHost().getLivePaneSessionIds(folder, PaneKind.Ai)).includes(sessionId)) {
-        await deps.spawnPane({
-            folder,
-            kind: PaneKind.Ai,
-            sessionId,
-        });
-    }
     /** Watch mode may have been turned off while the pass file was being written. */
     if (!watchState.entries[folder]?.isEnabled) {
         return;
     }
-    /** One line, since a typed newline would submit the prompt early. */
-    await deps.sendPaneText({
-        folder,
-        kind: PaneKind.Ai,
-        sessionId,
+    await (
+        await readReviewBuildV2()
+    ).sendToPluginThread({
+        cwd: folder,
+        origin: ThreadOrigin.Watch,
+        prUrl: prCheck?.url || '',
         text: `Agent-storm watch mode pass for: ${orderedTasks.join(', ')}. Read this pass's new file ${passFilePath} and follow ${watchModeInstructionsPath} for its tasks and PR check. Re-read that file every pass, since it changes.`,
     });
     await updateEntry(folder, {
@@ -922,7 +923,7 @@ function createPassFileName(folder: string) {
     return folder.replaceAll(/[^\w.-]+/g, '_').replace(/^_+/, '');
 }
 
-/** How a pass stands given its Watch tab's status. Undefined while the pass is still running. */
+/** How a pass stands given its Watch thread's status. Undefined while the pass is still running. */
 const passResults: Readonly<
     Record<PaneStatus, (sentAt: number) => {isExited: boolean} | undefined>
 > = {
@@ -968,56 +969,38 @@ async function readPassResult({
     if (!entry.pass) {
         return undefined;
     }
-    const status = await readWatchSessionStatus({
+    const status = await readReviewThreadStatus({
         folder,
-        sessionId: entry.watchSessionId,
+        origin: ThreadOrigin.Watch,
     });
     return passResults[status](entry.pass.sentAt);
 }
 
 /**
- * Compacts the Watch tab once a pass ends, since the next pass starts from a fresh PR check and
+ * Compacts the Watch thread once a pass ends, since the next pass starts from a fresh PR check and
  * needs none of this one's working detail.
  */
-async function compactWatchSession({
-    deps,
-    folder,
-    sessionId,
-}: Readonly<{
-    deps: Readonly<WatchModeDeps>;
-    folder: string;
-    sessionId: string;
-}>) {
-    const conversationId = (
-        await readReviewHost().findFolderSession({
-            folder,
-            kind: PaneKind.Ai,
-            sessionId,
-        })
-    )?.conversationId;
-    /** The next pass pauses on the prompt too, so there's no need to stop watch mode over it. */
-    if (conversationId && (await readReviewHost().isClaudeAwaitingPermission(conversationId))) {
+async function compactWatchThread(folder: string) {
+    const thread = await (
+        await readReviewBuildV2()
+    ).findPluginThread({
+        cwd: folder,
+        origin: ThreadOrigin.Watch,
+    });
+    /** The next pass pauses on the request too, so there's no need to stop watch mode over it. */
+    if (!thread || thread.status === AiThreadStatus.NeedsApproval) {
         return;
     }
-    await deps.sendPaneText({
-        folder,
-        kind: PaneKind.Ai,
-        sessionId,
-        text: '/compact',
-    });
+    await (await readReviewBuildV2()).compactThread(thread.id);
     try {
         await waitUntil.isTrue(
             async () => {
-                return (
-                    !!conversationId &&
-                    (await readReviewHost().isClaudeReady(conversationId)) &&
-                    !busyPaneStatuses[
-                        await readWatchSessionStatus({
-                            folder,
-                            sessionId,
-                        })
-                    ]
-                );
+                return !busyPaneStatuses[
+                    await readReviewThreadStatus({
+                        folder,
+                        origin: ThreadOrigin.Watch,
+                    })
+                ];
             },
             {
                 interval: {
@@ -1029,7 +1012,7 @@ async function compactWatchSession({
             },
         );
     } catch {
-        /** A slow compaction only delays the next pass's prompt, which Claude queues. */
+        /** A slow compaction only delays the next pass, which waits for the thread to finish. */
     }
 }
 
@@ -1077,17 +1060,15 @@ const closedPrStates: Readonly<
 };
 
 async function checkFolder({
-    deps,
     folder,
     entry,
     finishedPass,
     isPassExited,
 }: Readonly<{
-    deps: Readonly<WatchModeDeps>;
     folder: string;
     entry: Readonly<WatchEntry>;
     finishedPass: WatchEntry['pass'];
-    /** The pass's tab exited, so it may not have finished its tasks and they get sent again. */
+    /** The pass's thread failed, so it may not have finished its tasks and they get sent again. */
     isPassExited: boolean;
 }>) {
     const branch = await readReviewHost().getCurrentBranch(folder);
@@ -1230,14 +1211,12 @@ async function checkFolder({
                 idleStateKey: noPrIdleStateKey,
                 status: WatchModeStatus.Watching,
                 message:
-                    'The last pass opened no PR. Waiting for a new commit or local change. Check the Watch tab.',
+                    'The last pass opened no PR. Waiting for a new commit or local change. Check the Watch thread.',
             });
             return;
         }
         await startPass({
-            deps,
             folder,
-            entry,
             tasks: [
                 WatchTask.OpenPr,
                 WatchTask.LinearTicket,
@@ -1344,17 +1323,12 @@ async function checkFolder({
                 reason: entry.viewerReviewOwedReason,
             }
           : undefined;
-    /** A fix-up push for watch mode's own failing checks would otherwise ask for review again. */
-    const areChecksSettled = !prCheck.pendingCount && !prCheck.failingChecks.length;
-    const isViewerReviewRequested = !!viewerReviewOwed && areChecksSettled;
     await updateEntry(folder, {
         viewerReviewOwedAt: viewerReviewOwed?.at || '',
         viewerReviewOwedReason: viewerReviewOwed?.reason || '',
-        viewerReviewNotedAt: isViewerReviewRequested
-            ? viewerReviewOwed.at
-            : (viewerReviewOwed && entry.viewerReviewNotedAt) || '',
+        viewerReviewNotedAt: viewerReviewOwed?.at || '',
     });
-    if (isViewerReviewRequested) {
+    if (viewerReviewOwed) {
         await requestReviews({
             folder,
             prCheck,
@@ -1441,14 +1415,12 @@ async function checkFolder({
     if (needTaskList.length && idleStateKey === createIdleStateKey(prCheck)) {
         await updateEntry(folder, {
             status: WatchModeStatus.Watching,
-            message: `The last pass found nothing to push for: ${needTaskList.join(', ')}. Waiting for the PR to change. Check the Watch tab.`,
+            message: `The last pass found nothing to push for: ${needTaskList.join(', ')}. Waiting for the PR to change. Check the Watch thread.`,
         });
         return;
     } else if (needTaskList.length) {
         await startPass({
-            deps,
             folder,
-            entry,
             tasks: [
                 ...needTaskList,
                 ...localTasks,
@@ -1462,9 +1434,7 @@ async function checkFolder({
         if (localTasks.length || local.localHeadSha !== prCheck.headSha) {
             /** Merging now would strand the local work outside the PR. */
             await startPass({
-                deps,
                 folder,
-                entry,
                 tasks: [
                     ...localTasks,
                     ...ticketTasks,
@@ -1507,9 +1477,7 @@ async function checkFolder({
         }
     } else if (isFirstCheck && (localTasks.length || ticketTasks.length)) {
         await startPass({
-            deps,
             folder,
-            entry,
             tasks: [
                 ...localTasks,
                 ...ticketTasks,
@@ -1527,9 +1495,7 @@ async function checkFolder({
             pendingPolls: 0,
         });
         await startPass({
-            deps,
             folder,
-            entry,
             tasks: [WatchTask.StuckChecks],
             prCheck,
             branch,
@@ -1548,8 +1514,7 @@ async function checkFolder({
 }
 
 async function runFolder(folder: string) {
-    const deps = watchState.deps;
-    if (!deps || watchState.runningFolders.includes(folder)) {
+    if (!watchState.deps || watchState.runningFolders.includes(folder)) {
         return;
     }
     watchState.runningFolders = [
@@ -1577,7 +1542,7 @@ async function runFolder(folder: string) {
         } else if (passResult?.isExited && entry.exitedPassCount) {
             await stopWatching({
                 folder,
-                message: 'The Watch tab exited during two passes in a row.',
+                message: 'The Watch thread failed during two passes in a row.',
             });
             return;
         } else if (pauseMessage) {
@@ -1624,20 +1589,15 @@ async function runFolder(folder: string) {
                 pass: undefined,
                 exitedPassCount: passResult.isExited ? entry.exitedPassCount + 1 : 0,
             });
-            /** An exited tab has nothing to compact, and the next pass restarts it. */
+            /** A failed thread has nothing to compact, and the next pass restarts it. */
             if (!passResult.isExited) {
-                await compactWatchSession({
-                    deps,
-                    folder,
-                    sessionId: entry.watchSessionId,
-                });
+                await compactWatchThread(folder);
             }
         }
         const checkedEntry = await updateEntry(folder, {
             lastCheckAt: Date.now(),
         });
         await checkFolder({
-            deps,
             folder,
             entry: checkedEntry,
             /** A restart can make a pass look exited after it already pushed. */
@@ -1695,7 +1655,10 @@ async function loadEntries() {
                           const withDefaults = check.isObject(entry)
                               ? {
                                     ...defaultEntry,
-                                    ...entry,
+                                    /** Passes ran in an AI tab whose id the shape no longer has. */
+                                    ...omitObjectKeys(entry, [
+                                        'watchSessionId',
+                                    ]),
                                 }
                               : entry;
                           return checkValidShape(withDefaults, watchEntryShape)
@@ -1756,9 +1719,9 @@ async function resumeIdleStoppedFolders() {
 
 /**
  * Agent-storm's built-in `/watch-pr`: polls each watched folder's PR, merges it once it's ready,
- * and hands the work it can't do in code to an AI pass in the folder's Watch tab. Survives server
- * restarts, picking a pass that was running back up where it left off. Resolves to a function that
- * stops it.
+ * and hands the work it can't do in code to an AI pass in the folder's Watch thread. Survives
+ * server restarts, picking a pass that was running back up where it left off. Resolves to a
+ * function that stops it.
  */
 export async function startWatchMode(deps: Readonly<WatchModeDeps>) {
     watchState.deps = deps;
@@ -1768,29 +1731,37 @@ export async function startWatchMode(deps: Readonly<WatchModeDeps>) {
      * A named instance is a debug copy using the user's own GitHub login. Watching PRs it wasn't
      * asked to would push to and merge the user's real PRs.
      */
-    const stopListeners = instanceName
-        ? []
-        : [
-              listenToManualReviewState(async (changedEntries) => {
-                  await watchNewlyReviewedCheckouts({
-                      deps,
-                      changedEntries,
-                  });
-              }),
-              listenToAssigneeQueue(async (pullRequests) => {
-                  await watchAssignedCheckouts({
-                      deps,
-                      pullRequests,
-                  });
-              }),
-              readReviewHost().listenToNewFolderPrs((info) => {
-                  void watchNewWorktreePr(info).catch((error: unknown) => {
-                      log.warning(
-                          `Failed to start watch mode for ${info.path}'s new PR: ${extractErrorMessage(error)}`,
-                      );
-                  });
-              }),
-          ];
+    const stopListeners = [
+        listenToManualReviewState(async (changedEntries) => {
+            await applyPostedVerdicts({
+                deps,
+                changedEntries,
+            });
+        }),
+        ...(instanceName
+            ? []
+            : [
+                  listenToManualReviewState(async (changedEntries) => {
+                      await watchNewlyReviewedCheckouts({
+                          deps,
+                          changedEntries,
+                      });
+                  }),
+                  listenToAssigneeQueue(async (pullRequests) => {
+                      await watchAssignedCheckouts({
+                          deps,
+                          pullRequests,
+                      });
+                  }),
+                  readReviewHost().listenToNewFolderPrs((info) => {
+                      void watchNewWorktreePr(info).catch((error: unknown) => {
+                          log.warning(
+                              `Failed to start watch mode for ${info.path}'s new PR: ${extractErrorMessage(error)}`,
+                          );
+                      });
+                  }),
+              ]),
+    ];
     const interval = setInterval(
         () => {
             getObjectTypedEntries(watchState.entries)

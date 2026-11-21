@@ -4,6 +4,7 @@ import {ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
 import {
     completeClaudeToolItem,
     describeClaudeToolUse,
+    readClaudeMessageUsage,
     readClaudeToolResultText,
 } from './claude-items.js';
 
@@ -102,6 +103,44 @@ describe(completeClaudeToolItem.name, () => {
                 isDeclined: true,
             }).status,
             ThreadItemStatus.Declined,
+        );
+    });
+});
+
+describe(readClaudeMessageUsage.name, () => {
+    it('keys usage by the API message', () => {
+        assert.deepEquals(
+            readClaudeMessageUsage({
+                id: 'msg_1',
+                model: 'claude-opus-4-1',
+                usage: {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_read_input_tokens: 300,
+                    cache_creation_input_tokens: null,
+                },
+            }),
+            {
+                dedupeKey: 'claude-message:msg_1',
+                model: 'claude-opus-4-1',
+                inputTokens: 10,
+                outputTokens: 20,
+                cacheReadTokens: 300,
+                cacheWriteTokens: 0,
+            },
+        );
+    });
+
+    it("skips Claude Code's own notices", () => {
+        assert.isUndefined(
+            readClaudeMessageUsage({
+                id: 'msg_2',
+                model: '<synthetic>',
+                usage: {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            }),
         );
     });
 });

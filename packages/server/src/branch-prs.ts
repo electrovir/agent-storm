@@ -1,4 +1,6 @@
+import {PrStatus} from '@agent-storm/common';
 import {filterObject} from '@augment-vir/common';
+import {convertDuration} from 'date-vir';
 import {type PrInfo, type RepoSlug} from './git.js';
 
 type RepoPrCacheEntry = {
@@ -17,6 +19,101 @@ export const repoPrCache = new Map<string, RepoPrCacheEntry>();
 
 export function repoCacheKey(slug: Readonly<RepoSlug>) {
     return `${slug.owner}/${slug.name}`;
+}
+
+/**
+ * The GitHub statuses each status held by {@link holdPrStatus} stands in for: the ones GitHub still
+ * answers with before it shows the change. Any other answer means GitHub caught up.
+ */
+const heldStatusReplacements: Readonly<Record<PrStatus, ReadonlyArray<PrStatus>>> = {
+    [PrStatus.None]: [],
+    [PrStatus.AwaitingReview]: [],
+    [PrStatus.ReviewStarted]: [],
+    [PrStatus.ReReviewRequested]: [],
+    [PrStatus.UnresolvedComments]: [],
+    [PrStatus.ChangesRequested]: [
+        PrStatus.AwaitingReview,
+        PrStatus.ReviewStarted,
+        PrStatus.ReReviewRequested,
+        PrStatus.UnresolvedComments,
+        PrStatus.Approved,
+        PrStatus.AwaitingOtherReviews,
+        PrStatus.ChecksFailed,
+        PrStatus.ReadyToMerge,
+    ],
+    /** Unresolved threads outrank an approval, as they do in GitHub's own status. */
+    [PrStatus.Approved]: [
+        PrStatus.AwaitingReview,
+        PrStatus.ReviewStarted,
+        PrStatus.ReReviewRequested,
+        PrStatus.ChangesRequested,
+    ],
+    [PrStatus.OthersRequestedChanges]: [],
+    [PrStatus.AwaitingOtherReviews]: [],
+    [PrStatus.ChecksFailed]: [],
+    [PrStatus.ReadyToMerge]: [],
+    [PrStatus.Merged]: [],
+    [PrStatus.Closed]: [],
+};
+
+/** By PR url. */
+const heldPrStatuses = new Map<
+    string,
+    Readonly<{
+        status: PrStatus;
+        heldAt: number;
+    }>
+>();
+
+/**
+ * Shows `status` for the PR at `url` in place of the cached GitHub answers that predate it, for a
+ * change made in agent-storm that GitHub doesn't show yet. An undefined `status` drops the hold.
+ */
+export function holdPrStatus({
+    url,
+    status,
+}: Readonly<{
+    url: string;
+    status: PrStatus | undefined;
+}>) {
+    if (status) {
+        heldPrStatuses.set(url, {
+            status,
+            heldAt: Date.now(),
+        });
+    } else {
+        heldPrStatuses.delete(url);
+    }
+}
+
+/**
+ * `prInfo` with the status held for its PR by {@link holdPrStatus}. A GitHub answer that caught up,
+ * or a hold GitHub never confirmed, ends the hold.
+ */
+export function applyHeldPrStatus(prInfo: Readonly<PrInfo>) {
+    const held = heldPrStatuses.get(prInfo.url);
+    if (!held) {
+        return prInfo;
+    }
+    const isHeld =
+        heldStatusReplacements[held.status].includes(prInfo.status) &&
+        Date.now() - held.heldAt <
+            convertDuration(
+                {
+                    minutes: 15,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds;
+    if (!isHeld) {
+        heldPrStatuses.delete(prInfo.url);
+        return prInfo;
+    }
+    return {
+        ...prInfo,
+        status: held.status,
+    };
 }
 
 /**
@@ -76,5 +173,5 @@ export function readBranchPrStatus({
             }),
         )
         ?.prsByBranch.get(branchName);
-    return prInfo?.url === url ? prInfo.status : undefined;
+    return prInfo?.url === url ? applyHeldPrStatus(prInfo).status : undefined;
 }

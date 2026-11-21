@@ -41,7 +41,6 @@ function renderReview(params: PaneRenderParams) {
                                 id: diffTabId,
                                 kind: diffPaneId,
                             },
-                            isBackground: true,
                         }),
                         {
                             tabId: diffTabId,

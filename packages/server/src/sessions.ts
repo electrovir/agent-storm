@@ -197,6 +197,49 @@ async function forgetConversationState(conversationIds: ReadonlyArray<string>): 
     );
 }
 
+/**
+ * Each AI tab whose Claude session id the session hook (`claude-hooks/agent-storm-session.sh`)
+ * recorded. The hook keeps only a tab's latest session.
+ */
+export async function listClaudeTabSessions() {
+    const store = await loadStore();
+    const tabs = getObjectTypedEntries(store).flatMap(
+        ([
+            folder,
+            sessions,
+        ]) => {
+            return getEnumValues(PaneKind)
+                .filter((kind) => paneKindRunsAi[kind])
+                .flatMap((kind) => sessions[kind])
+                .map((session) => {
+                    return {
+                        folder,
+                        conversationId: session.conversationId,
+                    };
+                });
+        },
+    );
+    const found = await Promise.all(
+        tabs.map(async (tab) => {
+            const claudeSessionId = (
+                await readFile(
+                    join(conversationStateDir, 'claude', tab.conversationId),
+                    'utf8',
+                ).catch(() => '')
+            ).trim();
+            return claudeSessionId
+                ? [
+                      {
+                          ...tab,
+                          claudeSessionId,
+                      },
+                  ]
+                : [];
+        }),
+    );
+    return found.flat();
+}
+
 /** Unlike {@link findFolderSession}, never creates a folder's default sessions. */
 export async function hasFolderSession({
     folder,

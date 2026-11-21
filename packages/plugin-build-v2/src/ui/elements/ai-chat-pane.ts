@@ -7,15 +7,21 @@ import {
 import {extractErrorMessage} from '@augment-vir/common';
 import {html, keyed, listen} from 'element-vir';
 import {defineShape} from 'object-shape-tester';
-import {createSizedIcon, LucideMessageSquareIcon} from 'vira';
+import {createSizedIcon, LucideMessageSquareIcon, ViraIcon} from 'vira';
+import {aiChatPaneId} from '../../build-v2-api.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {findBuildV2State, removeThread, storeThread} from '../../util/build-v2-state.js';
+import {VirAiChatTabIcon} from './vir-ai-chat-tab-icon.element.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
+
+const aiChatIcon = createSizedIcon(LucideMessageSquareIcon, 14);
 
 /** An AI Chat tab's own state. */
 const aiChatTabStateShape = defineShape({
     /** The thread the tab shows. Empty until the tab's first message creates one. */
     threadId: '',
+    /** Set on an extra tab in a thread's tabs, whose own thread stays out of the sidebar. */
+    parentThreadId: '',
 });
 
 function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
@@ -25,7 +31,7 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
                 tabId: params.tabId,
                 state: {
                     threadId,
-                } satisfies typeof aiChatTabStateShape.runtimeType,
+                } satisfies Partial<typeof aiChatTabStateShape.runtimeType>,
             });
         });
     }
@@ -38,6 +44,7 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
                 threadId: params.tabState.threadId || undefined,
                 repoPath: params.folder,
                 isShown: params.isDisplayed && params.isActive,
+                parentThreadId: params.tabState.parentThreadId || undefined,
             })}
                 ${listen(VirAiChat.events.threadCreated, async (event) => {
                     const state = findBuildV2State(params.context);
@@ -65,7 +72,7 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
 
 /** A Build V2 chat thread in a folder's tabs, beside its terminals and diffs. */
 export const aiChatPane: PaneDefinition<typeof aiChatTabStateShape> = {
-    id: 'ai-chat',
+    id: aiChatPaneId,
     tabStateShape: aiChatTabStateShape,
     label() {
         return 'AI Chat';
@@ -78,7 +85,24 @@ export const aiChatPane: PaneDefinition<typeof aiChatTabStateShape> = {
             },
         ];
     },
-    icon: createSizedIcon(LucideMessageSquareIcon, 14),
+    icon: aiChatIcon,
+    renderTabIcon({tabState, context}) {
+        const state = findBuildV2State(context);
+        return state && tabState.threadId
+            ? html`
+                  <${VirAiChatTabIcon.assign({
+                      threads: state.threads,
+                      sideChats: state.sideChats,
+                      threadId: tabState.threadId,
+                      icon: aiChatIcon,
+                  })}></${VirAiChatTabIcon}>
+              `
+            : html`
+                  <${ViraIcon.assign({
+                      icon: aiChatIcon,
+                  })}></${ViraIcon}>
+              `;
+    },
     hasAi: false,
     /** Stays mounted once shown so a running thread keeps streaming into its timeline. */
     mounting: PaneMounting.OnceDisplayed,

@@ -39,7 +39,13 @@ import {
     unknownShape,
 } from 'object-shape-tester';
 import {loadAppState, updateAppState, type AppState} from './app-state.js';
-import {recordBranchPr, repoCacheKey, repoPrCache} from './branch-prs.js';
+import {
+    applyHeldPrStatus,
+    holdPrStatus,
+    recordBranchPr,
+    repoCacheKey,
+    repoPrCache,
+} from './branch-prs.js';
 import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
 import {loadFolderSettings} from './folder-settings.js';
@@ -426,7 +432,8 @@ async function getCachedPrInfo(
     if (!slug) {
         return null;
     }
-    const pr = (await getCachedRepoPrMap(slug, refreshTtl)).get(branch);
+    const cachedPr = (await getCachedRepoPrMap(slug, refreshTtl)).get(branch);
+    const pr = cachedPr && applyHeldPrStatus(cachedPr);
     return pr
         ? {
               ...pr,
@@ -1029,10 +1036,28 @@ export async function recordFolderPrStatus({
 }
 
 /**
+ * {@link holdPrStatus}, then rebuilds every sidebar folder showing that PR so the next folder poll
+ * has it.
+ */
+export async function holdFolderPrStatus(
+    params: Readonly<{
+        url: string;
+        status: PrStatus | undefined;
+    }>,
+) {
+    holdPrStatus(params);
+    await Promise.all(
+        Array.from(cache.values())
+            .filter((info) => info.prUrl === params.url)
+            .map((info) => applyGitInfoChange(normalizePath(info.path))),
+    );
+}
+
+/**
  * Records a branch's PR found outside its repo's own lookup, like by the Review tab's PR lists, and
- * rebuilds every sidebar folder on that branch that doesn't show the PR yet. Without the rebuild,
- * an idle worktree's sidebar entry, and the {@link listenToNewFolderPrs} listeners watch mode starts
- * from, wait for the sweep's next read of that folder.
+ * rebuilds every sidebar folder on that branch that doesn't show the PR or its status yet. Without
+ * the rebuild, an idle worktree's sidebar entry, and the {@link listenToNewFolderPrs} listeners
+ * watch mode starts from, wait for the sweep's next read of that folder.
  */
 export async function recordFoldersBranchPr(
     params: Readonly<
@@ -1045,7 +1070,10 @@ export async function recordFoldersBranchPr(
     recordBranchPr(params);
     const folders = await awaitedFilter(
         Array.from(cache.values()).filter((info) => {
-            return info.branch === params.branchName && info.prUrl !== params.prInfo.url;
+            return (
+                info.branch === params.branchName &&
+                (info.prUrl !== params.prInfo.url || info.prStatus !== params.prInfo.status)
+            );
         }),
         async (info) => {
             const slug = await getRepoSlug(info.path);

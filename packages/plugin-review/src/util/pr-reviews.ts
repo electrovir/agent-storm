@@ -1,12 +1,6 @@
-import {
-    GitHubReviewState,
-    PrStatus,
-    type FolderInfo,
-    type ReviewPr,
-    type ReviewQueuePr,
-} from '@agent-storm/common';
+import {GitHubReviewState, PrStatus, type ReviewPr, type ReviewQueuePr} from '@agent-storm/common';
 import {reportClientError} from '@agent-storm/core/frontend';
-import {extractErrorMessage, omitObjectKeys, typedObjectFromEntries} from '@augment-vir/common';
+import {extractErrorMessage, omitObjectKeys} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {reviewClient} from './review-client.js';
@@ -19,7 +13,7 @@ export enum ReviewVerdict {
 export const reviewVerdicts: Record<
     ReviewVerdict,
     {
-        /** Typed into the AI pane, where the manual-review skill posts the review. */
+        /** Sent to the review thread, where the manual-review skill posts the review. */
         prompt: string;
         /** What the PR's rings show as soon as the verdict is sent. */
         prStatus: PrStatus;
@@ -145,40 +139,30 @@ export function getVerdictPrStatus({
 }
 
 /**
- * {@link getVerdictPrStatus} for each folder whose branch has a PR, by folder path. Folders without
- * a just-sent verdict are left out.
+ * Puts the PR's status in the server's PR store, which every ring and watch mode read, and fetches
+ * the folders again so the rings show it now. An undefined `status` drops it.
  */
-export function getFolderVerdictStatuses({
-    prReviews,
-    folderInfo,
+async function holdPrStatus({
+    url,
+    status,
+    refreshFolders,
 }: Readonly<{
-    prReviews: Readonly<PrReviews>;
-    folderInfo: ReadonlyMap<string, Readonly<FolderInfo>>;
+    url: string;
+    status: PrStatus | undefined;
+    refreshFolders: () => Promise<void>;
 }>) {
-    return typedObjectFromEntries(
-        [...folderInfo].flatMap(
-            ([
-                folderPath,
-                info,
-            ]) => {
-                const prStatus =
-                    info.prUrl &&
-                    getVerdictPrStatus({
-                        prReviews,
-                        url: info.prUrl,
-                        prStatus: info.prStatus,
-                    });
-                return prStatus
-                    ? [
-                          [
-                              folderPath,
-                              prStatus,
-                          ] as const,
-                      ]
-                    : [];
-            },
-        ),
-    );
+    try {
+        await reviewClient.call('holdPrStatus', {
+            url,
+            status,
+        });
+        await refreshFolders();
+    } catch (error) {
+        reportClientError({
+            error,
+            source: 'holdPrStatus',
+        });
+    }
 }
 
 /** PR details and sent verdicts, shared by every tab that reviews a PR. */
@@ -230,9 +214,12 @@ export function createPrReviews() {
     async function recordVerdict({
         pullRequest,
         verdict,
+        refreshFolders,
     }: Readonly<{
         pullRequest: Readonly<ReviewedBranch & Pick<ReviewQueuePr, 'url'>>;
         verdict: ReviewVerdict;
+        /** Fetches the app's folder list, which carries each folder's PR status. */
+        refreshFolders: () => Promise<void>;
     }>) {
         update({
             verdicts: {
@@ -243,6 +230,11 @@ export function createPrReviews() {
                     requestedAt: Date.now(),
                 },
             },
+        });
+        await holdPrStatus({
+            url: pullRequest.url,
+            status: reviewVerdicts[verdict].prStatus,
+            refreshFolders,
         });
         try {
             await reviewClient.call('closeEditorWindow', {
@@ -311,9 +303,9 @@ export function createPrReviews() {
             }
         },
         /**
-         * Hands the verdict's prompt to `sendPrompt`, which types it into the PR's AI pane for the
-         * manual-review skill to post. Meanwhile shows the verdict's status everywhere the PR is
-         * listed, and closes the editor window the review was read in, without waiting for the
+         * Hands the verdict's prompt to `sendPrompt`, which sends it to the PR's review thread for
+         * the manual-review skill to post. Meanwhile shows the verdict's status everywhere the PR
+         * is listed, and closes the editor window the review was read in, without waiting for the
          * skill. A prompt that fails to send clears the verdict again. Resolves to whether the
          * prompt was sent.
          */
@@ -334,6 +326,11 @@ export function createPrReviews() {
             ]);
             if (!isSent) {
                 clearVerdict(verdictRequest.pullRequest.url);
+                await holdPrStatus({
+                    url: verdictRequest.pullRequest.url,
+                    status: undefined,
+                    refreshFolders: verdictRequest.refreshFolders,
+                });
             }
             return isSent;
         },

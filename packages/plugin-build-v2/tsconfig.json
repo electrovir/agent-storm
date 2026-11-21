@@ -26,6 +26,9 @@
         },
         {
             "path": "../plugin-review"
+        },
+        {
+            "path": "../plugin-usage"
         }
     ]
 }

@@ -1,23 +1,30 @@
 import {
+    aiChatPaneId,
     diffPaneId,
     ManualReviewStatus,
-    paneInputEndpoint,
-    PaneKind,
+    ThreadOrigin,
     type ManualReviewState,
     type ReviewQueuePr,
 } from '@agent-storm/common';
 import {
-    fetchApi,
-    findShownSessionId,
+    addTab,
+    type FolderDataObservable,
     type FolderSessionsObservable,
     type UiLayoutObservable,
 } from '@agent-storm/core/frontend';
-import {extractErrorMessage, pickObjectKeys, wait} from '@augment-vir/common';
-import {HttpMethod} from '@rest-vir/api';
+import {extractErrorMessage, mapObjectValues, pickObjectKeys, wait} from '@augment-vir/common';
 import {convertDuration} from 'date-vir';
 import {Observable} from 'element-vir';
 import {reviewPrKey, type PrReviewsObservable, type ReviewVerdict} from './pr-reviews.js';
 import {reviewClient} from './review-client.js';
+
+/** A thread tab's name, shown instead of the AI Chat pane's label. */
+const threadTabNames: Readonly<Record<ThreadOrigin, string>> = {
+    [ThreadOrigin.User]: 'AI Chat',
+    [ThreadOrigin.Review]: 'AI Review',
+    [ThreadOrigin.Watch]: 'AI Watch',
+    [ThreadOrigin.SideChat]: 'AI Chat',
+};
 
 /** A verdict can only be posted while the skill holds a review that hasn't posted yet. */
 export const canPostVerdictByStatus: Readonly<Record<ManualReviewStatus, boolean>> = {
@@ -44,7 +51,7 @@ export type ReviewPanePr = Pick<
     | 'authorAvatarUrl'
 >;
 
-/** A manual review to start in a review folder's AI pane once its first session loads. */
+/** A manual review to start in a review folder's review thread. */
 export type ReviewStart = {
     prompt: string;
     /**
@@ -101,6 +108,13 @@ type PaneReviewState = {
      */
     reviewCopyFolder: string | undefined;
     reviewCopyPollHandle: ReturnType<typeof setInterval> | undefined;
+    /** Looks for the folder's review and watch mode threads while the group is active. */
+    threadPollHandle: ReturnType<typeof setInterval> | undefined;
+    /**
+     * The thread tabs this page has added, so a tab the user closes stays closed until the page
+     * reloads.
+     */
+    addedThreadTabIds: ReadonlyArray<string>;
     /** The last `ReviewStart` typed, for the renders between typing it and it being marked sent. */
     sentReviewStart: Readonly<ReviewStart> | undefined;
     /** Keeps the Diff tab on the manual review while its copy is still being made. */
@@ -124,19 +138,22 @@ export type PaneReviewObservable = ReturnType<typeof createPaneReview>;
 
 /**
  * A pane group's PR and the manual review on it: looks up a Build folder's PR, polls the review and
- * the folder's review copy while the group is active, types review prompts into the AI pane, and
- * acts on review updates.
+ * the folder's review copy while the group is active, sends review prompts to the review thread,
+ * and acts on review updates.
  */
 export function createPaneReview({
     folder,
     uiLayout,
     folderSessions,
     prReviews,
+    folderData,
 }: Readonly<{
     folder: string;
-    /** Holds the tab layout, to find the AI session the user is on and to show tabs. */
+    /** Fetched again once a verdict's status is held, so the rings show it at once. */
+    folderData: Pick<FolderDataObservable, 'refresh'>;
+    /** Holds the tab layout, to show tabs. */
     uiLayout: UiLayoutObservable;
-    /** Supplies the AI session prompts are typed into, and shows this review's errors. */
+    /** Shows this review's errors. */
     folderSessions: FolderSessionsObservable;
     prReviews: PrReviewsObservable;
 }>) {
@@ -155,6 +172,8 @@ export function createPaneReview({
             verdictSentAt: undefined,
             reviewCopyFolder: undefined,
             reviewCopyPollHandle: undefined,
+            threadPollHandle: undefined,
+            addedThreadTabIds: [],
             sentReviewStart: undefined,
             isManualReviewStarting: false,
         },
@@ -248,10 +267,84 @@ export function createPaneReview({
         }
     }
 
+    /** Adds a tab showing a review or watch mode thread, in the background unless `isShown`. */
+    function addThreadTab({
+        threadId,
+        origin,
+        isShown,
+    }: Readonly<{
+        threadId: string;
+        origin: ThreadOrigin;
+        isShown: boolean;
+    }>) {
+        const tabId = `${aiChatPaneId}:${threadId}`;
+        if (!observable.value.addedThreadTabIds.includes(tabId)) {
+            update({
+                addedThreadTabIds: [
+                    ...observable.value.addedThreadTabIds,
+                    tabId,
+                ],
+            });
+        }
+        uiLayout.updateTabLayout({
+            folder,
+            update(current) {
+                if (!current || (!isShown && current.tabs[tabId])) {
+                    return current;
+                }
+                const added = addTab(current, {
+                    tab: {
+                        id: tabId,
+                        kind: aiChatPaneId,
+                        name: threadTabNames[origin],
+                        state: {
+                            threadId,
+                        },
+                    },
+                });
+                return isShown
+                    ? added
+                    : {
+                          ...added,
+                          groups: mapObjectValues(added.groups, (groupId, group) => {
+                              return {
+                                  ...group,
+                                  activeTabId:
+                                      current.groups[groupId]?.activeTabId || group.activeTabId,
+                              };
+                          }),
+                          activeGroupId: current.activeGroupId,
+                      };
+            },
+        });
+    }
+
+    async function loadReviewThreads() {
+        try {
+            const {threads} = await reviewClient.call('readReviewThreads', {
+                folder,
+            });
+            threads
+                .filter((thread) => {
+                    return !observable.value.addedThreadTabIds.includes(
+                        `${aiChatPaneId}:${thread.threadId}`,
+                    );
+                })
+                .forEach((thread) => {
+                    addThreadTab({
+                        ...thread,
+                        isShown: false,
+                    });
+                });
+        } catch {
+            /** The next poll tries again. */
+        }
+    }
+
     /**
-     * Types `prompt` into the AI pane's selected session, or the folder's first one, which the
-     * server creates and starts as needed. On mobile, switches to the AI pane first. Failures are
-     * reported, and resolve to `false`.
+     * Sends `prompt` to the folder's review thread, which the server starts when there's none, and
+     * adds the thread's tab. On mobile, shows that tab. Failures are reported, and resolve to
+     * `false`.
      */
     async function sendPrompt({
         prompt,
@@ -260,25 +353,16 @@ export function createPaneReview({
         prompt: string;
         isMobile: boolean;
     }>) {
-        const aiSessions = folderSessions.value.sessions?.ai || [];
-        const tabLayout = uiLayout.getTabLayout(folder);
-        const shownSessionId = tabLayout && findShownSessionId(tabLayout, PaneKind.Ai);
-        const session =
-            aiSessions.find((aiSession) => aiSession.id === shownSessionId) || aiSessions[0];
-        if (isMobile) {
-            uiLayout.showPaneTab({
-                folder,
-                kind: PaneKind.Ai,
-            });
-        }
         try {
-            await fetchApi(paneInputEndpoint, HttpMethod.Post, {
-                requestData: {
-                    folder,
-                    kind: PaneKind.Ai,
-                    sessionId: session?.id,
-                    text: prompt,
-                },
+            const {threadId} = await reviewClient.call('sendToReviewThread', {
+                folder,
+                prompt,
+                prUrl: observable.value.pullRequest?.url || '',
+            });
+            addThreadTab({
+                threadId,
+                origin: ThreadOrigin.Review,
+                isShown: isMobile,
             });
             return true;
         } catch (error) {
@@ -435,6 +519,31 @@ export function createPaneReview({
                 });
             }
 
+            if (!active && observable.value.threadPollHandle) {
+                clearInterval(observable.value.threadPollHandle);
+                update({
+                    threadPollHandle: undefined,
+                });
+            }
+            if (active && !observable.value.threadPollHandle) {
+                void loadReviewThreads();
+                update({
+                    threadPollHandle: setInterval(
+                        () => {
+                            void loadReviewThreads();
+                        },
+                        convertDuration(
+                            {
+                                seconds: 5,
+                            },
+                            {
+                                milliseconds: true,
+                            },
+                        ).milliseconds,
+                    ),
+                });
+            }
+
             const shouldPollReviewCopy = isDiffMounted && !reviewPullRequest && active;
             if (!shouldPollReviewCopy && observable.value.reviewCopyPollHandle) {
                 clearInterval(observable.value.reviewCopyPollHandle);
@@ -479,6 +588,7 @@ export function createPaneReview({
             const isSent = await prReviews.requestVerdict({
                 pullRequest,
                 verdict,
+                refreshFolders: folderData.refresh,
                 sendPrompt(prompt) {
                     return sendPrompt({
                         prompt,
@@ -504,9 +614,9 @@ export function createPaneReview({
             });
         },
         /**
-         * Types `reviewStart`'s prompt once the AI pane's sessions have loaded, then opens the Diff
-         * tab, and for a fresh start runs the init command, once the review records something
-         * newer. Returns whether this call typed it, which is when the caller should mark it sent.
+         * Sends `reviewStart`'s prompt, then opens the Diff tab, and for a fresh start runs the
+         * init command, once the review records something newer. Returns whether this call sent it,
+         * which is when the caller should mark it sent.
          */
         sendReviewStart({
             reviewStart,
@@ -515,11 +625,7 @@ export function createPaneReview({
             reviewStart: Readonly<ReviewStart>;
             isMobile: boolean;
         }>) {
-            if (
-                reviewStart.isSent ||
-                !folderSessions.value.sessions ||
-                observable.value.sentReviewStart === reviewStart
-            ) {
+            if (reviewStart.isSent || observable.value.sentReviewStart === reviewStart) {
                 return false;
             }
             update({
@@ -536,6 +642,7 @@ export function createPaneReview({
         destroy() {
             clearInterval(observable.value.reviewPollHandle);
             clearInterval(observable.value.reviewCopyPollHandle);
+            clearInterval(observable.value.threadPollHandle);
             destroyObservable();
         },
     });

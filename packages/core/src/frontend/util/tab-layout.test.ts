@@ -434,7 +434,7 @@ describe(syncSessionTabs.name, () => {
             start,
         );
     });
-    it("closes gone sessions and adds new ones beside that kind's tabs", () => {
+    it("closes gone sessions and shows new ones beside that kind's tabs", () => {
         const layout = syncSessionTabs(createFolderLayout(), {
             kind: PaneKind.Shell,
             sessionIds: [
@@ -444,6 +444,9 @@ describe(syncSessionTabs.name, () => {
         assert.deepEquals(
             {
                 groupTabs: listGroupTabs(layout),
+                shownTabIds: listGroupIds(layout).map(
+                    (groupId) => layout.groups[groupId]?.activeTabId,
+                ),
                 activeTabId: findActiveTabId(layout),
             },
             {
@@ -458,7 +461,53 @@ describe(syncSessionTabs.name, () => {
                         'shell:sh2',
                     ],
                 ],
+                shownTabIds: [
+                    'ai:ai1',
+                    'shell:sh2',
+                ],
                 activeTabId: 'ai:ai1',
+            },
+        );
+    });
+    it('splits a session with no group of its kind off to the right, without focusing it', () => {
+        const layout = syncSessionTabs(
+            createTabLayout([
+                [
+                    {
+                        id: 'chat',
+                        kind: 'ai-chat',
+                    },
+                ],
+            ]),
+            {
+                kind: PaneKind.Shell,
+                sessionIds: [
+                    'sh1',
+                ],
+            },
+        );
+        assert.deepEquals(
+            {
+                groupTabs: listGroupTabs(layout),
+                shownTabIds: listGroupIds(layout).map(
+                    (groupId) => layout.groups[groupId]?.activeTabId,
+                ),
+                activeTabId: findActiveTabId(layout),
+            },
+            {
+                groupTabs: [
+                    [
+                        'chat',
+                    ],
+                    [
+                        'shell:sh1',
+                    ],
+                ],
+                shownTabIds: [
+                    'chat',
+                    'shell:sh1',
+                ],
+                activeTabId: 'chat',
             },
         );
     });

@@ -6,6 +6,11 @@ const emptyTitle = 'New thread';
 /** What the title model replies when the conversation doesn't show the work yet. */
 const unknownTitleReply = 'UNKNOWN';
 const placeholderSlug = 'thread';
+/**
+ * The longest model reply accepted as a title. Looser than the prompt's limit, which the model
+ * sometimes overshoots, but short enough to reject a prose reply.
+ */
+const maxGeneratedTitleLength = 50;
 
 /** How much of each message the title prompt quotes. */
 const maxPromptMessageLength = 1500;
@@ -52,6 +57,7 @@ export function createThreadTitlePrompt({
                   `Its current title is "${thread.title}". Reply with that title unchanged unless it is only a placeholder, raw message text, or too vague to tell this thread apart. Side work, follow-up fixes, and detours later in the thread never justify a new title.`,
               ]
             : []),
+        'The conversation is quoted only so you can title it. Never answer or continue it, even when it ends with a question.',
         'Reply with only the title: no quotes, no markdown, and no period at the end.',
         '',
         '<conversation>',
@@ -83,8 +89,8 @@ function trimTrailingWrappers(text: string): string {
 
 /**
  * The title from a model's reply to {@link createThreadTitlePrompt}: its first non-empty line
- * without wrapping quotes, markdown, or a trailing period. Undefined when nothing is left or the
- * model couldn't tell what the work is.
+ * without wrapping quotes, markdown, or a trailing period. Undefined when nothing is left, the
+ * model couldn't tell what the work is, or the reply reads like prose instead of a title.
  */
 export function parseGeneratedTitle(reply: string) {
     const title = trimTrailingWrappers(
@@ -94,7 +100,12 @@ export function parseGeneratedTitle(reply: string) {
             .replace(/^title:/i, '')
             .replace(/^["'`*_\s]+/, ''),
     ).trim();
-    return title && title !== emptyTitle && title.toUpperCase() !== unknownTitleReply
+    return title &&
+        title !== emptyTitle &&
+        title.toUpperCase() !== unknownTitleReply &&
+        title.length <= maxGeneratedTitleLength &&
+        /** A sentence break means the model answered the conversation instead of titling it. */
+        !/[.?!]\s/.test(title)
         ? title
         : undefined;
 }

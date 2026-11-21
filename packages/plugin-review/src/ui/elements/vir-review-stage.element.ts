@@ -154,10 +154,7 @@ export const VirReviewStage = defineAppElement<{
                         owner,
                         repoName,
                         number: Number(prNumber),
-                        /**
-                         * The folder is only a `mkdir` here, and its pane group's AI tab opens into
-                         * it.
-                         */
+                        /** The folder is only a `mkdir` here, and the review thread runs in it. */
                         createFolder: true,
                     });
                     const isStarted =

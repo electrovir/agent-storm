@@ -1,7 +1,7 @@
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
-import {describeCodexItem} from './codex-items.js';
+import {describeCodexItem, readCodexTokenUsage} from './codex-items.js';
 
 describe(describeCodexItem.name, () => {
     it('takes a command item and its status', () => {
@@ -71,6 +71,67 @@ describe(describeCodexItem.name, () => {
                 undefined,
                 undefined,
             ],
+        );
+    });
+});
+
+describe(readCodexTokenUsage.name, () => {
+    function createBreakdown({
+        inputTokens,
+        totalTokens,
+    }: Readonly<{
+        inputTokens: number;
+        totalTokens: number;
+    }>) {
+        return {
+            inputTokens,
+            cachedInputTokens: 100,
+            outputTokens: 30,
+            reasoningOutputTokens: 5,
+            totalTokens,
+        };
+    }
+
+    it('logs the last response, not the running total', () => {
+        assert.deepEquals(
+            readCodexTokenUsage({
+                params: {
+                    threadId: 'thread-1',
+                    turnId: 'turn-1',
+                    tokenUsage: {
+                        last: createBreakdown({
+                            inputTokens: 150,
+                            totalTokens: 180,
+                        }),
+                        total: createBreakdown({
+                            inputTokens: 900,
+                            totalTokens: 1200,
+                        }),
+                        modelContextWindow: null,
+                    },
+                },
+                model: 'gpt-5-codex',
+            }),
+            {
+                dedupeKey: 'codex-usage:thread-1:turn-1:1200',
+                model: 'gpt-5-codex',
+                inputTokens: 50,
+                outputTokens: 30,
+                cacheReadTokens: 100,
+                cacheWriteTokens: 0,
+                reasoningTokens: 5,
+            },
+        );
+    });
+
+    it('ignores params in an unknown format', () => {
+        assert.isUndefined(
+            readCodexTokenUsage({
+                params: {
+                    threadId: 'thread-1',
+                },
+                model: 'gpt-5-codex',
+            }),
         );
     });
 });

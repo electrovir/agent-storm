@@ -187,17 +187,74 @@ const editThreadCommentMutation = [
     '}',
 ].join('\n');
 
+/**
+ * What the thread mutations return: the thread's PR with every field its ring status is computed
+ * from, so resolving a thread updates the ring without another request.
+ */
+const threadPrStatusFields = [
+    'thread { pullRequest {',
+    `  url state headRefName baseRefName mergeStateStatus reviewDecision body author { login } ${prStatusFields}`,
+    '  baseRepository { name owner { login } }',
+    '  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }',
+    `  reviewThreads(first: ${maxThreads}) { nodes { isResolved } }`,
+    '} }',
+].join('\n');
+
 const resolveThreadMutation = [
     'mutation($threadId: ID!) {',
-    '  resolveReviewThread(input: {threadId: $threadId}) { thread { id } }',
+    `  result: resolveReviewThread(input: {threadId: $threadId}) { ${threadPrStatusFields} }`,
     '}',
 ].join('\n');
 
 const unresolveThreadMutation = [
     'mutation($threadId: ID!) {',
-    '  unresolveReviewThread(input: {threadId: $threadId}) { thread { id } }',
+    `  result: unresolveReviewThread(input: {threadId: $threadId}) { ${threadPrStatusFields} }`,
     '}',
 ].join('\n');
+
+const threadMutationResponseShape = defineShape({
+    result: {
+        thread: {
+            pullRequest: {
+                url: '',
+                state: enumShape(RawPrState),
+                headRefName: '',
+                baseRefName: '',
+                mergeStateStatus: '',
+                reviewDecision: nullableShape(''),
+                body: '',
+                author: nullableShape({
+                    login: '',
+                }),
+                ...rawPrStatusFields,
+                baseRepository: nullableShape({
+                    name: '',
+                    owner: {
+                        login: '',
+                    },
+                }),
+                commits: {
+                    nodes: [
+                        {
+                            commit: {
+                                statusCheckRollup: nullableShape({
+                                    state: enumShape(RawCheckResult),
+                                }),
+                            },
+                        },
+                    ],
+                },
+                reviewThreads: {
+                    nodes: [
+                        {
+                            isResolved: false,
+                        },
+                    ],
+                },
+            },
+        },
+    },
+});
 
 const graphqlResponseShape = defineShape({
     data: nullableShape(unknownShape()),
@@ -879,6 +936,44 @@ const terminalPrStatuses: Readonly<Record<RawPrState, PrStatus | undefined>> = {
     [RawPrState.Closed]: PrStatus.Closed,
 };
 
+/** A PR as a query here fetches it, with everything its ring status is computed from. */
+type StatusFieldsPr = Readonly<
+    Omit<Parameters<typeof toOpenPrStatus>[0], 'headRef'> & {
+        url: string;
+        state: RawPrState;
+        headRefName: string;
+        baseRefName: string;
+        commits: Readonly<{
+            nodes: ReadonlyArray<
+                Readonly<{
+                    commit: Readonly<{
+                        statusCheckRollup?:
+                            | Readonly<{
+                                  state: RawCheckResult;
+                              }>
+                            | null
+                            | undefined;
+                    }>;
+                }>
+            >;
+        }>;
+    }
+>;
+
+function toFetchedPrStatus(pr: StatusFieldsPr) {
+    return (
+        terminalPrStatuses[pr.state] ||
+        toOpenPrStatus({
+            ...pr,
+            headRef: {
+                target: {
+                    statusCheckRollup: pr.commits.nodes[0]?.commit.statusCheckRollup,
+                },
+            },
+        })
+    );
+}
+
 /**
  * Shows a PR this plugin just fetched in the sidebar, which otherwise keeps what its own, much less
  * frequent GitHub lookup last saw.
@@ -890,39 +985,9 @@ export async function shareFolderPrStatus({
 }: Readonly<{
     folder: string;
     slug: Readonly<RepoSlug>;
-    pr: Readonly<
-        Omit<Parameters<typeof toOpenPrStatus>[0], 'headRef'> & {
-            url: string;
-            state: RawPrState;
-            headRefName: string;
-            baseRefName: string;
-            commits: Readonly<{
-                nodes: ReadonlyArray<
-                    Readonly<{
-                        commit: Readonly<{
-                            statusCheckRollup?:
-                                | Readonly<{
-                                      state: RawCheckResult;
-                                  }>
-                                | null
-                                | undefined;
-                        }>;
-                    }>
-                >;
-            }>;
-        }
-    >;
+    pr: StatusFieldsPr;
 }>) {
-    const status =
-        terminalPrStatuses[pr.state] ||
-        toOpenPrStatus({
-            ...pr,
-            headRef: {
-                target: {
-                    statusCheckRollup: pr.commits.nodes[0]?.commit.statusCheckRollup,
-                },
-            },
-        });
+    const status = toFetchedPrStatus(pr);
     if (
         readReviewHost().readBranchPrStatus({
             ...slug,
@@ -997,8 +1062,27 @@ export async function setThreadResolved({
     threadId: string;
     resolved: boolean;
 }>) {
-    await runGraphql(resolved ? resolveThreadMutation : unresolveThreadMutation, {
-        threadId,
-    });
+    const response = assertWrapValidShape(
+        await runGraphql(resolved ? resolveThreadMutation : unresolveThreadMutation, {
+            threadId,
+        }),
+        threadMutationResponseShape,
+        {
+            allowExtraKeys: true,
+        },
+    );
     gitHubWriteState.lastWriteAt = Date.now();
+    const pr = response.result.thread.pullRequest;
+    if (pr.baseRepository) {
+        await readReviewHost().recordBranchPr({
+            owner: pr.baseRepository.owner.login,
+            name: pr.baseRepository.name,
+            branchName: pr.headRefName,
+            prInfo: {
+                url: pr.url,
+                status: toFetchedPrStatus(pr),
+                baseBranch: pr.baseRefName,
+            },
+        });
+    }
 }

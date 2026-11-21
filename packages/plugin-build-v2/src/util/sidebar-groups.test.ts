@@ -1,7 +1,7 @@
 import {SidebarSorting} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {AiProvider, RuntimeMode, ThreadStatus, type Thread} from '../build-v2-api.js';
+import {AiProvider, RuntimeMode, ThreadOrigin, ThreadStatus, type Thread} from '../build-v2-api.js';
 import {arrangeRepoGroups} from './sidebar-groups.js';
 import {type ThreadRepoGroup} from './thread-timeline.js';
 
@@ -28,6 +28,7 @@ function createGroup({
         hasUnreadReply: false,
         isAskingQuestion: false,
         backgroundTaskCount: 0,
+        origin: ThreadOrigin.User,
         userMessageCount: 0,
         lastUserMessageAt: 0,
         createdAt: 0,

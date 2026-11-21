@@ -12,6 +12,9 @@
     "id": "build-v2",
     "isBeta": true,
     "name": "Build V2",
+    "optionalDependencies": [
+        "usage"
+    ],
     "panes": [
         {
             "icon": "LucideMessageSquareIcon",

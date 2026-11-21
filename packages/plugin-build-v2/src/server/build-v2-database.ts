@@ -1,7 +1,7 @@
+import {applySqliteMigrations} from 'agent-storm-util';
 import {resolve} from 'node:path';
 import {createPrismaClient, PrismaDatabaseEngine} from 'prisma-vir';
 import {PrismaClient} from './generated/client.js';
-import {applySqliteMigrations} from './migrate-sqlite.js';
 
 /**
  * Opens the plugin's database in `dataDir`, first applying the migrations the plugin build copies

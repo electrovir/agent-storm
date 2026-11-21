@@ -23,6 +23,7 @@ import {
     withManualReviewStateLock,
     writeFileAtomically,
 } from 'agent-storm-util';
+import {convertDuration, type AnyDuration} from 'date-vir';
 import {resolve} from 'node:path';
 import {
     checkValidShape,
@@ -132,25 +133,94 @@ function toEntryKey({owner, repoName, branchName}: Readonly<PullRequestBranch>) 
 }
 
 /**
- * The skill script that records each status as pending. Each clears it from an exit trap, which a
- * hard kill of the script skips, leaving the review locked as pending forever.
+ * The skill scripts that work on each status while it's pending, how long it must have been pending
+ * before none of them running means it's abandoned, and the status it settles back to then.
  */
-const pendingStatusScripts: Readonly<Record<ManualReviewStatus, string | undefined>> = {
-    [ManualReviewStatus.Started]: '/run-review.sh',
-    [ManualReviewStatus.Aborted]: '/abort-review.sh',
-    [ManualReviewStatus.Approved]: undefined,
-    [ManualReviewStatus.RequestedChanges]: undefined,
-    [ManualReviewStatus.Commented]: undefined,
+const pendingStatusCleanups: Readonly<
+    Record<
+        ManualReviewStatus,
+        | Readonly<{
+              scripts: ReadonlyArray<string>;
+              minPendingAge: AnyDuration;
+              settledStatus: ManualReviewStatus;
+          }>
+        | undefined
+    >
+> = {
+    /**
+     * These scripts clear the flag from an exit trap, which a hard kill of the script skips,
+     * leaving the review locked as pending forever.
+     */
+    [ManualReviewStatus.Started]: {
+        scripts: [
+            '/run-review.sh',
+        ],
+        minPendingAge: {
+            milliseconds: 0,
+        },
+        settledStatus: ManualReviewStatus.Started,
+    },
+    [ManualReviewStatus.Aborted]: {
+        scripts: [
+            '/abort-review.sh',
+        ],
+        minPendingAge: {
+            milliseconds: 0,
+        },
+        settledStatus: ManualReviewStatus.Aborted,
+    },
+    /**
+     * `post-github-comments.ts --dry-run` marks the verdict pending, and only `commit-review.sh`
+     * after a real post clears it. No script runs between the two while the AI copyedits, so only a
+     * long gap means the AI stopped without posting (such as on finding the PR already approved).
+     * Nothing was posted, so the review goes back to started; a later real post records its verdict
+     * again.
+     */
+    [ManualReviewStatus.Approved]: {
+        scripts: [
+            '/post-github-comments.ts',
+            '/commit-review.sh',
+        ],
+        minPendingAge: {
+            minutes: 5,
+        },
+        settledStatus: ManualReviewStatus.Started,
+    },
+    [ManualReviewStatus.RequestedChanges]: {
+        scripts: [
+            '/post-github-comments.ts',
+            '/commit-review.sh',
+        ],
+        minPendingAge: {
+            minutes: 5,
+        },
+        settledStatus: ManualReviewStatus.Started,
+    },
+    [ManualReviewStatus.Commented]: {
+        scripts: [
+            '/post-github-comments.ts',
+            '/commit-review.sh',
+        ],
+        minPendingAge: {
+            minutes: 5,
+        },
+        settledStatus: ManualReviewStatus.Started,
+    },
     [ManualReviewStatus.PostFailed]: undefined,
 };
 
-/** Clears `isPending` on entries whose recording script is no longer running. */
+/** Settles pending entries that no skill script is working on anymore. */
 async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualReviewEntry>) {
+    const nowMs = Date.now();
     const candidates = entries.filter((listed) => {
+        const cleanup = listed.entry.status && pendingStatusCleanups[listed.entry.status];
         return (
             !!listed.entry.isPending &&
-            !!listed.entry.status &&
-            !!pendingStatusScripts[listed.entry.status]
+            !!cleanup &&
+            nowMs - (listed.entry.lastUpdatedAt ?? 0) >=
+                convertDuration(cleanup.minPendingAge, {
+                    milliseconds: true,
+                }).milliseconds
         );
     });
     if (!candidates.length) {
@@ -169,8 +239,13 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
         },
     );
     const orphaned = candidates.filter((listed) => {
-        const script = listed.entry.status && pendingStatusScripts[listed.entry.status];
-        return !!script && !runningCommands.includes(script);
+        const cleanup = listed.entry.status && pendingStatusCleanups[listed.entry.status];
+        return (
+            !!cleanup &&
+            !cleanup.scripts.some((script) => {
+                return runningCommands.includes(script);
+            })
+        );
     });
     if (!orphaned.length) {
         return;
@@ -186,7 +261,9 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
                     listed.repoName,
                 ].join('/');
                 const stored = current[repoKey]?.[listed.branchName];
-                return check.isObject(stored) &&
+                const cleanup = listed.entry.status && pendingStatusCleanups[listed.entry.status];
+                return cleanup &&
+                    check.isObject(stored) &&
                     stored.isPending === true &&
                     stored.lastUpdatedAt === listed.entry.lastUpdatedAt
                     ? {
@@ -195,6 +272,7 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
                               ...current[repoKey],
                               [listed.branchName]: {
                                   ...stored,
+                                  status: cleanup.settledStatus,
                                   isPending: false,
                               },
                           },
@@ -210,7 +288,7 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
         },
     });
     log.info(
-        `Cleared the pending flag of manual reviews whose script is gone: ${orphaned
+        `Settled pending manual reviews that no script is working on: ${orphaned
             .map((listed) => listed.branchName)
             .join(', ')}`,
     );

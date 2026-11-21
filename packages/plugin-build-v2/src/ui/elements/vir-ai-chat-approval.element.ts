@@ -1,13 +1,15 @@
-// cspell:words haspopup
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {classMap, css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     createSizedIcon,
     LucideGitBranchIcon,
     LucideShieldIcon,
+    PopoverAnchor,
+    PopoverTrigger,
+    renderMenuItemEntries,
     tooltip,
     ViraIcon,
-    viraShadows,
+    ViraMenuTrigger,
     viraThemeByKeys,
 } from 'vira';
 import {ApprovalDecision, ApprovalKind, type ApprovalRequest} from '../../build-v2-api.js';
@@ -62,11 +64,6 @@ export const VirAiChatApproval = defineAppElement<{
     events: {
         decided: defineElementEvent<ApprovalDecision>(),
         moveToWorktreeRequested: defineElementEvent<void>(),
-    },
-    state() {
-        return {
-            isMoreOpen: false,
-        };
     },
     styles: css`
         ${diffLineStyles}
@@ -170,7 +167,7 @@ export const VirAiChatApproval = defineAppElement<{
             color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
         }
 
-        button.inline-button {
+        .inline-button {
             display: inline-flex;
             align-items: center;
             gap: 2px;
@@ -201,50 +198,8 @@ export const VirAiChatApproval = defineAppElement<{
                 opacity: 0.64;
             }
         }
-
-        .more {
-            position: relative;
-            display: inline-flex;
-        }
-
-        .backdrop {
-            position: fixed;
-            inset: 0;
-            z-index: 129;
-        }
-
-        .menu {
-            position: absolute;
-            bottom: 100%;
-            right: 0;
-            z-index: 130;
-            margin-bottom: 4px;
-            width: max-content;
-            max-width: calc(100vw - 32px);
-            padding: 4px;
-            box-sizing: border-box;
-            border-radius: 8px;
-            background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
-            border: 1px solid ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
-            ${viraShadows.menuShadow}
-
-            & .menu-item {
-                display: flex;
-                align-items: center;
-                min-height: 28px;
-                padding: 4px 8px;
-                border-radius: 6px;
-                font-size: 13px;
-                cursor: pointer;
-
-                &:hover {
-                    background-color: ${viraThemeByKeys.brand['behind-fg']['small-body'].background
-                        .value};
-                }
-            }
-        }
     `,
-    render({inputs, state, updateState, dispatch, events}) {
+    render({inputs, dispatch, events}) {
         const labels = approvalLabels[inputs.request.kind];
         const showsTitle =
             !!inputs.request.title &&
@@ -253,9 +208,6 @@ export const VirAiChatApproval = defineAppElement<{
         const detail = inputs.request.detail || inputs.request.title || labels.label;
 
         function decide(decision: ApprovalDecision) {
-            updateState({
-                isMoreOpen: false,
-            });
             if (inputs.isBusy) {
                 return;
             }
@@ -339,46 +291,31 @@ export const VirAiChatApproval = defineAppElement<{
                         >
                             Approve
                         </button>
-                        <span class="more">
-                            <button
-                                type="button"
+                        <${ViraMenuTrigger.assign({
+                            trigger: PopoverTrigger.Click,
+                            popoverAnchor: PopoverAnchor.Right,
+                            isDisabled: inputs.isBusy,
+                            popoverOffset: {
+                                vertical: 4,
+                            },
+                        })}>
+                            <span
                                 class="inline-button"
+                                slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
                                 aria-label="More approval options"
-                                aria-haspopup="menu"
-                                ?disabled=${inputs.isBusy}
-                                ${listen('click', () => {
-                                    updateState({
-                                        isMoreOpen: !state.isMoreOpen,
-                                    });
-                                })}
                             >
                                 More
-                            </button>
-                            ${state.isMoreOpen
-                                ? html`
-                                      <div
-                                          class="backdrop"
-                                          ${listen('click', () => {
-                                              updateState({
-                                                  isMoreOpen: false,
-                                              });
-                                          })}
-                                      ></div>
-                                      <div class="menu" role="menu">
-                                          <div
-                                              class="menu-item"
-                                              role="menuitem"
-                                              tabindex="-1"
-                                              ${listen('click', () => {
-                                                  decide(ApprovalDecision.ApproveForSession);
-                                              })}
-                                          >
-                                              Always allow this session
-                                          </div>
-                                      </div>
-                                  `
-                                : nothing}
-                        </span>
+                            </span>
+                            ${renderMenuItemEntries([
+                                {
+                                    content: 'Always allow this session',
+                                    hideIcon: true,
+                                    onClick() {
+                                        decide(ApprovalDecision.ApproveForSession);
+                                    },
+                                },
+                            ])}
+                        </${ViraMenuTrigger}>
                         ${inputs.canMoveToWorktree
                             ? html`
                                   <button

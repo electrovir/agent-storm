@@ -19,6 +19,7 @@ import {
     RawReviewDecision,
     RawReviewState,
     RawThreadSubjectType,
+    ThreadOrigin,
     toOpenPrStatus,
     type GitHubReview,
     type GitHubReviewRequest,
@@ -88,6 +89,7 @@ import {
 } from './manual-review-state.js';
 import {deleteReviewFolder} from './review-folders.js';
 import {readReviewHost} from './review-host.js';
+import {readReviewThreadStatus} from './review-threads.js';
 
 const githubUserFields = {
     login: '',
@@ -506,7 +508,10 @@ function createPrQueue({
                                 manualReview.lastUpdatedAt > cache.fetchStartedAt
                             ),
                         panes: {
-                            [PaneKind.Ai]: statusLookup(folder, PaneKind.Ai),
+                            [PaneKind.Ai]: await readReviewThreadStatus({
+                                folder,
+                                origin: ThreadOrigin.Review,
+                            }),
                             [PaneKind.Shell]: statusLookup(folder, PaneKind.Shell),
                         },
                         prStatus: await applyManualReviewStatus({
