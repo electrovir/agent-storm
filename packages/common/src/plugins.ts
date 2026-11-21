@@ -61,6 +61,13 @@ export const pluginManifestShape = defineShape({
         alsoUndefined: true,
     }),
     /**
+     * The ids of plugins whose server `exports` this plugin uses when they run. Unlike
+     * `dependencies`, it runs without them.
+     */
+    optionalDependencies: optionalShape([''], {
+        alsoUndefined: true,
+    }),
+    /**
      * The `@agent-storm/core` versions the plugin works with, as an npm semver range. Required, so
      * a plugin that doesn't say what it works with never runs on a guess. A plugin whose range
      * excludes the running core version doesn't run.
@@ -183,3 +190,23 @@ export const approvedFolderSettingsShape = defineShape({
     path: '',
     contentHash: '',
 });
+
+/**
+ * Names the `exports` a plugin's server part returns, for its dependents' `waitForPlugin`. Lives
+ * apart from the server part, so a dependent imports the key without bundling the dependency's
+ * server code.
+ */
+export type PluginServerExportsKey<Exports> = Readonly<{
+    pluginId: string;
+    /** Never set: only carries the exports' type. */
+    exportsType?: Exports | undefined;
+}>;
+
+/** Creates the key that types a plugin's server `exports` for the plugins that depend on it. */
+export function definePluginServerExportsKey<const Exports>(
+    pluginId: string,
+): PluginServerExportsKey<Exports> {
+    return {
+        pluginId,
+    };
+}

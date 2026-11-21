@@ -15,6 +15,8 @@ import {listenToPluginChanges, readActivePluginServers} from './plugins.js';
 /** One plugin's started server part, or why it didn't start. */
 type PluginServerStart = Readonly<{
     serverHash: string;
+    /** Its manifest's `dependencies` and `optionalDependencies`, which stop only after it. */
+    dependencies: ReadonlyArray<string>;
     running: Promise<
         Readonly<
             | {
@@ -35,12 +37,15 @@ const pluginServers: {
     starts: Readonly<Record<string, PluginServerStart>>;
     /** Runs one sync at a time, so a plugin is never started twice. */
     sync: Promise<void>;
+    /** Plugins whose server part stopped, until the sync stopping them starts their new copy. */
+    stoppedIds: ReadonlyArray<string>;
     sendEvent:
         | ((message: WebSocketHostMessageType<typeof pluginEventsWebSocket>) => void)
         | undefined;
 } = {
     starts: {},
     sync: Promise.resolve(),
+    stoppedIds: [],
     sendEvent: undefined,
 };
 
@@ -72,15 +77,89 @@ async function importPluginServer({
     return definition satisfies object as AnyPluginServerDefinition;
 }
 
-function startPluginServer(
-    plugin: Readonly<{
-        pluginId: string;
-        serverPath: string;
-        serverHash: string;
-    }>,
-): PluginServerStart {
+/**
+ * Whether `pluginId` reaches `targetId` through the dependencies of the started plugins. The return
+ * type is annotated because the recursion keeps TypeScript from inferring it.
+ */
+function dependsOn({
+    pluginId,
+    targetId,
+    visited,
+}: Readonly<{
+    pluginId: string;
+    targetId: string;
+    visited: ReadonlyArray<string>;
+}>): boolean {
+    const dependencies = pluginServers.starts[pluginId]?.dependencies || [];
+    return dependencies.some((dependencyId) => {
+        return (
+            dependencyId === targetId ||
+            (!visited.includes(dependencyId) &&
+                dependsOn({
+                    pluginId: dependencyId,
+                    targetId,
+                    visited: [
+                        ...visited,
+                        dependencyId,
+                    ],
+                }))
+        );
+    });
+}
+
+type ActivePluginServer = Awaited<ReturnType<typeof readActivePluginServers>>[number];
+
+async function readStartedExports(pluginId: string) {
+    const start = pluginServers.starts[pluginId];
+    return start && !pluginServers.stoppedIds.includes(pluginId)
+        ? (await start.running).server?.exports
+        : undefined;
+}
+
+/**
+ * The dependency's `exports`, once it finishes starting or a queued sync finishes restarting it.
+ * Undefined when it isn't running and no queued sync starts it. The return type is annotated
+ * because the recursion keeps TypeScript from inferring it.
+ */
+async function waitForPluginExports({
+    pluginId,
+    dependencyId,
+}: Readonly<{
+    pluginId: string;
+    dependencyId: string;
+}>): Promise<unknown> {
+    /** Each waits for the other to start, so neither ever would. */
+    if (
+        dependsOn({
+            pluginId: dependencyId,
+            targetId: pluginId,
+            visited: [],
+        })
+    ) {
+        throw new Error(`Plugins '${pluginId}' and '${dependencyId}' depend on each other.`);
+    } else if (
+        pluginServers.starts[dependencyId] &&
+        !pluginServers.stoppedIds.includes(dependencyId)
+    ) {
+        return await readStartedExports(dependencyId);
+    }
+    const sync = pluginServers.sync;
+    await sync;
+    return pluginServers.sync === sync
+        ? await readStartedExports(dependencyId)
+        : await waitForPluginExports({
+              pluginId,
+              dependencyId,
+          });
+}
+
+function startPluginServer(plugin: ActivePluginServer): PluginServerStart {
     return {
         serverHash: plugin.serverHash,
+        dependencies: [
+            ...plugin.dependencies,
+            ...plugin.optionalDependencies,
+        ],
         running: (async () => {
             try {
                 const definition = await importPluginServer(plugin);
@@ -100,6 +179,24 @@ function startPluginServer(
                     dataDir,
                     tempDir,
                     host: pluginServerHost,
+                    async waitForPlugin(key) {
+                        if (
+                            !plugin.dependencies.includes(key.pluginId) &&
+                            !plugin.optionalDependencies.includes(key.pluginId)
+                        ) {
+                            throw new Error(
+                                `Plugin '${plugin.pluginId}' waited for plugin '${key.pluginId}', which its manifest's dependencies and optionalDependencies don't list.`,
+                            );
+                        }
+                        /**
+                         * The dependency's `exports` are typed only by its key, which its server
+                         * part's `satisfies` checks against.
+                         */
+                        return (await waitForPluginExports({
+                            pluginId: plugin.pluginId,
+                            dependencyId: key.pluginId,
+                        })) satisfies unknown as typeof key.exportsType;
+                    },
                     emit(event, data) {
                         assertValidShape(data, definition.api.events[event]);
                         pluginServers.sendEvent?.({
@@ -140,6 +237,10 @@ async function stopPluginServer({
         pluginId,
         hooks: undefined,
     });
+    pluginServers.stoppedIds = [
+        ...pluginServers.stoppedIds,
+        pluginId,
+    ];
     try {
         await (await start.running).server?.stop?.();
     } catch (error) {
@@ -148,35 +249,54 @@ async function stopPluginServer({
 }
 
 /**
- * Stops each server part whose plugin stopped running or whose files changed, then starts each
- * active plugin's that isn't running.
+ * Stops the started plugins with ids in `pluginIds`, each only after every one of them that depends
+ * on it, so a plugin's `stop` can still use its dependencies' `exports`.
  */
-async function syncPluginServers() {
-    const active = await readActivePluginServers();
-    const stale = Object.entries(pluginServers.starts).filter(
-        ([
-            pluginId,
-            start,
-        ]) => {
-            return !active.some((plugin) => {
-                return plugin.pluginId === pluginId && plugin.serverHash === start.serverHash;
-            });
-        },
-    );
+async function stopPluginServersInOrder(pluginIds: ReadonlyArray<string>) {
+    const leaves = pluginIds.filter((pluginId) => {
+        return !pluginIds.some((otherId) => {
+            return pluginServers.starts[otherId]?.dependencies.includes(pluginId);
+        });
+    });
+    /** Ids left in a dependency cycle stop together. */
+    const wave = leaves.length ? leaves : pluginIds;
     await Promise.all(
-        stale.map(
-            async ([
-                pluginId,
-                start,
-            ]) => {
+        wave.map(async (pluginId) => {
+            const start = pluginServers.starts[pluginId];
+            if (start) {
                 await stopPluginServer({
                     pluginId,
                     start,
                 });
-            },
-        ),
+            }
+        }),
     );
-    const staleIds = stale.map(([pluginId]) => pluginId);
+    const remaining = pluginIds.filter((pluginId) => !wave.includes(pluginId));
+    if (remaining.length) {
+        await stopPluginServersInOrder(remaining);
+    }
+}
+
+/**
+ * Stops each server part whose plugin stopped running or whose files changed, then starts each
+ * active plugin's that isn't running. A plugin whose dependency restarts keeps running: its
+ * `waitForPlugin` calls wait out the restart.
+ */
+async function syncPluginServers() {
+    const active = await readActivePluginServers();
+    const staleIds = Object.entries(pluginServers.starts)
+        .filter(
+            ([
+                pluginId,
+                start,
+            ]) => {
+                return !active.some((plugin) => {
+                    return plugin.pluginId === pluginId && plugin.serverHash === start.serverHash;
+                });
+            },
+        )
+        .map(([pluginId]) => pluginId);
+    await stopPluginServersInOrder(staleIds);
     const kept = Object.entries(pluginServers.starts).filter(
         ([pluginId]) => !staleIds.includes(pluginId),
     );
@@ -191,6 +311,7 @@ async function syncPluginServers() {
                 ] as const;
             }),
     ]);
+    pluginServers.stoppedIds = [];
 }
 
 function queuePluginServerSync() {
@@ -217,21 +338,8 @@ export async function startPluginServers(
 /** Stops every plugin's server part, for the app shutting down. */
 export async function stopPluginServers() {
     await pluginServers.sync;
-    const starts = pluginServers.starts;
+    await stopPluginServersInOrder(Object.keys(pluginServers.starts));
     pluginServers.starts = {};
-    await Promise.all(
-        Object.entries(starts).map(
-            async ([
-                pluginId,
-                start,
-            ]) => {
-                await stopPluginServer({
-                    pluginId,
-                    start,
-                });
-            },
-        ),
-    );
 }
 
 /** Answers one call of a plugin's API, checking the request and the response against its shapes. */

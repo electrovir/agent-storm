@@ -1,0 +1,82 @@
+// cspell:word dedupe
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/server/generated"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum UsageSource {
+  buildV1
+  buildV2
+  review
+}
+
+enum UsageProvider {
+  claude
+  codex
+}
+
+/// Tokens one model spent on one AI run, attributed to the plugin and place that ran it.
+model UsageRecord {
+  id               String        @id @default(cuid(2))
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @default(now()) @updatedAt
+  /// Repeating a record with the same key replaces it rather than counting it twice.
+  dedupeKey        String        @unique
+  /// Epoch milliseconds.
+  occurredAt       Float
+  /// The server's local day of `occurredAt`, as YYYY-MM-DD, which the daily totals group by.
+  day              String
+  source           UsageSource
+  provider         UsageProvider
+  model            String
+  inputTokens      Int
+  outputTokens     Int
+  cacheReadTokens  Int
+  cacheWriteTokens Int
+  /// Already counted inside `outputTokens`.
+  reasoningTokens  Int
+  /// Unset while no price is known for `model`.
+  costUsd          Float?
+  /// The cost came from public list prices rather than from the provider itself.
+  isCostEstimated  Boolean       @default(false)
+  repoPath         String
+  folder           String
+  threadId         String?
+  prUrl            String?
+  /// A name for the thread or PR, shown in the breakdowns.
+  label            String?
+
+  @@index([day])
+  @@index([costUsd])
+}
+
+/// One reading of a plan's rate-limit window.
+model PlanLimitSnapshot {
+  id          String        @id @default(cuid(2))
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @default(now()) @updatedAt
+  /// Epoch milliseconds.
+  recordedAt  Float
+  provider    UsageProvider
+  windowId    String
+  label       String
+  usedPercent Float
+  /// Epoch milliseconds.
+  resetsAt    Float?
+
+  @@index([recordedAt])
+}
+
+/// How far into each Claude transcript file Build V1's usage has been read.
+model TranscriptProgress {
+  id         String   @id @default(cuid(2))
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  filePath   String   @unique
+  byteOffset Int
+}

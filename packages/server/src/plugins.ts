@@ -467,6 +467,8 @@ export async function readActivePluginServers() {
                       pluginId: plugin.id,
                       serverHash: folder.serverHash,
                       serverPath: folder.serverPath,
+                      dependencies: plugin.manifest?.dependencies || [],
+                      optionalDependencies: plugin.manifest?.optionalDependencies || [],
                   },
               ]
             : [];

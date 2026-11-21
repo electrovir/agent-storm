@@ -480,6 +480,16 @@ export type PaneDefinition<TabStateShape extends Shape = typeof noTabStateShape>
         defaultPlacement(
             params: Readonly<Pick<PaneGroupView, 'extensionInputs'>>,
         ): DefaultTabPlacement | undefined;
+        /**
+         * Replaces the tab's `icon`, such as with the tab's own status. The tab strip doesn't
+         * re-render when the pane's data changes, so render an element that watches that data.
+         */
+        renderTabIcon(
+            params: Readonly<{
+                tabState: Readonly<TabStateShape['runtimeType']>;
+                context: AppContext;
+            }>,
+        ): HtmlInterpolation;
         /** Extra entries in the tab's right-click menu, between Rename and Close. */
         menuEntries(
             params: Readonly<{

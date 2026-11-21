@@ -73,6 +73,20 @@ export type PluginServerHost = Readonly<{
     /** The sidebar's folders. */
     listFolders(): Promise<ReadonlyArray<Readonly<FolderInfo>>>;
     /**
+     * The Claude session each AI tab last started, as Claude's session hook recorded it. Empty
+     * while the hooks aren't installed. A tab's earlier sessions aren't kept.
+     */
+    listClaudeTabSessions(): Promise<
+        ReadonlyArray<
+            Readonly<{
+                /** Normalized path. */
+                folder: string;
+                conversationId: string;
+                claudeSessionId: string;
+            }>
+        >
+    >;
+    /**
      * Calls `listener` when a sweep finds a PR on a folder whose previous sweep found none. A
      * folder's first sweep never counts.
      */
@@ -99,8 +113,19 @@ export type PluginServerHost = Readonly<{
         >,
     ): PrStatus | undefined;
     /**
+     * Shows `status` for the PR at `url` in every sidebar and PR list right away, for a change made
+     * in agent-storm that GitHub doesn't show yet, like a verdict sent from the Approve button. It
+     * stands over GitHub's answers until they catch up. An undefined `status` drops it.
+     */
+    holdPrStatus(
+        params: Readonly<{
+            url: string;
+            status: PrStatus | undefined;
+        }>,
+    ): Promise<void>;
+    /**
      * Records a branch's PR in the app's PR cache, and refreshes the sidebar entry of each folder
-     * on the branch that doesn't show that PR yet.
+     * on the branch that doesn't show that PR or its status yet.
      */
     recordBranchPr(
         params: Readonly<

@@ -1,0 +1,16 @@
+{
+    "activities": [
+        {
+            "id": "usage",
+            "isEnabledByDefault": true,
+            "label": "Usage"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "description": "Claude and Codex plan limits, and the tokens and cost each plugin's AI runs spend.",
+    "id": "usage",
+    "name": "Usage",
+    "panes": [],
+    "serverEntry": "server.js"
+}

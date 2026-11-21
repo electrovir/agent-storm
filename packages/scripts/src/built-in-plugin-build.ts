@@ -5,9 +5,15 @@ import {monorepoRoot} from '@agent-storm/server/src/file-paths.js';
 import {typedObjectFromEntries} from '@augment-vir/common';
 import {runShellCommand} from '@augment-vir/node';
 import {builtInPlugins} from 'agent-storm';
-import {context, type BuildOptions, type Plugin} from 'esbuild';
+import {
+    build as buildWithEsbuild,
+    stop as stopEsbuild,
+    type BuildOptions,
+    type Plugin,
+} from 'esbuild';
+import {watch} from 'node:fs';
 import {copyFile, cp, mkdir, readdir, readFile, stat} from 'node:fs/promises';
-import {resolve} from 'node:path';
+import {resolve, sep} from 'node:path';
 import {assertValidShape} from 'object-shape-tester';
 
 function findPluginPackageDir(pluginId: string) {
@@ -38,16 +44,13 @@ export async function generateBuiltInPluginPrismaClients() {
 
 /**
  * Copies the plugin's manifest into its build folder before each browser build, so a pane or
- * activity added to the manifest reaches the running app with the bundle that renders it. The
- * manifest isn't imported by any source file, so the entry's load lists it for esbuild's watch.
+ * activity added to the manifest reaches the running app with the bundle that renders it.
  */
 function createManifestCopyPlugin({
     manifestPath,
-    entryPath,
     outDir,
 }: Readonly<{
     manifestPath: string;
-    entryPath: string;
     outDir: string;
 }>): Plugin {
     return {
@@ -58,23 +61,6 @@ function createManifestCopyPlugin({
                 assertValidShape(manifest, pluginManifestShape);
                 await copyFile(manifestPath, resolve(outDir, pluginManifestFileName));
             });
-            build.onLoad(
-                {
-                    filter: /index\.ts$/,
-                },
-                async (args) => {
-                    if (args.path !== entryPath) {
-                        return undefined;
-                    }
-                    return {
-                        contents: await readFile(entryPath, 'utf8'),
-                        loader: 'ts',
-                        watchFiles: [
-                            manifestPath,
-                        ],
-                    };
-                },
-            );
         },
     };
 }
@@ -82,21 +68,19 @@ function createManifestCopyPlugin({
 /**
  * Keeps a server part's database files current before each server build: regenerates the Prisma
  * client when the schema changed, and copies the migrations beside the bundle, where the plugin
- * applies them when it opens its database. No source file imports either, so the entry's load lists
- * them for esbuild's watch, and a new migration or schema edit reaches the running app without a
- * restart.
+ * applies them when it opens its database.
  */
 function createDatabaseSyncPlugin({
     packageDir,
-    entryPath,
+    schemaPath,
+    migrationsDir,
     outDir,
 }: Readonly<{
     packageDir: string;
-    entryPath: string;
+    schemaPath: string;
+    migrationsDir: string;
     outDir: string;
 }>): Plugin {
-    const schemaPath = resolve(packageDir, 'prisma', 'schema.prisma');
-    const migrationsDir = resolve(packageDir, 'prisma', 'migrations');
     const state: {
         generatedSchema: string | undefined;
     } = {
@@ -117,29 +101,16 @@ function createDatabaseSyncPlugin({
                     });
                 }
             });
-            build.onLoad(
-                {
-                    filter: /-server\.ts$/,
-                },
-                async (args) => {
-                    if (args.path !== entryPath) {
-                        return undefined;
-                    }
-                    return {
-                        contents: await readFile(entryPath, 'utf8'),
-                        loader: 'ts',
-                        watchFiles: [
-                            schemaPath,
-                        ],
-                        watchDirs: [
-                            migrationsDir,
-                        ],
-                    };
-                },
-            );
         },
     };
 }
+
+type BuiltInPluginBuild = {
+    packageDir: string;
+    /** Files and folders a build reads that esbuild's metafile doesn't list as inputs. */
+    extraWatchPaths: string[];
+    options: BuildOptions;
+};
 
 async function createBuiltInPluginBuilds({
     pluginId,
@@ -149,7 +120,7 @@ async function createBuiltInPluginBuilds({
     pluginId: string;
     outDir: string;
     isWatching: boolean;
-}>) {
+}>): Promise<BuiltInPluginBuild[]> {
     const packageDir = findPluginPackageDir(pluginId);
     const manifestPath = resolve(packageDir, pluginManifestFileName);
     const manifest: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -168,6 +139,8 @@ async function createBuiltInPluginBuilds({
     );
     const browserEntryPath = resolve(packageDir, 'src', 'index.ts');
     const serverEntryPath = resolve(packageDir, 'src', 'server', `${pluginId}-server.ts`);
+    const schemaPath = resolve(packageDir, 'prisma', 'schema.prisma');
+    const migrationsDir = resolve(packageDir, 'prisma', 'migrations');
     const shared: BuildOptions = {
         bundle: true,
         format: 'esm',
@@ -176,81 +149,152 @@ async function createBuiltInPluginBuilds({
         /** Each plugin bundles its own copy of its dependencies, so a release minifies them. */
         minify: !isWatching,
     };
-    return await Promise.all([
-        context({
-            ...shared,
-            platform: 'browser',
-            target: 'es2022',
-            entryPoints: [
-                browserEntryPath,
+    return [
+        {
+            packageDir,
+            /** The manifest isn't imported by any source file. */
+            extraWatchPaths: [
+                manifestPath,
             ],
-            outfile: resolve(outDir, manifest.browserEntry),
-            /** Dependencies import Node's built-ins only behind checks that they run in Node. */
-            external: [
-                'node:*',
-            ],
-            plugins: [
-                createManifestCopyPlugin({
-                    manifestPath,
-                    entryPath: browserEntryPath,
-                    outDir,
-                }),
-                createPluginEsbuildPlugin({
-                    dependencies: typedObjectFromEntries(
-                        (manifest.dependencies || []).map((dependencyId) => {
-                            return [
-                                `@agent-storm/plugin-${dependencyId}`,
-                                dependencyId,
-                            ] as const;
-                        }),
-                    ),
-                }),
-            ],
-        }),
+            options: {
+                ...shared,
+                platform: 'browser',
+                target: 'es2022',
+                entryPoints: [
+                    browserEntryPath,
+                ],
+                outfile: resolve(outDir, manifest.browserEntry),
+                /** Dependencies import Node's built-ins only behind checks that they run in Node. */
+                external: [
+                    'node:*',
+                ],
+                plugins: [
+                    createManifestCopyPlugin({
+                        manifestPath,
+                        outDir,
+                    }),
+                    createPluginEsbuildPlugin({
+                        dependencies: typedObjectFromEntries(
+                            (manifest.dependencies || []).map((dependencyId) => {
+                                return [
+                                    `@agent-storm/plugin-${dependencyId}`,
+                                    dependencyId,
+                                ] as const;
+                            }),
+                        ),
+                    }),
+                ],
+            },
+        },
         ...(manifest.serverEntry
             ? [
-                  context({
-                      ...shared,
-                      platform: 'node',
-                      target: 'node22',
-                      entryPoints: [
-                          serverEntryPath,
+                  {
+                      packageDir,
+                      /** No source file imports the schema or the migrations. */
+                      extraWatchPaths: [
+                          schemaPath,
+                          migrationsDir,
                       ],
-                      outfile: resolve(outDir, manifest.serverEntry),
-                      external: [
-                          /**
-                           * Native modules, and the Claude Agent SDK, which runs Claude Code from a
-                           * platform-specific package it finds next to its own.
-                           */
-                          'node-pty',
-                          'better-sqlite3',
-                          '@anthropic-ai/claude-agent-sdk',
-                          /**
-                           * Prisma-vir's index re-exports test helpers reaching Playwright, which
-                           * esbuild must resolve before dropping them as unused and can't.
-                           */
-                          'playwright-core',
-                          'chromium-bidi',
-                      ],
-                      banner: {
-                          /**
-                           * Bundled CommonJS dependencies `require` Node's built-ins, which ES
-                           * modules lack. The import is renamed because bundled dependencies
-                           * declare their own top-level `createRequire`.
-                           */
-                          js: "import {createRequire as createBannerRequire} from 'node:module'; const require = createBannerRequire(import.meta.url);",
+                      options: {
+                          ...shared,
+                          platform: 'node',
+                          target: 'node22',
+                          entryPoints: [
+                              serverEntryPath,
+                          ],
+                          outfile: resolve(outDir, manifest.serverEntry),
+                          external: [
+                              /**
+                               * Native modules, and the Claude Agent SDK, which runs Claude Code
+                               * from a platform-specific package it finds next to its own.
+                               */
+                              'node-pty',
+                              'better-sqlite3',
+                              '@anthropic-ai/claude-agent-sdk',
+                              /**
+                               * Prisma-vir's index re-exports test helpers reaching Playwright,
+                               * which esbuild must resolve before dropping them as unused and
+                               * can't.
+                               */
+                              'playwright-core',
+                              'chromium-bidi',
+                          ],
+                          banner: {
+                              /**
+                               * Bundled CommonJS dependencies `require` Node's built-ins, which ES
+                               * modules lack. The import is renamed because bundled dependencies
+                               * declare their own top-level `createRequire`.
+                               */
+                              js: "import {createRequire as createBannerRequire} from 'node:module'; const require = createBannerRequire(import.meta.url);",
+                          },
+                          plugins: [
+                              createDatabaseSyncPlugin({
+                                  packageDir,
+                                  schemaPath,
+                                  migrationsDir,
+                                  outDir,
+                              }),
+                          ],
                       },
-                      plugins: [
-                          createDatabaseSyncPlugin({
-                              packageDir,
-                              entryPath: serverEntryPath,
-                              outDir,
-                          }),
-                      ],
-                  }),
+                  } satisfies BuiltInPluginBuild,
               ]
             : []),
-    ]);
+    ];
+}
+
+function isInsidePath({path, parentPath}: Readonly<{path: string; parentPath: string}>) {
+    return path === parentPath || path.startsWith(parentPath + sep);
+}
+
+/**
+ * Rebuilds a bundle when a file it read changes, using one native recursive watcher for every
+ * bundle. Esbuild's own watch mode isn't used because each of its contexts holds a full in-memory
+ * cache and polls every input file, which with every built-in plugin watching takes gigabytes of
+ * memory and constant CPU. A one-shot build of a bundle is fast enough to not need that cache.
+ */
+function watchBuiltInPluginBuilds(
+    builds: ReadonlyArray<
+        Readonly<{
+            build: BuiltInPluginBuild;
+            run: () => Promise<void>;
+            inputs: ReadonlySet<string>;
+            isFailed: boolean;
+        }>
+    >,
+) {
+    watch(
+        monorepoRoot,
+        {
+            recursive: true,
+        },
+        (event, fileName) => {
+            if (!fileName) {
+                return;
+            }
+            const changedPath = resolve(monorepoRoot, fileName);
+            builds
+                .filter((entry) => {
+                    return (
+                        entry.inputs.has(changedPath) ||
+                        [
+                            ...entry.build.extraWatchPaths,
+                            /** A failed build may not have read the file that fixes it yet. */
+                            ...(entry.isFailed
+                                ? [
+                                      resolve(entry.build.packageDir, 'src'),
+                                  ]
+                                : []),
+                        ].some((parentPath) => {
+                            return isInsidePath({
+                                path: changedPath,
+                                parentPath,
+                            });
+                        })
+                    );
+                })
+                .forEach((entry) => void entry.run());
+        },
+    );
 }
 
 /**
@@ -267,7 +311,7 @@ export async function buildBuiltInPlugins({
     findOutDir: (pluginId: string) => string;
     isWatching?: boolean | undefined;
 }>) {
-    const builds = (
+    const pluginBuilds = (
         await Promise.all(
             builtInPlugins.map(async (plugin) => {
                 return await createBuiltInPluginBuilds({
@@ -278,15 +322,59 @@ export async function buildBuiltInPlugins({
             }),
         )
     ).flat();
-    const results = await Promise.allSettled(builds.map(async (build) => await build.rebuild()));
-    await Promise.all(
-        builds.map(async (build) => {
-            if (isWatching) {
-                await build.watch();
-            } else {
-                await build.dispose();
-            }
-        }),
-    );
-    return results.every((result) => result.status === 'fulfilled');
+    const builds = pluginBuilds.map((build) => {
+        const entry = {
+            build,
+            inputs: new Set<string>(),
+            isFailed: false,
+            isRunning: false,
+            isQueued: false,
+            /**
+             * Runs the build, or when it's already running, queues one more run after it so a
+             * change made mid-build isn't missed. Its return type is annotated because it calls
+             * itself.
+             */
+            async run(): Promise<void> {
+                if (entry.isRunning) {
+                    entry.isQueued = true;
+                    return;
+                }
+                entry.isRunning = true;
+                try {
+                    const result = await buildWithEsbuild({
+                        ...build.options,
+                        metafile: true,
+                    });
+                    entry.inputs = new Set(
+                        Object.keys(result.metafile.inputs).map((input) => {
+                            return resolve(build.packageDir, input);
+                        }),
+                    );
+                    entry.isFailed = false;
+                } catch {
+                    /** Esbuild already logged the errors. */
+                    entry.isFailed = true;
+                } finally {
+                    entry.isRunning = false;
+                }
+                if (entry.isQueued) {
+                    entry.isQueued = false;
+                    await entry.run();
+                }
+                if (builds.every((other) => !other.isRunning)) {
+                    /**
+                     * Esbuild's Go process keeps the memory of finished builds until it exits. The
+                     * next build starts a new one.
+                     */
+                    await stopEsbuild();
+                }
+            },
+        };
+        return entry;
+    });
+    await Promise.all(builds.map(async (entry) => await entry.run()));
+    if (isWatching) {
+        watchBuiltInPluginBuilds(builds);
+    }
+    return builds.every((entry) => !entry.isFailed);
 }
