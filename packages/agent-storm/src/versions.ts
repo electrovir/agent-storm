@@ -263,6 +263,15 @@ async function writeActiveVersions({
     });
 }
 
+/**
+ * Windows' own `tar`, not whichever is first on the PATH: GNU tar from Git for Windows reads the
+ * `C:` of a Windows path as a remote host and can't extract into one.
+ */
+const tarCommand =
+    currentOperatingSystem === OperatingSystem.Windows
+        ? resolve(process.env.SystemRoot || String.raw`C:\Windows`, 'System32', 'tar.exe')
+        : 'tar';
+
 /** Windows can only run `npm`, a `.cmd` script, through a shell. */
 const needsShellForNpm = {
     [OperatingSystem.Linux]: false,
@@ -295,7 +304,7 @@ export async function installVersion({
     });
     try {
         await runCommand(
-            'tar',
+            tarCommand,
             [
                 '-xzf',
                 tarballPath,
