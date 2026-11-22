@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/scripts",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "private": true,
     "description": "Dev-only orchestration scripts (port allocation, run-with-log, etc).",
     "homepage": "https://github.com/electrovir/agent-storm",
@@ -26,13 +26,13 @@
         "test": "exit 0;"
     },
     "dependencies": {
-        "@agent-storm/common": "^0.5.0",
-        "@agent-storm/core": "^0.5.0",
-        "@agent-storm/server": "^0.5.0",
+        "@agent-storm/common": "^0.6.0",
+        "@agent-storm/core": "^0.6.0",
+        "@agent-storm/server": "^0.6.0",
         "@augment-vir/common": "^32.7.1",
         "@augment-vir/node": "^32.7.1",
-        "agent-storm": "^0.5.0",
-        "agent-storm-util": "^0.5.0",
+        "agent-storm": "^0.6.0",
+        "agent-storm-util": "^0.6.0",
         "esbuild": "^0.28.2",
         "object-shape-tester": "^6.15.3",
         "portfinder": "^1.0.38"

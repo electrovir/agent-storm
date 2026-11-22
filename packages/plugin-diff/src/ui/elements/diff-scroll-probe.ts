@@ -1,9 +1,10 @@
-import {reportClientError} from '@agent-storm/core/frontend';
+import {isDebugLogEnabled, reportClientError} from '@agent-storm/core/frontend';
 
 /**
  * TEMPORARY diagnostic for the diff view's backward scroll jumps. Remove once the cause is found.
- * Every backward jump during a downward wheel scroll is shipped to the backend client error log
- * along with any programmatic scroll writes that happened just before it.
+ * Runs only while the `enableDebugLogs` setting is on, and patches the page's scroll methods the
+ * first time it does. Every backward jump during a downward wheel scroll is shipped to the backend
+ * client error log along with any programmatic scroll writes that happened just before it.
  */
 
 type ScrollWrite = {
@@ -29,6 +30,9 @@ function describeElement(element: unknown) {
 }
 
 function recordWrite(target: unknown, detail: string) {
+    if (!isDebugLogEnabled()) {
+        return;
+    }
     recentWrites.push({
         at: performance.now(),
         stack: new Error('scroll write').stack || '',
@@ -118,7 +122,6 @@ function describeSelection() {
 
 /** TEMPORARY: logs every backward jump of a scroller inside `host` while the user scrolls down. */
 export function probeScrollJumps(host: HTMLElement, viewName: string) {
-    patchScrollWrites();
     const listenedElements = new WeakSet<Element>();
     const lastWheel = {
         at: -Infinity,
@@ -127,6 +130,10 @@ export function probeScrollJumps(host: HTMLElement, viewName: string) {
     host.addEventListener(
         'wheel',
         (event) => {
+            if (!isDebugLogEnabled()) {
+                return;
+            }
+            patchScrollWrites();
             lastWheel.at = performance.now();
             lastWheel.deltaY = event.deltaY;
             event.composedPath().forEach((target) => {
@@ -152,7 +159,7 @@ export function probeScrollJumps(host: HTMLElement, viewName: string) {
     >();
     function onScroll(event: Event) {
         const target = event.target;
-        if (!(target instanceof Element)) {
+        if (!(target instanceof Element) || !isDebugLogEnabled()) {
             return;
         }
         const position = {

@@ -27,6 +27,11 @@ export function setDebugLogEnabled(isEnabled: boolean) {
     pending.isEnabled = isEnabled;
 }
 
+/** Whether the `enableDebugLogs` setting is on. */
+export function isDebugLogEnabled() {
+    return pending.isEnabled;
+}
+
 /**
  * Appends an entry to the server's debug log (`debugLogDir`) while the `enableDebugLogs` setting is
  * on, and drops it otherwise. Unlike `reportClientError`, nothing is deduplicated or capped, so it

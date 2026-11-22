@@ -292,55 +292,55 @@ export const VirAiChatPermissions = defineAppElement<{
                                   }
                               })}
                           >
-                          <div class="heading">Permissions</div>
-                          <div class="modes" role="group">
-                              ${modes.map((runtimeMode) => {
-                                  const display = runtimeModeDisplays[runtimeMode];
-                                  return html`
-                                      <button
-                                          type="button"
-                                          role="menuitemradio"
-                                          data-mode=${runtimeMode}
-                                          aria-label=${display.label}
-                                          aria-checked=${runtimeMode === inputs.runtimeMode}
-                                          ${listen('click', () => {
-                                              pick(runtimeMode);
-                                          })}
-                                          ${listen('mouseenter', () => {
-                                              updateState({
-                                                  previewMode: runtimeMode,
-                                              });
-                                          })}
-                                          ${listen('focus', () => {
-                                              updateState({
-                                                  previewMode: runtimeMode,
-                                              });
-                                          })}
-                                      >
-                                          <${ViraIcon.assign({
-                                              icon: display.icon,
-                                          })}></${ViraIcon}>
-                                      </button>
-                                  `;
-                              })}
+                              <div class="heading">Permissions</div>
+                              <div class="modes" role="group">
+                                  ${modes.map((runtimeMode) => {
+                                      const display = runtimeModeDisplays[runtimeMode];
+                                      return html`
+                                          <button
+                                              type="button"
+                                              role="menuitemradio"
+                                              data-mode=${runtimeMode}
+                                              aria-label=${display.label}
+                                              aria-checked=${runtimeMode === inputs.runtimeMode}
+                                              ${listen('click', () => {
+                                                  pick(runtimeMode);
+                                              })}
+                                              ${listen('mouseenter', () => {
+                                                  updateState({
+                                                      previewMode: runtimeMode,
+                                                  });
+                                              })}
+                                              ${listen('focus', () => {
+                                                  updateState({
+                                                      previewMode: runtimeMode,
+                                                  });
+                                              })}
+                                          >
+                                              <${ViraIcon.assign({
+                                                  icon: display.icon,
+                                              })}></${ViraIcon}>
+                                          </button>
+                                      `;
+                                  })}
+                              </div>
+                              <div class="descriptions">
+                                  ${modes.map((runtimeMode) => {
+                                      const display = runtimeModeDisplays[runtimeMode];
+                                      return html`
+                                          <div
+                                              class="description ${runtimeMode === describedMode
+                                                  ? ''
+                                                  : 'inactive'}"
+                                          >
+                                              <span>${display.label}</span>
+                                              <span>${display.description}</span>
+                                          </div>
+                                      `;
+                                  })}
+                              </div>
                           </div>
-                          <div class="descriptions">
-                              ${modes.map((runtimeMode) => {
-                                  const display = runtimeModeDisplays[runtimeMode];
-                                  return html`
-                                      <div
-                                          class="description ${runtimeMode === describedMode
-                                              ? ''
-                                              : 'inactive'}"
-                                      >
-                                          <span>${display.label}</span>
-                                          <span>${display.description}</span>
-                                      </div>
-                                  `;
-                              })}
-                          </div>
-                      </div>
-                  `
+                      `
                     : nothing}
             </${ViraPopoverTrigger}>
         `;

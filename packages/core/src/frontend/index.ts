@@ -20,6 +20,7 @@ export * from './util/auth.js';
 export * from './util/backend-watchdog.js';
 export * from './util/client-error-log.js';
 export * from './util/client-perf-log.js';
+export * from './util/debug-log.js';
 export * from './util/folder-data.js';
 export * from './util/folder-sessions.js';
 export * from './util/global-data.js';

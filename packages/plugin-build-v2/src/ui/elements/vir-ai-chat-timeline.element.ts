@@ -1,5 +1,4 @@
 import {defineAppElement, spinAnimationCss, spinKeyframesCss} from '@agent-storm/core/frontend';
-import {assertWrap} from '@augment-vir/assert';
 import {type AnyDuration} from 'date-vir';
 import {
     classMap,
@@ -12,13 +11,10 @@ import {
     type TemplateResult,
 } from 'element-vir';
 import {
-    createAnchoredPopoverStyles,
     createSizedIcon,
     LucideChevronRightIcon,
     LucideCircleAlertIcon,
     LucideQuoteIcon,
-    popover,
-    PopoverManager,
     tooltip,
     ViraButton,
     ViraColorVariant,
@@ -176,6 +172,26 @@ function readSelectionEnd(range: Readonly<StaticRange>, shadowRoot: ShadowRoot) 
           };
 }
 
+/**
+ * Same as `Selection.getComposedRanges`, but also works in Safari 17 through 18.1, which only takes
+ * the shadow roots as separate arguments and throws a `TypeError` on the options object.
+ */
+function readComposedRanges(selection: Readonly<Selection>, shadowRoot: ShadowRoot) {
+    try {
+        return selection.getComposedRanges({
+            shadowRoots: [
+                shadowRoot,
+            ],
+        });
+    } catch {
+        return (
+            selection.getComposedRanges satisfies (...args: never[]) => StaticRange[] as (
+                ...shadowRoots: ShadowRoot[]
+            ) => StaticRange[]
+        ).call(selection, shadowRoot);
+    }
+}
+
 /** The page's selection when both of its ends are inside assistant messages of this timeline. */
 function readQuoteSelection(
     host: Readonly<HTMLElement> & {
@@ -188,11 +204,7 @@ function readQuoteSelection(
      * inside one as collapsed), so only the composed range knows where the selection is.
      */
     const composedRange = selection?.rangeCount
-        ? selection.getComposedRanges({
-              shadowRoots: [
-                  host.shadowRoot,
-              ],
-          })[0]
+        ? readComposedRanges(selection, host.shadowRoot)[0]
         : undefined;
     if (!selection || !composedRange || composedRange.collapsed) {
         return undefined;
@@ -244,7 +256,6 @@ export const VirAiChatTimeline = defineAppElement<{
             /** Work logs and work items the user opened or closed, by key or item id. */
             expanded: {} as Readonly<Record<string, boolean>>,
             quoteSelection: undefined as QuoteSelection | undefined,
-            quotePopoverManager: new PopoverManager(),
             removeSelectionListener: (() => {}) as () => void,
         };
     },
@@ -313,27 +324,11 @@ export const VirAiChatTimeline = defineAppElement<{
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
-        .quote-anchor {
-            position: absolute;
-            width: 0;
-            height: 0;
-        }
-
-        ${createAnchoredPopoverStyles({
-            selector: css`.quote-popover`,
-            fallbacks: [
-                {
-                    name: 'vir-ai-chat-quote-above',
-                    styles: css``,
-                    flipBlock: true,
-                },
-            ],
-        })}
-
         .quote-popover {
-            position-area: block-end;
-            position-visibility: anchors-visible;
+            position: absolute;
+            z-index: 20;
             margin-top: 6px;
+            transform: translateX(-50%);
         }
 
         ${spinKeyframesCss}
@@ -695,7 +690,7 @@ export const VirAiChatTimeline = defineAppElement<{
             }
         }
     `,
-    render({inputs, state, updateState, dispatch, events, host}) {
+    render({inputs, state, updateState, dispatch, events}) {
         const timeline = buildTimeline(inputs.items);
         const hasLiveItem = inputs.items.some((item) => {
             return item.status === ThreadItemStatus.InProgress;
@@ -1070,23 +1065,13 @@ export const VirAiChatTimeline = defineAppElement<{
             </div>
             ${state.quoteSelection
                 ? html`
-                      <span
-                          class="quote-anchor"
+                      <div
+                          class="quote-popover"
                           style=${css`
                               top: ${state.quoteSelection.top}px;
                               left: ${state.quoteSelection.left}px;
                           `}
-                          ${popover(state.quotePopoverManager, {
-                              trigger: true,
-                              getPopover() {
-                                  return assertWrap.instanceOf(
-                                      host.shadowRoot.querySelector('.quote-popover'),
-                                      HTMLElement,
-                                  );
-                              },
-                          })}
-                      ></span>
-                      <div class="quote-popover" popover="manual">
+                      >
                           <${ViraButton.assign({
                               text: 'Quote',
                               icon: quoteIcon,

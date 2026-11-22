@@ -751,27 +751,27 @@ export const VirAiChatComposer = defineAppElement<{
             ${trigger
                 ? html`
                       <div class="command-menu-popover" popover="manual">
-                      <${VirAiChatCommandMenu.assign({
-                          commands: menuCommands,
-                          triggerKind: trigger.kind,
-                          activeIndex: activeMenuIndex,
-                      })}
-                          ${listen('mousedown', (event) => {
-                              /** Keeps the message box focused, which keeps the menu open. */
-                              event.preventDefault();
+                          <${VirAiChatCommandMenu.assign({
+                              commands: menuCommands,
+                              triggerKind: trigger.kind,
+                              activeIndex: activeMenuIndex,
                           })}
-                          ${listen(VirAiChatCommandMenu.events.commandPicked, (event) => {
-                              pickCommand(event.detail);
-                          })}
-                          ${listen(VirAiChatCommandMenu.events.commandHovered, (event) => {
-                              updateState({
-                                  activeMenuRow: {
-                                      menuKey,
-                                      index: event.detail,
-                                  },
-                              });
-                          })}
-                      ></${VirAiChatCommandMenu}>
+                              ${listen('mousedown', (event) => {
+                                  /** Keeps the message box focused, which keeps the menu open. */
+                                  event.preventDefault();
+                              })}
+                              ${listen(VirAiChatCommandMenu.events.commandPicked, (event) => {
+                                  pickCommand(event.detail);
+                              })}
+                              ${listen(VirAiChatCommandMenu.events.commandHovered, (event) => {
+                                  updateState({
+                                      activeMenuRow: {
+                                          menuKey,
+                                          index: event.detail,
+                                      },
+                                  });
+                              })}
+                          ></${VirAiChatCommandMenu}>
                       </div>
                   `
                 : nothing}

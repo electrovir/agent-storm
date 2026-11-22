@@ -513,10 +513,8 @@ export const VirAiChatModelPicker = defineAppElement<{
         }
 
         function handleKeydown(event: KeyboardEvent) {
-            if (event.isComposing) {
-                return;
-            } else if (event.composedPath()[0] instanceof HTMLButtonElement) {
-                /** A focused button handles its own Enter, which must not also pick a model. */
+            /** A focused button handles its own Enter, which must not also pick a model. */
+            if (event.isComposing || event.composedPath()[0] instanceof HTMLButtonElement) {
                 return;
             }
             const direction =
@@ -646,153 +644,215 @@ export const VirAiChatModelPicker = defineAppElement<{
                         class="chevron"
                     ></${ViraIcon}>
                 </span>
-            ${state.isOpen
-                ? html`
-                      <div
-                          class="popover"
-                          slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-popover']}
-                          role="dialog"
-                          ${listen('keydown', handleKeydown)}
-                      >
-                          <div class="columns">
-                              <div class="rail" aria-label="Providers">
-                                  ${providers.map((provider) => {
-                                      return html`
-                                          <button
-                                              type="button"
-                                              class=${provider === activeRailProvider && !query
-                                                  ? 'rail-button active'
-                                                  : 'rail-button'}
-                                              ${tooltip(providerLabels[provider])}
-                                              aria-label=${providerLabels[provider]}
-                                              aria-pressed=${provider === activeRailProvider}
-                                              ${listen('click', () => {
+                ${state.isOpen
+                    ? html`
+                          <div
+                              class="popover"
+                              slot=${ViraPopoverTrigger.slotNames['vira-popover-trigger-popover']}
+                              role="dialog"
+                              ${listen('keydown', handleKeydown)}
+                          >
+                              <div class="columns">
+                                  <div class="rail" aria-label="Providers">
+                                      ${providers.map((provider) => {
+                                          return html`
+                                              <button
+                                                  type="button"
+                                                  class=${provider === activeRailProvider && !query
+                                                      ? 'rail-button active'
+                                                      : 'rail-button'}
+                                                  ${tooltip(providerLabels[provider])}
+                                                  aria-label=${providerLabels[provider]}
+                                                  aria-pressed=${provider === activeRailProvider}
+                                                  ${listen('click', () => {
+                                                      updateState({
+                                                          railProvider: provider,
+                                                          highlightedIndex: 0,
+                                                          showsOlderModels:
+                                                              selectedRow?.provider === provider &&
+                                                              selectedRow.model.isLegacy,
+                                                          effortIndex: undefined,
+                                                      });
+                                                      focusSearch();
+                                                  })}
+                                              >
+                                                  <${ViraIcon.assign({
+                                                      icon: railProviderIcons[provider],
+                                                  })}></${ViraIcon}>
+                                              </button>
+                                          `;
+                                      })}
+                                  </div>
+                                  <div class="column models-column">
+                                      <div class="column-header search">
+                                          <${ViraIcon.assign({
+                                              icon: searchIcon,
+                                          })}></${ViraIcon}>
+                                          <input
+                                              type="text"
+                                              placeholder="Search models..."
+                                              autocomplete="off"
+                                              spellcheck="false"
+                                              .value=${state.query}
+                                              ${listen('input', (event) => {
                                                   updateState({
-                                                      railProvider: provider,
+                                                      query: extractEventTarget(
+                                                          event,
+                                                          HTMLInputElement,
+                                                      ).value,
                                                       highlightedIndex: 0,
-                                                      showsOlderModels:
-                                                          selectedRow?.provider === provider &&
-                                                          selectedRow.model.isLegacy,
                                                       effortIndex: undefined,
                                                   });
-                                                  focusSearch();
                                               })}
-                                          >
-                                              <${ViraIcon.assign({
-                                                  icon: railProviderIcons[provider],
-                                              })}></${ViraIcon}>
-                                          </button>
-                                      `;
-                                  })}
-                              </div>
-                              <div class="column models-column">
-                                  <div class="column-header search">
-                                      <${ViraIcon.assign({
-                                          icon: searchIcon,
-                                      })}></${ViraIcon}>
-                                      <input
-                                          type="text"
-                                          placeholder="Search models..."
-                                          autocomplete="off"
-                                          spellcheck="false"
-                                          .value=${state.query}
-                                          ${listen('input', (event) => {
-                                              updateState({
-                                                  query: extractEventTarget(event, HTMLInputElement)
-                                                      .value,
-                                                  highlightedIndex: 0,
-                                                  effortIndex: undefined,
-                                              });
-                                          })}
-                                      />
-                                  </div>
-                                  ${rows.length
-                                      ? html`
-                                            <div class="list" role="listbox">
-                                                ${rows.map((row, index) => {
-                                                    return html`
-                                                        <${ViraMenuItem.assign({
-                                                            selected: row.key === selectedRow?.key,
-                                                            keepOpenAfterInteraction: true,
-                                                        })}
-                                                            ?data-highlighted=${index ===
-                                                                state.highlightedIndex &&
-                                                            !check.isNumber(state.effortIndex)}
-                                                            ${row.model.description
-                                                                ? tooltip(row.model.description)
-                                                                : nothing}
-                                                            ${listen('click', () => {
-                                                                selectModel(row);
+                                          />
+                                      </div>
+                                      ${rows.length
+                                          ? html`
+                                                <div class="list" role="listbox">
+                                                    ${rows.map((row, index) => {
+                                                        return html`
+                                                            <${ViraMenuItem.assign({
+                                                                selected:
+                                                                    row.key === selectedRow?.key,
+                                                                keepOpenAfterInteraction: true,
                                                             })}
-                                                            ${listen('mousemove', () => {
-                                                                highlightRow(index);
-                                                            })}
-                                                        >
-                                                            ${row.model.name}${query
-                                                                ? html`
-                                                                      <span class="option-provider">
-                                                                          ${providerLabels[
-                                                                              row.provider
-                                                                          ]}
-                                                                      </span>
-                                                                  `
-                                                                : nothing}
-                                                        </${ViraMenuItem}>
-                                                    `;
-                                                })}
-                                                ${hasOlderToggle
-                                                    ? html`
-                                                          <${ViraMenuItem.assign({
-                                                              selected: false,
-                                                              keepOpenAfterInteraction: true,
-                                                          })}
-                                                              class="older-toggle"
-                                                              aria-expanded=${state.showsOlderModels}
-                                                              ?data-highlighted=${state.highlightedIndex ===
-                                                                  rows.length &&
-                                                              !check.isNumber(state.effortIndex)}
-                                                              ${listen('click', toggleOlderModels)}
-                                                              ${listen('mousemove', () => {
-                                                                  highlightRow(rows.length);
+                                                                ?data-highlighted=${index ===
+                                                                    state.highlightedIndex &&
+                                                                !check.isNumber(state.effortIndex)}
+                                                                ${row.model.description
+                                                                    ? tooltip(row.model.description)
+                                                                    : nothing}
+                                                                ${listen('click', () => {
+                                                                    selectModel(row);
+                                                                })}
+                                                                ${listen('mousemove', () => {
+                                                                    highlightRow(index);
+                                                                })}
+                                                            >
+                                                                ${row.model.name}${query
+                                                                    ? html`
+                                                                          <span
+                                                                              class="option-provider"
+                                                                          >
+                                                                              ${providerLabels[
+                                                                                  row.provider
+                                                                              ]}
+                                                                          </span>
+                                                                      `
+                                                                    : nothing}
+                                                            </${ViraMenuItem}>
+                                                        `;
+                                                    })}
+                                                    ${hasOlderToggle
+                                                        ? html`
+                                                              <${ViraMenuItem.assign({
+                                                                  selected: false,
+                                                                  keepOpenAfterInteraction: true,
                                                               })}
-                                                          >
-                                                              ${state.showsOlderModels
-                                                                  ? 'Hide older models'
-                                                                  : 'Show older models'}
-                                                          </${ViraMenuItem}>
-                                                      `
-                                                    : nothing}
+                                                                  class="older-toggle"
+                                                                  aria-expanded=${state.showsOlderModels}
+                                                                  ?data-highlighted=${state.highlightedIndex ===
+                                                                      rows.length &&
+                                                                  !check.isNumber(
+                                                                      state.effortIndex,
+                                                                  )}
+                                                                  ${listen(
+                                                                      'click',
+                                                                      toggleOlderModels,
+                                                                  )}
+                                                                  ${listen('mousemove', () => {
+                                                                      highlightRow(rows.length);
+                                                                  })}
+                                                              >
+                                                                  ${state.showsOlderModels
+                                                                      ? 'Hide older models'
+                                                                      : 'Show older models'}
+                                                              </${ViraMenuItem}>
+                                                          `
+                                                        : nothing}
+                                                </div>
+                                            `
+                                          : html`
+                                                <div class="empty">${emptyLabel}</div>
+                                            `}
+                                  </div>
+                                  ${efforts.length && selectedRow
+                                      ? html`
+                                            <div
+                                                class="column efforts-column"
+                                                aria-label="Reasoning"
+                                            >
+                                                <div class="column-header">
+                                                    <span>Reasoning</span>
+                                                    <span>${selectedRow.model.name}</span>
+                                                </div>
+                                                <div class="list" role="listbox">
+                                                    ${efforts.map((effort, index) => {
+                                                        return html`
+                                                            <${ViraMenuItem.assign({
+                                                                selected: effort === selectedEffort,
+                                                                keepOpenAfterInteraction: true,
+                                                            })}
+                                                                ?data-highlighted=${index ===
+                                                                state.effortIndex}
+                                                                ${listen('click', () => {
+                                                                    pick({
+                                                                        row: selectedRow,
+                                                                        effort,
+                                                                    });
+                                                                })}
+                                                            >
+                                                                ${reasoningEffortLabels[effort]}
+                                                            </${ViraMenuItem}>
+                                                        `;
+                                                    })}
+                                                </div>
                                             </div>
                                         `
-                                      : html`
-                                            <div class="empty">${emptyLabel}</div>
-                                        `}
+                                      : nothing}
                               </div>
-                              ${efforts.length && selectedRow
+                              ${selectedRow && speedTiers.length
                                   ? html`
-                                        <div class="column efforts-column" aria-label="Reasoning">
-                                            <div class="column-header">
-                                                <span>Reasoning</span>
-                                                <span>${selectedRow.model.name}</span>
-                                            </div>
-                                            <div class="list" role="listbox">
-                                                ${efforts.map((effort, index) => {
+                                        <div class="speed">
+                                            <span>Speed</span>
+                                            <div
+                                                class="segments"
+                                                role="radiogroup"
+                                                aria-label="Speed"
+                                            >
+                                                ${[
+                                                    {
+                                                        id: undefined,
+                                                        name: 'Standard',
+                                                    },
+                                                    ...speedTiers,
+                                                ].map((tier) => {
                                                     return html`
-                                                        <${ViraMenuItem.assign({
-                                                            selected: effort === selectedEffort,
-                                                            keepOpenAfterInteraction: true,
-                                                        })}
-                                                            ?data-highlighted=${index ===
-                                                            state.effortIndex}
+                                                        <button
+                                                            type="button"
+                                                            class="segment"
+                                                            role="radio"
+                                                            aria-checked=${tier.id ===
+                                                            selectedSpeedTier?.id}
                                                             ${listen('click', () => {
-                                                                pick({
+                                                                emitModelChange({
                                                                     row: selectedRow,
-                                                                    effort,
+                                                                    effort: inputs.effort,
+                                                                    speedTier: tier.id,
                                                                 });
                                                             })}
                                                         >
-                                                            ${reasoningEffortLabels[effort]}
-                                                        </${ViraMenuItem}>
+                                                            ${tier.id
+                                                                ? html`
+                                                                      <${ViraIcon.assign({
+                                                                          icon: zapIcon,
+                                                                      })}
+                                                                          class="zap"
+                                                                      ></${ViraIcon}>
+                                                                  `
+                                                                : nothing}
+                                                            ${tier.name}
+                                                        </button>
                                                     `;
                                                 })}
                                             </div>
@@ -800,53 +860,8 @@ export const VirAiChatModelPicker = defineAppElement<{
                                     `
                                   : nothing}
                           </div>
-                          ${selectedRow && speedTiers.length
-                              ? html`
-                                    <div class="speed">
-                                        <span>Speed</span>
-                                        <div class="segments" role="radiogroup" aria-label="Speed">
-                                            ${[
-                                                {
-                                                    id: undefined,
-                                                    name: 'Standard',
-                                                },
-                                                ...speedTiers,
-                                            ].map((tier) => {
-                                                return html`
-                                                    <button
-                                                        type="button"
-                                                        class="segment"
-                                                        role="radio"
-                                                        aria-checked=${tier.id ===
-                                                        selectedSpeedTier?.id}
-                                                        ${listen('click', () => {
-                                                            emitModelChange({
-                                                                row: selectedRow,
-                                                                effort: inputs.effort,
-                                                                speedTier: tier.id,
-                                                            });
-                                                        })}
-                                                    >
-                                                        ${tier.id
-                                                            ? html`
-                                                                  <${ViraIcon.assign({
-                                                                      icon: zapIcon,
-                                                                  })}
-                                                                      class="zap"
-                                                                  ></${ViraIcon}>
-                                                              `
-                                                            : nothing}
-                                                        ${tier.name}
-                                                    </button>
-                                                `;
-                                            })}
-                                        </div>
-                                    </div>
-                                `
-                              : nothing}
-                      </div>
-                  `
-                : nothing}
+                      `
+                    : nothing}
             </${ViraPopoverTrigger}>
         `;
     },

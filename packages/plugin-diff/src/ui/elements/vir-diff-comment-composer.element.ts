@@ -9,9 +9,9 @@ import {
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
+    viraShadows,
     ViraSize,
     ViraTextArea,
-    viraShadows,
     viraThemeByKeys,
 } from 'vira';
 import {createPointPopoverStyles} from './point-popover-styles.js';

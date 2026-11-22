@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/plugin-diff-v2",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "private": true,
     "description": "",
     "keywords": [],
@@ -30,9 +30,9 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/common": "^0.5.0",
-        "@agent-storm/core": "^0.5.0",
-        "@agent-storm/plugin-diff": "^0.5.0",
+        "@agent-storm/common": "^0.6.0",
+        "@agent-storm/core": "^0.6.0",
+        "@agent-storm/plugin-diff": "^0.6.0",
         "@augment-vir/assert": "^32.7.1",
         "@pierre/diffs": "^1.6.4",
         "element-vir": "^27.0.2"
