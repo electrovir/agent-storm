@@ -28,6 +28,18 @@ export type AgentToolContext = Readonly<{
         >,
     ): Promise<ApprovalDecision>;
     /**
+     * Adds a message to the thread that shows the image files at `imagePaths` under `caption`.
+     * Rejects a path that isn't an absolute path to a readable image file.
+     */
+    showImages(
+        params: Readonly<{
+            threadId: string;
+            imagePaths: ReadonlyArray<string>;
+            /** Markdown. */
+            caption: string;
+        }>,
+    ): Promise<void>;
+    /**
      * Runs `action` once the thread's current turn ends. A tool that stops the thread's own session
      * waits for this, since stopping it mid-turn would end the very call running the tool.
      */
@@ -210,9 +222,47 @@ export const agentToolInstructions = [
     'Agent Storm is the app running this chat. These tools act on its chat threads, this one included, and on the folders in its sidebar.',
     "Before changing files, find this thread's folder with list_folders. In a plain checkout (isWorktreeRoot false), change files right there, and use move_to_worktree only when the user asks for a worktree. In a worktree root (isWorktreeRoot true), move this thread into its own worktree with move_to_worktree first, unless it is in one already.",
     "Tools that restart or stop this thread's session (move_to_worktree, move_to_folder, archive_thread on this thread, and configure_thread changing this thread's model) take effect when your turn ends, so call them last and then end your turn.",
+    'The chat shows images inline: to show the user an image file, call show_image, or put a Markdown image with its absolute path in your reply, such as ![Chart](/tmp/chart.png).',
 ].join(' ');
 
 export const agentTools: ReadonlyArray<AgentTool> = [
+    defineAgentTool({
+        name: 'show_image',
+        description:
+            "Shows the user image files inline in this thread's chat, as a message of their own. Use it for a screenshot, chart, or any other image the user should see. The images aren't sent back to you.",
+        isReadOnly: true,
+        inputSchema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+                paths: {
+                    type: 'array',
+                    items: {
+                        type: 'string',
+                    },
+                    minItems: 1,
+                    description: 'Absolute paths of PNG, JPEG, GIF, WebP, or SVG files.',
+                },
+                caption: {
+                    type: 'string',
+                    description: 'Markdown to show above the images.',
+                },
+            },
+            required: [
+                'paths',
+            ],
+        },
+        async run({callerId, input, context}) {
+            await context.showImages({
+                threadId: callerId,
+                imagePaths: input.paths,
+                caption: input.caption || '',
+            });
+            return {
+                ok: true,
+            };
+        },
+    }),
     defineAgentTool({
         name: 'list_threads',
         description:

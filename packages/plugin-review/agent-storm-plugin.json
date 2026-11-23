@@ -3,6 +3,7 @@
         {
             "id": "review",
             "isEnabledByDefault": true,
+            "isStartedWithApp": true,
             "label": "Review"
         }
     ],

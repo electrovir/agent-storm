@@ -152,16 +152,10 @@ describe(splitComposerCommandMentions.name, () => {
                     text: '/clear',
                     command: clear,
                 },
-                ...[
-                    ' ',
-                    'then',
-                    ' ',
-                ].map((text) => {
-                    return {
-                        text,
-                        command: undefined,
-                    };
-                }),
+                {
+                    text: ' then ',
+                    command: undefined,
+                },
                 {
                     text: '$review',
                     command: review,
@@ -174,17 +168,10 @@ describe(splitComposerCommandMentions.name, () => {
                     text: '/review',
                     command: review,
                 },
-                ...[
-                    ' ',
-                    '/clear',
-                    '\n',
-                    '$nope',
-                ].map((text) => {
-                    return {
-                        text,
-                        command: undefined,
-                    };
-                }),
+                {
+                    text: ' /clear\n$nope',
+                    command: undefined,
+                },
             ],
         );
     });

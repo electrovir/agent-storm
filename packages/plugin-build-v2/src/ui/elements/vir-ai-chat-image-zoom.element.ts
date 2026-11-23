@@ -1,7 +1,7 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {getObjectTypedValues, omitObjectKeys} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
-import {classMap, css, html, listen} from 'element-vir';
+import {classMap, css, defineElementEvent, html, listen} from 'element-vir';
 import {
     fittedImageView,
     panImageView,
@@ -20,6 +20,7 @@ function readViewport(event: Event) {
 
     return {
         viewport,
+        image,
         center: {
             x: rect.left + rect.width / 2,
             y: rect.top + rect.height / 2,
@@ -67,13 +68,16 @@ function findMidpoint([
 /**
  * An image shrunk to fit its parent but never stretched past its natural size, like a chat app's
  * image viewer: click to zoom in, option/alt-click to zoom out, scroll or pinch to zoom, drag to
- * pan.
+ * pan. A click outside the image emits `outsideClicked` instead of zooming.
  */
 export const VirAiChatImageZoom = defineAppElement<{
     imageUrl: string;
     alt: string;
 }>()({
     tagName: 'vir-ai-chat-image-zoom',
+    events: {
+        outsideClicked: defineElementEvent<void>(),
+    },
     state() {
         return {
             view: fittedImageView as Readonly<ImageView>,
@@ -123,13 +127,13 @@ export const VirAiChatImageZoom = defineAppElement<{
             overflow: hidden;
             touch-action: none;
             user-select: none;
-            cursor: zoom-in;
 
-            &.zoom-out {
+            &.zoom-out img {
                 cursor: zoom-out;
             }
 
-            &.dragging {
+            &.dragging,
+            &.dragging img {
                 cursor: grabbing;
             }
         }
@@ -138,15 +142,24 @@ export const VirAiChatImageZoom = defineAppElement<{
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
+            cursor: zoom-in;
         }
     `,
-    render({inputs, state, updateState, host}) {
+    render({inputs, state, updateState, host, dispatch, events}) {
         function endPress(event: PointerEvent) {
             if (!host.instanceState.pointers[event.pointerId]) {
                 return;
             }
-            const {center, bounds, naturalWidth} = readViewport(event);
+            const {center, bounds, naturalWidth, image} = readViewport(event);
             const isClick = event.type === 'pointerup' && !!host.instanceState.pressStart;
+            const imageRect = image?.getBoundingClientRect();
+            const isOutsideClick =
+                isClick &&
+                (!imageRect ||
+                    event.clientX < imageRect.left ||
+                    event.clientX > imageRect.right ||
+                    event.clientY < imageRect.top ||
+                    event.clientY > imageRect.bottom);
             const clickedView = zoomImageView({
                 ...bounds,
                 view: host.instanceState.view,
@@ -171,8 +184,16 @@ export const VirAiChatImageZoom = defineAppElement<{
                     `${event.pointerId}`,
                 ]),
                 pressStart: undefined,
-                view: isClick ? clickedView : host.instanceState.view,
+                view: isClick && !isOutsideClick ? clickedView : host.instanceState.view,
             });
+
+            if (isOutsideClick) {
+                dispatch(
+                    new events.outsideClicked({
+                        detail: undefined,
+                    }),
+                );
+            }
         }
 
         return html`

@@ -73,7 +73,7 @@ enum ThreadOrigin {
   review
   /// Runs watch mode's passes for the Review plugin.
   watch
-  /// An extra AI Chat tab in a thread's tabs. Keeps the title it starts with.
+  /// An extra AI Chat tab in a thread's tabs. Its generated title names its tab.
   sideChat
 }
 
@@ -123,6 +123,8 @@ model ThreadItem {
   status         ThreadItemStatus
   title          String
   text           String
+  /// Absolute paths of the images the item shows, as JSON.
+  imagePaths     String           @default("[]")
   order          Int
   /// The provider's id for the item, so later updates from the provider find it.
   providerItemId String?

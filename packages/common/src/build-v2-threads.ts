@@ -12,7 +12,7 @@ export enum ThreadOrigin {
     Review = 'review',
     /** Runs watch mode's passes for the Review plugin. */
     Watch = 'watch',
-    /** An extra AI Chat tab in a thread's tabs. Keeps the title it starts with. */
+    /** An extra AI Chat tab in a thread's tabs. Its generated title names its tab. */
     SideChat = 'sideChat',
 }
 

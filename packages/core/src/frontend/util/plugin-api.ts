@@ -490,6 +490,16 @@ export type PaneDefinition<TabStateShape extends Shape = typeof noTabStateShape>
                 context: AppContext;
             }>,
         ): HtmlInterpolation;
+        /**
+         * Replaces `label` on a tab the user hasn't named. Like `renderTabIcon`, render an element
+         * that watches the data the label comes from.
+         */
+        renderTabLabel(
+            params: Readonly<{
+                tabState: Readonly<TabStateShape['runtimeType']>;
+                context: AppContext;
+            }>,
+        ): HtmlInterpolation;
         /** Extra entries in the tab's right-click menu, between Rename and Close. */
         menuEntries(
             params: Readonly<{

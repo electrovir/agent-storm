@@ -18,6 +18,7 @@ import {
     ViraButton,
     ViraColorVariant,
     ViraEmphasis,
+    ViraLink,
     ViraMenuTrigger,
     ViraSize,
     ViraTabs,
@@ -249,6 +250,11 @@ export const VirTabHost = defineAppElement<{
                       sizes: ReadonlyArray<number>;
                   }>
                 | undefined,
+            /**
+             * The tab whose menu the strip's menu shows instead of the new-tab entries, set by the
+             * last press on a strip.
+             */
+            stripMenuTabId: undefined as string | undefined,
         };
     },
     styles: css`
@@ -666,10 +672,29 @@ export const VirTabHost = defineAppElement<{
             }
             const newTabEntries = buildNewTabEntries(undefined);
             /**
-             * The strip's new-tab menu opens on presses that miss every tab. Stopped at the tabs,
-             * before they reach the menu's trigger, so a tab's own menu doesn't open with it.
+             * `ViraTabs` gives its overflow dropdown no tab menus, so the strip's menu stands in:
+             * the dropdown itself is the selected tab, and an item in its menu is that item's tab.
              */
-            function stopIfOnTab(event: MouseEvent) {
+            function findOverflowTabId(event: Readonly<MouseEvent>) {
+                const path = event.composedPath();
+                const link = path.find((node) => check.instanceOf(node, ViraLink));
+                if (link) {
+                    return link.instanceInputs.route?.route.paths?.[0];
+                }
+                const isOnDropdown = path.some((node) => {
+                    return node instanceof HTMLElement && node.classList.contains('tab-more');
+                });
+                return isOnDropdown ? displayedTabId : undefined;
+            }
+            const stripMenuEntries =
+                (state.stripMenuTabId && tabIds.includes(state.stripMenuTabId)
+                    ? inputs.tabs[state.stripMenuTabId]?.menuEntries
+                    : undefined) || newTabEntries;
+            /**
+             * The strip's menu opens on presses that miss every tab. Stopped at the tabs, before
+             * they reach the menu's trigger, so a tab's own menu doesn't open with it.
+             */
+            function onStripPress(event: MouseEvent) {
                 const isOnTab =
                     findElementIndexAt({
                         elements: listInlineTabElements(extractEventTarget(event, HTMLElement)),
@@ -678,7 +703,11 @@ export const VirTabHost = defineAppElement<{
                     }) !== -1;
                 if (isOnTab) {
                     event.stopPropagation();
+                    return;
                 }
+                updateState({
+                    stripMenuTabId: findOverflowTabId(event),
+                });
             }
             return html`
                 <div class="strip">
@@ -714,7 +743,7 @@ export const VirTabHost = defineAppElement<{
                                 contextMenuPopoverOffset: sidebarContextMenuOffset,
                             })}
                                 slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                                ${listen('mousedown', stopIfOnTab)}
+                                ${listen('mousedown', onStripPress)}
                                 ${listen('pointerdown', (event) => {
                                     /**
                                      * Only touches: a touch's long press opens the menu from
@@ -722,7 +751,7 @@ export const VirTabHost = defineAppElement<{
                                      * reach the strip.
                                      */
                                     if (event.pointerType === 'touch') {
-                                        stopIfOnTab(event);
+                                        onStripPress(event);
                                     }
                                 })}
                                 ${listen(ViraTabs.events.tabSelect, (event) => {
@@ -753,7 +782,7 @@ export const VirTabHost = defineAppElement<{
                                     }
                                 })}
                             ></${ViraTabs}>
-                            ${renderMenuItemEntries(newTabEntries)}
+                            ${renderMenuItemEntries(stripMenuEntries)}
                         </${ViraMenuTrigger}>
                     </div>
                     <div class="strip-actions">

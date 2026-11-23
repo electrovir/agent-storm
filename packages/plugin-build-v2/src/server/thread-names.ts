@@ -1,5 +1,5 @@
-import {randomString} from '@augment-vir/common';
-import {type Thread, type ThreadItem, ThreadItemKind} from '../build-v2-api.js';
+import {randomString, type PartialWithUndefined} from '@augment-vir/common';
+import {isTabName, ThreadItemKind, type Thread, type ThreadItem} from '../build-v2-api.js';
 
 const maxTitleLength = 60;
 const emptyTitle = 'New thread';
@@ -26,15 +26,20 @@ const promptMessageTags: Partial<Record<ThreadItemKind, string>> = {
 /**
  * Asks a model to title a thread from its conversation: the first message and the latest few. With
  * `thread`, the model keeps its current title unless the conversation shows it is vague or
- * outdated.
+ * outdated. With `isSideChat`, asks for a side chat's tab name instead: a word or two.
  */
 export function createThreadTitlePrompt({
     items,
     thread,
-}: Readonly<{
-    items: ReadonlyArray<Readonly<Pick<ThreadItem, 'kind' | 'text'>>>;
-    thread?: Readonly<Pick<Thread, 'title'>> | undefined;
-}>) {
+    isSideChat,
+}: Readonly<
+    {
+        items: ReadonlyArray<Readonly<Pick<ThreadItem, 'kind' | 'text'>>>;
+    } & PartialWithUndefined<{
+        thread: Readonly<Pick<Thread, 'title'>>;
+        isSideChat: boolean;
+    }>
+>) {
     const [
         firstMessage,
         ...laterMessages
@@ -46,13 +51,22 @@ export function createThreadTitlePrompt({
           ]
         : [];
     return [
-        'Write a title for the coding thread below that reads like a terse branch name written with spaces: 2 to 5 words, such as "sidebar title overflow" or "fix codex resume crash".',
-        'The user keeps many threads open at once, so the title must tell this one apart from similar threads. Name its specific subject (the bug, feature, file, ticket, channel, or error), not only the kind of task. Drop filler words like "the", "a", "issue", and "update".',
-        'Keep it to 30 characters or fewer.',
+        ...(isSideChat
+            ? [
+                  'Name the side chat below for its tab in a crowded tab strip.',
+                  'Reply with exactly one plain English word: the one that best tells this chat apart from other chats about the same project, such as "assignee", "markdown", "search", "resume", or "datepicker".',
+                  'Name its specific subject (the feature, component, question, or error), not the kind of task.',
+                  'One word only: no spaces, no hyphens, no camelCase, no quotes, no punctuation.',
+              ]
+            : [
+                  'Write a title for the coding thread below that reads like a terse branch name written with spaces: 2 to 5 words, such as "sidebar title overflow" or "fix codex resume crash".',
+                  'The user keeps many threads open at once, so the title must tell this one apart from similar threads. Name its specific subject (the bug, feature, file, ticket, channel, or error), not only the kind of task. Drop filler words like "the", "a", "issue", and "update".',
+                  'Keep it to 30 characters or fewer.',
+              ]),
         'The first message sets what the thread is about. Title that main goal, not whatever the latest messages happen to be working on.',
         'Title the work the user wants done, never the conversation itself: no notes about missing context, links that cannot be opened, or what the assistant could not do.',
         `If the conversation does not yet show what that work is, such as when it holds only a link, reply with exactly ${unknownTitleReply}.`,
-        ...(thread
+        ...(thread && !isSideChat
             ? [
                   `Its current title is "${thread.title}". Reply with that title unchanged unless it is only a placeholder, raw message text, or too vague to tell this thread apart. Side work, follow-up fixes, and detours later in the thread never justify a new title.`,
               ]
@@ -108,6 +122,16 @@ export function parseGeneratedTitle(reply: string) {
         !/[.?!]\s/.test(title)
         ? title
         : undefined;
+}
+
+/**
+ * Same as {@link parseGeneratedTitle}, but keeps only the last two words, since the title model
+ * sometimes replies with more even when told to use one. The last words hold the specific subject,
+ * such as "markdown" in "task modal markdown".
+ */
+export function parseGeneratedTabName(reply: string) {
+    const title = parseGeneratedTitle(reply)?.split(/\s+/).slice(-2).join(' ');
+    return title && isTabName(title) ? title : undefined;
 }
 
 /** A thread's title from its first message: the first non-empty line, shortened with `…`. */

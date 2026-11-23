@@ -113,11 +113,17 @@ function listIds(entries: ReadonlyArray<Readonly<{id: string}>> | undefined) {
 
 function listActivities(
     activities:
-        | ReadonlyArray<Readonly<Pick<PluginActivityContribution, 'id' | 'isEnabledByDefault'>>>
+        | ReadonlyArray<
+              Readonly<
+                  Pick<PluginActivityContribution, 'id' | 'isEnabledByDefault' | 'isStartedWithApp'>
+              >
+          >
         | undefined,
 ) {
     return (activities || [])
-        .map((activity) => `${activity.id}:${activity.isEnabledByDefault}`)
+        .map((activity) => {
+            return `${activity.id}:${activity.isEnabledByDefault}:${!!activity.isStartedWithApp}`;
+        })
         .toSorted();
 }
 
@@ -143,7 +149,17 @@ function readPluginModule({
     }
     const plugin = definition satisfies object as PluginDefinition;
     const mismatches = [
-        check.jsonEquals(listActivities(plugin.activities), listActivities(manifest.activities))
+        check.jsonEquals(
+            listActivities(
+                plugin.activities?.map((activity) => {
+                    return {
+                        ...activity,
+                        isStartedWithApp: !!(activity.startWithApp || activity.findCount),
+                    };
+                }),
+            ),
+            listActivities(manifest.activities),
+        )
             ? ''
             : 'activities',
         check.jsonEquals(listIds(plugin.panes), listIds(manifest.panes)) ? '' : 'panes',
@@ -768,7 +784,16 @@ export function createPluginRegistry({
         const requestedIds = addDependencies({
             pluginIds: tracking.isAllRequested
                 ? activePlugins.map((plugin) => plugin.id)
-                : tracking.requestedPluginIds,
+                : [
+                      ...tracking.requestedPluginIds,
+                      ...activePlugins
+                          .filter((plugin) => {
+                              return plugin.manifest?.activities.some(
+                                  (activity) => activity.isStartedWithApp,
+                              );
+                          })
+                          .map((plugin) => plugin.id),
+                  ],
             plugins: activePlugins,
         });
         const lazyPlugins = activePlugins.filter((plugin) => !requestedIds.includes(plugin.id));

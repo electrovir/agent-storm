@@ -4,6 +4,7 @@ import {check} from '@augment-vir/assert';
 import {
     getObjectTypedEntries,
     type MaybePromise,
+    type PartialWithUndefined,
     typedObjectFromEntries,
 } from '@augment-vir/common';
 import {
@@ -18,6 +19,7 @@ import {
     type ThreadStatus,
 } from '../../build-v2-api.js';
 import {type AgentToolConnection} from '../agent-tool-server.js';
+import {type InlineImage} from '../chat-images.js';
 
 /**
  * Drops the unset variables a process's environment type allows, which a spawn handshake can't
@@ -43,7 +45,12 @@ export type ProviderItem = Readonly<
     Pick<ThreadItem, 'kind' | 'status' | 'title' | 'text'> & {
         /** The provider's own id for the item, which later updates to the same item reuse. */
         providerItemId: string;
-    }
+    } & PartialWithUndefined<{
+            /** Image files on disk the item shows. */
+            imagePaths: ReadonlyArray<string>;
+            /** Images the provider sent inline, which the thread saves to disk to show. */
+            inlineImages: ReadonlyArray<InlineImage>;
+        }>
 >;
 
 /** What one model response spent. A repeated `dedupeKey` replaces the earlier record. */

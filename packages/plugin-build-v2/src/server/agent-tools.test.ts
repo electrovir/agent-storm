@@ -130,6 +130,13 @@ function createTestContext(
             });
             return Promise.resolve(ApprovalDecision.Approve);
         },
+        showImages(request) {
+            requests.push({
+                call: 'showImages',
+                request,
+            });
+            return Promise.resolve();
+        },
         runAfterTurn(threadId, action) {
             afterTurnActions.push(action);
         },

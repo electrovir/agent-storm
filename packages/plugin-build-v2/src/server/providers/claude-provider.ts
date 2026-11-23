@@ -28,6 +28,7 @@ import {
     ThreadStatus,
     type ProviderModel,
 } from '../../build-v2-api.js';
+import {isUploadPath} from '../../util/message-attachments.js';
 import {parseReasoningEfforts} from '../../util/reasoning-effort.js';
 import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
 import {
@@ -42,6 +43,7 @@ import {
     completeClaudeToolItem,
     describeClaudeToolUse,
     readClaudeMessageUsage,
+    readClaudeToolResultImages,
     readClaudeToolResultText,
     readOnlyClaudeTools,
     type ClaudeToolDescription,
@@ -655,6 +657,8 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 blockCounts: new Map<string, number>(),
                 toolItems: new Map<string, ClaudeToolDescription>(),
                 declinedToolIds: new Set<string>(),
+                /** `Read` calls on the user's own uploads, whose images the chat already shows. */
+                uploadReadIds: new Set<string>(),
                 sessionApprovals: new Set<string>(),
                 wasInterrupted: false,
                 isStopped: false,
@@ -1064,6 +1068,14 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                                 input: check.isObject(block.input) ? block.input : {},
                             });
                             state.toolItems.set(block.id, tool);
+                            if (
+                                block.name === 'Read' &&
+                                check.isObject(block.input) &&
+                                check.isString(block.input.file_path) &&
+                                isUploadPath(block.input.file_path)
+                            ) {
+                                state.uploadReadIds.add(block.id);
+                            }
                             await sink.putItem({
                                 ...tool,
                                 providerItemId: block.id,
@@ -1097,6 +1109,9 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                                     isError: block.is_error === true,
                                     isDeclined: state.declinedToolIds.delete(toolUseId),
                                 }),
+                                inlineImages: state.uploadReadIds.delete(toolUseId)
+                                    ? []
+                                    : readClaudeToolResultImages(block.content),
                                 providerItemId: toolUseId,
                             });
                         }),

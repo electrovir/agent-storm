@@ -8,10 +8,11 @@ import {extractErrorMessage} from '@augment-vir/common';
 import {html, keyed, listen} from 'element-vir';
 import {defineShape} from 'object-shape-tester';
 import {createSizedIcon, LucideMessageSquareIcon, ViraIcon} from 'vira';
-import {aiChatPaneId} from '../../build-v2-api.js';
+import {aiChatPaneId, aiChatTabLabel} from '../../build-v2-api.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
 import {findBuildV2State, removeThread, storeThread} from '../../util/build-v2-state.js';
 import {VirAiChatTabIcon} from './vir-ai-chat-tab-icon.element.js';
+import {VirAiChatTabTitle} from './vir-ai-chat-tab-title.element.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
 
 const aiChatIcon = createSizedIcon(LucideMessageSquareIcon, 14);
@@ -75,17 +76,28 @@ export const aiChatPane: PaneDefinition<typeof aiChatTabStateShape> = {
     id: aiChatPaneId,
     tabStateShape: aiChatTabStateShape,
     label() {
-        return 'AI Chat';
+        return aiChatTabLabel;
     },
     newTabEntries() {
         return [
             {
-                label: 'AI Chat',
+                label: aiChatTabLabel,
                 state: undefined,
             },
         ];
     },
     icon: aiChatIcon,
+    renderTabLabel({tabState, context}) {
+        const state = findBuildV2State(context);
+        return state && tabState.threadId && tabState.parentThreadId
+            ? html`
+                  <${VirAiChatTabTitle.assign({
+                      sideChats: state.sideChats,
+                      threadId: tabState.threadId,
+                  })}></${VirAiChatTabTitle}>
+              `
+            : aiChatTabLabel;
+    },
     renderTabIcon({tabState, context}) {
         const state = findBuildV2State(context);
         return state && tabState.threadId

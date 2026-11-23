@@ -1,8 +1,9 @@
-import {classMap, css, html, unsafeHTML} from 'element-vir';
+import {classMap, css, html, nothing, unsafeHTML} from 'element-vir';
 import {micromark} from 'micromark';
 import {gfm, gfmHtml} from 'micromark-extension-gfm';
 import {viraThemeByKeys} from 'vira';
 import {VirAiChatCodeCopy} from './vir-ai-chat-code-copy.element.js';
+import {VirAiChatLocalImage} from './vir-ai-chat-local-image.element.js';
 
 const codeBlockPattern = /<pre><code(?: class="language-([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g;
 
@@ -85,11 +86,68 @@ function wrapCodeBlocks(markupHtml: string) {
     });
 }
 
+/** An image Micromark rendered whose source is an absolute file path, not a URL. */
+const localImagePattern = /<img src="(\/(?!\/)[^"]*)" alt="([^"]*)"(?: title="[^"]*")? \/>/g;
+
+function toLocalImageTag({path, altHtml}: Readonly<{path: string; altHtml: string}>) {
+    const pathAttribute = path
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('<', '&lt;');
+    return `<${VirAiChatLocalImage.tagName} path="${pathAttribute}" alt="${altHtml}"></${VirAiChatLocalImage.tagName}>`;
+}
+
+/** Micromark percent-encodes a source and escapes it for HTML, so the file path is undone from both. */
+function decodeImageSource(source: string) {
+    const unescaped = source.replaceAll('&amp;', '&');
+    try {
+        return decodeURIComponent(unescaped);
+    } catch {
+        return unescaped;
+    }
+}
+
+/** Swaps each image of a local file for a `VirAiChatLocalImage`, which reads it through the server. */
+function replaceLocalImages(markupHtml: string) {
+    return markupHtml.replaceAll(localImagePattern, (_match, source: string, altHtml: string) => {
+        return toLocalImageTag({
+            path: decodeImageSource(source),
+            altHtml,
+        });
+    });
+}
+
+/** Shows image files by their absolute paths, in a wrapping row. */
+export function renderChatImages(imagePaths: ReadonlyArray<string>) {
+    return imagePaths.length
+        ? html`
+              <div class="chat-images">
+                  ${unsafeHTML(
+                      imagePaths
+                          .map((path) => {
+                              return toLocalImageTag({
+                                  path,
+                                  altHtml: '',
+                              });
+                          })
+                          .join(''),
+                  )}
+              </div>
+          `
+        : nothing;
+}
+
 /**
- * Styles for `renderChatMarkdown`'s output. Include them in the styles of the element that renders
- * it.
+ * Styles for `renderChatMarkdown`'s and `renderChatImages`'s output. Include them in the styles of
+ * the element that renders it.
  */
 export const chatMarkdownStyles = css`
+    .chat-images {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
     .chat-markdown {
         width: 100%;
         min-width: 0;
@@ -297,15 +355,17 @@ export function renderChatMarkdown({
     hasLineBreaks?: boolean;
     marks?: ReadonlyArray<Readonly<ChatMarkdownMark>> | undefined;
 }>) {
-    const markupHtml = wrapCodeBlocks(
-        micromark(hasLineBreaks ? preserveLineBreaks(text) : text, {
-            extensions: [
-                gfm(),
-            ],
-            htmlExtensions: [
-                gfmHtml(),
-            ],
-        }),
+    const markupHtml = replaceLocalImages(
+        wrapCodeBlocks(
+            micromark(hasLineBreaks ? preserveLineBreaks(text) : text, {
+                extensions: [
+                    gfm(),
+                ],
+                htmlExtensions: [
+                    gfmHtml(),
+                ],
+            }),
+        ),
     );
     return html`
         <div

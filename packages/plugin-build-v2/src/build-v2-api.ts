@@ -4,6 +4,14 @@ import {defineShape, enumShape, nullableShape, optionalShape} from 'object-shape
 
 export {aiChatPaneId, buildV2PluginId, ThreadOrigin, ThreadStatus} from '@agent-storm/common';
 
+/** An AI Chat tab's label, and a side chat's title until it gets a generated one. */
+export const aiChatTabLabel = 'AI Chat';
+
+/** Whether a side chat's title is short enough to name its tab. */
+export function isTabName(title: string) {
+    return !!title.trim() && title.trim().split(/\s+/).length <= 2;
+}
+
 /** The agent CLI a thread talks to. */
 export enum AiProvider {
     Claude = 'claude',
@@ -136,6 +144,10 @@ export const threadItemShape = defineShape({
      * tool's input and result.
      */
     text: '',
+    /** Absolute paths of the images the item shows, such as the screenshots a tool returned. */
+    imagePaths: [
+        '',
+    ],
     /** Position in the thread's timeline. */
     order: 0,
     /** Epoch milliseconds. */
@@ -501,6 +513,19 @@ export const buildV2Api = definePluginApi({
                 path: '',
             }),
             responseShape: defineShape({
+                dataBase64: '',
+            }),
+        },
+        /**
+         * Reads an image file for the chat to show, from any absolute path the user's account can
+         * read. Rejects anything but an image file.
+         */
+        readImage: {
+            requestShape: defineShape({
+                path: '',
+            }),
+            responseShape: defineShape({
+                mimeType: '',
                 dataBase64: '',
             }),
         },

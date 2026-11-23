@@ -1,3 +1,4 @@
+import {check} from '@augment-vir/assert';
 import {
     checkValidShape,
     defineShape,
@@ -8,9 +9,14 @@ import {
     type Shape,
 } from 'object-shape-tester';
 import {ApprovalDecision, ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
+import {isUploadPath} from '../../util/message-attachments.js';
+import {type InlineImage} from '../chat-images.js';
 import {type ProviderItem, type ProviderUsage} from './provider-session.js';
 
-type CodexItemDescription = Pick<ProviderItem, 'kind' | 'title' | 'text'>;
+type CodexItemDescription = Pick<
+    ProviderItem,
+    'kind' | 'title' | 'text' | 'imagePaths' | 'inlineImages'
+>;
 
 const codexItemBaseShape = defineShape({
     id: '',
@@ -37,9 +43,43 @@ function formatJson(value: unknown) {
     return value == undefined ? '' : JSON.stringify(value, undefined, 4);
 }
 
+/** The image blocks (`{type: 'image', data, mimeType}`) in an MCP tool result's `content`. */
+function readMcpResultImages(result: unknown): InlineImage[] {
+    const content = check.isObject(result) && check.isArray(result.content) ? result.content : [];
+    return content.filter(check.isObject).flatMap((block) => {
+        return block.type === 'image' &&
+            check.isString(block.data) &&
+            check.isString(block.mimeType)
+            ? [
+                  {
+                      mimeType: block.mimeType,
+                      dataBase64: block.data,
+                  },
+              ]
+            : [];
+    });
+}
+
+/** An MCP tool result without its images' base64 data, which the item shows as images instead. */
+function omitMcpResultImageData(result: unknown) {
+    return check.isObject(result) && check.isArray(result.content)
+        ? {
+              ...result,
+              content: result.content.map((block) => {
+                  return check.isObject(block) && block.type === 'image'
+                      ? {
+                            type: block.type,
+                            mimeType: block.mimeType,
+                        }
+                      : block;
+              }),
+          }
+        : result;
+}
+
 /**
  * How each Codex item type shows in a thread, keyed by the item's `type`. Codex has more types than
- * these (user messages, image views, compaction markers); a thread leaves the rest out.
+ * these (user messages, compaction markers); a thread leaves the rest out.
  */
 const codexItemDescribers: Readonly<
     Record<string, (item: unknown) => CodexItemDescription | undefined>
@@ -129,10 +169,29 @@ const codexItemDescribers: Readonly<
                 title: `${item.server}.${item.tool}`,
                 text: [
                     formatJson(item.arguments),
-                    formatJson(item.error ?? item.result),
+                    formatJson(item.error ?? omitMcpResultImageData(item.result)),
                 ]
                     .filter(Boolean)
                     .join('\n\n'),
+                inlineImages: readMcpResultImages(item.result),
+            };
+        },
+    ),
+    imageView: describeWith(
+        defineShape({
+            path: '',
+        }),
+        ({path}) => {
+            return {
+                kind: ThreadItemKind.ToolCall,
+                title: 'View image',
+                text: path,
+                /** The user's own upload, which their message already shows. */
+                imagePaths: isUploadPath(path)
+                    ? []
+                    : [
+                          path,
+                      ],
             };
         },
     ),

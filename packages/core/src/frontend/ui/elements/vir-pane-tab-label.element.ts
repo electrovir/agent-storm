@@ -47,6 +47,8 @@ export const VirPaneTabLabel = defineAppElement<{
     ai?: Readonly<AiDefinition> | undefined;
     /** Shown instead of `icon` and `ai`. */
     iconContent?: HtmlInterpolation | undefined;
+    /** Shown instead of `label`. */
+    labelContent?: HtmlInterpolation | undefined;
     /** When set, the label keeps room for the activity icon so tabs don't shift when it appears. */
     status?: PaneStatus | undefined;
 }>()({
@@ -97,7 +99,7 @@ export const VirPaneTabLabel = defineAppElement<{
                           icon: inputs.icon,
                       })}></${ViraIcon}>
                   `)}
-            <span>${inputs.label}</span>
+            <span>${inputs.labelContent ?? inputs.label}</span>
             ${inputs.status
                 ? html`
                       <span

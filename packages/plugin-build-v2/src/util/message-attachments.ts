@@ -30,6 +30,11 @@ const imageExtensions: ReadonlyArray<string> = [
  */
 const uploadPathRegExp = /^\/(?:.*\/)?\d+-[a-z][a-z\d]{23}-([^/]+)$/;
 
+/** Whether `path` is a file the composer uploaded, such as an attachment on a sent message. */
+export function isUploadPath(path: string) {
+    return uploadPathRegExp.test(path);
+}
+
 /** A file the composer attached to a sent message. */
 export type MessageAttachment = {
     path: string;

@@ -55,6 +55,7 @@ import {
     fillMissingModelDefaults,
     findModelDefaultsFolder,
     resolveModelDefault,
+    saveFolderModelDefault,
 } from '../../util/model-defaults.js';
 import {stickToBottom} from '../../util/stick-to-bottom.js';
 import {applyItemDelta, findPathName, upsertItems} from '../../util/thread-timeline.js';
@@ -669,10 +670,10 @@ export const VirAiChat = defineAppElement<{
               ? threadStatusDisplays[state.thread.status]
               : undefined;
         const cwd = state.thread?.cwd || inputs.repoPath;
-        const branch =
-            state.thread?.worktreeBranch ||
-            inputs.context.folderData.value.folderInfo.get(cwd)?.branch;
-        const canMoveToWorktree = !!state.thread && !state.thread.worktreeBranch;
+        const cwdFolderInfo = inputs.context.folderData.value.folderInfo.get(cwd);
+        const branch = state.thread?.worktreeBranch || cwdFolderInfo?.branch;
+        const canMoveToWorktree =
+            !!state.thread && !state.thread.worktreeBranch && !cwdFolderInfo?.parentRepoPath;
         const request = state.requests[0];
         const questionRequest = request?.kind === ApprovalKind.Question ? request : undefined;
         const questionDraft = questionRequest
@@ -1182,7 +1183,7 @@ export const VirAiChat = defineAppElement<{
                                 modelSelection: event.detail,
                             });
                         }
-                        await fillMissingModelDefaults({
+                        await (threadId ? fillMissingModelDefaults : saveFolderModelDefault)({
                             context: inputs.context,
                             folder: modelDefaultsFolder,
                             modelDefault: {
@@ -1531,18 +1532,22 @@ export const VirAiChat = defineAppElement<{
                 <div class="lane-content hero-anchor">
                     <div class="hero">
                         <h1>${findPathName(inputs.repoPath)}</h1>
-                        <${ViraInput.assign({
-                            value: state.threadTitle,
-                            placeholder: 'Thread name (optional)',
-                            showClearButton: true,
-                        })}
-                            class="thread-title-input"
-                            ${listen(ViraInput.events.valueChange, (event) => {
-                                updateState({
-                                    threadTitle: event.detail,
-                                });
-                            })}
-                        ></${ViraInput}>
+                        ${inputs.parentThreadId
+                            ? nothing
+                            : html`
+                                  <${ViraInput.assign({
+                                      value: state.threadTitle,
+                                      placeholder: 'Thread name (optional)',
+                                      showClearButton: true,
+                                  })}
+                                      class="thread-title-input"
+                                      ${listen(ViraInput.events.valueChange, (event) => {
+                                          updateState({
+                                              threadTitle: event.detail,
+                                          });
+                                      })}
+                                  ></${ViraInput}>
+                              `}
                     </div>
                     ${composer}
                 </div>

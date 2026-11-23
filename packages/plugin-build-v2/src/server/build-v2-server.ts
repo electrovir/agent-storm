@@ -7,6 +7,7 @@ import {
 } from '@agent-storm/core/server';
 import {UsageProvider, UsageSource} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {usageExportsKey} from '@agent-storm/plugin-usage/src/usage-exports.js';
+import {check} from '@augment-vir/assert';
 import {
     awaitedForEach,
     createCuid2,
@@ -20,12 +21,14 @@ import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {
+    aiChatTabLabel,
     AiProvider,
     ApprovalDecision,
     ApprovalKind,
     type ApprovalRequest,
     buildV2Api,
     type ComposerCommand,
+    isTabName,
     providerLabels,
     type ProviderModel,
     RuntimeMode,
@@ -38,6 +41,7 @@ import {readModelDefaults} from '../util/model-default-settings.js';
 import {startAgentToolServer} from './agent-tool-server.js';
 import {agentToolInstructions, agentTools} from './agent-tools.js';
 import {openBuildV2Database} from './build-v2-database.js';
+import {checkChatImage, readChatImage, saveInlineImage} from './chat-images.js';
 import {createClaudeSessionStore} from './claude-session-store.js';
 import {buildContextHandoff} from './context-handoff.js';
 import {readFolderEnv} from './folder-env.js';
@@ -58,6 +62,7 @@ import {
     createThreadTitlePrompt,
     createWorktreeName,
     isPlaceholderWorktreeName,
+    parseGeneratedTabName,
     parseGeneratedTitle,
 } from './thread-names.js';
 import {createThreadStore, interruptedTurnNotice} from './thread-store.js';
@@ -337,10 +342,22 @@ export default definePluginServer({
             }
 
             return {
-                async putItem(item) {
+                async putItem({inlineImages, imagePaths, ...item}) {
                     if (isCurrent()) {
+                        const savedImagePaths = await Promise.all(
+                            (inlineImages || []).map(async (image) => {
+                                return await saveInlineImage({
+                                    image,
+                                    imagesDir: join(dataDir, 'images'),
+                                });
+                            }),
+                        );
                         await store.putItem({
                             ...item,
+                            imagePaths: [
+                                ...(imagePaths || []),
+                                ...savedImagePaths.filter(check.isTruthy),
+                            ],
                             threadId,
                             turnId: readTurnId(threadId),
                         });
@@ -723,31 +740,51 @@ export default definePluginServer({
         }: Readonly<{threadId: string; firstMessage?: string | undefined}>) {
             try {
                 const details = await store.findSessionDetails(threadId);
-                if (details.hasCustomTitle) {
+                const thread = await store.findThread(threadId);
+                const isSideChat = thread.origin === ThreadOrigin.SideChat;
+                /**
+                 * A side chat keeps its name once it has a single word, so its tab doesn't change
+                 * after every reply.
+                 */
+                if (
+                    isSideChat &&
+                    thread.title !== aiChatTabLabel &&
+                    !/\s/.test(thread.title.trim())
+                ) {
+                    return;
+                }
+                /** A side chat's title only shows on its tab when it is short enough. */
+                if (isSideChat && details.hasCustomTitle && !isTabName(thread.title)) {
+                    await store.updateThread(threadId, {
+                        hasCustomTitle: false,
+                    });
+                } else if (details.hasCustomTitle) {
                     await renamePlaceholderBranch({
                         threadId,
-                        title: (await store.findThread(threadId)).title,
+                        title: thread.title,
                     });
                     return;
                 }
-                const title = parseGeneratedTitle(
-                    await providers[details.provider].generateTitle({
-                        cwd: details.cwd,
-                        model: details.model,
-                        prompt: createThreadTitlePrompt(
-                            firstMessage == undefined
-                                ? await store.readThread(threadId)
-                                : {
-                                      items: [
-                                          {
-                                              kind: ThreadItemKind.UserMessage,
-                                              text: firstMessage,
-                                          },
-                                      ],
-                                  },
-                        ),
+                const reply = await providers[details.provider].generateTitle({
+                    cwd: details.cwd,
+                    model: details.model,
+                    prompt: createThreadTitlePrompt({
+                        ...(firstMessage == undefined
+                            ? await store.readThread(threadId)
+                            : {
+                                  items: [
+                                      {
+                                          kind: ThreadItemKind.UserMessage,
+                                          text: firstMessage,
+                                      },
+                                  ],
+                              }),
+                        isSideChat,
                     }),
-                );
+                });
+                const title = isSideChat
+                    ? parseGeneratedTabName(reply)
+                    : parseGeneratedTitle(reply);
                 if (title) {
                     await store.setGeneratedTitle({
                         threadId,
@@ -985,8 +1022,10 @@ export default definePluginServer({
                 effort,
                 speedTier,
                 runtimeMode,
-                title: customTitle || createThreadTitle(text),
-                hasCustomTitle: !!customTitle || origin === ThreadOrigin.SideChat,
+                title:
+                    customTitle ||
+                    (origin === ThreadOrigin.SideChat ? aiChatTabLabel : createThreadTitle(text)),
+                hasCustomTitle: !!customTitle,
                 origin,
                 prUrl,
                 parentThreadId,
@@ -1303,6 +1342,9 @@ export default definePluginServer({
                     }),
                 };
             },
+            async readImage({path}) {
+                return await readChatImage(path);
+            },
             async sendMessage(request) {
                 await sendMessage(request);
                 return ok;
@@ -1514,6 +1556,18 @@ export default definePluginServer({
                         signal,
                     });
                     return decision;
+                },
+                async showImages({threadId, imagePaths, caption}) {
+                    await Promise.all(imagePaths.map(checkChatImage));
+                    await store.putItem({
+                        threadId,
+                        turnId: readTurnId(threadId),
+                        kind: ThreadItemKind.AssistantMessage,
+                        status: ThreadItemStatus.Completed,
+                        title: '',
+                        text: caption,
+                        imagePaths,
+                    });
                 },
                 runAfterTurn(threadId, action) {
                     afterTurnActions.set(threadId, [

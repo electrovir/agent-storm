@@ -1,5 +1,4 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {extractExtension} from '@augment-vir/common';
 import {asyncProp, css, defineElementEvent, html, listen, onDomCreated} from 'element-vir';
 import {createSizedIcon, LucideXIcon, ViraButton, ViraColorVariant, viraThemeByKeys} from 'vira';
 import {buildV2Client} from '../../util/build-v2-client.js';
@@ -8,19 +7,21 @@ import {VirAiChatImageZoom} from './vir-ai-chat-image-zoom.element.js';
 
 const closeIcon = createSizedIcon(LucideXIcon, 16);
 
-async function loadContent({path, name, isImage}: Readonly<MessageAttachment>) {
-    const {dataBase64} = await buildV2Client.call('readUpload', {
-        path,
-    });
-
+async function loadContent({path, isImage}: Readonly<MessageAttachment>) {
+    /** `readUpload` only reads uploads, and an image can also be one a chat message shows. */
     if (isImage) {
-        const extension = extractExtension(name).extension.slice(1).toLowerCase();
+        const {mimeType, dataBase64} = await buildV2Client.call('readImage', {
+            path,
+        });
         return {
-            imageUrl: `data:image/${extension === 'jpg' ? 'jpeg' : extension};base64,${dataBase64}`,
+            imageUrl: `data:${mimeType};base64,${dataBase64}`,
             text: undefined,
         };
     }
 
+    const {dataBase64} = await buildV2Client.call('readUpload', {
+        path,
+    });
     const text = await (await fetch(`data:text/plain;base64,${dataBase64}`)).text();
     return {
         imageUrl: undefined,
@@ -31,7 +32,7 @@ async function loadContent({path, name, isImage}: Readonly<MessageAttachment>) {
 
 /**
  * An attachment at full size, or its full text, filling its nearest positioned ancestor. Escape or
- * the close button emits `closed`.
+ * the close button (or a click outside an image) emits `closed`.
  */
 export const VirAiChatAttachmentViewer = defineAppElement<{
     attachment: Readonly<MessageAttachment>;
@@ -132,7 +133,9 @@ export const VirAiChatAttachmentViewer = defineAppElement<{
                     <${VirAiChatImageZoom.assign({
                         imageUrl: state.content.value.imageUrl,
                         alt: inputs.attachment.name,
-                    })}></${VirAiChatImageZoom}>
+                    })}
+                        ${listen(VirAiChatImageZoom.events.outsideClicked, close)}
+                    ></${VirAiChatImageZoom}>
                 `;
             } else if (state.content.value.text == undefined) {
                 return html`

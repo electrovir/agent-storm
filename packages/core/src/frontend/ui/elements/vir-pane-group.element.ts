@@ -778,6 +778,12 @@ export const VirPaneGroup = defineAppElement<{
                             tabState,
                             context: inputs.context,
                         }),
+                        labelContent: tab.name
+                            ? undefined
+                            : definition.renderTabLabel?.({
+                                  tabState,
+                                  context: inputs.context,
+                              }),
                     })}
                         ${renderKindTooltip({
                             name: tab.name,

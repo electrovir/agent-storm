@@ -81,6 +81,7 @@ const itemSelect = {
     status: true,
     title: true,
     text: true,
+    imagePaths: true,
     order: true,
 } satisfies Prisma.ThreadItemSelect;
 
@@ -97,6 +98,10 @@ const requestSelect = {
 
 const storedQuestionsShape = defineShape([
     userQuestionShape,
+]);
+
+const storedImagePathsShape = defineShape([
+    '',
 ]);
 
 /**
@@ -144,10 +149,14 @@ export function toThreadItem({
     createdAt,
     kind,
     status,
+    imagePaths,
     ...row
 }: Readonly<Prisma.ThreadItemGetPayload<{select: typeof itemSelect}>>): ThreadItem {
+    const parsedImagePaths: unknown = JSON.parse(imagePaths);
+    assertValidShape(parsedImagePaths, storedImagePathsShape);
     return {
         ...row,
+        imagePaths: parsedImagePaths,
         kind: assertWrap.isEnumValue(kind, ThreadItemKind),
         status: assertWrap.isEnumValue(status, ThreadItemStatus),
         createdAt: createdAt.getTime(),
@@ -172,10 +181,13 @@ export function toApprovalRequest({
 
 /** An item to create, or to replace when one with the same `providerItemId` exists. */
 export type ItemUpdate = Readonly<
-    Pick<ThreadItem, 'threadId' | 'turnId' | 'kind' | 'status' | 'title' | 'text'> & {
-        /** The provider's own id for the item, which later updates to it reuse. */
-        providerItemId?: string | undefined;
-    }
+    Pick<ThreadItem, 'threadId' | 'turnId' | 'kind' | 'status' | 'title' | 'text'> &
+        PartialWithUndefined<{
+            /** The provider's own id for the item, which later updates to it reuse. */
+            providerItemId: string;
+            /** Replaces the item's images. None when unset. */
+            imagePaths: ReadonlyArray<string>;
+        }>
 >;
 
 /**
@@ -545,7 +557,7 @@ export function createThreadStore({
                 requests,
             };
         },
-        async putItem({providerItemId, ...item}: ItemUpdate) {
+        async putItem({providerItemId, imagePaths, ...item}: ItemUpdate) {
             const existing = providerItemId
                 ? await prismaClient.threadItem.findUnique({
                       where: {
@@ -569,12 +581,14 @@ export function createThreadStore({
                           status: item.status,
                           title: item.title,
                           text: item.text,
+                          imagePaths: JSON.stringify(imagePaths ?? []),
                       },
                       select: itemSelect,
                   })
                 : await prismaClient.threadItem.create({
                       data: {
                           ...item,
+                          imagePaths: JSON.stringify(imagePaths ?? []),
                           providerItemId: providerItemId ?? null,
                           order: await findNextOrder(item.threadId),
                       },

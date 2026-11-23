@@ -12,6 +12,7 @@ function createItem(overrides: Readonly<Partial<ThreadItem>>): ThreadItem {
         status: ThreadItemStatus.Completed,
         title: '',
         text: '',
+        imagePaths: [],
         order: 0,
         createdAt: 0,
         ...overrides,

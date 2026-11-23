@@ -2,6 +2,7 @@ import {check} from '@augment-vir/assert';
 import {ApprovalKind, ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
 import {agentToolServerName} from '../agent-tool-server.js';
 import {unpromptedAgentToolNames} from '../agent-tools.js';
+import {type InlineImage} from '../chat-images.js';
 import {type ProviderItem, type ProviderUsage} from './provider-session.js';
 
 /** A Claude tool call as a thread item, before its result arrives. */
@@ -164,6 +165,25 @@ export function readClaudeToolResultText(content: unknown) {
         .map((block) => readString(block, 'text'))
         .filter(Boolean)
         .join('\n');
+}
+
+/** The base64 images in a `tool_result` block's `content`, such as a screenshot `Read` returned. */
+export function readClaudeToolResultImages(content: unknown): InlineImage[] {
+    return (check.isArray(content) ? content : []).filter(check.isObject).flatMap((block) => {
+        const source = block.source;
+        return block.type === 'image' &&
+            check.isObject(source) &&
+            source.type === 'base64' &&
+            check.isString(source.media_type) &&
+            check.isString(source.data)
+            ? [
+                  {
+                      mimeType: source.media_type,
+                      dataBase64: source.data,
+                  },
+              ]
+            : [];
+    });
 }
 
 /** A Claude tool call's item once its result arrives. */

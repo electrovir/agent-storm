@@ -38,9 +38,10 @@ import {
     type TimelineEntry,
 } from '../../util/thread-timeline.js';
 import {countDiffLines, diffLineStyles, renderDiffLines} from './diff-lines.js';
-import {chatMarkdownStyles, renderChatMarkdown} from './markdown-styles.js';
+import {chatMarkdownStyles, renderChatImages, renderChatMarkdown} from './markdown-styles.js';
 import {workingIcon, workItemDisplays} from './thread-display.js';
 import {findCommandMentionColor} from './vir-ai-chat-command-menu.element.js';
+import {VirAiChatLocalImage} from './vir-ai-chat-local-image.element.js';
 import {VirAiChatSentAttachment} from './vir-ai-chat-sent-attachment.element.js';
 
 function isFailedStatus(status: ThreadItemStatus) {
@@ -391,8 +392,15 @@ export const VirAiChatTimeline = defineAppElement<{
         }
 
         .assistant-entry {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
             min-width: 0;
             padding: 2px 4px 8px;
+        }
+
+        .work-images {
+            padding: 0 4px 8px;
         }
 
         .button-reset {
@@ -692,7 +700,12 @@ export const VirAiChatTimeline = defineAppElement<{
     `,
     render({inputs, state, updateState, dispatch, events}) {
         const timeline = buildTimeline(inputs.items);
-        const hasLiveItem = inputs.items.some((item) => {
+        const lastEntry = timeline.at(-1);
+        /**
+         * Only the last entry shows a spinner, so it stays under everything the turn has shown so
+         * far, such as images `show_image` adds while its own tool call is still in progress.
+         */
+        const isLastEntryLive = !!lastEntry?.items.some((item) => {
             return item.status === ThreadItemStatus.InProgress;
         });
         /**
@@ -861,7 +874,7 @@ export const VirAiChatTimeline = defineAppElement<{
                         toggle(entry.key, isOpen);
                     })}
                 >
-                    ${liveItem || entry.key === liveWorkKey
+                    ${(liveItem && entry.key === lastEntry?.key) || entry.key === liveWorkKey
                         ? html`
                               <div class="live-row">
                                   ${renderWorkLogLine({
@@ -900,6 +913,13 @@ export const VirAiChatTimeline = defineAppElement<{
             `;
 
             return html`
+                ${entry.items.some((item) => item.imagePaths.length)
+                    ? html`
+                          <div class="work-images">
+                              ${renderChatImages(entry.items.flatMap((item) => item.imagePaths))}
+                          </div>
+                      `
+                    : nothing}
                 <div
                     class=${classMap({
                         'work-group-header': true,
@@ -992,9 +1012,12 @@ export const VirAiChatTimeline = defineAppElement<{
                 return entry.items.map((item) => {
                     return html`
                         <div class="assistant-entry">
-                            ${renderChatMarkdown({
-                                text: item.text,
-                            })}
+                            ${item.text
+                                ? renderChatMarkdown({
+                                      text: item.text,
+                                  })
+                                : nothing}
+                            ${renderChatImages(item.imagePaths)}
                         </div>
                     `;
                 });
@@ -1040,14 +1063,23 @@ export const VirAiChatTimeline = defineAppElement<{
         };
 
         return html`
-            <div class="timeline">
+            <div
+                class="timeline"
+                ${listen(VirAiChatLocalImage.events.opened, (event) => {
+                    dispatch(
+                        new events.attachmentOpened({
+                            detail: event.detail,
+                        }),
+                    );
+                })}
+            >
                 ${timeline.length || inputs.isRunning
                     ? nothing
                     : html`
                           <p class="empty">Send a message to start the conversation.</p>
                       `}
                 ${timeline.map((entry) => entryRenderers[entry.kind](entry))}
-                ${(inputs.isRunning && !hasLiveItem && !liveWorkKey) ||
+                ${(inputs.isRunning && !isLastEntryLive && !liveWorkKey) ||
                 (!inputs.isRunning && inputs.backgroundTaskCount)
                     ? html`
                           <div class="working">

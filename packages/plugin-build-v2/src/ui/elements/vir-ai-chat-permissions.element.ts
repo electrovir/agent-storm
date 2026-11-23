@@ -261,7 +261,7 @@ export const VirAiChatPermissions = defineAppElement<{
                     <${ViraIcon.assign({
                         icon: shown.icon,
                     })}></${ViraIcon}>
-                    <span>${shown.label}</span>
+                    <span part="label">${shown.label}</span>
                     <${ViraIcon.assign({
                         icon: chevronIcon,
                     })}

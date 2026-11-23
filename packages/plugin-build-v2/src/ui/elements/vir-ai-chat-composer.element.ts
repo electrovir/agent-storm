@@ -8,7 +8,16 @@ import {
 } from '@agent-storm/core/frontend';
 import {assertWrap} from '@augment-vir/assert';
 import {extractEventTarget} from '@augment-vir/web';
-import {classMap, css, defineElementEvent, html, listen, nothing} from 'element-vir';
+import {
+    classMap,
+    css,
+    defineElementEvent,
+    html,
+    listen,
+    nothing,
+    onDomRendered,
+    onResize,
+} from 'element-vir';
 import {
     createAnchoredPopoverStyles,
     createSizedIcon,
@@ -60,6 +69,34 @@ const worktreeIcon = createSizedIcon(LucideGitBranchPlusIcon, 16);
 const attachIcon = createSizedIcon(LucidePlusIcon, 16);
 const removeIcon = createSizedIcon(LucideXIcon, 12);
 const uploadingIcon = createSizedIcon(LucideLoaderCircleIcon, 20);
+
+/** Footer classes that hide a chip's label, applied in order until the footer controls fit. */
+const footerLabelHidingClasses = [
+    'hide-permissions-label',
+    'hide-model-label',
+];
+
+/**
+ * Hides the permissions label, then the model label, only as far as needed for the footer controls
+ * to fit beside the actions. Icons and buttons always stay.
+ */
+function fitFooterLabels(footer: Element) {
+    const controls = assertWrap.isDefined(footer.querySelector('.controls'));
+    footer.classList.remove(...footerLabelHidingClasses);
+    /**
+     * The model label otherwise shrinks into an ellipsis, so the controls would never overflow and
+     * there would be nothing to measure.
+     */
+    footer.classList.add('measuring');
+    footerLabelHidingClasses.some((labelHidingClass) => {
+        if (controls.scrollWidth <= controls.clientWidth) {
+            return true;
+        }
+        footer.classList.add(labelHidingClass);
+        return false;
+    });
+    footer.classList.remove('measuring');
+}
 
 /** A paste at least this long becomes a text file attachment instead of landing in the box. */
 const minPastedAttachmentLength = 4000;
@@ -313,6 +350,15 @@ export const VirAiChatComposer = defineAppElement<{
             justify-content: space-between;
             gap: 8px;
             padding: 0 8px 8px;
+
+            &.measuring .controls > * {
+                flex-shrink: 0;
+            }
+
+            &.hide-permissions-label ${VirAiChatPermissions}::part(label),
+            &.hide-model-label ${VirAiChatModelPicker}::part(label) {
+                display: none;
+            }
         }
 
         .controls {
@@ -953,7 +999,13 @@ export const VirAiChatComposer = defineAppElement<{
                         }
                     })}
                 />
-                <div class="footer">
+                <div
+                    class="footer"
+                    ${onResize(({target}) => {
+                        fitFooterLabels(target);
+                    })}
+                    ${onDomRendered(fitFooterLabels)}
+                >
                     <div class="controls">
                         ${inputs.questionAction
                             ? nothing

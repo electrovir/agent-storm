@@ -221,9 +221,9 @@ export function listComposerMenuCommands({
 }
 
 /**
- * Splits `text` into whitespace and words, pairing each word that names one of `commands` with it.
- * Matching follows the menu: a skill matches after either sign anywhere, and a command matches only
- * as the message's first word.
+ * Splits `text` into the words that name one of `commands`, each paired with its command, and the
+ * unbroken runs of text between them. Matching follows the menu: a skill matches after either sign
+ * anywhere, and a command matches only as the message's first word.
  */
 export function splitComposerCommandMentions({
     text,
@@ -232,7 +232,7 @@ export function splitComposerCommandMentions({
     text: string;
     commands: ReadonlyArray<Readonly<ComposerCommand>>;
 }>) {
-    return text.split(/(\s+)/).map((part, index) => {
+    const parts = text.split(/(\s+)/).map((part, index) => {
         return {
             text: part,
             command: commands.find((command) => {
@@ -243,6 +243,33 @@ export function splitComposerCommandMentions({
                     : !index && part === `${composerCommandSigns[command.kind]}${command.name}`;
             }),
         };
+    });
+
+    /**
+     * The message box's highlight layer renders each part as its own text node, and a line split
+     * across many text nodes measures slightly wider than the box's single run. That wraps the
+     * highlights a word early and gives them a scrollbar before the box itself wraps.
+     */
+    return parts.flatMap((part, index) => {
+        if (part.command) {
+            return [
+                part,
+            ];
+        } else if (index && !parts[index - 1]?.command) {
+            return [];
+        }
+        const runEnd = parts.findIndex((laterPart, laterIndex) => {
+            return laterIndex > index && laterPart.command;
+        });
+        return [
+            {
+                text: parts
+                    .slice(index, runEnd === -1 ? parts.length : runEnd)
+                    .map((runPart) => runPart.text)
+                    .join(''),
+                command: undefined,
+            },
+        ];
     });
 }
 

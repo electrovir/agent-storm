@@ -6,6 +6,7 @@ import {
     createThreadTitle,
     createWorktreeName,
     isPlaceholderWorktreeName,
+    parseGeneratedTabName,
     parseGeneratedTitle,
 } from './thread-names.js';
 
@@ -51,6 +52,16 @@ describe(parseGeneratedTitle.name, () => {
         assert.isUndefined(
             parseGeneratedTitle('Port every legacy insurance report to the per-payer system'),
         );
+    });
+});
+
+describe(parseGeneratedTabName.name, () => {
+    it('accepts two words', () => {
+        assert.strictEquals(parseGeneratedTabName('"Auth bug."'), 'Auth bug');
+    });
+
+    it('keeps the last two words of a longer reply', () => {
+        assert.strictEquals(parseGeneratedTabName('Task modal markdown'), 'modal markdown');
     });
 });
 

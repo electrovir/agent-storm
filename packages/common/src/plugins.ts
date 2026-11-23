@@ -27,6 +27,14 @@ export const pluginActivityContributionShape = defineShape({
     label: '',
     /** The same as the activity's own `isEnabledByDefault`, which the plugin must match. */
     isEnabledByDefault: false,
+    /**
+     * Loads the plugin as soon as the window opens instead of when one of its tabs is first shown.
+     * Set exactly when the activity has a `startWithApp` or `findCount`, which otherwise don't run
+     * until then. The plugin fails to load when this doesn't match.
+     */
+    isStartedWithApp: optionalShape(false, {
+        alsoUndefined: true,
+    }),
 });
 
 export type PluginActivityContribution = typeof pluginActivityContributionShape.runtimeType;

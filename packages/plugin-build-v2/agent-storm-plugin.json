@@ -3,6 +3,7 @@
         {
             "id": "build-v2",
             "isEnabledByDefault": true,
+            "isStartedWithApp": true,
             "label": "Build V2"
         }
     ],
