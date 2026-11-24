@@ -682,6 +682,15 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                                     );
                                                                 },
                                                             ),
+                                                        paneThreads:
+                                                            inputs.buildV2State.paneThreads.value.filter(
+                                                                (paneThread) => {
+                                                                    return (
+                                                                        paneThread.cwd ===
+                                                                        thread.cwd
+                                                                    );
+                                                                },
+                                                            ),
                                                     })}
                                                         ${listen(
                                                             VirBuildV2ThreadRow.events.selected,

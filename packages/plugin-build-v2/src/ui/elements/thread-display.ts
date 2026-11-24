@@ -296,11 +296,21 @@ export function isThreadWorking(thread: Readonly<Pick<Thread, 'status' | 'backgr
     );
 }
 
-/** The sidebar's spinner for a thread one of whose side chats still works. */
-export const sideChatSidebarStatus = {
+const elsewhereWorkingSidebarStatus = {
     label: undefined,
-    tooltip: 'An AI Chat tab in this thread is still working.',
     icon: workingIcon,
     isSpinning: true,
     color: 'pink',
+} as const;
+
+/** The sidebar's spinner for a thread whose folder's AI Review or AI Watch tab still works. */
+export const paneThreadSidebarStatus = {
+    ...elsewhereWorkingSidebarStatus,
+    tooltip: "The AI is working in this folder's AI Review or AI Watch tab.",
+} as const;
+
+/** The sidebar's spinner for a thread one of whose side chats still works. */
+export const sideChatSidebarStatus = {
+    ...elsewhereWorkingSidebarStatus,
+    tooltip: 'An AI Chat tab in this thread is still working.',
 } as const;

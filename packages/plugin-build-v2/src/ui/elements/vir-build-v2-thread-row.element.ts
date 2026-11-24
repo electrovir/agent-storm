@@ -33,6 +33,7 @@ import {type Thread, ThreadStatus} from '../../build-v2-api.js';
 import {
     backgroundTaskSidebarStatusDisplay,
     isThreadWorking,
+    paneThreadSidebarStatus,
     questionSidebarStatusDisplay,
     sidebarStatusDisplays,
     sideChatSidebarStatus,
@@ -70,6 +71,8 @@ export const VirBuildV2ThreadRow = defineAppElement<{
     isArchived: boolean;
     /** The thread's side chats, whose spinner and new-reply dot the row shows too. */
     sideChats: ReadonlyArray<Readonly<Thread>>;
+    /** The AI Review and AI Watch threads in the thread's folder, whose spinner the row shows too. */
+    paneThreads: ReadonlyArray<Readonly<Thread>>;
 }>()({
     tagName: 'vir-build-v2-thread-row',
     events: {
@@ -285,7 +288,11 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         const ownSpinnerStatus = display.status?.isSpinning ? display.status : undefined;
         const spinnerStatus =
             ownSpinnerStatus ||
-            (inputs.sideChats.some(isThreadWorking) ? sideChatSidebarStatus : undefined);
+            (inputs.sideChats.some(isThreadWorking)
+                ? sideChatSidebarStatus
+                : inputs.paneThreads.some(isThreadWorking)
+                  ? paneThreadSidebarStatus
+                  : undefined);
         const trailingStatus = ownSpinnerStatus ? undefined : display.status;
         const isWatchOff = inputs.folderInfo?.watchMode.status === WatchModeStatus.Off;
         const hasUnreadReply =
