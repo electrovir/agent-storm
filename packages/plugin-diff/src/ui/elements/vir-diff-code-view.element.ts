@@ -1,5 +1,7 @@
 import {type ReviewComment} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
+import {clamp} from '@augment-vir/common';
 import {type Text} from '@codemirror/state';
 import {EditorView} from '@codemirror/view';
 import {asyncProp, css, defineElementEvent, html, listen, nothing, onDomCreated} from 'element-vir';
@@ -49,6 +51,17 @@ export const VirDiffCodeView = defineAppElement<{
     chunkScroll:
         | Readonly<{
               chunkIndex: number;
+              requestId: number;
+          }>
+        | undefined;
+    /**
+     * The newest jump to a 1-based line. Each new `requestId` scrolls once, after the editor shows
+     * `fileKey`.
+     */
+    lineScroll:
+        | Readonly<{
+              fileKey: string;
+              line: number;
               requestId: number;
           }>
         | undefined;
@@ -102,6 +115,8 @@ export const VirDiffCodeView = defineAppElement<{
             }),
             /** The `chunkScroll` request already scrolled to. */
             handledChunkScroll: undefined as number | undefined,
+            /** The `lineScroll` request already scrolled to. */
+            handledLineScroll: undefined as number | undefined,
         };
     },
     styles: css`
@@ -247,9 +262,16 @@ export const VirDiffCodeView = defineAppElement<{
                     },
                 },
                 onGeometryChange(view, chunks) {
-                    updateState({
-                        rulerMarks: toRulerMarks(view, chunks),
-                    });
+                    const rulerMarks = toRulerMarks(view, chunks);
+                    /**
+                     * CodeMirror reports a geometry change on every measure that moves anything,
+                     * and a fresh array re-renders this element even when no mark moved.
+                     */
+                    if (!check.deepEquals(state.rulerMarks, rulerMarks)) {
+                        updateState({
+                            rulerMarks,
+                        });
+                    }
                 },
             });
             const editor = rendered?.editor;
@@ -320,6 +342,31 @@ export const VirDiffCodeView = defineAppElement<{
                 handledChunkScroll: inputs.chunkScroll.requestId,
             });
             scrollToChunk(inputs.chunkScroll.chunkIndex);
+        }
+
+        const lineScrollView = state.rendered?.editor?.view;
+        if (
+            inputs.lineScroll &&
+            lineScrollView &&
+            inputs.lineScroll.requestId !== state.handledLineScroll &&
+            state.rendered.fileKey === inputs.lineScroll.fileKey
+        ) {
+            updateState({
+                handledLineScroll: inputs.lineScroll.requestId,
+            });
+            lineScrollView.dispatch({
+                effects: EditorView.scrollIntoView(
+                    lineScrollView.state.doc.line(
+                        clamp(inputs.lineScroll.line, {
+                            min: 1,
+                            max: lineScrollView.state.doc.lines,
+                        }),
+                    ).from,
+                    {
+                        y: 'center',
+                    },
+                ),
+            });
         }
 
         /**

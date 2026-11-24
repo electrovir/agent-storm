@@ -84,6 +84,13 @@ export const VirDiffReview = defineAppElement<{
         if (pendingScroll && !inputs.files.some((file) => file.path === pendingScroll.stagedPath)) {
             /** After this render commits, so the staged file's editor is already gone. */
             requestAnimationFrame(() => {
+                /**
+                 * Every render while the scroll is pending schedules one of these; the first one
+                 * acts.
+                 */
+                if (state.pendingScroll !== pendingScroll) {
+                    return;
+                }
                 updateState({
                     pendingScroll: undefined,
                 });

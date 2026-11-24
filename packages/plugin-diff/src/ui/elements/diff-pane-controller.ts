@@ -79,6 +79,17 @@ export function createDiffPaneState() {
                   requestId: number;
               }>
             | undefined,
+        /**
+         * The newest jump to a review comment's line. Each new `requestId` scrolls once, and only
+         * once the editor shows `fileKey`.
+         */
+        lineScroll: undefined as
+            | Readonly<{
+                  fileKey: string;
+                  line: number;
+                  requestId: number;
+              }>
+            | undefined,
         hunkMenu: undefined as HunkMenu | undefined,
         /**
          * Review comments stored for the folder's review, polled with the status so a comment the
@@ -668,6 +679,31 @@ export function createDiffPaneController({
         });
     }
 
+    /** Opens the comment's file and centers its line. */
+    async function openComment(comment: Readonly<ReviewComment>) {
+        const values = allSelectValues(state.status).filter((value) => {
+            return findSelected(state.status, value)?.file.path === comment.path;
+        });
+        const value = values.find((entry) => entry === state.selectedValue) || values[0];
+        if (!value) {
+            return;
+        }
+        if (comment.line) {
+            updateState({
+                lineScroll: {
+                    fileKey: value,
+                    line: comment.line,
+                    requestId: (state.lineScroll?.requestId ?? 0) + 1,
+                },
+            });
+        }
+        await onRowClick({
+            value,
+            isRange: false,
+            isToggle: false,
+        });
+    }
+
     function toggleReview(side: GitDiffSide) {
         setReviewSide(state.reviewSide === side ? undefined : side);
     }
@@ -690,5 +726,6 @@ export function createDiffPaneController({
         stepFile,
         setReviewSide,
         toggleReview,
+        openComment,
     };
 }

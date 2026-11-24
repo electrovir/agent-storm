@@ -30,6 +30,7 @@ import {stageSide, writeDiffSettings} from './diff-pane-requests.js';
 import {chunkSelectionAtLine} from './diff-selection.js';
 import {VirDiffCodeView} from './vir-diff-code-view.element.js';
 import {VirDiffCommentComposer} from './vir-diff-comment-composer.element.js';
+import {VirDiffCommentList} from './vir-diff-comment-list.element.js';
 import {VirDiffExplanation} from './vir-diff-explanation.element.js';
 import {VirDiffFileHeader, stageActionLabels} from './vir-diff-file-header.element.js';
 import {VirDiffFileList} from './vir-diff-file-list.element.js';
@@ -469,6 +470,7 @@ export const VirDiffPane = defineAppElement<{
                               : undefined,
                       canStage: !state.busy && !!selected && !!stageActionLabels[selected.side],
                       chunkScroll: state.chunkScroll,
+                      lineScroll: state.lineScroll,
                   })}
                       ?data-hidden=${isCodeViewHidden}
                       ${listen(VirDiffCodeView.events.addCommentRequested, (event) => {
@@ -553,7 +555,21 @@ export const VirDiffPane = defineAppElement<{
                           reviewSide: state.reviewSide,
                           isBusy: state.busy,
                           collapsedSides,
-                          header: inputs.sidebarHeader,
+                          header: inputs.sidebarHeader
+                              ? html`
+                                    ${inputs.sidebarHeader}
+                                    <${VirDiffCommentList.assign({
+                                        comments: state.reviewComments,
+                                    })}
+                                        ${listen(
+                                            VirDiffCommentList.events.commentClick,
+                                            async (event) => {
+                                                await controller.openComment(event.detail);
+                                            },
+                                        )}
+                                    ></${VirDiffCommentList}>
+                                `
+                              : undefined,
                       })}
                           ${listen(VirDiffFileSection.events.rowClick, async (event) => {
                               await controller.onRowClick(event.detail);

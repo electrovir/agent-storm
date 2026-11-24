@@ -106,8 +106,13 @@ const lastDiff: {
 /* eslint-disable-next-line @virmator/prefer-params-object -- CodeMirror calls this, so the two
    positional strings are its signature to dictate, not ours. */
 function toCodeMirrorChanges(a: string, b: string): readonly Change[] {
+    /**
+     * `@codemirror/merge` rewrites and splices the array it gets back from here (`makePresentable`,
+     * `mergeAdjacent`), so every caller gets its own copy and the cache keeps the diff as
+     * computed.
+     */
     if (lastDiff.current?.a === a && lastDiff.current.b === b) {
-        return lastDiff.current.changes;
+        return [...lastDiff.current.changes];
     }
     const aLines = a.split('\n');
     const bLines = b.split('\n');
@@ -173,7 +178,7 @@ function toCodeMirrorChanges(a: string, b: string): readonly Change[] {
         b,
         changes,
     };
-    return changes;
+    return [...changes];
 }
 
 /** Pass to every `Chunk.build` / `MergeView` / `unifiedMergeView` call so they all agree. */
