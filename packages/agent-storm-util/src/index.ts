@@ -4,5 +4,6 @@ export * from './manual-review-file.js';
 export * from './migrate-sqlite.js';
 export * from './paths.js';
 export * from './run-command.js';
+export * from './sqlite-worker-adapter.js';
 export * from './user-data-paths.js';
 export * from './write-file-atomically.js';

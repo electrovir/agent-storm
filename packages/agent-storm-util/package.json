@@ -1,6 +1,6 @@
 {
     "name": "agent-storm-util",
-    "version": "0.7.0",
+    "version": "0.8.0",
     "description": "Node.js helpers shared by agent-storm, its launcher, and its plugins.",
     "keywords": [
         "agent-storm",
@@ -37,6 +37,8 @@
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",
         "@augment-vir/node": "^32.7.1",
+        "@prisma/adapter-better-sqlite3": "7.10.1",
+        "@prisma/driver-adapter-utils": "7.10.1",
         "better-sqlite3": "^13.0.3",
         "date-vir": "^9.4.1",
         "object-shape-tester": "^6.15.3"
@@ -46,6 +48,7 @@
         "@types/better-sqlite3": "^9.6.0",
         "@types/node": "^26.6.6",
         "c8": "^12.0.0",
+        "esbuild": "^0.28.2",
         "istanbul-smart-text-reporter": "^1.1.5"
     },
     "engines": {

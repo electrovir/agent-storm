@@ -1,11 +1,14 @@
-import {applySqliteMigrations} from 'agent-storm-util';
+import {
+    applySqliteMigrations,
+    createSqliteWorkerAdapter,
+    sqliteWorkerFileName,
+} from 'agent-storm-util';
 import {resolve} from 'node:path';
-import {createPrismaClient, PrismaDatabaseEngine} from 'prisma-vir';
 import {PrismaClient} from './generated/client.js';
 
 /**
  * Opens the plugin's database in `dataDir`, first applying the migrations the plugin build copies
- * beside the server bundle.
+ * beside the server bundle. Its queries run in the worker thread the build bundles there too.
  */
 export async function openUsageDatabase(
     dataDir: string,
@@ -17,17 +20,10 @@ export async function openUsageDatabase(
         databasePath,
         migrationsDir,
     });
-    const {prismaClient} = await createPrismaClient(PrismaDatabaseEngine.Sqlite, PrismaClient, {
-        /**
-         * Prisma-vir reads this only to create a database file that's missing, which the migrations
-         * above always create first.
-         */
-        configPath: '',
-        connection: {
-            liveConnection: {
-                filePath: databasePath,
-            },
-        },
+    return new PrismaClient({
+        adapter: createSqliteWorkerAdapter({
+            databasePath,
+            workerPath: resolve(import.meta.dirname, sqliteWorkerFileName),
+        }),
     });
-    return prismaClient;
 }

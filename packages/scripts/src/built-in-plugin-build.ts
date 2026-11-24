@@ -5,6 +5,7 @@ import {monorepoRoot} from '@agent-storm/server/src/file-paths.js';
 import {typedObjectFromEntries} from '@augment-vir/common';
 import {runShellCommand} from '@augment-vir/node';
 import {builtInPlugins} from 'agent-storm';
+import {sqliteWorkerFileName} from 'agent-storm-util';
 import {
     build as buildWithEsbuild,
     stop as stopEsbuild,
@@ -149,6 +150,29 @@ async function createBuiltInPluginBuilds({
         /** Each plugin bundles its own copy of its dependencies, so a release minifies them. */
         minify: !isWatching,
     };
+    const hasDatabase = !!(await stat(schemaPath).catch(() => undefined));
+    const serverOptions: BuildOptions = {
+        ...shared,
+        platform: 'node',
+        target: 'node22',
+        external: [
+            /**
+             * Native modules, and the Claude Agent SDK, which runs Claude Code from a
+             * platform-specific package it finds next to its own.
+             */
+            'node-pty',
+            'better-sqlite3',
+            '@anthropic-ai/claude-agent-sdk',
+        ],
+        banner: {
+            /**
+             * Bundled CommonJS dependencies `require` Node's built-ins, which ES modules lack. The
+             * import is renamed because bundled dependencies declare their own top-level
+             * `createRequire`.
+             */
+            js: "import {createRequire as createBannerRequire} from 'node:module'; const require = createBannerRequire(import.meta.url);",
+        },
+    };
     return [
         {
             packageDir,
@@ -196,37 +220,11 @@ async function createBuiltInPluginBuilds({
                           migrationsDir,
                       ],
                       options: {
-                          ...shared,
-                          platform: 'node',
-                          target: 'node22',
+                          ...serverOptions,
                           entryPoints: [
                               serverEntryPath,
                           ],
                           outfile: resolve(outDir, manifest.serverEntry),
-                          external: [
-                              /**
-                               * Native modules, and the Claude Agent SDK, which runs Claude Code
-                               * from a platform-specific package it finds next to its own.
-                               */
-                              'node-pty',
-                              'better-sqlite3',
-                              '@anthropic-ai/claude-agent-sdk',
-                              /**
-                               * Prisma-vir's index re-exports test helpers reaching Playwright,
-                               * which esbuild must resolve before dropping them as unused and
-                               * can't.
-                               */
-                              'playwright-core',
-                              'chromium-bidi',
-                          ],
-                          banner: {
-                              /**
-                               * Bundled CommonJS dependencies `require` Node's built-ins, which ES
-                               * modules lack. The import is renamed because bundled dependencies
-                               * declare their own top-level `createRequire`.
-                               */
-                              js: "import {createRequire as createBannerRequire} from 'node:module'; const require = createBannerRequire(import.meta.url);",
-                          },
                           plugins: [
                               createDatabaseSyncPlugin({
                                   packageDir,
@@ -237,6 +235,28 @@ async function createBuiltInPluginBuilds({
                           ],
                       },
                   } satisfies BuiltInPluginBuild,
+                  /** The server part's database runs its queries in this worker. */
+                  ...(hasDatabase
+                      ? [
+                            {
+                                packageDir,
+                                extraWatchPaths: [],
+                                options: {
+                                    ...serverOptions,
+                                    entryPoints: [
+                                        resolve(
+                                            monorepoRoot,
+                                            'packages',
+                                            'agent-storm-util',
+                                            'src',
+                                            'sqlite-worker.ts',
+                                        ),
+                                    ],
+                                    outfile: resolve(outDir, sqliteWorkerFileName),
+                                },
+                            } satisfies BuiltInPluginBuild,
+                        ]
+                      : []),
               ]
             : []),
     ];

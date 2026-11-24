@@ -97,6 +97,13 @@ export async function applySqliteMigrations({
     const isExistingDatabase = !!(await stat(databasePath).catch(() => undefined));
     const database = new Database(databasePath);
     try {
+        /**
+         * The default rollback journal syncs the disk on every commit, and better-sqlite3 runs
+         * synchronously, so each write would freeze the whole server for as long as a busy disk
+         * takes. WAL is stored in the file, so the Prisma connection opened after this uses it
+         * too.
+         */
+        database.pragma('journal_mode = WAL');
         database.exec(
             'CREATE TABLE IF NOT EXISTS "_applied_migrations" ("name" TEXT NOT NULL PRIMARY KEY, "appliedAt" TEXT NOT NULL)',
         );

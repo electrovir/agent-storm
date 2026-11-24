@@ -72,6 +72,15 @@ describe(applySqliteMigrations.name, () => {
                 'First',
                 '_applied_migrations',
             ]);
+            assert.deepEquals(
+                readColumn({
+                    databasePath: fixture.databasePath,
+                    sql: 'PRAGMA journal_mode',
+                }),
+                [
+                    'wal',
+                ],
+            );
         } finally {
             await rm(fixture.dir, {
                 recursive: true,
