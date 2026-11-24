@@ -36,10 +36,6 @@ export const builtInPlugins: ReadonlyArray<
         isEnabledByDefault: true,
     },
     {
-        id: 'diff-v2',
-        isEnabledByDefault: false,
-    },
-    {
         id: 'review',
         isEnabledByDefault: true,
     },

@@ -1,7 +1,7 @@
 /**
  * CodeMirror's stock merge colors are a few percent of tint and wash out entirely on a bright
- * screen. The line and text colors below are the Diff V2 pane's instead (`@pierre/diffs` with its
- * default `pierre-light` and `pierre-dark` themes), so a diff reads the same in either pane.
+ * screen. The line and text colors below are taken from `@pierre/diffs`'s default `pierre-light`
+ * and `pierre-dark` themes instead.
  *
  * Two layers: every changed line gets a pale tint so the extent of the change is visible at a
  * glance, and the words the diff narrowed the edit down to sit on top in a darker shade.
