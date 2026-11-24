@@ -15,6 +15,7 @@ import {forgetFolderActivity} from './folder-activity.js';
 import {
     getCachedFolders,
     holdFolderPrStatus,
+    listenToFolderPrChanges,
     listenToNewFolderPrs,
     pauseGitHubForRateLimit,
     readGitHubPause,
@@ -58,6 +59,7 @@ export const pluginServerHost: PluginServerHost = {
     listFolders: getCachedFolders,
     listClaudeTabSessions,
     listenToNewFolderPrs,
+    listenToFolderPrChanges,
     recordFolderPrStatus,
     readBranchPrStatus,
     holdPrStatus: holdFolderPrStatus,

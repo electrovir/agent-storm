@@ -92,6 +92,11 @@ export type PluginServerHost = Readonly<{
      */
     listenToNewFolderPrs(listener: (info: Readonly<FolderInfo>) => void): () => void;
     /**
+     * Calls `listener` whenever a folder's PR or PR status changes, however the app learned it. A
+     * folder's first read never counts.
+     */
+    listenToFolderPrChanges(listener: (info: Readonly<FolderInfo>) => void): () => void;
+    /**
      * Records a PR state the plugin learned before the app's own polling would, and refreshes the
      * folder's sidebar entry.
      */

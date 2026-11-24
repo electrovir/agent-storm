@@ -487,16 +487,26 @@ async function applyPostedVerdicts({
                             },
                         });
                     }
-                    if (watchState.entries[folder.path]?.isEnabled) {
-                        await updateEntry(folder.path, {
-                            lastCheckAt: 0,
-                            fullCheckAt: 0,
-                        });
-                        await runFolder(folder.path);
-                    }
+                    await checkFolderNow(folder.path);
                 });
         }),
     );
+}
+
+/**
+ * Runs a watched folder's check now rather than at its next scheduled one. A check already running
+ * reads the PR fresh, and its own reads feed the folder's PR status, so it isn't followed by
+ * another.
+ */
+async function checkFolderNow(folder: string) {
+    if (!watchState.entries[folder]?.isEnabled || watchState.runningFolders.includes(folder)) {
+        return;
+    }
+    await updateEntry(folder, {
+        lastCheckAt: 0,
+        fullCheckAt: 0,
+    });
+    await runFolder(folder);
 }
 
 /**
@@ -1732,6 +1742,13 @@ export async function startWatchMode(deps: Readonly<WatchModeDeps>) {
      * asked to would push to and merge the user's real PRs.
      */
     const stopListeners = [
+        readReviewHost().listenToFolderPrChanges((info) => {
+            void checkFolderNow(normalizePath(info.path)).catch((error: unknown) => {
+                log.warning(
+                    `Failed to check ${info.path} after its PR changed: ${extractErrorMessage(error)}`,
+                );
+            });
+        }),
         listenToManualReviewState(async (changedEntries) => {
             await applyPostedVerdicts({
                 deps,

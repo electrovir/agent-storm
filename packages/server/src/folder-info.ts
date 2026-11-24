@@ -931,6 +931,19 @@ export function listenToNewFolderPrs(listener: (info: Readonly<FolderInfo>) => v
     };
 }
 
+const folderPrChangeListeners = new Set<(info: Readonly<FolderInfo>) => void>();
+
+/**
+ * Calls `listener` whenever a folder's PR or PR status changes, from a sweep or from a PR status
+ * learned elsewhere. A folder's first read never counts. Returns a function that stops listening.
+ */
+export function listenToFolderPrChanges(listener: (info: Readonly<FolderInfo>) => void) {
+    folderPrChangeListeners.add(listener);
+    return () => {
+        folderPrChangeListeners.delete(listener);
+    };
+}
+
 async function refreshOnce({
     target,
     statusLookup,
@@ -982,6 +995,9 @@ function storeFolderInfo(info: Readonly<FolderInfo>) {
     }
     if (previous && !previous.prUrl && info.prUrl) {
         newFolderPrListeners.forEach((listener) => listener(info));
+    }
+    if (previous && (previous.prUrl !== info.prUrl || previous.prStatus !== info.prStatus)) {
+        folderPrChangeListeners.forEach((listener) => listener(info));
     }
 }
 

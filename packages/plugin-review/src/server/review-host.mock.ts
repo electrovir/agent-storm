@@ -16,6 +16,7 @@ export const testReviewHost: PluginServerHost = {
     listClaudeTabSessions: throwUnmocked,
     isFolderBusyInPlugins: throwUnmocked,
     listenToNewFolderPrs: throwUnmocked,
+    listenToFolderPrChanges: throwUnmocked,
     recordFolderPrStatus: throwUnmocked,
     readBranchPrStatus: throwUnmocked,
     holdPrStatus: throwUnmocked,
