@@ -13,8 +13,11 @@ import {
     extractErrorMessage,
     log,
     type MaybePromise,
+    type UnknownObject,
 } from '@augment-vir/common';
+import {doesPathContain} from '@augment-vir/node';
 import {
+    hasErrorCode,
     listManualReviewEntries,
     manualReviewSkillDir,
     manualReviewStatePath,
@@ -24,7 +27,8 @@ import {
     writeFileAtomically,
 } from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
-import {resolve} from 'node:path';
+import {lstat} from 'node:fs/promises';
+import {join, resolve} from 'node:path';
 import {
     checkValidShape,
     defineShape,
@@ -209,6 +213,121 @@ const pendingStatusCleanups: Readonly<
     [ManualReviewStatus.PostFailed]: undefined,
 };
 
+function runsCleanupScript(status: ManualReviewStatus, command: string) {
+    return !!pendingStatusCleanups[status]?.scripts.some((script) => command.includes(script));
+}
+
+/** Each process's working directory, by pid. A pid whose directory can't be read is left out. */
+async function readProcessFolders(processIds: ReadonlyArray<string>) {
+    if (!processIds.length) {
+        return {};
+    }
+    /** `lsof` exits 1 when it can't read any one of the processes, even after printing the rest. */
+    const output = await runCommand(
+        'lsof',
+        [
+            '-a',
+            '-d',
+            'cwd',
+            '-Fn',
+            '-p',
+            processIds.join(','),
+        ],
+        {
+            timeout: {
+                seconds: 5,
+            },
+        },
+    ).then(
+        ({stdout}) => stdout,
+        (error: unknown) => {
+            return check.hasKey(error, 'stdout') && check.isString(error.stdout)
+                ? error.stdout
+                : '';
+        },
+    );
+    return parseLsofFolders(output);
+}
+
+/** Parses the `p<pid>` and `n<path>` lines of `lsof -Fn` into each pid's path. */
+export function parseLsofFolders(output: string) {
+    return output.split('\n').reduce<{
+        pid: string | undefined;
+        folders: Readonly<Record<string, string>>;
+    }>(
+        (parsed, line) => {
+            if (line.startsWith('p')) {
+                return {
+                    ...parsed,
+                    pid: line.slice(1),
+                };
+            } else if (line.startsWith('n') && parsed.pid) {
+                return {
+                    ...parsed,
+                    folders: {
+                        ...parsed.folders,
+                        [parsed.pid]: line.slice(1),
+                    },
+                };
+            } else {
+                return parsed;
+            }
+        },
+        {
+            pid: undefined,
+            folders: {},
+        },
+    ).folders;
+}
+
+/**
+ * Rewrites listed entries in the state file under its lock. `update` returns `undefined` to leave
+ * an entry alone. An entry a run has rewritten since it was listed is skipped.
+ */
+async function updateUnchangedEntries({
+    entries,
+    update,
+}: Readonly<{
+    entries: ReadonlyArray<ListedManualReviewEntry>;
+    update: (
+        stored: Readonly<UnknownObject>,
+        listed: Readonly<ListedManualReviewEntry>,
+    ) => UnknownObject | undefined;
+}>) {
+    await withManualReviewStateLock({
+        statePath: manualReviewStatePath,
+        async callback() {
+            const file = await readManualReviewFile(manualReviewStatePath);
+            const updated = entries.reduce((current, listed) => {
+                const repoKey = [
+                    listed.owner,
+                    listed.repoName,
+                ].join('/');
+                const stored = current[repoKey]?.[listed.branchName];
+                const updatedEntry =
+                    check.isObject(stored) && stored.lastUpdatedAt === listed.entry.lastUpdatedAt
+                        ? update(stored, listed)
+                        : undefined;
+                return updatedEntry
+                    ? {
+                          ...current,
+                          [repoKey]: {
+                              ...current[repoKey],
+                              [listed.branchName]: updatedEntry,
+                          },
+                      }
+                    : current;
+            }, file);
+            if (updated !== file) {
+                await writeFileAtomically({
+                    path: manualReviewStatePath,
+                    contents: `${JSON.stringify(updated, undefined, 4)}\n`,
+                });
+            }
+        },
+    });
+}
+
 /** Settles pending entries that no skill script is working on anymore. */
 async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualReviewEntry>) {
     const nowMs = Date.now();
@@ -226,11 +345,11 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
     if (!candidates.length) {
         return;
     }
-    const {stdout: runningCommands} = await runCommand(
+    const {stdout: processList} = await runCommand(
         'ps',
         [
             '-axo',
-            'command=',
+            'pid=,command=',
         ],
         {
             timeout: {
@@ -238,57 +357,133 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
             },
         },
     );
+    const scriptProcesses = processList
+        .split('\n')
+        .map((line) => {
+            const [
+                pid = '',
+                ...command
+            ] = line.trim().split(/\s+/);
+            return {
+                pid,
+                command: command.join(' '),
+            };
+        })
+        .filter(({command}) => {
+            return candidates.some((listed) => {
+                return !!listed.entry.status && runsCleanupScript(listed.entry.status, command);
+            });
+        });
+    const folderByPid = await readProcessFolders(scriptProcesses.map(({pid}) => pid));
+    /**
+     * Several reviews often run at once, so a script only keeps an entry pending while it runs in
+     * that entry's review folder.
+     */
     const orphaned = candidates.filter((listed) => {
-        const cleanup = listed.entry.status && pendingStatusCleanups[listed.entry.status];
+        const status = listed.entry.status;
+        const folder = listed.entry.folder;
         return (
-            !!cleanup &&
-            !cleanup.scripts.some((script) => {
-                return runningCommands.includes(script);
+            !!status &&
+            !scriptProcesses.some(({pid, command}) => {
+                const cwd = folderByPid[pid];
+                return (
+                    runsCleanupScript(status, command) &&
+                    (!folder ||
+                        !cwd ||
+                        doesPathContain({
+                            potentialParentPath: folder,
+                            potentialChildPath: cwd,
+                        }))
+                );
             })
         );
     });
     if (!orphaned.length) {
         return;
     }
-    await withManualReviewStateLock({
-        statePath: manualReviewStatePath,
-        async callback() {
-            const file = await readManualReviewFile(manualReviewStatePath);
-            /** A run that started since the read above has rewritten its entry, so it's skipped. */
-            const updated = orphaned.reduce((current, listed) => {
-                const repoKey = [
-                    listed.owner,
-                    listed.repoName,
-                ].join('/');
-                const stored = current[repoKey]?.[listed.branchName];
-                const cleanup = listed.entry.status && pendingStatusCleanups[listed.entry.status];
-                return cleanup &&
-                    check.isObject(stored) &&
-                    stored.isPending === true &&
-                    stored.lastUpdatedAt === listed.entry.lastUpdatedAt
-                    ? {
-                          ...current,
-                          [repoKey]: {
-                              ...current[repoKey],
-                              [listed.branchName]: {
-                                  ...stored,
-                                  status: cleanup.settledStatus,
-                                  isPending: false,
-                              },
-                          },
-                      }
-                    : current;
-            }, file);
-            if (updated !== file) {
-                await writeFileAtomically({
-                    path: manualReviewStatePath,
-                    contents: `${JSON.stringify(updated, undefined, 4)}\n`,
-                });
-            }
+    await updateUnchangedEntries({
+        entries: orphaned,
+        update(stored, listed) {
+            const cleanup = listed.entry.status && pendingStatusCleanups[listed.entry.status];
+            return cleanup && stored.isPending === true
+                ? {
+                      ...stored,
+                      status: cleanup.settledStatus,
+                      isPending: false,
+                  }
+                : undefined;
         },
     });
     log.info(
         `Settled pending manual reviews that no script is working on: ${orphaned
+            .map((listed) => listed.branchName)
+            .join(', ')}`,
+    );
+}
+
+/** A review in one of these still needs its folder, to read the PR in and to post from. */
+const folderReviewStatuses: Readonly<Record<ManualReviewStatus, boolean>> = {
+    [ManualReviewStatus.Started]: true,
+    [ManualReviewStatus.PostFailed]: true,
+    [ManualReviewStatus.Approved]: false,
+    [ManualReviewStatus.RequestedChanges]: false,
+    [ManualReviewStatus.Commented]: false,
+    [ManualReviewStatus.Aborted]: false,
+};
+
+/**
+ * Whether `folder` still holds a checkout. Only a missing path counts as gone, so a folder that
+ * can't be read for another reason keeps its review.
+ */
+async function isCheckout(folder: string) {
+    try {
+        await lstat(join(folder, '.git'));
+        return true;
+    } catch (error) {
+        return !hasErrorCode(error, 'ENOENT') && !hasErrorCode(error, 'ENOTDIR');
+    }
+}
+
+/**
+ * Aborts unfinished reviews whose folder is no longer a checkout, such as one deleted by hand to
+ * free disk space. Their entry would otherwise keep saying the review is in progress, which leaves
+ * the Review pane unable to start it again and the skill's abort script unable to run in it.
+ */
+async function abortReviewsWithoutFolder(entries: ReadonlyArray<ListedManualReviewEntry>) {
+    const withoutFolder = (
+        await Promise.all(
+            entries.map(async (listed) => {
+                const folder = listed.entry.folder;
+                const isFolderGone =
+                    !!folder &&
+                    !!listed.entry.status &&
+                    folderReviewStatuses[listed.entry.status] &&
+                    !listed.entry.isPending &&
+                    !(await isCheckout(folder));
+                return isFolderGone
+                    ? [
+                          listed,
+                      ]
+                    : [];
+            }),
+        )
+    ).flat();
+    if (!withoutFolder.length) {
+        return;
+    }
+    await updateUnchangedEntries({
+        entries: withoutFolder,
+        update(stored) {
+            return {
+                ...stored,
+                status: ManualReviewStatus.Aborted,
+                isPending: false,
+                lastUpdatedAt: Date.now(),
+            };
+        },
+    });
+    log.info(
+        `Aborted manual reviews whose folder is gone: ${withoutFolder
             .map((listed) => listed.branchName)
             .join(', ')}`,
     );
@@ -302,6 +497,11 @@ async function pollManualReviewFile() {
         });
         /** `ps` is missing on Windows, where the skill's bash scripts don't run either. */
         await clearOrphanedPendingEntries(entries).catch(() => undefined);
+        await abortReviewsWithoutFolder(entries).catch((error: unknown) => {
+            log.warning(
+                `Failed to abort manual reviews whose folder is gone: ${extractErrorMessage(error)}`,
+            );
+        });
         const previousEntries = manualReviewWatch.previousEntries;
         manualReviewWatch.previousEntries = entries;
         if (!previousEntries) {

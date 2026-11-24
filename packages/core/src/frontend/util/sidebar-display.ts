@@ -75,7 +75,7 @@ export const localChangesTooltip = 'Has uncommitted or not pushed changes.';
 export const prStatusTooltips: Record<PrStatus, string> = {
     [PrStatus.None]: '',
     [PrStatus.AwaitingReview]: 'PR awaiting your review.',
-    [PrStatus.ReviewStarted]: 'You started reviewing this PR.',
+    [PrStatus.ReviewStarted]: 'Ready for your review.',
     [PrStatus.ReReviewRequested]: 'You requested changes, and the PR awaits your review again.',
     [PrStatus.UnresolvedComments]: 'PR has unresolved comments.',
     [PrStatus.ChangesRequested]: 'You requested changes on this PR.',

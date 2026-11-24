@@ -41,7 +41,7 @@ export type ReviewSidebarQueues = Readonly<
 const assigneePrStatusTooltips: Record<PrStatus, string> = {
     [PrStatus.None]: '',
     [PrStatus.AwaitingReview]: 'Awaiting review.',
-    [PrStatus.ReviewStarted]: 'Review started.',
+    [PrStatus.ReviewStarted]: 'Ready for your review.',
     [PrStatus.ReReviewRequested]: 'Awaiting re-review.',
     [PrStatus.UnresolvedComments]: 'Unresolved comments.',
     [PrStatus.ChangesRequested]: 'Changes requested.',

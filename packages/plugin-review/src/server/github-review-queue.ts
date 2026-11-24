@@ -1161,7 +1161,10 @@ const owedReviewStatuses: Readonly<Record<PrStatus, boolean>> = {
     [PrStatus.Closed]: false,
 };
 
-/** Turns a review the viewer owes into `ReviewStarted` once the manual-review skill starts on it. */
+/**
+ * Turns a review the viewer owes into `ReviewStarted` once the manual-review skill has finished
+ * setting it up.
+ */
 export async function applyManualReviewStatus({
     prStatus,
     ...branch
@@ -1170,8 +1173,11 @@ export async function applyManualReviewStatus({
         prStatus: PrStatus;
     }
 >) {
-    return owedReviewStatuses[prStatus] &&
-        (await readManualReviewState(branch))?.status === ManualReviewStatus.Started
+    if (!owedReviewStatuses[prStatus]) {
+        return prStatus;
+    }
+    const review = await readManualReviewState(branch);
+    return review?.status === ManualReviewStatus.Started && !review.isPending
         ? PrStatus.ReviewStarted
         : prStatus;
 }

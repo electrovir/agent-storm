@@ -267,7 +267,10 @@ export enum WatchModeStatus {
 export enum PrStatus {
     None = 'none',
     AwaitingReview = 'awaitingReview',
-    /** Same as `AwaitingReview` except the viewer has started a local manual review of the branch. */
+    /**
+     * Same as `AwaitingReview` except the viewer's local manual review of the branch is set up and
+     * ready to read.
+     */
     ReviewStarted = 'reviewStarted',
     /** Same as `AwaitingReview` except the viewer's latest verdict on the PR requested changes. */
     ReReviewRequested = 'reReviewRequested',
