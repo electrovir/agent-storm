@@ -76,4 +76,18 @@ describe(stickToBottom.name, () => {
         removeStickToBottom();
         scroller.remove();
     });
+
+    it('keeps its scroll position when it moves down and shrinks at once', async () => {
+        const {scroller, removeStickToBottom} = setUpScroller();
+        await waitForFrames();
+        scroller.scrollTop = 200;
+        await waitForFrames();
+        scroller.style.marginTop = '40px';
+        scroller.style.height = '60px';
+        await waitForFrames();
+
+        assert.strictEquals(scroller.scrollTop, 200);
+        removeStickToBottom();
+        scroller.remove();
+    });
 });

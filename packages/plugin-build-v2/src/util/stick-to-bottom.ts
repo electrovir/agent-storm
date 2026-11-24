@@ -99,7 +99,7 @@ export function stickToBottom(scroller: HTMLElement) {
                     ? [
                           {
                               element: ancestor,
-                              top: rect.top,
+                              top: rect.top - bounds.top,
                           },
                       ]
                     : [];
@@ -130,7 +130,15 @@ export function stickToBottom(scroller: HTMLElement) {
         } else {
             const anchor = pin.anchors.find(({element}) => element.isConnected);
             if (anchor) {
-                scroller.scrollTop += anchor.element.getBoundingClientRect().top - anchor.top;
+                /**
+                 * Measured from the scroller's top, not the screen's: when the iOS keyboard opens,
+                 * the whole app moves down with the visual viewport's pan while the scroller
+                 * shrinks, and that move isn't content shifting.
+                 */
+                scroller.scrollTop +=
+                    anchor.element.getBoundingClientRect().top -
+                    scroller.getBoundingClientRect().top -
+                    anchor.top;
             }
         }
         remember();

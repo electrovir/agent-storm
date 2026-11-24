@@ -2,6 +2,7 @@ import {classMap, css, html, nothing, unsafeHTML} from 'element-vir';
 import {micromark} from 'micromark';
 import {gfm, gfmHtml} from 'micromark-extension-gfm';
 import {viraThemeByKeys} from 'vira';
+import {splitTrailingFences} from '../../util/markdown-fence.js';
 import {VirAiChatCodeCopy} from './vir-ai-chat-code-copy.element.js';
 import {VirAiChatLocalImage} from './vir-ai-chat-local-image.element.js';
 
@@ -357,7 +358,7 @@ export function renderChatMarkdown({
 }>) {
     const markupHtml = replaceLocalImages(
         wrapCodeBlocks(
-            micromark(hasLineBreaks ? preserveLineBreaks(text) : text, {
+            micromark(hasLineBreaks ? preserveLineBreaks(splitTrailingFences(text)) : text, {
                 extensions: [
                     gfm(),
                 ],

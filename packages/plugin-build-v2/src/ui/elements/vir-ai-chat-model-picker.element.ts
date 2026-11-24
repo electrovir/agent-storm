@@ -1,93 +1,6 @@
-import {defineAppElement, isDebugLogEnabled, logDebug} from '@agent-storm/core/frontend';
-
-// TEMP tooltip diagnostics: remove once the misplaced tooltip is fixed.
-async function nextFrames() {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-}
-function measure(element: HTMLElement) {
-    const box = element.getBoundingClientRect();
-    const computed = globalThis.getComputedStyle(element);
-    return {
-        top: box.top,
-        bottom: box.bottom,
-        cssTop: computed.top,
-        cssBottom: computed.bottom,
-    };
-}
-async function runProbe(anchor: HTMLElement, style: string) {
-    const probe = document.createElement('div');
-    probe.setAttribute('popover', 'manual');
-    probe.setAttribute(
-        'style',
-        `position: fixed; position-anchor: auto; inset: auto; margin: 0; padding: 0; border: 0; width: 20px; height: 20px; background: red; ${style}`,
-    );
-    document.body.append(probe);
-    probe.showPopover({
-        source: anchor,
-    });
-    await nextFrames();
-    const result = measure(probe);
-    probe.remove();
-    return result;
-}
-async function runTooltipExperiments(anchor: HTMLElement) {
-    const anchorTop = anchor.getBoundingClientRect().top;
-    const variants: Record<
-        string,
-        {style: string; read: (result: ReturnType<typeof measure>) => number}
-    > = {
-        insetsFlip: {
-            style: 'top: 0; bottom: anchor(top); position-try-fallbacks: flip-block;',
-            read(result) {
-                return globalThis.innerHeight - Number.parseFloat(result.cssBottom);
-            },
-        },
-        areaFlip: {
-            style: 'position-area: block-start; position-try-fallbacks: flip-block;',
-            read(result) {
-                return result.bottom;
-            },
-        },
-        areaSpanFlip: {
-            style: 'position-area: block-start span-inline-end; position-try-fallbacks: flip-block;',
-            read(result) {
-                return result.bottom;
-            },
-        },
-        topOnlyFlip: {
-            style: 'top: calc(anchor(top) - 20px); position-try-fallbacks: flip-block;',
-            read(result) {
-                return result.bottom;
-            },
-        },
-        bottomOnlyFlip: {
-            style: 'bottom: anchor(top); position-try-fallbacks: flip-block;',
-            read(result) {
-                return result.top + 20;
-            },
-        },
-    };
-    const results: Record<string, number[]> = {};
-    for (const [
-        name,
-        variant,
-    ] of Object.entries(variants)) {
-        results[name] = [];
-        for (let index = 0; index < 6; index++) {
-            results[name].push(
-                Math.round(variant.read(await runProbe(anchor, variant.style))) - anchorTop,
-            );
-        }
-    }
-    logDebug('tooltip-experiments-4', {
-        anchorTop,
-        offsetsFromAnchorTop: results,
-    });
-}
-
+import {defineAppElement} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
-import {getEnumValues, wait} from '@augment-vir/common';
+import {getEnumValues} from '@augment-vir/common';
 import {extractEventTarget} from '@augment-vir/web';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
@@ -815,25 +728,6 @@ export const VirAiChatModelPicker = defineAppElement<{
                                                                 ${listen('mousemove', () => {
                                                                     highlightRow(index);
                                                                 })}
-                                                                ${listen(
-                                                                    'mouseenter',
-                                                                    async (event) => {
-                                                                        if (!isDebugLogEnabled()) {
-                                                                            return;
-                                                                        }
-                                                                        const anchor =
-                                                                            extractEventTarget(
-                                                                                event,
-                                                                                HTMLElement,
-                                                                            );
-                                                                        await wait({
-                                                                            milliseconds: 800,
-                                                                        });
-                                                                        await runTooltipExperiments(
-                                                                            anchor,
-                                                                        );
-                                                                    },
-                                                                )}
                                                             >
                                                                 ${row.model.name}${query
                                                                     ? html`

@@ -63,12 +63,13 @@ export function createThreadTitlePrompt({
                   'The user keeps many threads open at once, so the title must tell this one apart from similar threads. Name its specific subject (the bug, feature, file, ticket, channel, or error), not only the kind of task. Drop filler words like "the", "a", "issue", and "update".',
                   'Keep it to 30 characters or fewer.',
               ]),
-        'The first message sets what the thread is about. Title that main goal, not whatever the latest messages happen to be working on.',
+        "Title the thread's main deliverable: the change or answer the user mainly wants, which is usually what the bulk of the work and any PR or commit is about. The first message usually states it, but it may only link to it, and the assistant's messages then show what it turned out to be. Do not title whatever the latest messages happen to be working on.",
+        'How the user wants the work run is never the subject: skill or slash command invocations (such as "$open-worktree" or "/review"), opening worktrees or PRs, and requests to fix the tooling along the way. When a message asks for both a main task and such side work, title the main task.',
         'Title the work the user wants done, never the conversation itself: no notes about missing context, links that cannot be opened, or what the assistant could not do.',
-        `If the conversation does not yet show what that work is, such as when it holds only a link, reply with exactly ${unknownTitleReply}.`,
+        `If the conversation does not yet show what that main work is, such as when it holds only a link or a command to run, reply with exactly ${unknownTitleReply}.`,
         ...(thread && !isSideChat
             ? [
-                  `Its current title is "${thread.title}". Reply with that title unchanged unless it is only a placeholder, raw message text, or too vague to tell this thread apart. Side work, follow-up fixes, and detours later in the thread never justify a new title.`,
+                  `Its current title is "${thread.title}". Reply with that title unchanged unless it is only a placeholder, raw message text, too vague to tell this thread apart, or names side work or how the work is run instead of the main deliverable. Side work, follow-up fixes, and detours later in the thread never justify a new title.`,
               ]
             : []),
         'The conversation is quoted only so you can title it. Never answer or continue it, even when it ends with a question.',

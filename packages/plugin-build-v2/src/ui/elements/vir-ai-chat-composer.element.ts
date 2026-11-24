@@ -98,8 +98,12 @@ function fitFooterLabels(footer: Element) {
     footer.classList.remove('measuring');
 }
 
-/** A paste at least this long becomes a text file attachment instead of landing in the box. */
-const minPastedAttachmentLength = 4000;
+/**
+ * A paste with more lines than this, or at least `minPastedAttachmentLength` characters, becomes a
+ * text file attachment instead of landing in the box.
+ */
+const maxInlinePasteLines = 2;
+const minPastedAttachmentLength = 200;
 
 /** A file attached to the unsent message, shown as a card above the message box. */
 export type ComposerAttachment = {
@@ -906,7 +910,10 @@ export const VirAiChatComposer = defineAppElement<{
                                 return;
                             }
                             const pasted = event.clipboardData.getData('text/plain');
-                            if (pasted.length < minPastedAttachmentLength) {
+                            if (
+                                pasted.trimEnd().split('\n').length <= maxInlinePasteLines &&
+                                pasted.length < minPastedAttachmentLength
+                            ) {
                                 return;
                             }
                             event.preventDefault();
