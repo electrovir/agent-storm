@@ -62,7 +62,8 @@
         "@web/test-runner": "^1.0.1",
         "@web/test-runner-playwright": "^1.0.1",
         "istanbul-smart-text-reporter": "^1.1.5",
-        "prisma": "7.10.1"
+        "prisma": "7.10.1",
+        "typescript": "^6.0.3"
     },
     "engines": {
         "node": ">=22"
