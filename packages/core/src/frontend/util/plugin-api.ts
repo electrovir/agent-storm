@@ -342,6 +342,8 @@ export type PaneGroupExtensionInputs = Readonly<Record<string, unknown>>;
 /** What a pane group knows about itself and hands to each tab's pane. */
 export type PaneGroupView = Readonly<{
     folder: string;
+    /** The pane group's `scope` input. Undefined for the folder's own pane group. */
+    scope: string | undefined;
     context: AppContext;
     /** True when the pane group is the user's currently focused folder. */
     isActive: boolean;
@@ -374,6 +376,11 @@ export type PaneGroupExtension<
     create(
         params: Readonly<{
             folder: string;
+            /**
+             * Keys this group's tabs in `context.uiLayout`. Differs from `folder` for a scoped
+             * group, such as a Build V2 thread's.
+             */
+            layoutKey: string;
             context: AppContext;
             folderSessions: FolderSessionsObservable;
         }>,

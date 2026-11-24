@@ -75,6 +75,8 @@ enum ThreadOrigin {
   watch
   /// An extra AI Chat tab in a thread's tabs. Its generated title names its tab.
   sideChat
+  /// An AI Chat tab outside Build V2's threads, such as in a Review or Build folder's tabs.
+  paneChat
 }
 
 model Thread {
@@ -100,6 +102,8 @@ model Thread {
   hasUnreadReply      Boolean          @default(false)
   /// Set once the user or an agent renames the thread, which stops automatic titles replacing it.
   hasCustomTitle      Boolean          @default(false)
+  /// Set by the user to flag the thread in the sidebar.
+  isPriority          Boolean          @default(false)
   /// Background tasks, such as sub-agents, still running after the agent's reply ended.
   backgroundTaskCount Int              @default(0)
   origin              ThreadOrigin     @default(user)
@@ -134,6 +138,7 @@ model ThreadItem {
 
   @@unique([threadId, providerItemId])
   @@index([threadId, order])
+  @@index([kind, threadId])
 }
 
 model ApprovalRequest {

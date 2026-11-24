@@ -33,6 +33,7 @@ function createThread(overrides: Readonly<Partial<Thread>>): Thread {
         title: 'Thread',
         status: ThreadStatus.Idle,
         hasUnreadReply: false,
+        isPriority: false,
         isAskingQuestion: false,
         backgroundTaskCount: 0,
         origin: ThreadOrigin.User,

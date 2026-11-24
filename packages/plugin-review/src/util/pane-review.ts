@@ -24,6 +24,7 @@ const threadTabNames: Readonly<Record<ThreadOrigin, string>> = {
     [ThreadOrigin.Review]: 'AI Review',
     [ThreadOrigin.Watch]: 'AI Watch',
     [ThreadOrigin.SideChat]: 'AI Chat',
+    [ThreadOrigin.PaneChat]: 'AI Chat',
 };
 
 /** A verdict can only be posted while the skill holds a review that hasn't posted yet. */
@@ -143,12 +144,15 @@ export type PaneReviewObservable = ReturnType<typeof createPaneReview>;
  */
 export function createPaneReview({
     folder,
+    layoutKey,
     uiLayout,
     folderSessions,
     prReviews,
     folderData,
 }: Readonly<{
     folder: string;
+    /** Keys the pane group's tabs in `uiLayout`. */
+    layoutKey: string;
     /** Fetched again once a verdict's status is held, so the rings show it at once. */
     folderData: Pick<FolderDataObservable, 'refresh'>;
     /** Holds the tab layout, to show tabs. */
@@ -287,7 +291,7 @@ export function createPaneReview({
             });
         }
         uiLayout.updateTabLayout({
-            folder,
+            folder: layoutKey,
             update(current) {
                 if (!current || (!isShown && current.tabs[tabId])) {
                     return current;
@@ -468,7 +472,7 @@ export function createPaneReview({
                 if (active && observable.value.review?.status === ManualReviewStatus.Started) {
                     void Promise.resolve().then(() => {
                         uiLayout.showPaneTab({
-                            folder,
+                            folder: layoutKey,
                             kind: diffPaneId,
                         });
                     });

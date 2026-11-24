@@ -1,8 +1,9 @@
-import {PrStatus} from '@agent-storm/common';
+// cspell:words unpushed
+import {PrStatus, type PluginCallResponse} from '@agent-storm/common';
 import {type AppContext} from '@agent-storm/core/frontend';
 import {extractErrorMessage} from '@augment-vir/common';
 import {Observable} from 'element-vir';
-import {buildV2PluginId, ThreadOrigin, type Thread} from '../build-v2-api.js';
+import {buildV2PluginId, ThreadOrigin, type buildV2Api, type Thread} from '../build-v2-api.js';
 import {buildV2Client} from './build-v2-client.js';
 import {buildV2Memory} from './build-v2-memory.js';
 import {findPathName, upsertThread, type ThreadRepo} from './thread-timeline.js';
@@ -11,6 +12,9 @@ export const buildV2ActivityId = buildV2PluginId;
 
 /** The route's first sub path while the stage shows the new-thread composer. */
 export const newThreadSubPath = 'new';
+
+/** The new-thread composer's pane group scope, whose AI Chat tab starts sidebar threads. */
+export const newThreadScope = `build-v2:${newThreadSubPath}`;
 
 /** Everything the Build V2 plugin keeps for the app's whole life. */
 export function createBuildV2State() {
@@ -27,6 +31,13 @@ export function createBuildV2State() {
         }),
         /** Every `ThreadOrigin.SideChat` thread that isn't archived. */
         sideChats: new Observable<ReadonlyArray<Readonly<Thread>>>({
+            defaultValue: [],
+        }),
+        /**
+         * Every thread that isn't archived and isn't a `User` or side chat thread. Other plugins
+         * show these, so only their AI Chat tab icons read them.
+         */
+        paneThreads: new Observable<ReadonlyArray<Readonly<Thread>>>({
             defaultValue: [],
         }),
         /**
@@ -53,6 +64,42 @@ export type BuildV2State = ReturnType<typeof createBuildV2State>;
 /** The Build V2 activity's state. Undefined while the plugin is off. */
 export function findBuildV2State({activityStates}: Readonly<Pick<AppContext, 'activityStates'>>) {
     return activityStates[buildV2ActivityId] satisfies unknown as BuildV2State | undefined;
+}
+
+/** The archive confirmation's text for what the worktree's `readWorktreeChanges` call found. */
+export function describeArchiveLoss({
+    branch,
+    cwd,
+    changes,
+}: Readonly<{
+    branch: string;
+    cwd: string;
+    changes: Readonly<PluginCallResponse<typeof buildV2Api, 'readWorktreeChanges'>>;
+}>) {
+    const isNothingLost = !changes.hasUncommittedChanges && !changes.branchCommitCount;
+    return [
+        changes.branchCommitCount
+            ? unmergedWorktreeWarning(branch)
+            : 'Archiving this thread also deletes its worktree.',
+        cwd,
+        isNothingLost
+            ? `Nothing will be lost: there are no uncommitted changes, and the branch "${branch}" has no commits of its own. Archive?`
+            : [
+                  changes.hasUncommittedChanges ? 'Its uncommitted changes will be lost.' : '',
+                  changes.branchCommitCount
+                      ? changes.unpushedCommitCount
+                          ? `The branch stays, but ${changes.unpushedCommitCount} of its commits only exist locally.`
+                          : 'The branch stays, and its commits are pushed.'
+                      : 'The branch has no commits of its own.',
+                  'Archive anyway?',
+              ]
+                  .filter(Boolean)
+                  .join(' '),
+    ].join('\n\n');
+}
+
+function unmergedWorktreeWarning(branch: string) {
+    return `Archiving this thread also deletes its worktree, but its branch "${branch}" hasn't been merged yet.`;
 }
 
 /**
@@ -83,21 +130,38 @@ export async function confirmThreadArchive({
     ) {
         return true;
     }
-    return globalThis.confirm(
-        [
-            `Archiving this thread also deletes its worktree, but its branch "${thread.worktreeBranch}" hasn't been merged yet.`,
-            thread.cwd,
-            'Uncommitted changes in the worktree will be lost. The branch itself stays. Archive anyway?',
-        ].join('\n\n'),
-    );
+    try {
+        return globalThis.confirm(
+            describeArchiveLoss({
+                branch: thread.worktreeBranch,
+                cwd: thread.cwd,
+                changes: await buildV2Client.call('readWorktreeChanges', {
+                    threadId: thread.id,
+                }),
+            }),
+        );
+    } catch (error) {
+        return globalThis.confirm(
+            [
+                unmergedWorktreeWarning(thread.worktreeBranch),
+                thread.cwd,
+                `Checking it for changes failed: ${extractErrorMessage(error)}`,
+                'Uncommitted changes in the worktree will be lost. The branch itself stays. Archive anyway?',
+            ].join('\n\n'),
+        );
+    }
 }
 
 /** Loads the thread list again, replacing whatever the state had. */
 export async function loadThreads(state: Readonly<BuildV2State>) {
     try {
-        const {threads, sideChats, repoActivity} = await buildV2Client.call('listThreads', {});
+        const {threads, sideChats, paneThreads, repoActivity} = await buildV2Client.call(
+            'listThreads',
+            {},
+        );
         state.threads.setValue(threads);
         state.sideChats.setValue(sideChats);
+        state.paneThreads.setValue(paneThreads);
         state.repoActivityAtMs.setValue(
             new Map(
                 repoActivity.map(({repoPath, updatedAt}) => {
@@ -135,7 +199,7 @@ export function storeThread(state: Readonly<BuildV2State>, thread: Readonly<Thre
         state.sideChats.setValue(upsertThread(state.sideChats.value, thread));
         return;
     } else if (thread.origin !== ThreadOrigin.User) {
-        /** Other plugins show the threads they start themselves. */
+        state.paneThreads.setValue(upsertThread(state.paneThreads.value, thread));
         return;
     }
     state.threads.setValue(upsertThread(state.threads.value || [], thread));
@@ -194,6 +258,11 @@ export function startThreadSync(state: Readonly<BuildV2State>) {
             if (state.sideChats.value.some((sideChat) => sideChat.id === threadId)) {
                 state.sideChats.setValue(
                     state.sideChats.value.filter((sideChat) => sideChat.id !== threadId),
+                );
+            }
+            if (state.paneThreads.value.some((paneThread) => paneThread.id === threadId)) {
+                state.paneThreads.setValue(
+                    state.paneThreads.value.filter((paneThread) => paneThread.id !== threadId),
                 );
             }
         }),

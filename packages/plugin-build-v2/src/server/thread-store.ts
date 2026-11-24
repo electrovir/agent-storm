@@ -37,6 +37,7 @@ const threadSelect = {
     title: true,
     status: true,
     hasUnreadReply: true,
+    isPriority: true,
     backgroundTaskCount: true,
     origin: true,
     prUrl: true,
@@ -234,6 +235,7 @@ export function createThreadStore({
                 | 'runtimeMode'
                 | 'title'
                 | 'hasCustomTitle'
+                | 'isPriority'
                 | 'status'
                 | 'backgroundTaskCount'
                 | 'providerSessionId'
@@ -320,6 +322,22 @@ export function createThreadStore({
                     where: {
                         deactivatedAt: null,
                         origin: ThreadOrigin.SideChat,
+                    },
+                    select: threadSelect,
+                })
+            ).map(toThread);
+        },
+        async listPaneThreads() {
+            return (
+                await prismaClient.thread.findMany({
+                    where: {
+                        deactivatedAt: null,
+                        origin: {
+                            notIn: [
+                                ThreadOrigin.User,
+                                ThreadOrigin.SideChat,
+                            ],
+                        },
                     },
                     select: threadSelect,
                 })
@@ -631,6 +649,21 @@ export function createThreadStore({
                 }
             }
             return threadItem;
+        },
+        async setThreadPriority(threadId: string, isPriority: boolean) {
+            const {updatedAt} = await prismaClient.thread.findUniqueOrThrow({
+                where: {
+                    id: threadId,
+                },
+                select: {
+                    updatedAt: true,
+                },
+            });
+            return await updateThread(threadId, {
+                isPriority,
+                /** Passing `updatedAt` keeps Prisma's `@updatedAt` from bumping it. */
+                updatedAt,
+            });
         },
         async markThreadRead(threadId: string) {
             const {updatedAt, hasUnreadReply, deactivatedAt} =

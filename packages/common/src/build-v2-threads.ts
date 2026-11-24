@@ -1,3 +1,4 @@
+import {type PartialWithUndefined} from '@augment-vir/common';
 import {definePluginServerExportsKey} from './plugins.js';
 
 export const buildV2PluginId = 'build-v2';
@@ -14,6 +15,25 @@ export enum ThreadOrigin {
     Watch = 'watch',
     /** An extra AI Chat tab in a thread's tabs. Its generated title names its tab. */
     SideChat = 'sideChat',
+    /** An AI Chat tab outside Build V2's threads, such as in a Review or Build folder's tabs. */
+    PaneChat = 'paneChat',
+}
+
+/** The origin of a thread started from an AI Chat tab. */
+export function findNewThreadOrigin({
+    parentThreadId,
+    isSidebarThread,
+}: Readonly<
+    PartialWithUndefined<{
+        parentThreadId: string | null;
+        /** Set only by Build V2's new-thread composer and the agent tool that starts threads. */
+        isSidebarThread: boolean | null;
+    }>
+>) {
+    if (parentThreadId) {
+        return ThreadOrigin.SideChat;
+    }
+    return isSidebarThread ? ThreadOrigin.User : ThreadOrigin.PaneChat;
 }
 
 export enum ThreadStatus {

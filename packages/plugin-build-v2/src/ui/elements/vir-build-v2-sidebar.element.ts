@@ -17,6 +17,7 @@ import {
     type ActivityRoute,
     type AppContext,
 } from '@agent-storm/core/frontend';
+import {reviewClient} from '@agent-storm/plugin-review';
 import {extractErrorMessage} from '@augment-vir/common';
 import {HttpMethod} from '@rest-vir/api';
 import {classMap, css, html, listen, nothing} from 'element-vir';
@@ -234,7 +235,7 @@ export const VirBuildV2Sidebar = defineAppElement<{
             top: 0;
             right: 22px;
             display: flex;
-            height: 28px;
+            height: 22px;
             align-items: center;
             opacity: 0;
 
@@ -709,6 +710,41 @@ export const VirBuildV2Sidebar = defineAppElement<{
                                                                     storeThread(
                                                                         inputs.buildV2State,
                                                                         renamed.thread,
+                                                                    );
+                                                                });
+                                                            },
+                                                        )}
+                                                        ${listen(
+                                                            VirBuildV2ThreadRow.events
+                                                                .priorityChanged,
+                                                            async (event) => {
+                                                                await runAction(async () => {
+                                                                    const changed =
+                                                                        await buildV2Client.call(
+                                                                            'setThreadPriority',
+                                                                            {
+                                                                                threadId: thread.id,
+                                                                                isPriority:
+                                                                                    event.detail,
+                                                                            },
+                                                                        );
+                                                                    storeThread(
+                                                                        inputs.buildV2State,
+                                                                        changed.thread,
+                                                                    );
+                                                                });
+                                                            },
+                                                        )}
+                                                        ${listen(
+                                                            VirBuildV2ThreadRow.events.watchChanged,
+                                                            async (event) => {
+                                                                await runAction(async () => {
+                                                                    await reviewClient.call(
+                                                                        'setWatchMode',
+                                                                        {
+                                                                            folder: thread.cwd,
+                                                                            isEnabled: event.detail,
+                                                                        },
                                                                     );
                                                                 });
                                                             },

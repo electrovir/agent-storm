@@ -14,6 +14,7 @@ import {
     VirPaneGroup,
     type TabLayout,
 } from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
 import {getObjectTypedEntries} from '@augment-vir/common';
 import {css, html, keyed, listen, nothing} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
@@ -23,6 +24,7 @@ import {
     buildV2ActivityId,
     createBuildV2State,
     findStateThread,
+    newThreadScope,
     newThreadSubPath,
     startThreadSync,
 } from '../../util/build-v2-state.js';
@@ -193,7 +195,7 @@ export const buildV2Activity = defineActivity({
          */
         const isCwdGone = !!thread?.cwd && !!folderInfo.size && !folderInfo.has(thread.cwd);
         const folder = thread ? (!isCwdGone && thread.cwd) || thread.repoPath : draftRepoPath || '';
-        const scope = `build-v2:${threadId || newThreadSubPath}`;
+        const scope = threadId ? `build-v2:${threadId}` : newThreadScope;
         const layoutKey = toPaneGroupKey({
             folder,
             scope,
@@ -201,7 +203,8 @@ export const buildV2Activity = defineActivity({
         /**
          * An extra AI Chat tab in a thread's tabs is a side chat, so its thread stays out of the
          * sidebar and never retitles itself. A tab holding another sidebar thread closes, since
-         * that thread would otherwise show under both entries.
+         * that thread would otherwise show under both entries. A tab holding a thread another
+         * plugin started, such as a review or watch mode thread, stays.
          */
         const strayChatTabs = threadId
             ? getObjectTypedEntries(context.uiLayout.getTabLayout(layoutKey)?.tabs || {}).filter(
@@ -212,7 +215,9 @@ export const buildV2Activity = defineActivity({
                       return (
                           tab.kind === aiChatPane.id &&
                           tab.state?.threadId !== threadId &&
-                          !tab.state?.parentThreadId
+                          !tab.state?.parentThreadId &&
+                          (!check.isString(tab.state?.threadId) ||
+                              !!findStateThread(state, tab.state.threadId))
                       );
                   },
               )

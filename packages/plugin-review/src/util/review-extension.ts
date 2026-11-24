@@ -16,9 +16,10 @@ export type ReviewExtensionInputs = Readonly<{
 /** The pane group's PR and manual review, which the Diff and Review panes both read. */
 export const reviewExtension: PaneGroupExtension<ReviewExtensionInputs, PaneReviewObservable> = {
     id: 'review',
-    create({folder, context, folderSessions}) {
+    create({folder, layoutKey, context, folderSessions}) {
         return createPaneReview({
             folder,
+            layoutKey,
             uiLayout: context.uiLayout,
             folderSessions,
             prReviews: findReviewState(context).prReviews,

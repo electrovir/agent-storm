@@ -1,3 +1,4 @@
+import {findNewThreadOrigin} from '@agent-storm/common';
 import {defineAppElement, type AppContext} from '@agent-storm/core/frontend';
 import {
     createCuid2,
@@ -28,7 +29,6 @@ import {
     mcpControlProviders,
     RuntimeMode,
     ThreadItemKind,
-    ThreadOrigin,
     ThreadStatus,
     type ApprovalRequest,
     type ComposerCommand,
@@ -134,6 +134,8 @@ export const VirAiChat = defineAppElement<{
     isShown: boolean;
     /** Makes a new thread a `ThreadOrigin.SideChat` one in this thread's tabs. */
     parentThreadId?: string | undefined;
+    /** Makes a new thread a `ThreadOrigin.User` one, shown in the sidebar. */
+    isSidebarThread?: boolean | undefined;
 }>()({
     tagName: 'vir-ai-chat',
     events: {
@@ -825,6 +827,7 @@ export const VirAiChat = defineAppElement<{
                             title: threadTitle || undefined,
                             isInWorktree,
                             parentThreadId: inputs.parentThreadId,
+                            isSidebarThread: inputs.isSidebarThread,
                         });
                         pendingThreadCreations.set(id, creation);
                         /** Shown before the server replies, which then replaces it in the list. */
@@ -843,11 +846,10 @@ export const VirAiChat = defineAppElement<{
                                         title: createThreadTitle(message),
                                         status: ThreadStatus.Running,
                                         hasUnreadReply: false,
+                                        isPriority: false,
                                         isAskingQuestion: false,
                                         backgroundTaskCount: 0,
-                                        origin: inputs.parentThreadId
-                                            ? ThreadOrigin.SideChat
-                                            : ThreadOrigin.User,
+                                        origin: findNewThreadOrigin(inputs),
                                         prUrl: undefined,
                                         parentThreadId: inputs.parentThreadId,
                                         userMessageCount: 1,
@@ -944,7 +946,7 @@ export const VirAiChat = defineAppElement<{
             );
         }
 
-        async function moveToWorktree(requestId: string | undefined) {
+        async function moveToWorktree() {
             if (!state.thread) {
                 return;
             }
@@ -955,7 +957,6 @@ export const VirAiChat = defineAppElement<{
             await runAction(async () => {
                 const {thread} = await buildV2Client.call('moveToWorktree', {
                     threadId,
-                    requestId: requestId ?? null,
                 });
                 updateState({
                     thread,
@@ -1354,7 +1355,7 @@ export const VirAiChat = defineAppElement<{
                                       if (isRunning || state.isMoving) {
                                           return;
                                       }
-                                      await moveToWorktree(undefined);
+                                      await moveToWorktree();
                                   })}
                               ></${ViraButton}>
                           `
@@ -1413,13 +1414,9 @@ export const VirAiChat = defineAppElement<{
                           request,
                           requestCount: state.requests.length,
                           isBusy: state.busyRequestId === request.id || state.isMoving,
-                          canMoveToWorktree,
                       })}
                           ${listen(VirAiChatApproval.events.decided, async (event) => {
                               await decide(request.id, event.detail);
-                          })}
-                          ${listen(VirAiChatApproval.events.moveToWorktreeRequested, async () => {
-                              await moveToWorktree(request.id);
                           })}
                       ></${VirAiChatApproval}>
                   `

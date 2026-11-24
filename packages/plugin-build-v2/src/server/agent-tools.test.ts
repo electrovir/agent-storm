@@ -27,6 +27,7 @@ const baseThread: Thread = {
     title: 'Caller',
     status: ThreadStatus.Running,
     hasUnreadReply: false,
+    isPriority: false,
     isAskingQuestion: false,
     backgroundTaskCount: 0,
     origin: ThreadOrigin.User,
@@ -58,6 +59,7 @@ function createTestContext(
                     ...threads,
                 ],
                 sideChats: [],
+                paneThreads: [],
                 repoActivity: [],
             };
         },
@@ -184,6 +186,7 @@ describe('create_thread', () => {
                     text: 'Fix the build.',
                     isInWorktree: false,
                     isStartAwaited: true,
+                    isSidebarThread: true,
                 },
             },
         ]);
@@ -216,6 +219,7 @@ describe('create_thread', () => {
                     text: 'Fix the build.',
                     isInWorktree: false,
                     isStartAwaited: true,
+                    isSidebarThread: true,
                 },
             },
         ]);
@@ -321,6 +325,24 @@ describe('move_to_worktree', () => {
                     'sendMessage',
                 ],
             },
+        );
+    });
+
+    it('skips asking when the user already asked for a worktree', async () => {
+        const {context, requests, afterTurnActions} = createTestContext();
+        await runTool({
+            name: 'move_to_worktree',
+            input: {
+                isRequestedByUser: true,
+            },
+            context,
+        });
+        await Promise.all(afterTurnActions.map(async (action) => await action()));
+        assert.deepEquals(
+            requests.map(({call}) => call),
+            [
+                'moveToWorktree',
+            ],
         );
     });
 

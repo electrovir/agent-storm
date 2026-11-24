@@ -1,15 +1,11 @@
 import {defineAppElement} from '@agent-storm/core/frontend';
 import {classMap, css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
-    createSizedIcon,
-    LucideGitBranchIcon,
-    LucideShieldIcon,
-    PopoverAnchor,
-    PopoverTrigger,
-    renderMenuItemEntries,
-    tooltip,
+    ViraButton,
+    ViraColorVariant,
+    ViraEmphasis,
     ViraIcon,
-    ViraMenuTrigger,
+    ViraSize,
     viraThemeByKeys,
 } from 'vira';
 import {ApprovalDecision, ApprovalKind, type ApprovalRequest} from '../../build-v2-api.js';
@@ -21,7 +17,7 @@ const approvalLabels: Record<
     Readonly<{
         label: string;
         detailLabel: string;
-        /** What the user is asked, shown above the request's detail. */
+        /** What the user is asked, shown as the card's header. */
         prompt: string;
     }>
 > = {
@@ -47,23 +43,17 @@ const approvalLabels: Record<
     },
 };
 
-const shieldIcon = createSizedIcon(LucideShieldIcon, 12);
-const branchIcon = createSizedIcon(LucideGitBranchIcon, 12);
-
-/** The request a thread waits on, shown as an inline row under the timeline. */
+/** The request a thread waits on, shown as a card under the timeline. */
 export const VirAiChatApproval = defineAppElement<{
     request: Readonly<ApprovalRequest>;
     /** How many requests wait, counting this one. */
     requestCount: number;
     /** While an answer to a request is being sent. */
     isBusy: boolean;
-    /** Whether the thread can still move to a worktree, which it can only do once. */
-    canMoveToWorktree: boolean;
 }>()({
     tagName: 'vir-ai-chat-approval',
     events: {
         decided: defineElementEvent<ApprovalDecision>(),
-        moveToWorktreeRequested: defineElementEvent<void>(),
     },
     styles: css`
         ${diffLineStyles}
@@ -74,55 +64,63 @@ export const VirAiChatApproval = defineAppElement<{
             color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
         }
 
-        .row {
+        .card {
             display: flex;
             flex-direction: column;
-            gap: 2px;
-            padding: 2px;
+            gap: 8px;
+            padding: 10px 12px;
             min-width: 0;
+            border: 1px solid ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
+            border-left: 3px solid ${viraThemeByKeys.yellow.foreground.header.foreground.value};
+            border-radius: 8px;
+            background-color: ${viraThemeByKeys.grey['behind-bg'].body.foreground.value};
         }
 
-        .prompt {
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
+
+            & .prompt {
+                flex-grow: 1;
+            }
+
+            & .count {
+                font-weight: normal;
+                color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+            }
+        }
+
+        .summary {
             display: flex;
             flex-direction: column;
             gap: 2px;
-            padding-left: 22px;
             overflow-wrap: anywhere;
+            user-select: text;
 
-            & .heading {
-                font-weight: 500;
+            & .title {
+                font-size: 15px;
+                font-weight: 600;
             }
 
             & .reason {
                 color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-                user-select: text;
-            }
-        }
-
-        .detail-line {
-            display: flex;
-            align-items: flex-start;
-            gap: 6px;
-            min-width: 0;
-            user-select: none;
-
-            & vira-icon {
-                flex-shrink: 0;
-                margin-top: 4px;
-                color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-                opacity: 0.7;
             }
         }
 
         code {
             display: block;
-            flex-grow: 1;
             min-width: 0;
             max-height: 160px;
             overflow: auto;
             box-sizing: border-box;
-            padding: 2px 4px;
-            border-radius: 4px;
+            padding: 6px 8px;
+            border: 1px solid ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
+            border-radius: 6px;
+            background-color: ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
             font-family: monospace;
             font-size: 12px;
             overflow-wrap: anywhere;
@@ -140,63 +138,11 @@ export const VirAiChatApproval = defineAppElement<{
             }
         }
 
-        .meta {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            padding-left: 22px;
-            padding-bottom: 4px;
-            font-size: 12px;
-            min-width: 0;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            overflow-wrap: anywhere;
-        }
-
         .actions {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            column-gap: 8px;
-            row-gap: 4px;
-        }
-
-        .waiting {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            color: ${viraThemeByKeys.yellow.foreground.header.foreground.value};
-        }
-
-        .inline-button {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            padding: 0;
-            border: none;
-            background: none;
-            font: inherit;
-            font-weight: 500;
-            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
-            cursor: pointer;
-            text-underline-offset: 2px;
-
-            &.primary {
-                color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-            }
-
-            &:hover:not(:disabled) {
-                text-decoration: underline;
-                color: ${viraThemeByKeys.grey.foreground.body.foreground.value};
-            }
-
-            &:focus-visible {
-                outline: 2px solid ${viraThemeByKeys.blue.foreground.body.foreground.value};
-            }
-
-            &:disabled {
-                cursor: default;
-                opacity: 0.64;
-            }
+            gap: 6px;
         }
     `,
     render({inputs, dispatch, events}) {
@@ -220,128 +166,84 @@ export const VirAiChatApproval = defineAppElement<{
 
         return html`
             <div
-                class="row"
+                class="card"
                 role="group"
                 data-v2-item-type="approval_request"
                 aria-label=${labels.label}
             >
-                <div class="prompt">
-                    <span class="heading">${labels.prompt}</span>
-                    ${inputs.request.reason
-                        ? html`
-                              <span class="reason">${inputs.request.reason}</span>
-                          `
-                        : nothing}
-                </div>
-                <div class="detail-line">
+                <div class="header">
                     <${ViraIcon.assign({
                         icon: approvalKindIcons[inputs.request.kind],
                     })}></${ViraIcon}>
-                    <code
-                        class=${classMap({
-                            'diff-block': inputs.request.kind === ApprovalKind.FileChange,
-                        })}
-                        data-approval-detail="complete"
-                        aria-label=${labels.detailLabel}
-                        tabindex="0"
-                    >
-                        ${inputs.request.kind === ApprovalKind.FileChange
-                            ? renderDiffLines(detail)
-                            : html`
-                                  <span class="detail-text">${detail}</span>
-                              `}
-                    </code>
-                </div>
-                <div class="meta">
-                    ${showsTitle
+                    <span class="prompt">${labels.prompt}</span>
+                    ${inputs.requestCount > 1
                         ? html`
-                              <span>${inputs.request.title}</span>
+                              <span class="count">1 of ${inputs.requestCount}</span>
                           `
                         : nothing}
-                    <div class="actions">
-                        <span class="waiting">
-                            <${ViraIcon.assign({
-                                icon: shieldIcon,
-                            })}></${ViraIcon}>
-                            Waiting for approval
-                            ${inputs.requestCount > 1
-                                ? html`
-                                      <span>(1 of ${inputs.requestCount})</span>
-                                  `
-                                : nothing}
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <button
-                            type="button"
-                            class="inline-button"
-                            ?disabled=${inputs.isBusy}
-                            ${listen('click', () => {
-                                decide(ApprovalDecision.Decline);
-                            })}
-                        >
-                            Decline
-                        </button>
-                        <button
-                            type="button"
-                            class="inline-button primary"
-                            ?disabled=${inputs.isBusy}
-                            ${listen('click', () => {
-                                decide(ApprovalDecision.Approve);
-                            })}
-                        >
-                            Approve
-                        </button>
-                        <${ViraMenuTrigger.assign({
-                            trigger: PopoverTrigger.Click,
-                            popoverAnchor: PopoverAnchor.Right,
-                            isDisabled: inputs.isBusy,
-                            popoverOffset: {
-                                vertical: 4,
-                            },
-                        })}>
-                            <span
-                                class="inline-button"
-                                slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
-                                aria-label="More approval options"
-                            >
-                                More
-                            </span>
-                            ${renderMenuItemEntries([
-                                {
-                                    content: 'Always allow this session',
-                                    hideIcon: true,
-                                    onClick() {
-                                        decide(ApprovalDecision.ApproveForSession);
-                                    },
-                                },
-                            ])}
-                        </${ViraMenuTrigger}>
-                        ${inputs.canMoveToWorktree
-                            ? html`
-                                  <button
-                                      type="button"
-                                      class="inline-button"
-                                      ${tooltip('Decline, then redo this work in a new worktree')}
-                                      ?disabled=${inputs.isBusy}
-                                      ${listen('click', () => {
-                                          if (inputs.isBusy) {
-                                              return;
-                                          }
-                                          dispatch(
-                                              new events.moveToWorktreeRequested({
-                                                  detail: undefined,
-                                              }),
-                                          );
-                                      })}
-                                  >
-                                      <${ViraIcon.assign({
-                                          icon: branchIcon,
-                                      })}></${ViraIcon}>
-                                      Move to worktree
-                                  </button>
-                              `
-                            : nothing}
-                    </div>
+                </div>
+                ${showsTitle || inputs.request.reason
+                    ? html`
+                          <div class="summary">
+                              ${showsTitle
+                                  ? html`
+                                        <span class="title">${inputs.request.title}</span>
+                                    `
+                                  : nothing}
+                              ${inputs.request.reason
+                                  ? html`
+                                        <span class="reason">${inputs.request.reason}</span>
+                                    `
+                                  : nothing}
+                          </div>
+                      `
+                    : nothing}
+                <code
+                    class=${classMap({
+                        'diff-block': inputs.request.kind === ApprovalKind.FileChange,
+                    })}
+                    data-approval-detail="complete"
+                    aria-label=${labels.detailLabel}
+                    tabindex="0"
+                >
+                    ${inputs.request.kind === ApprovalKind.FileChange
+                        ? renderDiffLines(detail)
+                        : html`
+                              <span class="detail-text">${detail}</span>
+                          `}
+                </code>
+                <div class="actions">
+                    <${ViraButton.assign({
+                        text: 'Decline',
+                        buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        color: ViraColorVariant.Danger,
+                        isDisabled: inputs.isBusy,
+                    })}
+                        ${listen('click', () => {
+                            decide(ApprovalDecision.Decline);
+                        })}
+                    ></${ViraButton}>
+                    <${ViraButton.assign({
+                        text: 'Always allow this session',
+                        buttonSize: ViraSize.Small,
+                        color: ViraColorVariant.Neutral,
+                        isDisabled: inputs.isBusy,
+                    })}
+                        ${listen('click', () => {
+                            decide(ApprovalDecision.ApproveForSession);
+                        })}
+                    ></${ViraButton}>
+                    <${ViraButton.assign({
+                        text: 'Approve',
+                        buttonSize: ViraSize.Small,
+                        color: ViraColorVariant.Positive,
+                        isDisabled: inputs.isBusy,
+                    })}
+                        ${listen('click', () => {
+                            decide(ApprovalDecision.Approve);
+                        })}
+                    ></${ViraButton}>
                 </div>
             </div>
         `;

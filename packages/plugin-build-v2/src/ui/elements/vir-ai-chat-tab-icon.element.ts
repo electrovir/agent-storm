@@ -10,6 +10,7 @@ const workingIcon = createSizedIcon(LucideLoaderIcon, 14);
 export const VirAiChatTabIcon = defineAppElement<{
     threads: Readonly<Observable<ReadonlyArray<Readonly<Thread>> | undefined>>;
     sideChats: Readonly<Observable<ReadonlyArray<Readonly<Thread>>>>;
+    paneThreads: Readonly<Observable<ReadonlyArray<Readonly<Thread>>>>;
     threadId: string;
     icon: ViraIconSvg;
 }>()({
@@ -41,6 +42,7 @@ export const VirAiChatTabIcon = defineAppElement<{
         const thread = [
             ...(inputs.threads.value || []),
             ...inputs.sideChats.value,
+            ...inputs.paneThreads.value,
         ].find((entry) => entry.id === inputs.threadId);
 
         if (thread && isThreadWorking(thread)) {

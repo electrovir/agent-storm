@@ -10,7 +10,12 @@ import {defineShape} from 'object-shape-tester';
 import {createSizedIcon, LucideMessageSquareIcon, ViraIcon} from 'vira';
 import {aiChatPaneId, aiChatTabLabel} from '../../build-v2-api.js';
 import {buildV2Client} from '../../util/build-v2-client.js';
-import {findBuildV2State, removeThread, storeThread} from '../../util/build-v2-state.js';
+import {
+    findBuildV2State,
+    newThreadScope,
+    removeThread,
+    storeThread,
+} from '../../util/build-v2-state.js';
 import {VirAiChatTabIcon} from './vir-ai-chat-tab-icon.element.js';
 import {VirAiChatTabTitle} from './vir-ai-chat-tab-title.element.js';
 import {VirAiChat} from './vir-ai-chat.element.js';
@@ -46,6 +51,7 @@ function renderAiChat(params: PaneRenderParams<typeof aiChatTabStateShape>) {
                 repoPath: params.folder,
                 isShown: params.isDisplayed && params.isActive,
                 parentThreadId: params.tabState.parentThreadId || undefined,
+                isSidebarThread: params.scope === newThreadScope,
             })}
                 ${listen(VirAiChat.events.threadCreated, async (event) => {
                     const state = findBuildV2State(params.context);
@@ -105,6 +111,7 @@ export const aiChatPane: PaneDefinition<typeof aiChatTabStateShape> = {
                   <${VirAiChatTabIcon.assign({
                       threads: state.threads,
                       sideChats: state.sideChats,
+                      paneThreads: state.paneThreads,
                       threadId: tabState.threadId,
                       icon: aiChatIcon,
                   })}></${VirAiChatTabIcon}>

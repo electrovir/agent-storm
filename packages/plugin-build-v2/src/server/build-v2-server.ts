@@ -1,5 +1,9 @@
-import {type BuildV2ServerExports, type PluginThreadTarget} from '@agent-storm/common';
-// cspell:words unarchive unarchived unarchives unarchiving
+import {
+    type BuildV2ServerExports,
+    findNewThreadOrigin,
+    type PluginThreadTarget,
+} from '@agent-storm/common';
+// cspell:words unarchive unarchived unarchives unarchiving unpushed
 import {
     definePluginServer,
     type HostedProcessAttachment,
@@ -7,7 +11,7 @@ import {
 } from '@agent-storm/core/server';
 import {UsageProvider, UsageSource} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {usageExportsKey} from '@agent-storm/plugin-usage/src/usage-exports.js';
-import {check} from '@augment-vir/assert';
+import {assertWrap, check} from '@augment-vir/assert';
 import {
     awaitedForEach,
     createCuid2,
@@ -85,6 +89,7 @@ const usageProviders: Readonly<Record<AiProvider, UsageProvider>> = {
 const usageSources: Readonly<Record<ThreadOrigin, UsageSource>> = {
     [ThreadOrigin.User]: UsageSource.BuildV2,
     [ThreadOrigin.SideChat]: UsageSource.BuildV2,
+    [ThreadOrigin.PaneChat]: UsageSource.BuildV2,
     [ThreadOrigin.Review]: UsageSource.Review,
     [ThreadOrigin.Watch]: UsageSource.Review,
 };
@@ -1168,15 +1173,18 @@ export default definePluginServer({
                 const [
                     threads,
                     sideChats,
+                    paneThreads,
                     repoActivity,
                 ] = await Promise.all([
                     store.listThreads(),
                     store.listSideChats(),
+                    store.listPaneThreads(),
                     store.listRepoActivity(),
                 ]);
                 return {
                     threads,
                     sideChats,
+                    paneThreads,
                     repoActivity,
                 };
             },
@@ -1319,7 +1327,7 @@ export default definePluginServer({
             async createThread(request) {
                 return await createThread({
                     ...request,
-                    origin: request.parentThreadId ? ThreadOrigin.SideChat : ThreadOrigin.User,
+                    origin: findNewThreadOrigin(request),
                     prUrl: undefined,
                 });
             },
@@ -1374,26 +1382,17 @@ export default definePluginServer({
                 await settleApproval(requestId, decision, answers);
                 return ok;
             },
-            async moveToWorktree({threadId, requestId}) {
+            async moveToWorktree({threadId}) {
                 const thread = await store.findThread(threadId);
                 if (thread.worktreeBranch) {
                     throw new Error('This thread is already in its own worktree.');
                 }
                 await stopSession(threadId);
-                const worktreePath = await moveThreadToNewWorktree({
+                await moveThreadToNewWorktree({
                     threadId,
                     folder: thread.cwd,
                     title: thread.title,
                 });
-                if (requestId) {
-                    await sendMessage({
-                        threadId,
-                        text: [
-                            `This thread moved to a new worktree at ${worktreePath}, so your last request was declined.`,
-                            'Redo that work there, using paths under that folder.',
-                        ].join(' '),
-                    });
-                }
                 return {
                     thread: await store.findThread(threadId),
                 };
@@ -1481,9 +1480,61 @@ export default definePluginServer({
                     }),
                 };
             },
+            async setThreadPriority({threadId, isPriority}) {
+                return {
+                    thread: await store.setThreadPriority(threadId, isPriority),
+                };
+            },
             async markThreadRead({threadId}) {
                 await store.markThreadRead(threadId);
                 return ok;
+            },
+            async readWorktreeChanges({threadId}) {
+                const thread = await store.findThread(threadId);
+                const branch = assertWrap.isTruthy(
+                    thread.worktreeBranch,
+                    `Thread ${threadId} has no worktree branch.`,
+                );
+                async function readGit(args: ReadonlyArray<string>) {
+                    const {stdout} = await runCommand('git', args, {
+                        cwd: thread.cwd,
+                        timeout: gitTimeout,
+                    });
+                    return stdout.trim();
+                }
+                const [
+                    status,
+                    branchCommitCount,
+                    unpushedCommitCount,
+                ] = await Promise.all([
+                    readGit([
+                        'status',
+                        '--porcelain',
+                    ]),
+                    /** `--exclude` applies to the next `--branches` or `--remotes` only. */
+                    readGit([
+                        'rev-list',
+                        '--count',
+                        'HEAD',
+                        '--not',
+                        `--exclude=${branch}`,
+                        '--branches',
+                        `--exclude=*/${branch}`,
+                        '--remotes',
+                    ]),
+                    readGit([
+                        'rev-list',
+                        '--count',
+                        'HEAD',
+                        '--not',
+                        '--remotes',
+                    ]),
+                ]);
+                return {
+                    hasUncommittedChanges: !!status,
+                    branchCommitCount: Number(branchCommitCount),
+                    unpushedCommitCount: Number(unpushedCommitCount),
+                };
             },
             async archiveThread({threadId, deleteWorktree}) {
                 const worktreeThread = deleteWorktree

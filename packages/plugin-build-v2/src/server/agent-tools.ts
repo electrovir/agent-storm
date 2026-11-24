@@ -393,7 +393,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
         description: [
             "Moves this thread into a new git worktree of its checkout, on a new branch, and runs the repo's post-worktree command there.",
             'The move happens when your turn ends, and the thread works in the worktree from then on, so call this last and then end your turn.',
-            'Asks the user to approve the move first, and fails if they decline or if this thread is already in its own worktree.',
+            'Asks the user to approve the move first, unless they already asked for a worktree, and fails if they decline or if this thread is already in its own worktree.',
         ].join(' '),
         isReadOnly: false,
         asksForApproval: true,
@@ -406,6 +406,11 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                     description:
                         'Sent to this thread once it is in the worktree, to carry on the work there. Omit to wait for the user.',
                 },
+                isRequestedByUser: {
+                    type: 'boolean',
+                    description:
+                        "True when the user's own message asked for a worktree, such as by invoking a worktree skill or saying they want one. Skips asking the user to approve the move.",
+                },
             },
         },
         async run({callerId, input, context, signal}) {
@@ -413,20 +418,21 @@ export const agentTools: ReadonlyArray<AgentTool> = [
             if (thread.worktreeBranch) {
                 throw new Error('This thread is already in its own worktree.');
             }
-            const decision = await context.requestApproval({
-                threadId: callerId,
-                title: 'Move this thread to a new worktree',
-                detail: thread.cwd,
-                reason: 'Makes a new git worktree of this folder, on a new branch, and moves this thread into it.',
-                signal,
-            });
+            const decision = input.isRequestedByUser
+                ? ApprovalDecision.Approve
+                : await context.requestApproval({
+                      threadId: callerId,
+                      title: 'Move this thread to a new worktree',
+                      detail: thread.cwd,
+                      reason: 'Makes a new git worktree of this folder, on a new branch, and moves this thread into it.',
+                      signal,
+                  });
             if (decision === ApprovalDecision.Decline) {
                 throw new Error('The user declined moving this thread to a new worktree.');
             }
             context.runAfterTurn(callerId, async () => {
                 const {thread} = await context.calls.moveToWorktree({
                     threadId: callerId,
-                    requestId: null,
                 });
                 if (input.continuationPrompt) {
                     await context.calls.sendMessage({
@@ -547,6 +553,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 text: input.text,
                 isInWorktree: !!input.isInWorktree,
                 isStartAwaited: true,
+                isSidebarThread: true,
             });
             return {
                 thread: summarizeThread(thread),

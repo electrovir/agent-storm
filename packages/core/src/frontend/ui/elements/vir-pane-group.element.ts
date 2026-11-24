@@ -70,12 +70,14 @@ const loggedSelections = new Map<string, string>();
 function startExtensionRuns({
     extensions,
     folder,
+    scope,
     context,
     folderSessions,
     host,
 }: Readonly<{
     extensions: AppContext['paneGroupExtensions'];
     folder: string;
+    scope: string | undefined;
     context: AppContext;
     folderSessions: FolderSessionsObservable;
     host: Readonly<Pick<HTMLElement & {requestUpdate(): void}, 'requestUpdate'>>;
@@ -85,6 +87,10 @@ function startExtensionRuns({
             key: extension.id,
             value: extension.create({
                 folder,
+                layoutKey: toPaneGroupKey({
+                    folder,
+                    scope,
+                }),
                 context,
                 folderSessions,
             }),
@@ -177,6 +183,7 @@ export const VirPaneGroup = defineAppElement<{
             ...startExtensionRuns({
                 extensions: inputs.context.paneGroupExtensions,
                 folder: inputs.folder,
+                scope: inputs.scope,
                 context: inputs.context,
                 folderSessions,
                 host,
@@ -400,6 +407,7 @@ export const VirPaneGroup = defineAppElement<{
             ? startExtensionRuns({
                   extensions: lateExtensions,
                   folder: inputs.folder,
+                  scope: inputs.scope,
                   context: inputs.context,
                   folderSessions,
                   host,
@@ -423,6 +431,7 @@ export const VirPaneGroup = defineAppElement<{
 
         const view: PaneGroupView = {
             folder: inputs.folder,
+            scope: inputs.scope,
             context: inputs.context,
             isActive: inputs.active,
             isMobile,

@@ -1,4 +1,4 @@
-// cspell:words claudeai
+// cspell:words claudeai, unpushed
 import {buildV2PluginId, definePluginApi, ThreadOrigin, ThreadStatus} from '@agent-storm/common';
 import {defineShape, enumShape, nullableShape, optionalShape} from 'object-shape-tester';
 
@@ -103,6 +103,8 @@ export const threadShape = defineShape({
     status: enumShape(ThreadStatus),
     /** The agent finished a reply since the thread was last on screen. */
     hasUnreadReply: false,
+    /** The user flagged the thread as a priority in the sidebar. */
+    isPriority: false,
     /**
      * Every request the thread waits on is a question for the user rather than an action to
      * approve.
@@ -322,6 +324,10 @@ export const buildV2Api = definePluginApi({
                 sideChats: [
                     threadShape,
                 ],
+                /** Every thread that isn't archived and isn't a `User` or side chat thread. */
+                paneThreads: [
+                    threadShape,
+                ],
                 /** Each repo's latest thread activity, archived threads included. */
                 repoActivity: [
                     {
@@ -482,6 +488,11 @@ export const buildV2Api = definePluginApi({
                  * `ThreadOrigin.User` one.
                  */
                 parentThreadId: nullableShape(''),
+                /**
+                 * Shows the thread in the sidebar as a `ThreadOrigin.User` one. Otherwise, without
+                 * `parentThreadId`, it's a hidden `ThreadOrigin.PaneChat` one.
+                 */
+                isSidebarThread: nullableShape(false),
             }),
             responseShape: threadResponseShape,
         },
@@ -563,13 +574,11 @@ export const buildV2Api = definePluginApi({
         },
         /**
          * Creates a worktree of the thread's checkout, runs the post-worktree command there, and
-         * resumes the thread in it. With a `requestId`, declines that request first and tells the
-         * provider to redo the work in the worktree.
+         * resumes the thread in it.
          */
         moveToWorktree: {
             requestShape: defineShape({
                 threadId: '',
-                requestId: nullableShape(''),
             }),
             responseShape: threadResponseShape,
         },
@@ -618,10 +627,29 @@ export const buildV2Api = definePluginApi({
             }),
             responseShape: threadResponseShape,
         },
+        /** Sets the thread's `isPriority` without moving it in the sidebar's order. */
+        setThreadPriority: {
+            requestShape: defineShape({
+                threadId: '',
+                isPriority: false,
+            }),
+            responseShape: threadResponseShape,
+        },
         /** Clears the thread's `hasUnreadReply` without moving it in the sidebar's order. */
         markThreadRead: {
             requestShape: threadRequestShape,
             responseShape: okResponseShape,
+        },
+        /** What deleting the thread's worktree would lose, read from git at the time of the call. */
+        readWorktreeChanges: {
+            requestShape: threadRequestShape,
+            responseShape: defineShape({
+                hasUncommittedChanges: false,
+                /** Commits on the branch that no other branch or remote has. */
+                branchCommitCount: 0,
+                /** Commits on the branch that no remote has. */
+                unpushedCommitCount: 0,
+            }),
         },
         /** Stops the thread and hides it from the sidebar. */
         archiveThread: {

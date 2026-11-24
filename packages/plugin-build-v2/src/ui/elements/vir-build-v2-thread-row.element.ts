@@ -17,6 +17,7 @@ import {
     createSizedIcon,
     LucideEyeIcon,
     LucideEyeOffIcon,
+    LucideFlagIcon,
     LucideGitBranchIcon,
     PopoverAnchor,
     PopoverTrigger,
@@ -38,7 +39,11 @@ import {
 } from './thread-display.js';
 
 const branchIcon = createColoredIcon(createSizedIcon(LucideGitBranchIcon, 12), {
-    'vira-icon-stroke-color': viraThemeByKeys.grey.foreground['non-body'].foreground.value,
+    'vira-icon-stroke-color': viraThemeByKeys.grey.foreground.placeholder.foreground.value,
+});
+
+const priorityIcon = createColoredIcon(createSizedIcon(LucideFlagIcon, 14), {
+    'vira-icon-stroke-color': viraThemeByKeys.red.foreground.header.foreground.value,
 });
 
 function createWatchModeIcon(icon: Readonly<ViraIconSvg>, color: ViraThemeColorName) {
@@ -72,6 +77,9 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         renamed: defineElementEvent<string>(),
         archived: defineElementEvent<void>(),
         unarchived: defineElementEvent<void>(),
+        priorityChanged: defineElementEvent<boolean>(),
+        /** Whether watch mode should be on for the thread's folder. */
+        watchChanged: defineElementEvent<boolean>(),
     },
     state() {
         return {
@@ -236,13 +244,19 @@ export const VirBuildV2ThreadRow = defineAppElement<{
         }
 
         .folder-status,
-        .watch-status {
+        .watch-status,
+        .priority-status {
             display: inline-flex;
             align-items: center;
             justify-content: center;
             width: 16px;
             height: 16px;
             flex-shrink: 0;
+        }
+
+        .priority-status {
+            height: 20px;
+            margin-right: -6px;
         }
 
         .message-count {
@@ -273,6 +287,7 @@ export const VirBuildV2ThreadRow = defineAppElement<{
             ownSpinnerStatus ||
             (inputs.sideChats.some(isThreadWorking) ? sideChatSidebarStatus : undefined);
         const trailingStatus = ownSpinnerStatus ? undefined : display.status;
+        const isWatchOff = inputs.folderInfo?.watchMode.status === WatchModeStatus.Off;
         const hasUnreadReply =
             inputs.thread.hasUnreadReply ||
             inputs.sideChats.some((sideChat) => sideChat.hasUnreadReply);
@@ -462,6 +477,18 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                             `
                           : nothing}
                     <div class="top">
+                        ${inputs.thread.isPriority
+                            ? html`
+                                  <span
+                                      class="priority-status"
+                                      ${tooltip('Priority', sidebarTooltipOptions)}
+                                  >
+                                      <${ViraIcon.assign({
+                                          icon: priorityIcon,
+                                      })}></${ViraIcon}>
+                                  </span>
+                              `
+                            : nothing}
                         ${title}
                         <span class="trailing">
                             <span
@@ -562,6 +589,32 @@ export const VirBuildV2ThreadRow = defineAppElement<{
                               {
                                   content: 'Rename',
                                   onClick: startRename,
+                              },
+                              {
+                                  content: inputs.thread.isPriority
+                                      ? 'Remove priority'
+                                      : 'Mark as priority',
+                                  onClick() {
+                                      dispatch(
+                                          new events.priorityChanged({
+                                              detail: !inputs.thread.isPriority,
+                                          }),
+                                      );
+                                  },
+                              },
+                              {
+                                  hidden:
+                                      !inputs.folderInfo ||
+                                      (!inputs.folderInfo.prUrl && isWatchOff),
+                                  content: isWatchOff ? 'Watch PR' : 'Stop watching PR',
+                                  iconOverride: isWatchOff ? LucideEyeIcon : LucideEyeOffIcon,
+                                  onClick() {
+                                      dispatch(
+                                          new events.watchChanged({
+                                              detail: isWatchOff,
+                                          }),
+                                      );
+                                  },
                               },
                               {
                                   content: 'Archive',
