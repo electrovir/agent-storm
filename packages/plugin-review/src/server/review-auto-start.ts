@@ -128,10 +128,10 @@ export function startReviewAutoStart(deps: Readonly<ReviewAutoStartDeps>) {
 
 /**
  * Restarts a finished review only when the viewer's review request is new since the list's previous
- * update, or, on the list's first update, when the verdict is older than
- * {@link postedVerdictListingLag}. Posting a verdict clears the request on GitHub, but the search
- * can keep listing it for an update or two, which would otherwise restart the review that was just
- * posted.
+ * update, or when the verdict is older than {@link postedVerdictListingLag}. Posting a verdict
+ * clears the request on GitHub, but the search can keep listing it for an update or two, which
+ * would otherwise restart the review that was just posted. The age check catches a request made
+ * again before the list's next update, which never leaves the list.
  */
 function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
     const queueState: {
@@ -157,12 +157,12 @@ function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
                         !!previousAwaitingUrls &&
                         pr.isAwaitingViewerReview &&
                         !previousAwaitingUrls.includes(pr.url),
-                    isAwaitingAtStartup: !previousAwaitingUrls && pr.isAwaitingViewerReview,
                 };
             })
             .filter(({pullRequest, isReRequested}) => {
                 return (
                     isReRequested ||
+                    pullRequest.isAwaitingViewerReview ||
                     !autoStartState.triedUrls.includes(pullRequest.url) ||
                     (pullRequest.url in autoStartState.launchedAt &&
                         hasLaunchCooledDown(pullRequest.url))
@@ -173,17 +173,13 @@ function createQueueListener(deps: Readonly<ReviewAutoStartDeps>) {
             ...candidates.map(({pullRequest}) => pullRequest.url),
         ]);
         /** Starting an AI takes a while, and the queue's next update shouldn't wait on it. */
-        void awaitedForEach(
-            candidates,
-            async ({pullRequest, isReRequested, isAwaitingAtStartup}) => {
-                await autoStartReview({
-                    pullRequest,
-                    isReRequested,
-                    isAwaitingAtStartup,
-                    deps,
-                });
-            },
-        );
+        void awaitedForEach(candidates, async ({pullRequest, isReRequested}) => {
+            await autoStartReview({
+                pullRequest,
+                isReRequested,
+                deps,
+            });
+        });
         void awaitedForEach(reviewablePrs, async (pullRequest) => {
             await restartOutdatedReview({
                 pullRequest,
@@ -380,7 +376,7 @@ async function initStartedReview({
 
 /**
  * How long after a verdict is posted the search can still list the viewer's cleared review request.
- * A request seen at startup on a verdict older than this was made after the verdict.
+ * A request seen on a verdict older than this was made after the verdict.
  */
 const postedVerdictListingLag: AnyDuration = {
     minutes: 5,
@@ -389,13 +385,10 @@ const postedVerdictListingLag: AnyDuration = {
 async function autoStartReview({
     pullRequest,
     isReRequested,
-    isAwaitingAtStartup,
     deps,
 }: Readonly<{
     pullRequest: Readonly<ReviewQueuePr>;
     isReRequested: boolean;
-    /** The viewer's review request was already listed in the list's first update since startup. */
-    isAwaitingAtStartup: boolean;
     deps: Readonly<ReviewAutoStartDeps>;
 }>) {
     try {
@@ -413,7 +406,7 @@ async function autoStartReview({
             !review.isPending &&
             finishedReviewStatuses[review.status] &&
             (isReRequested ||
-                (isAwaitingAtStartup &&
+                (pullRequest.isAwaitingViewerReview &&
                     Date.now() - review.lastUpdatedAt >
                         convertDuration(postedVerdictListingLag, {
                             milliseconds: true,
