@@ -55,11 +55,29 @@ export const VirDiffReview = defineAppElement<{
                       nextPath: string;
                   }
                 | undefined,
+            /** This element's own height, which caps each file's explanation column. */
+            height: undefined as number | undefined,
+            resizeObserver: undefined as ResizeObserver | undefined,
         };
     },
-    init({host}) {
+    init({host, updateState}) {
         blurDiffEditorOnScroll(host);
         probeScrollJumps(host, 'review');
+        const resizeObserver = new ResizeObserver((entries) => {
+            const height = entries.at(-1)?.contentRect.height;
+            if (height != undefined) {
+                updateState({
+                    height,
+                });
+            }
+        });
+        resizeObserver.observe(host);
+        updateState({
+            resizeObserver,
+        });
+    },
+    cleanup({state}) {
+        state.resizeObserver?.disconnect();
     },
     styles: css`
         :host {
@@ -69,8 +87,6 @@ export const VirDiffReview = defineAppElement<{
             min-width: 0;
             min-height: 0;
             overflow: auto;
-            /** Lets each file's sticky explanation cap its height at this scroll's. */
-            container-type: size;
         }
 
         .note {
@@ -127,6 +143,7 @@ export const VirDiffReview = defineAppElement<{
                             baseCommit: inputs.baseCommit,
                             file,
                             scrollRoot: host,
+                            scrollRootHeight: state.height,
                             hideWhitespace: inputs.hideWhitespace,
                             unified: inputs.unified,
                             collapseUnchanged: inputs.collapseUnchanged,

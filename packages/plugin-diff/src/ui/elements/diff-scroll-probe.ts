@@ -4,7 +4,8 @@ import {isDebugLogEnabled, reportClientError} from '@agent-storm/core/frontend';
  * TEMPORARY diagnostic for the diff view's backward scroll jumps. Remove once the cause is found.
  * Runs only while the `enableDebugLogs` setting is on, and patches the page's scroll methods the
  * first time it does. Every backward jump during a downward wheel scroll is shipped to the backend
- * client error log along with any programmatic scroll writes that happened just before it.
+ * client error log along with any programmatic scroll writes, and any DOM moves of an element
+ * containing the probed view, that happened just before it.
  */
 
 type ScrollWrite = {
@@ -15,6 +16,94 @@ type ScrollWrite = {
 };
 
 const recentWrites: ScrollWrite[] = [];
+/**
+ * Every host being probed, so DOM moves of anything that contains one can be recorded. Held weakly
+ * because nothing unregisters a closed view's host.
+ */
+const probedHosts = new Set<WeakRef<Element>>();
+
+function containsProbedHost(node: unknown) {
+    if (!(node instanceof Node)) {
+        return false;
+    }
+    return [...probedHosts].some((hostRef) => {
+        const host = hostRef.deref();
+        if (!host) {
+            probedHosts.delete(hostRef);
+            return false;
+        }
+        const cursor = {
+            node: host as Node | null,
+        };
+        while (cursor.node) {
+            if (cursor.node === node) {
+                return true;
+            }
+            cursor.node =
+                cursor.node.parentNode ??
+                (cursor.node instanceof ShadowRoot ? cursor.node.host : null);
+        }
+        return false;
+    });
+}
+
+function recordDomMove(method: string, nodes: ReadonlyArray<unknown>) {
+    if (!isDebugLogEnabled() || !probedHosts.size) {
+        return;
+    }
+    const moved = nodes.find((node) => containsProbedHost(node));
+    if (moved) {
+        recordWrite(moved, `dom ${method}`);
+    }
+}
+
+function patchDomMoves() {
+    const nodePrototype = Node.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+    >;
+    [
+        'insertBefore',
+        'appendChild',
+        'removeChild',
+        'replaceChild',
+    ].forEach((name) => {
+        const original = nodePrototype[name];
+        if (!original) {
+            return;
+        }
+        nodePrototype[name] = function (this: Node, ...args: unknown[]) {
+            recordDomMove(name, args);
+            return original.apply(this, args);
+        };
+    });
+    const elementPrototype = Element.prototype as unknown as Record<
+        string,
+        (...args: unknown[]) => unknown
+    >;
+    [
+        'append',
+        'prepend',
+        'before',
+        'after',
+        'replaceChildren',
+        'remove',
+        'replaceWith',
+    ].forEach((name) => {
+        const original = elementPrototype[name];
+        if (!original) {
+            return;
+        }
+        elementPrototype[name] = function (this: Element, ...args: unknown[]) {
+            recordDomMove(name, [
+                ...args,
+                ...(name === 'remove' || name === 'replaceWith' ? [this] : []),
+                ...(name === 'replaceChildren' ? [...this.childNodes] : []),
+            ]);
+            return original.apply(this, args);
+        };
+    });
+}
 const patchState = {
     isPatched: false,
 };
@@ -49,6 +138,7 @@ function patchScrollWrites() {
         return;
     }
     patchState.isPatched = true;
+    patchDomMoves();
     const scrollTopDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
     if (scrollTopDescriptor?.set) {
         Object.defineProperty(Element.prototype, 'scrollTop', {
@@ -122,6 +212,7 @@ function describeSelection() {
 
 /** TEMPORARY: logs every backward jump of a scroller inside `host` while the user scrolls down. */
 export function probeScrollJumps(host: HTMLElement, viewName: string) {
+    probedHosts.add(new WeakRef(host));
     const listenedElements = new WeakSet<Element>();
     const lastWheel = {
         at: -Infinity,
@@ -157,6 +248,7 @@ export function probeScrollJumps(host: HTMLElement, viewName: string) {
             height: number;
         }
     >();
+    const scrollTrails = new WeakMap<Element, {at: number; top: number; height: number}[]>();
     function onScroll(event: Event) {
         const target = event.target;
         if (!(target instanceof Element) || !isDebugLogEnabled()) {
@@ -169,6 +261,15 @@ export function probeScrollJumps(host: HTMLElement, viewName: string) {
         const previous = lastPositions.get(target);
         lastPositions.set(target, position);
         const now = performance.now();
+        const trail = scrollTrails.get(target) ?? [];
+        trail.push({
+            at: now,
+            ...position,
+        });
+        if (trail.length > 12) {
+            trail.shift();
+        }
+        scrollTrails.set(target, trail);
         if (
             !previous ||
             position.top >= previous.top - 40 ||
@@ -204,6 +305,9 @@ export function probeScrollJumps(host: HTMLElement, viewName: string) {
                     focus: describeFocus(document),
                     selection: describeSelection(),
                     writes,
+                    trail: trail.map((entry) => {
+                        return `${Math.round(now - entry.at)}ms:${Math.round(entry.top)}/${entry.height}`;
+                    }),
                 }),
             ),
         });

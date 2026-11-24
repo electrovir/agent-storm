@@ -674,9 +674,23 @@ export function blurDiffEditorOnScroll(host: Readonly<HTMLElement>) {
             editorContent.ownerDocument.getSelection()?.removeAllRanges();
         }
     }
-    host.addEventListener('wheel', blurFocusedEditor, {
-        passive: true,
-    });
+    /**
+     * Kept from reaching CodeMirror's `.cm-content`. Within 100ms of a wheel event CodeMirror
+     * corrects its scroll anchor by writing `scrollTop` on an outer scroller (`vir-diff-review`, or
+     * the split view's `.editor-host`), and during Safari's async scrolling that write lands on a
+     * position the scroll has already left, throwing the view back hundreds of pixels.
+     */
+    host.addEventListener(
+        'wheel',
+        (event) => {
+            event.stopPropagation();
+            blurFocusedEditor();
+        },
+        {
+            passive: true,
+            capture: true,
+        },
+    );
     host.addEventListener('touchmove', blurFocusedEditor, {
         passive: true,
     });

@@ -49,6 +49,8 @@ export const VirDiffReviewFile = defineAppElement<{
     file: GitDiffFile;
     /** The scrolling ancestor, which is what "near the screen" is measured against. */
     scrollRoot: Element;
+    /** Caps the explanation column so it scrolls itself rather than running past `scrollRoot`. */
+    scrollRootHeight?: number | undefined;
     hideWhitespace: boolean;
     unified: boolean;
     collapseUnchanged: boolean;
@@ -140,14 +142,13 @@ export const VirDiffReviewFile = defineAppElement<{
 
         /*
          * Sticks to the top of the review while its file scrolls past, the way the file header
-         * does, and scrolls itself when it is taller than the review. The 100cqh is the review's
-         * own height (VirDiffReview is the size container).
+         * does. Its max-height comes from the review's measured height, because a size container
+         * on the review breaks its scrolling.
          */
         ${VirDiffExplanation}.beside {
             position: sticky;
             top: 0;
             align-self: flex-start;
-            max-height: 100cqh;
         }
 
         /*
@@ -448,6 +449,11 @@ export const VirDiffReviewFile = defineAppElement<{
                     explanation: inputs.explanation,
                 })}
                     class=${placement}
+                    style=${placement === 'beside' && inputs.scrollRootHeight
+                        ? css`
+                              max-height: ${inputs.scrollRootHeight}px;
+                          `
+                        : nothing}
                 ></${VirDiffExplanation}>
             `;
         }
