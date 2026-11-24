@@ -29,6 +29,7 @@ import {
     type DiffCommentHandlers,
 } from './diff-editor-comments.js';
 import {collapsedGapsExtension} from './diff-editor-gaps.js';
+import {traceEditorPasses} from './diff-freeze-trail.js';
 
 /**
  * Columns a wrapped row hangs by, so a continuation reads as part of the line above it rather than
@@ -410,6 +411,7 @@ function mountDiffEditor({
      */
     onGeometryChange?: ((view: EditorView) => void) | undefined;
 }>) {
+    traceEditorPasses();
     const reviewComments = commentHandlers
         ? reviewCommentExtension({
               isDark,

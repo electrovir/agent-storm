@@ -1,5 +1,6 @@
 import {wrapDefineElement} from 'element-vir';
 import {reportRenderError} from '../util/client-error-log.js';
+import {traceFreezeSpan} from '../util/debug-log.js';
 import {PerfCategory, recordPerf} from '../util/perf-stats.js';
 
 /**
@@ -13,7 +14,7 @@ export const defineAppElement = wrapDefineElement<`vir-${string}`>({
             render(params) {
                 const startedAt = performance.now();
                 try {
-                    return init.render(params);
+                    return traceFreezeSpan(`render ${init.tagName}`, () => init.render(params));
                 } finally {
                     recordPerf({
                         category: PerfCategory.Render,
