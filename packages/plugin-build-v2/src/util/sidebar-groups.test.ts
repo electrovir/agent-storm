@@ -1,5 +1,5 @@
-import {SidebarSorting} from '@agent-storm/common';
-import {assert} from '@augment-vir/assert';
+import {folderInfoShape, PrStatus, SidebarSorting} from '@agent-storm/common';
+import {assert, assertWrap} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {AiProvider, RuntimeMode, ThreadOrigin, ThreadStatus, type Thread} from '../build-v2-api.js';
 import {arrangeRepoGroups} from './sidebar-groups.js';
@@ -26,6 +26,7 @@ function createGroup({
         title: threadTitle || '',
         status: ThreadStatus.Idle,
         hasUnreadReply: false,
+        isPriority: false,
         isAskingQuestion: false,
         backgroundTaskCount: 0,
         origin: ThreadOrigin.User,
@@ -165,6 +166,93 @@ describe(arrangeRepoGroups.name, () => {
                 'beta',
                 'echo',
                 'hotel',
+            ],
+        );
+    });
+    it('sorts threads by status ring within alphabetical folders', () => {
+        const alpha = createGroup({
+            name: 'alpha',
+            threadTitle: 'Approved',
+            updatedAt: 1,
+        });
+        const threadStatuses = [
+            PrStatus.Approved,
+            PrStatus.Merged,
+            PrStatus.ChecksFailed,
+        ];
+        const threads = threadStatuses.map((prStatus) => {
+            return {
+                ...assertWrap.isDefined(alpha.threads[0]),
+                id: `thread-${prStatus}`,
+                cwd: `/worktrees/${prStatus}`,
+            };
+        });
+        const arranged = arrangeRepoGroups({
+            groups: [
+                ...groups.filter((group) => group.repo.name !== 'alpha'),
+                {
+                    ...alpha,
+                    threads,
+                },
+            ],
+            folderInfo: new Map(
+                threadStatuses.map((prStatus) => {
+                    const path = `/worktrees/${prStatus}`;
+                    return [
+                        path,
+                        {
+                            ...folderInfoShape.default,
+                            path,
+                            prUrl: `https://github.com/owner/repo/pull/${prStatus}`,
+                            prStatus,
+                        },
+                    ];
+                }),
+            ),
+            archivedThreadIds: [
+                'beta',
+            ],
+            repos: [],
+            sorting: SidebarSorting.Status,
+            onlyShowRecent: false,
+            searchQuery: '',
+        });
+        assert.deepEquals(
+            arranged.map((group) => {
+                return {
+                    name: group.repo.name,
+                    threadIds: group.threads.map((thread) => thread.id),
+                };
+            }),
+            [
+                {
+                    name: 'alpha',
+                    threadIds: [
+                        `thread-${PrStatus.Merged}`,
+                        `thread-${PrStatus.ChecksFailed}`,
+                        `thread-${PrStatus.Approved}`,
+                    ],
+                },
+                {
+                    name: 'gamma',
+                    threadIds: [
+                        'gamma',
+                    ],
+                },
+                {
+                    name: 'beta',
+                    threadIds: [
+                        'beta',
+                    ],
+                },
+                {
+                    name: 'echo',
+                    threadIds: [],
+                },
+                {
+                    name: 'hotel',
+                    threadIds: [],
+                },
             ],
         );
     });

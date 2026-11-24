@@ -469,11 +469,12 @@ export const settingsJsonSchema = {
                 SidebarSorting.Name,
                 SidebarSorting.Date,
                 SidebarSorting.Activity,
+                SidebarSorting.Status,
             ],
             default: SidebarSorting.Name,
             title: 'Sidebar sorting',
             description:
-                'How the sidebar orders folders. "name" sorts alphabetically; "date" puts the most recently created repos and worktrees first; "activity" puts the ones you most recently typed into first. Selectable from the filter icon next to the Add button in the sidebar as well.',
+                'How the sidebar orders folders. "name" sorts alphabetically; "date" puts the most recently created repos and worktrees first; "activity" puts the ones you most recently typed into first; "status" puts the highest-precedence PR status ring first. Selectable from the filter icon next to the Add button in the sidebar as well.',
         },
         /**
          * Sticky Diff pane layout, written by that pane's own split/inline toggle so the choice

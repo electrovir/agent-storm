@@ -1,4 +1,5 @@
 import {type FolderInfo, PaneStatus, type SavedRepo, SidebarSorting} from '@agent-storm/common';
+import {getPrRingRank} from '@agent-storm/core/frontend';
 import {filterMap} from '@augment-vir/common';
 import {
     type AnyDuration,
@@ -34,6 +35,12 @@ export const folderComparators: Record<SidebarSorting, (a: FolderInfo, b: Folder
     [SidebarSorting.Activity](a, b) {
         return (
             b.lastActivityAtMs - a.lastActivityAtMs || folderComparators[SidebarSorting.Name](a, b)
+        );
+    },
+    /** Highest-precedence PR status ring first, per {@link getPrRingRank}. Ties go by activity. */
+    [SidebarSorting.Status](a, b) {
+        return (
+            getPrRingRank(b) - getPrRingRank(a) || folderComparators[SidebarSorting.Activity](a, b)
         );
     },
 };

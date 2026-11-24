@@ -126,7 +126,8 @@ export enum SidebarGrouping {
  * How the sidebar orders folders within each group. `Date` uses each folder's filesystem creation
  * time (newest first), falling back to name for folders the backend couldn't stat. `Activity` uses
  * the last time the user typed into any of the folder's panes, falling back to name for folders
- * nobody has typed in.
+ * nobody has typed in. `Status` puts the highest-precedence PR status ring first, falling back to
+ * activity for ties.
  *
  * The first variant is the default (`enumShape` picks the first value when the field is absent from
  * config), so `Name` stays as the out-of-the-box behavior.
@@ -135,6 +136,7 @@ export enum SidebarSorting {
     Name = 'name',
     Date = 'date',
     Activity = 'activity',
+    Status = 'status',
 }
 
 /**

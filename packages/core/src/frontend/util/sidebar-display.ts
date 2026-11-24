@@ -1,4 +1,10 @@
-import {finishedPrStatuses, type FolderInfo, PaneStatus, PrStatus} from '@agent-storm/common';
+import {
+    finishedPrStatuses,
+    type FolderInfo,
+    PaneStatus,
+    PrStatus,
+    SidebarSorting,
+} from '@agent-storm/common';
 import {html} from 'element-vir';
 import {
     createColoredIcon,
@@ -105,6 +111,42 @@ export function getPrRingDisplay(folder: Readonly<FolderInfo>) {
             : prStatusTooltips[folder.prStatus],
     };
 }
+
+/**
+ * Higher outranks lower, following the checks in the server's `toOpenPrStatus`. Approved and
+ * ChangesRequested never compete, unresolved comments outrank only an approval, and
+ * `AwaitingReview` only falls through to its last check when nothing above it applies.
+ * `ReReviewRequested` never competes with `AwaitingReview`. Negative for statuses with no ring
+ * worth ranking, which sort below the local-changes ring's 0.
+ */
+export const prRingRanks: Readonly<Record<PrStatus, number>> = {
+    [PrStatus.None]: -1,
+    [PrStatus.Closed]: -1,
+    [PrStatus.Approved]: 1,
+    [PrStatus.UnresolvedComments]: 2,
+    [PrStatus.ChangesRequested]: 3,
+    [PrStatus.ChecksFailed]: 4,
+    [PrStatus.AwaitingOtherReviews]: 5,
+    [PrStatus.OthersRequestedChanges]: 6,
+    [PrStatus.AwaitingReview]: 7,
+    [PrStatus.ReReviewRequested]: 8,
+    [PrStatus.ReviewStarted]: 9,
+    [PrStatus.ReadyToMerge]: 10,
+    [PrStatus.Merged]: 11,
+};
+
+/** The folder's {@link prRingRanks} entry, or 0 while it shows the local-changes ring. */
+export function getPrRingRank(folder: Readonly<FolderInfo>) {
+    return getPrRingDisplay(folder).showsLocalChanges ? 0 : prRingRanks[folder.prStatus];
+}
+
+/** In the order the sidebar menus list them. */
+export const sidebarSortingLabels: Readonly<Record<SidebarSorting, string>> = {
+    [SidebarSorting.Activity]: 'Sort by activity',
+    [SidebarSorting.Date]: 'Sort by created',
+    [SidebarSorting.Name]: 'Sort by name',
+    [SidebarSorting.Status]: 'Sort by status',
+};
 
 const paneStatusColor: Record<PaneStatus, string> = {
     [PaneStatus.None]: String(viraThemeByKeys.grey.foreground.decoration.foreground.value),

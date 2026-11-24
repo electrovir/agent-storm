@@ -1,33 +1,14 @@
-import {PrStatus} from '@agent-storm/common';
+import {getObjectTypedKeys} from '@augment-vir/common';
 import {defineBookPage} from 'element-book';
 import {css, html, nothing} from 'element-vir';
 import {tooltip, ViraIcon, type ViraIconSvg} from 'vira';
 import {
     localChangesIcon,
     localChangesTooltip,
+    prRingRanks,
     prStatusIcons,
     prStatusTooltips,
 } from '../../util/sidebar-display.js';
-
-/**
- * Lowest precedence first, following the checks in the server's `toOpenPrStatus`. Approved and
- * ChangesRequested never compete, unresolved comments outrank only an approval, and
- * `AwaitingReview` only falls through to its last check when nothing above it applies.
- * `ReReviewRequested` never competes with `AwaitingReview`.
- */
-const precedenceOrder: ReadonlyArray<PrStatus> = [
-    PrStatus.Approved,
-    PrStatus.UnresolvedComments,
-    PrStatus.ChangesRequested,
-    PrStatus.ChecksFailed,
-    PrStatus.AwaitingOtherReviews,
-    PrStatus.OthersRequestedChanges,
-    PrStatus.AwaitingReview,
-    PrStatus.ReReviewRequested,
-    PrStatus.ReviewStarted,
-    PrStatus.ReadyToMerge,
-    PrStatus.Merged,
-];
 
 export const prStatusRingPage = defineBookPage({
     parent: undefined,
@@ -65,17 +46,20 @@ export const prStatusRingPage = defineBookPage({
                         icon: localChangesIcon,
                         tooltipText: localChangesTooltip,
                     },
-                    ...precedenceOrder.flatMap((prStatus) => {
-                        const icon = prStatusIcons[prStatus];
-                        return icon
-                            ? [
-                                  {
-                                      icon,
-                                      tooltipText: prStatusTooltips[prStatus],
-                                  },
-                              ]
-                            : [];
-                    }),
+                    ...getObjectTypedKeys(prRingRanks)
+                        .filter((prStatus) => prRingRanks[prStatus] > 0)
+                        .toSorted((first, second) => prRingRanks[first] - prRingRanks[second])
+                        .flatMap((prStatus) => {
+                            const icon = prStatusIcons[prStatus];
+                            return icon
+                                ? [
+                                      {
+                                          icon,
+                                          tooltipText: prStatusTooltips[prStatus],
+                                      },
+                                  ]
+                                : [];
+                        }),
                 ];
                 return html`
                     <div class="rings">

@@ -1,6 +1,32 @@
 import {type FolderInfo, type SavedRepo, SidebarSorting} from '@agent-storm/common';
+import {getPrRingRank} from '@agent-storm/core/frontend';
 import {calculateRelativeDate, createUtcFullDate, getNowInUtcTimezone, isDateAfter} from 'date-vir';
+import {type Thread} from '../build-v2-api.js';
 import {type ThreadRepoGroup} from './thread-timeline.js';
+
+/**
+ * Each sorting's key for the threads within a folder, largest first. Ties keep their order, and
+ * `undefined` keeps every thread's order.
+ */
+const threadSortKeys: Record<
+    SidebarSorting,
+    | ((
+          params: Readonly<{
+              thread: Readonly<Thread>;
+              folderInfo: ReadonlyMap<string, Readonly<FolderInfo>>;
+          }>,
+      ) => number)
+    | undefined
+> = {
+    [SidebarSorting.Name]: undefined,
+    [SidebarSorting.Date]: undefined,
+    [SidebarSorting.Activity]: undefined,
+    /** The ring a thread row shows is its working folder's. */
+    [SidebarSorting.Status]({thread, folderInfo}) {
+        const folder = folderInfo.get(thread.cwd);
+        return folder ? getPrRingRank(folder) : -1;
+    },
+};
 
 /** Each sorting's key, largest first. Ties, and every group under name sorting, go by name. */
 const groupSortKeys: Record<
@@ -25,6 +51,10 @@ const groupSortKeys: Record<
      */
     [SidebarSorting.Activity]({group, archivedThreadIds}) {
         return group.threads.some((thread) => !archivedThreadIds.includes(thread.id)) ? 1 : 0;
+    },
+    /** Same folder order as activity; the status rings reorder the threads within each folder. */
+    [SidebarSorting.Status](params) {
+        return groupSortKeys[SidebarSorting.Activity](params);
     },
 };
 
@@ -106,11 +136,29 @@ export function arrangeRepoGroups({
         : onlyShowRecent
           ? filterByRecency(groups, repos)
           : groups;
+    const selectedSorting = sorting ?? SidebarSorting.Name;
+    const threadSortKey = threadSortKeys[selectedSorting];
     return shownGroups
         .map((group) => {
             return {
-                group,
-                sortKey: groupSortKeys[sorting ?? SidebarSorting.Name]({
+                group: threadSortKey
+                    ? {
+                          ...group,
+                          threads: group.threads.toSorted((first, second) => {
+                              return (
+                                  threadSortKey({
+                                      thread: second,
+                                      folderInfo,
+                                  }) -
+                                  threadSortKey({
+                                      thread: first,
+                                      folderInfo,
+                                  })
+                              );
+                          }),
+                      }
+                    : group,
+                sortKey: groupSortKeys[selectedSorting]({
                     group,
                     folder: folderInfo.get(group.repo.path),
                     archivedThreadIds,

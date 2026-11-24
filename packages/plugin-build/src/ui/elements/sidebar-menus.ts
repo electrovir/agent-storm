@@ -4,8 +4,9 @@ import {
     SidebarSorting,
     WatchModeStatus,
 } from '@agent-storm/common';
+import {sidebarSortingLabels} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
-import {log, type MaybePromise} from '@augment-vir/common';
+import {getObjectTypedKeys, log, type MaybePromise} from '@augment-vir/common';
 import {html} from 'element-vir';
 import {parseUrl} from 'url-vir';
 import {
@@ -37,12 +38,6 @@ const allowedLinkHostnames = ['github.com'];
 const sidebarGroupingLabels: Record<SidebarGrouping, string> = {
     [SidebarGrouping.Repo]: 'Group by repo',
     [SidebarGrouping.Status]: 'Group by status',
-};
-
-const sidebarSortingLabels: Record<SidebarSorting, string> = {
-    [SidebarSorting.Name]: 'Sort by name',
-    [SidebarSorting.Date]: 'Sort by created',
-    [SidebarSorting.Activity]: 'Sort by activity',
 };
 
 function isValidPrUrl(url: string | null | undefined): boolean {
@@ -107,11 +102,9 @@ export function buildFilterMenuSections({
      * The sort options are mutually exclusive: picking one writes the single
      * `config.sidebarSorting` value, which drops the check from the others.
      */
-    const sortingEntries: ReadonlyArray<ViraMenuItemEntry> = [
-        SidebarSorting.Name,
-        SidebarSorting.Date,
-        SidebarSorting.Activity,
-    ].map((sorting) => {
+    const sortingEntries: ReadonlyArray<ViraMenuItemEntry> = getObjectTypedKeys(
+        sidebarSortingLabels,
+    ).map((sorting) => {
         return {
             content: sidebarSortingLabels[sorting],
             iconOverride:

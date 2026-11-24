@@ -2,9 +2,11 @@ import {SidebarSorting} from '@agent-storm/common';
 import {
     AgentStormMarkIcon,
     defineAppElement,
+    sidebarSortingLabels,
     sidebarTooltipOptions,
     VirSidebarSearch,
 } from '@agent-storm/core/frontend';
+import {getObjectTypedKeys} from '@augment-vir/common';
 import {css, defineElementEvent, html, listen} from 'element-vir';
 import {
     createSizedIcon,
@@ -32,12 +34,6 @@ const mobileButtonIconSize = 24;
 const mobilePlusIcon = createSizedIcon(LucidePlusIcon, mobileButtonIconSize);
 const mobileEllipsisIcon = createSizedIcon(LucideEllipsisIcon, mobileButtonIconSize);
 const mobileFilterIcon = createSizedIcon(LucideListFilterIcon, mobileButtonIconSize);
-
-const sidebarSortingLabels: Record<SidebarSorting, string> = {
-    [SidebarSorting.Name]: 'Sort by name',
-    [SidebarSorting.Date]: 'Sort by created',
-    [SidebarSorting.Activity]: 'Sort by activity',
-};
 
 /**
  * The Build V2 sidebar's top bar: brand, search, add-folder button, and the filter and options
@@ -158,11 +154,7 @@ export const VirBuildV2SidebarHeader = defineAppElement<{
                         ${tooltip('Filter & sort sidebar', sidebarTooltipOptions)}
                     ></${ViraButton}>
                     ${renderMenuItemEntries(
-                        [
-                            SidebarSorting.Name,
-                            SidebarSorting.Date,
-                            SidebarSorting.Activity,
-                        ].map((sorting) => {
+                        getObjectTypedKeys(sidebarSortingLabels).map((sorting) => {
                             return {
                                 content: sidebarSortingLabels[sorting],
                                 iconOverride:
