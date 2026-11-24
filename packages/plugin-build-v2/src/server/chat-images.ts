@@ -1,11 +1,6 @@
-import {
-    convertByteSize,
-    createCuid2,
-    getObjectTypedEntries,
-    type AnyByteSize,
-} from '@augment-vir/common';
-import {mkdir, readFile, stat, writeFile} from 'node:fs/promises';
-import {extname, isAbsolute, join} from 'node:path';
+import {convertByteSize, type AnyByteSize} from '@augment-vir/common';
+import {readFile, stat} from 'node:fs/promises';
+import {extname, isAbsolute} from 'node:path';
 
 /**
  * The image files the chat shows, by lowercase extension. SVG is safe here: the chat shows it
@@ -61,40 +56,4 @@ export async function readChatImage(path: string) {
         mimeType,
         dataBase64: (await readFile(path)).toString('base64'),
     };
-}
-
-/** An image a provider returned inline, such as in a tool's result. */
-export type InlineImage = Readonly<{
-    mimeType: string;
-    dataBase64: string;
-}>;
-
-/**
- * Writes an image a provider returned inline into `imagesDir`, so a thread item can show it by
- * path. Returns undefined for a MIME type the chat doesn't show.
- */
-export async function saveInlineImage({
-    image,
-    imagesDir,
-}: Readonly<{
-    image: InlineImage;
-    imagesDir: string;
-}>) {
-    const extension = getObjectTypedEntries(imageMimeTypes).find(
-        ([
-            ,
-            mimeType,
-        ]) => {
-            return mimeType === image.mimeType.toLowerCase();
-        },
-    )?.[0];
-    if (!extension) {
-        return undefined;
-    }
-    await mkdir(imagesDir, {
-        recursive: true,
-    });
-    const filePath = join(imagesDir, `${Date.now()}-${createCuid2()}${extension}`);
-    await writeFile(filePath, Buffer.from(image.dataBase64, 'base64'));
-    return filePath;
 }

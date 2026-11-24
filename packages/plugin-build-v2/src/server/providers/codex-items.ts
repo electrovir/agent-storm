@@ -9,14 +9,9 @@ import {
     type Shape,
 } from 'object-shape-tester';
 import {ApprovalDecision, ThreadItemKind, ThreadItemStatus} from '../../build-v2-api.js';
-import {isUploadPath} from '../../util/message-attachments.js';
-import {type InlineImage} from '../chat-images.js';
 import {type ProviderItem, type ProviderUsage} from './provider-session.js';
 
-type CodexItemDescription = Pick<
-    ProviderItem,
-    'kind' | 'title' | 'text' | 'imagePaths' | 'inlineImages'
->;
+type CodexItemDescription = Pick<ProviderItem, 'kind' | 'title' | 'text'>;
 
 const codexItemBaseShape = defineShape({
     id: '',
@@ -43,24 +38,7 @@ function formatJson(value: unknown) {
     return value == undefined ? '' : JSON.stringify(value, undefined, 4);
 }
 
-/** The image blocks (`{type: 'image', data, mimeType}`) in an MCP tool result's `content`. */
-function readMcpResultImages(result: unknown): InlineImage[] {
-    const content = check.isObject(result) && check.isArray(result.content) ? result.content : [];
-    return content.filter(check.isObject).flatMap((block) => {
-        return block.type === 'image' &&
-            check.isString(block.data) &&
-            check.isString(block.mimeType)
-            ? [
-                  {
-                      mimeType: block.mimeType,
-                      dataBase64: block.data,
-                  },
-              ]
-            : [];
-    });
-}
-
-/** An MCP tool result without its images' base64 data, which the item shows as images instead. */
+/** An MCP tool result without its images' base64 data, which would bury the rest of its text. */
 function omitMcpResultImageData(result: unknown) {
     return check.isObject(result) && check.isArray(result.content)
         ? {
@@ -173,7 +151,6 @@ const codexItemDescribers: Readonly<
                 ]
                     .filter(Boolean)
                     .join('\n\n'),
-                inlineImages: readMcpResultImages(item.result),
             };
         },
     ),
@@ -186,12 +163,6 @@ const codexItemDescribers: Readonly<
                 kind: ThreadItemKind.ToolCall,
                 title: 'View image',
                 text: path,
-                /** The user's own upload, which their message already shows. */
-                imagePaths: isUploadPath(path)
-                    ? []
-                    : [
-                          path,
-                      ],
             };
         },
     ),

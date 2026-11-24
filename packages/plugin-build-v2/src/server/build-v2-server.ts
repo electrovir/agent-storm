@@ -11,7 +11,7 @@ import {
 } from '@agent-storm/core/server';
 import {UsageProvider, UsageSource} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {usageExportsKey} from '@agent-storm/plugin-usage/src/usage-exports.js';
-import {assertWrap, check} from '@augment-vir/assert';
+import {assertWrap} from '@augment-vir/assert';
 import {
     awaitedForEach,
     createCuid2,
@@ -45,7 +45,7 @@ import {readModelDefaults} from '../util/model-default-settings.js';
 import {startAgentToolServer} from './agent-tool-server.js';
 import {agentToolInstructions, agentTools} from './agent-tools.js';
 import {openBuildV2Database} from './build-v2-database.js';
-import {checkChatImage, readChatImage, saveInlineImage} from './chat-images.js';
+import {checkChatImage, readChatImage} from './chat-images.js';
 import {createClaudeSessionStore} from './claude-session-store.js';
 import {buildContextHandoff} from './context-handoff.js';
 import {readFolderEnv} from './folder-env.js';
@@ -347,22 +347,10 @@ export default definePluginServer({
             }
 
             return {
-                async putItem({inlineImages, imagePaths, ...item}) {
+                async putItem(item) {
                     if (isCurrent()) {
-                        const savedImagePaths = await Promise.all(
-                            (inlineImages || []).map(async (image) => {
-                                return await saveInlineImage({
-                                    image,
-                                    imagesDir: join(dataDir, 'images'),
-                                });
-                            }),
-                        );
                         await store.putItem({
                             ...item,
-                            imagePaths: [
-                                ...(imagePaths || []),
-                                ...savedImagePaths.filter(check.isTruthy),
-                            ],
                             threadId,
                             turnId: readTurnId(threadId),
                         });

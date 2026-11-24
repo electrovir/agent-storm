@@ -5,7 +5,6 @@ import {
     completeClaudeToolItem,
     describeClaudeToolUse,
     readClaudeMessageUsage,
-    readClaudeToolResultImages,
     readClaudeToolResultText,
 } from './claude-items.js';
 
@@ -69,44 +68,6 @@ describe(readClaudeToolResultText.name, () => {
             ]),
             'first\nsecond',
         );
-    });
-});
-
-describe(readClaudeToolResultImages.name, () => {
-    it('takes base64 images and skips the rest', () => {
-        assert.deepEquals(
-            readClaudeToolResultImages([
-                {
-                    type: 'text',
-                    text: 'Screenshot',
-                },
-                {
-                    type: 'image',
-                    source: {
-                        type: 'base64',
-                        media_type: 'image/png',
-                        data: 'iVBORw0K',
-                    },
-                },
-                {
-                    type: 'image',
-                    source: {
-                        type: 'url',
-                        url: 'https://example.com/a.png',
-                    },
-                },
-            ]),
-            [
-                {
-                    mimeType: 'image/png',
-                    dataBase64: 'iVBORw0K',
-                },
-            ],
-        );
-    });
-
-    it('takes nothing from a string result', () => {
-        assert.deepEquals(readClaudeToolResultImages('done'), []);
     });
 });
 

@@ -49,7 +49,7 @@ describe(describeCodexItem.name, () => {
         );
     });
 
-    it('shows a viewed image by its path', () => {
+    it('shows a viewed image by its path only', () => {
         assert.deepEquals(
             describeCodexItem({
                 item: {
@@ -65,28 +65,11 @@ describe(describeCodexItem.name, () => {
                 status: ThreadItemStatus.Completed,
                 title: 'View image',
                 text: '/tmp/chart.png',
-                imagePaths: [
-                    '/tmp/chart.png',
-                ],
             },
         );
     });
 
-    it("doesn't show the user's own upload again", () => {
-        assert.deepEquals(
-            describeCodexItem({
-                item: {
-                    type: 'imageView',
-                    id: 'item-4',
-                    path: '/var/folders/xy/T/agent-storm-plugins/build-v2/1763500000000-a12345678901234567890123-shot.png',
-                },
-                isCompleted: true,
-            })?.imagePaths,
-            [],
-        );
-    });
-
-    it("moves an MCP result's images out of its text", () => {
+    it("drops an MCP result's image data from its text", () => {
         assert.deepEquals(
             describeCodexItem({
                 item: {
@@ -129,12 +112,6 @@ describe(describeCodexItem.name, () => {
                         4,
                     ),
                 ].join('\n\n'),
-                inlineImages: [
-                    {
-                        mimeType: 'image/png',
-                        dataBase64: 'iVBORw0K',
-                    },
-                ],
             },
         );
     });
