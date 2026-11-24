@@ -38,6 +38,7 @@ import {
     unionShape,
 } from 'object-shape-tester';
 import {
+    findOwnPr,
     mentionsAny,
     prStatusFields,
     rawPrStatusFields,
@@ -930,18 +931,6 @@ const branchChangeResponseShape = defineShape({
 });
 
 /**
- * The first of `prs` whose branch lives in `fullRepoName` itself. `headRefName` also matches a
- * fork's PR from a branch of the same name.
- */
-function findOwnPr<
-    Pr extends Readonly<{headRepository?: Readonly<{nameWithOwner: string}> | null | undefined}>,
->(prs: ReadonlyArray<Pr>, fullRepoName: string) {
-    return prs.find(
-        (pr) => pr.headRepository?.nameWithOwner.toLowerCase() === fullRepoName.toLowerCase(),
-    );
-}
-
-/**
  * One aliased `pullRequests`, `branch<index>`, per branch, so every watched branch of a repo shares
  * one call. `headRef` rather than `commits(last: 1)`, which is a nested list and costs more.
  */
@@ -1168,7 +1157,17 @@ export async function fetchPrCheck({
           cachedCheckContexts?.sha === headCommit.oid &&
           cachedCheckContexts.state === headCommit.statusCheckRollup.state &&
           cachedCheckContexts.totalCount === headCommit.statusCheckRollup.contexts.totalCount &&
-          finishedRollupStates.includes(headCommit.statusCheckRollup.state)
+          finishedRollupStates.includes(headCommit.statusCheckRollup.state) &&
+          /**
+           * A `FAILURE` rollup holds while other checks still run, and their finishing changes
+           * neither the state nor the count.
+           */
+          !cachedCheckContexts.contexts.some((checkContext) => {
+              return (
+                  isStatusRunning(checkContext.status || '') ||
+                  checkContext.state === RawCheckResult.Pending
+              );
+          })
             ? cachedCheckContexts.contexts
             : await fetchCheckContexts({
                   owner,

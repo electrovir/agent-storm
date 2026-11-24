@@ -122,10 +122,11 @@ export const reviewRequestFields =
 const prQuery = [
     'query($owner: String!, $name: String!, $branch: String!) {',
     '  repository(owner: $owner, name: $name) {',
-    '    open: pullRequests(headRefName: $branch, states: [OPEN], first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {',
+    '    nameWithOwner',
+    '    open: pullRequests(headRefName: $branch, states: [OPEN], first: 3, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     '      nodes { ...PrFields }',
     '    }',
-    '    latest: pullRequests(headRefName: $branch, states: [OPEN, MERGED, CLOSED], first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {',
+    '    latest: pullRequests(headRefName: $branch, states: [OPEN, MERGED, CLOSED], first: 3, orderBy: {field: UPDATED_AT, direction: DESC}) {',
     '      nodes { ...PrFields }',
     '    }',
     '  }',
@@ -135,6 +136,7 @@ const prQuery = [
     `  ${prStatusFields}`,
     '  author { login avatarUrl }',
     '  baseRepository { name owner { login } }',
+    '  headRepository { nameWithOwner }',
     `  commits(last: 1) { nodes { commit { ${statusCheckRollupFields} } } }`,
     `  latestReviews(first: ${maxReviews}) { nodes { ${reviewFields} } }`,
     `  reviewRequests(first: ${maxReviews}) { nodes { ${reviewRequestFields} } }`,
@@ -544,6 +546,10 @@ export const rawPrShape = defineShape({
             login: '',
         },
     }),
+    /** Null once the fork it came from is deleted. */
+    headRepository: nullableShape({
+        nameWithOwner: '',
+    }),
     commits: {
         nodes: [
             {
@@ -584,6 +590,8 @@ export const rawPrShape = defineShape({
 
 const prQueryResponseShape = defineShape({
     repository: nullableShape({
+        /** GitHub's current name, which differs from the remote's after a rename or transfer. */
+        nameWithOwner: '',
         open: {
             nodes: [
                 rawPrShape,
@@ -887,6 +895,18 @@ export async function fetchFolderPr({
     }
 }
 
+/**
+ * The first of `prs` whose branch lives in `fullRepoName` itself. `headRefName` also matches a
+ * fork's PR from a branch of the same name.
+ */
+export function findOwnPr<
+    Pr extends Readonly<{headRepository?: Readonly<{nameWithOwner: string}> | null | undefined}>,
+>(prs: ReadonlyArray<Pr>, fullRepoName: string) {
+    return prs.find(
+        (pr) => pr.headRepository?.nameWithOwner.toLowerCase() === fullRepoName.toLowerCase(),
+    );
+}
+
 async function queryFolderPr(folder: string) {
     const [
         slug,
@@ -906,7 +926,9 @@ async function queryFolderPr(folder: string) {
         }),
         prQueryResponseShape,
     ).repository;
-    const node = repository?.open.nodes[0] || repository?.latest.nodes[0];
+    const node =
+        findOwnPr(repository?.open.nodes || [], repository?.nameWithOwner || '') ||
+        findOwnPr(repository?.latest.nodes || [], repository?.nameWithOwner || '');
     if (!node) {
         return null;
     }

@@ -13,7 +13,7 @@ import {assert} from '@augment-vir/assert';
 import {selectFrom} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {checkValidShape} from 'object-shape-tester';
-import {rawPrShape, toPr} from './github-pr.js';
+import {findOwnPr, rawPrShape, toPr} from './github-pr.js';
 
 /** Minimal PR node; each test overrides only the fields it exercises. */
 const baseRawPr: typeof rawPrShape.runtimeType = {
@@ -408,6 +408,48 @@ describe('rawPrShape', () => {
                 false,
                 true,
             ],
+        );
+    });
+});
+
+describe(findOwnPr.name, () => {
+    it('skips a fork PR from a branch of the same name', () => {
+        assert.deepEquals(
+            findOwnPr(
+                [
+                    {
+                        number: 1,
+                        headRepository: {
+                            nameWithOwner: 'forker/name',
+                        },
+                    },
+                    {
+                        number: 2,
+                        headRepository: {
+                            nameWithOwner: 'Owner/Name',
+                        },
+                    },
+                ],
+                'owner/name',
+            ),
+            {
+                number: 2,
+                headRepository: {
+                    nameWithOwner: 'Owner/Name',
+                },
+            },
+        );
+    });
+    it('matches nothing from a deleted fork', () => {
+        assert.isUndefined(
+            findOwnPr(
+                [
+                    {
+                        headRepository: null,
+                    },
+                ],
+                'owner/name',
+            ),
         );
     });
 });
