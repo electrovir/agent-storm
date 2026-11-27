@@ -21,6 +21,15 @@ const baseConfig = defineConfig({
                 '^packages/core/src/frontend/util/plugin-registry\\.ts$',
             ],
         },
+        'no-deprecated-core': {
+            /**
+             * Node marks the whole `async_hooks` module deprecated, but the `AsyncLocalStorage` it
+             * uses is stable and has no other import path.
+             */
+            from: [
+                '^packages/agent-storm-util/src/perf-trace\\.ts$',
+            ],
+        },
     },
     omitRules: [
         // enter rule names here to omit
@@ -48,7 +57,7 @@ const depCruiserConfig: IConfiguration = {
         {
             name: 'plugin-only-to-plugins',
             comment:
-                'A plugin builds on core, common, agent-storm-util, and other plugins, never on the host that registers it.',
+                'A plugin builds on core, common, the agent-storm-util and bot libraries, and other plugins, never on the host that registers it.',
             severity: 'error',
             from: {
                 path: '^packages/plugin-[^/]+/',
@@ -56,7 +65,7 @@ const depCruiserConfig: IConfiguration = {
             to: {
                 path: '^packages/',
                 pathNot: [
-                    '^packages/(agent-storm-util|common|core|plugin-[^/]+)/',
+                    '^packages/(agent-storm-util|bot|common|core|plugin-[^/]+)/',
                 ],
             },
         },

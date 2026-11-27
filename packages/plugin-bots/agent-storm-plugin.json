@@ -1,0 +1,22 @@
+{
+    "activities": [
+        {
+            "id": "bots",
+            "isEnabledByDefault": true,
+            "isStartedWithApp": true,
+            "label": "Bots"
+        }
+    ],
+    "browserEntry": "browser.js",
+    "coreVersionRange": "*",
+    "dependencies": [
+        "build",
+        "terminal"
+    ],
+    "description": "Runs the bots each repo lists in its agent-storm.config file, on a schedule, with their shells, AI chats, questions, and run history.",
+    "id": "bots",
+    "isBeta": true,
+    "name": "Bots",
+    "panes": [],
+    "serverEntry": "server.js"
+}

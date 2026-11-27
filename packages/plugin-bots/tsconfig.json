@@ -1,0 +1,34 @@
+{
+    "compilerOptions": {
+        "outDir": "./dist/",
+        "rootDir": "./src/"
+    },
+    "exclude": [
+        "./configs/",
+        "./coverage/",
+        "./dist-*/",
+        "./dist/",
+        "./node_modules/",
+        "./test-files/",
+        "eslint.config.ts",
+        "src/all-files-for-code-coverage.test.ts"
+    ],
+    "extends": "../../configs/tsconfig.base.json",
+    "references": [
+        {
+            "path": "../agent-storm"
+        },
+        {
+            "path": "../bot"
+        },
+        {
+            "path": "../common"
+        },
+        {
+            "path": "../core"
+        },
+        {
+            "path": "../plugin-build"
+        }
+    ]
+}
