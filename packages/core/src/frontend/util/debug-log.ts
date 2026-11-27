@@ -1,9 +1,7 @@
-import {clientDebugLogEndpoint} from '@agent-storm/common';
+import {TimedDebugLogEvent, type clientDebugLogRequestShape} from '@agent-storm/common';
 import {createArray, randomString, wrapInTry} from '@augment-vir/common';
-import {HttpMethod} from '@rest-vir/api';
 import {convertDuration, getNowInUtcTimezone, toUtcIsoString, type AnyDuration} from 'date-vir';
 import {checkValidShape, defineShape} from 'object-shape-tester';
-import {fetchApi} from './api-client.js';
 
 const windowId = randomString(8);
 
@@ -17,10 +15,15 @@ const pending: {
     isSendScheduled: boolean;
     /** Follows the `enableDebugLogs` setting. */
     isEnabled: boolean;
+    /** Set by the API client, which logs its own requests here and so can't be imported here. */
+    send:
+        | ((requestData: typeof clientDebugLogRequestShape.runtimeType) => Promise<unknown>)
+        | undefined;
 } = {
     entries: [],
     isSendScheduled: false,
     isEnabled: false,
+    send: undefined,
 };
 
 const freezeTrailKeyPrefix = 'agent-storm-freeze-trail:';
@@ -53,6 +56,8 @@ const freezeTrail: {
     trail: typeof freezeTrailShape.runtimeType;
     /** Other windows' trails this page already reported. */
     reportedKeys: string[];
+    /** `Date.now()` of this window's last trail write. */
+    savedAt: number;
 } = {
     hasStarted: false,
     trail: {
@@ -61,7 +66,18 @@ const freezeTrail: {
         entries: [],
     },
     reportedKeys: [],
+    savedAt: 0,
 };
+
+/**
+ * Writing the trail on every entry, which is several times per frame, swamps Safari: each
+ * `localStorage.setItem` re-reads the origin's whole store in the shared network process, its
+ * write-ahead log never gets merged back (it reached 10GB), and every Agent Storm window's storage
+ * and plugin-cache calls then queue behind it, so new windows load blank and panes never load.
+ */
+const freezeTrailSaveInterval = {
+    milliseconds: 500,
+} as const satisfies AnyDuration;
 
 /**
  * `localStorage` rather than a request because a frozen WebKit page sends nothing, not even from a
@@ -69,6 +85,7 @@ const freezeTrail: {
  * loop still land where other pages read them, and outlive the page being killed.
  */
 function saveFreezeTrail() {
+    freezeTrail.savedAt = Date.now();
     try {
         globalThis.localStorage.setItem(ownFreezeTrailKey, JSON.stringify(freezeTrail.trail));
     } catch {
@@ -79,7 +96,9 @@ function saveFreezeTrail() {
 /**
  * Adds one entry to this window's freeze trail while the `enableDebugLogs` setting is on. If the
  * window freezes or is killed, the next Agent Storm page to run sends the trail's newest entries to
- * the debug log, so the last entry shows what the page was doing when it stopped.
+ * the debug log, so the last entries show what the page was doing when it stopped. Entries recorded
+ * since the last write are only saved by a later entry or the periodic save, so a freeze can hide
+ * its newest few.
  */
 export function recordFreezeTrail(event: string) {
     if (!pending.isEnabled) {
@@ -92,7 +111,9 @@ export function recordFreezeTrail(event: string) {
     if (freezeTrail.trail.entries.length > freezeTrailEntryCount) {
         freezeTrail.trail.entries.shift();
     }
-    saveFreezeTrail();
+    if (Date.now() - freezeTrail.savedAt >= freezeTrailSaveInterval.milliseconds) {
+        saveFreezeTrail();
+    }
 }
 
 /**
@@ -134,6 +155,17 @@ function reportStaleFreezeTrails() {
     }
 }
 
+/**
+ * A hidden window whose trail has gone unrefreshed this long is treated as gone, and its trail is
+ * dropped unreported. Hidden pages' timers get throttled, so they need far longer than
+ * {@link freezeTrailStaleness}. Dropping a live window's trail is harmless: its next save writes it
+ * back. Without this, every window killed while hidden leaves its trail behind forever, and each
+ * leftover trail slows down every `localStorage` write in Safari.
+ */
+const hiddenFreezeTrailStaleness = {
+    minutes: 10,
+} as const satisfies AnyDuration;
+
 function readStaleFreezeTrails() {
     const now = Date.now();
     createArray(globalThis.localStorage.length, (index) => globalThis.localStorage.key(index))
@@ -158,6 +190,15 @@ function readStaleFreezeTrails() {
             }
             const silentMilliseconds = now - trail.aliveAt;
             if (
+                !trail.isVisible &&
+                silentMilliseconds >=
+                    convertDuration(hiddenFreezeTrailStaleness, {
+                        milliseconds: true,
+                    }).milliseconds
+            ) {
+                globalThis.localStorage.removeItem(key);
+                return;
+            } else if (
                 !trail.isVisible ||
                 silentMilliseconds <
                     convertDuration(freezeTrailStaleness, {
@@ -253,17 +294,134 @@ function startFreezeTrail() {
     reportStaleFreezeTrails();
 }
 
+/**
+ * The browser keeps only 250 resource timings by default, and the dev server loads each source file
+ * separately, so a page load overflows it.
+ */
+globalThis.performance.setResourceTimingBufferSize(5000);
+
+const pageLoadReport = {
+    isScheduled: false,
+};
+
+/**
+ * Logs how long this page took to load and what it downloaded, once the load has had time to
+ * finish. The page can't be inspected on an installed phone app, so this is how a slow load there
+ * gets measured.
+ */
+function schedulePageLoadReport() {
+    if (pageLoadReport.isScheduled) {
+        return;
+    }
+    pageLoadReport.isScheduled = true;
+    const debugLogEnabledAtMilliseconds = Math.round(globalThis.performance.now());
+    setTimeout(
+        () => {
+            const navigation = globalThis.performance
+                .getEntriesByType('navigation')
+                .find((entry) => entry instanceof PerformanceNavigationTiming);
+            const resources = globalThis.performance
+                .getEntriesByType('resource')
+                .filter((entry) => entry instanceof PerformanceResourceTiming);
+            logDebug('page load', {
+                userAgent: globalThis.navigator.userAgent,
+                isInstalledApp: globalThis.matchMedia('(display-mode: standalone)').matches,
+                documentMilliseconds: Math.round(navigation?.responseEnd ?? 0),
+                domContentLoadedMilliseconds: Math.round(navigation?.domContentLoadedEventEnd ?? 0),
+                loadMilliseconds: Math.round(navigation?.loadEventEnd ?? 0),
+                debugLogEnabledAtMilliseconds,
+                resourceCount: resources.length,
+                cachedResourceCount: resources.filter((entry) => {
+                    return entry.transferSize === 0 && entry.decodedBodySize > 0;
+                }).length,
+                transferKilobytes: Math.round(
+                    resources.reduce((total, entry) => total + entry.transferSize, 0) / 1024,
+                ),
+                decodedKilobytes: Math.round(
+                    resources.reduce((total, entry) => total + entry.decodedBodySize, 0) / 1024,
+                ),
+                lastResourceEndMilliseconds: Math.round(
+                    Math.max(0, ...resources.map((entry) => entry.responseEnd)),
+                ),
+                slowestResources: resources
+                    .toSorted((left, right) => right.duration - left.duration)
+                    .slice(0, 15)
+                    .map((entry) => {
+                        return [
+                            `starts ${Math.round(entry.startTime)}ms`,
+                            `takes ${Math.round(entry.duration)}ms`,
+                            `${Math.round(entry.transferSize / 1024)}KB`,
+                            entry.name.replace(globalThis.location.origin, '').slice(0, 150),
+                        ].join(' ');
+                    }),
+            });
+        },
+        convertDuration(
+            {
+                seconds: 30,
+            },
+            {
+                milliseconds: true,
+            },
+        ).milliseconds,
+    );
+}
+
 /** Turns {@link logDebug} and the freeze trail on or off, for the `enableDebugLogs` setting. */
 export function setDebugLogEnabled(isEnabled: boolean) {
     pending.isEnabled = isEnabled;
     if (isEnabled) {
         startFreezeTrail();
+        schedulePageLoadReport();
     }
 }
 
 /** Whether the `enableDebugLogs` setting is on. */
 export function isDebugLogEnabled() {
     return pending.isEnabled;
+}
+
+/**
+ * While the `enableDebugLogs` setting is on, logs how long one backend request took from this
+ * window, and how long until the next frame painted after its response, which includes rendering
+ * what the response changed. The server's own time for the request is in its `request` and
+ * `plugin-call` entries.
+ */
+export function logRequestTiming({
+    name,
+    startedAt,
+}: Readonly<{
+    name: string;
+    /** From `performance.now()`. */
+    startedAt: number;
+}>) {
+    if (!pending.isEnabled) {
+        return;
+    }
+    const milliseconds = Math.round(globalThis.performance.now() - startedAt);
+    /** A hidden page gets no animation frames until it shows again. */
+    if (globalThis.document.hidden) {
+        logDebug(TimedDebugLogEvent.ClientRequest, {
+            name,
+            milliseconds,
+        });
+        return;
+    }
+    /** A frame callback runs before its frame paints, so the nested one runs after the first paint. */
+    globalThis.requestAnimationFrame(() => {
+        globalThis.requestAnimationFrame(() => {
+            logDebug(TimedDebugLogEvent.ClientRequest, {
+                name,
+                milliseconds,
+                untilPaintMilliseconds: Math.round(globalThis.performance.now() - startedAt),
+            });
+        });
+    });
+}
+
+/** Sets how {@link logDebug} sends its batches to the server. */
+export function setDebugLogSender(send: NonNullable<(typeof pending)['send']>) {
+    pending.send = send;
 }
 
 /**
@@ -289,15 +447,15 @@ export function logDebug(event: string, details: unknown) {
             const entries = pending.entries;
             pending.entries = [];
             pending.isSendScheduled = false;
-            void fetchApi(clientDebugLogEndpoint, HttpMethod.Post, {
-                requestData: {
+            void pending
+                .send?.({
                     windowId,
                     pageUrl: globalThis.location.href,
                     entries,
-                },
-            }).catch(() => {
-                /* the backend is where these go; a failed send has nowhere left to go */
-            });
+                })
+                .catch(() => {
+                    /* the backend is where these go; a failed send has nowhere left to go */
+                });
         },
         convertDuration(
             {

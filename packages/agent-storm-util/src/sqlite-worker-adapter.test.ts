@@ -6,6 +6,7 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
+import {startPerfTrace, takePerfTrace} from './perf-trace.js';
 import {createSqliteWorkerAdapter} from './sqlite-worker-adapter.js';
 
 function toQuery(sql: string) {
@@ -83,6 +84,25 @@ async function withAdapter(callback: (adapter: SqlDriverAdapter) => Promise<void
 }
 
 describe(createSqliteWorkerAdapter.name, () => {
+    it('names each query span by its statement and table', async () => {
+        await withAdapter(async (adapter) => {
+            const trace = await startPerfTrace(async () => {
+                await adapter.executeRaw(
+                    toQuery('INSERT INTO "Item" ("label") VALUES (\'first\')'),
+                );
+                await readLabels(adapter);
+                return takePerfTrace();
+            });
+            assert.deepEquals(
+                trace?.spans.map((span) => span.name),
+                [
+                    'sqlite INSERT Item',
+                    'sqlite SELECT Item',
+                ],
+            );
+        });
+    });
+
     it('writes and reads rows through the worker', async () => {
         await withAdapter(async (adapter) => {
             assert.strictEquals(

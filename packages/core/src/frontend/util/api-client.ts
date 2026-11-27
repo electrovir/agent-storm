@@ -1,4 +1,4 @@
-import {agentStormService} from '@agent-storm/common';
+import {agentStormService, clientDebugLogEndpoint, pluginCallEndpoint} from '@agent-storm/common';
 import {type BivariantFunction, HttpStatus} from '@augment-vir/common';
 import {
     type ClientFetch,
@@ -7,10 +7,12 @@ import {
     type EndpointFetchOutput,
     type EndpointFetchParams,
     type EndpointResponseType,
+    HttpMethod,
     RestVirClient,
 } from '@rest-vir/api';
 import {clearStoredSecret, ensureSecret} from './auth.js';
 import {notifyBackendFailure, notifyBackendSuccess} from './backend-watchdog.js';
+import {logRequestTiming, setDebugLogSender} from './debug-log.js';
 import {PerfCategory, recordPerf} from './perf-stats.js';
 import {getBackendBaseUrl} from './service-origin.js';
 
@@ -76,6 +78,19 @@ export async function fetchApi<
                 name: `${method} ${endpoint.path}`,
                 milliseconds: performance.now() - startedAt,
             });
+            /**
+             * Plugin calls are logged by their call's name instead. Logging the debug log's own
+             * sends would log a send for every send.
+             */
+            if (
+                endpoint.path !== pluginCallEndpoint.path &&
+                endpoint.path !== clientDebugLogEndpoint.path
+            ) {
+                logRequestTiming({
+                    name: `${method} ${endpoint.path}`,
+                    startedAt,
+                });
+            }
         });
     notifyBackendSuccess();
     if (result.Ok) {
@@ -87,3 +102,9 @@ export async function fetchApi<
     }
     throw new Error(`${method} ${endpoint.path} failed: ${String(errorOutput?.responseData)}`);
 }
+
+setDebugLogSender(async (requestData) => {
+    return await fetchApi(clientDebugLogEndpoint, HttpMethod.Post, {
+        requestData,
+    });
+});

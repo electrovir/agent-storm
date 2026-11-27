@@ -1,8 +1,13 @@
 import {type AnyPluginApiDefinition, type pluginEventsWebSocket} from '@agent-storm/common';
-import {type AnyPluginServerDefinition, type RunningPluginServer} from '@agent-storm/core/server';
+import {
+    type AnyPluginServerDefinition,
+    type PluginServerHost,
+    type RunningPluginServer,
+} from '@agent-storm/core/server';
 import {check} from '@augment-vir/assert';
-import {extractErrorMessage, log, type MaybePromise} from '@augment-vir/common';
+import {extractErrorMessage, log, mapObjectValues, type MaybePromise} from '@augment-vir/common';
 import {type WebSocketHostMessageType} from '@rest-vir/api';
+import {tracePerfSpan} from 'agent-storm-util';
 import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -11,6 +16,20 @@ import {pluginDataDir, pluginTempDir} from './file-paths.js';
 import {setPluginFolderHooks} from './plugin-folder-hooks.js';
 import {pluginServerHost} from './plugin-server-host.js';
 import {listenToPluginChanges, readActivePluginServers} from './plugins.js';
+
+/**
+ * Same as {@link pluginServerHost}, but each method's promise is timed as a `host.<method>` span of
+ * the current perf trace. Methods that don't return a promise return as they are.
+ */
+const tracedPluginServerHost = mapObjectValues(pluginServerHost, (name, value) => {
+    if (!check.isFunction(value)) {
+        return value;
+    }
+    return (...args: unknown[]) => {
+        const result: unknown = Reflect.apply(value, pluginServerHost, args);
+        return check.isPromise(result) ? tracePerfSpan(`host.${name}`, () => result) : result;
+    };
+}) satisfies Record<keyof PluginServerHost, unknown> as PluginServerHost;
 
 /** One plugin's started server part, or why it didn't start. */
 type PluginServerStart = Readonly<{
@@ -178,7 +197,7 @@ function startPluginServer(plugin: ActivePluginServer): PluginServerStart {
                 const server = await definition.start({
                     dataDir,
                     tempDir,
-                    host: pluginServerHost,
+                    host: tracedPluginServerHost,
                     async waitForPlugin(key) {
                         if (
                             !plugin.dependencies.includes(key.pluginId) &&
@@ -352,9 +371,11 @@ export async function callPluginServer({
     call: string;
     request: unknown;
 }>) {
-    await pluginServers.sync;
-    const start = pluginServers.starts[pluginId];
-    const running = start ? await start.running : undefined;
+    const running = await tracePerfSpan('wait for plugin server', async () => {
+        await pluginServers.sync;
+        const start = pluginServers.starts[pluginId];
+        return start ? await start.running : undefined;
+    });
     if (!running?.server) {
         throw new Error(
             [
@@ -371,6 +392,8 @@ export async function callPluginServer({
     }
     assertValidShape(request, callDefinition.requestShape);
     const response = await handler(request);
-    assertValidShape(response, callDefinition.responseShape);
+    await tracePerfSpan('check response shape', () => {
+        assertValidShape(response, callDefinition.responseShape);
+    });
     return response;
 }

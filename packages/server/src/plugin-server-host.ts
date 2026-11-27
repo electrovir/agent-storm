@@ -1,9 +1,8 @@
 import {type PluginServerHost} from '@agent-storm/core/server';
 import {wait} from '@augment-vir/common';
-import {normalizePath} from 'agent-storm-util';
+import {normalizePath, tracePerfSpan} from 'agent-storm-util';
 import {dirname} from 'node:path';
 import {readBranchPrStatus} from './branch-prs.js';
-import {isClaudeAwaitingPermission, isClaudeReady} from './claude-activity.js';
 import {
     attachHostedProcess,
     fetchPaneStatuses,
@@ -11,6 +10,7 @@ import {
     killHostedProcess,
     listHostedProcessIds,
 } from './daemon/daemon-client.js';
+import {appCheckoutPath} from './file-paths.js';
 import {forgetFolderActivity} from './folder-activity.js';
 import {
     getCachedFolders,
@@ -32,32 +32,27 @@ import {
     listenToGitInfoChanges,
     removeWorktree,
 } from './git.js';
-import {
-    launchFolderSession,
-    runInIdleFolderShell,
-    runPostWorktreeCmd,
-    sendPaneText,
-    spawnPane,
-} from './pane-launch.js';
+import {sendNotification} from './notifications.js';
+import {runInIdleFolderShell, runPostWorktreeCmd, sendPaneText, spawnPane} from './pane-launch.js';
 import {isFolderBusyInPlugins} from './plugin-folder-hooks.js';
-import {getLivePaneSessionIds, getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
+import {getLivePaneSessionIds, getPaneSessionStatusLookup} from './pty.js';
 import {
     createFolderSession,
     findFolderSession,
     forgetFolderSessions,
     getFolderSessions,
-    listClaudeTabSessions,
     renameFolderSession,
+    scopeFolderSessions,
 } from './sessions.js';
 import {loadSettings} from './settings.js';
-import {deleteFolderState} from './ui-layout.js';
+import {deleteFolderState, moveFolderState} from './ui-layout.js';
+import {listenToUserInput, readLastUserInputAt} from './user-input.js';
 
 /** What every plugin's server part reaches the app's own state through. */
 export const pluginServerHost: PluginServerHost = {
     loadSettings,
     loadFolderSettings,
     listFolders: getCachedFolders,
-    listClaudeTabSessions,
     listenToNewFolderPrs,
     listenToFolderPrChanges,
     recordFolderPrStatus,
@@ -74,24 +69,31 @@ export const pluginServerHost: PluginServerHost = {
         return (await fetchPaneStatuses()).map((pane) => pane.folder);
     },
     killFolderPanes,
-    getPaneStatusLookup,
     getPaneSessionStatusLookup,
     getLivePaneSessionIds,
     deleteFolderState,
+    async moveFolderPaneGroup(params) {
+        /** First, so the sessions are in the scope by the time a window sees the moved layout. */
+        await scopeFolderSessions(params);
+        await moveFolderState(params);
+    },
     getFolderSessions,
     createFolderSession,
     findFolderSession,
     renameFolderSession,
-    isClaudeReady,
-    isClaudeAwaitingPermission,
     spawnPane,
     sendPaneText,
-    launchFolderSession,
     runInIdleFolderShell,
     getCurrentBranch,
     getRepoSlug,
     listenToGitInfoChanges,
-    async createWorktree({folder, name}) {
+    notify: sendNotification,
+    findAppCheckoutPath() {
+        return appCheckoutPath;
+    },
+    readLastUserInputAt,
+    listenToUserInput,
+    async createWorktree({folder, name, scope}) {
         const normalizedFolder = normalizePath(folder);
         const isRoot = await isWorktreeRoot(normalizedFolder);
         const repoPath = isRoot
@@ -103,10 +105,13 @@ export const pluginServerHost: PluginServerHost = {
             name,
             baseCheckout: isRoot ? undefined : normalizedFolder,
         });
-        await refreshFolderInfoNow();
-        await runPostWorktreeCmd({
-            repoPath,
-            worktreePath,
+        await tracePerfSpan('refresh folder info', refreshFolderInfoNow);
+        await tracePerfSpan('post-worktree command', async () => {
+            await runPostWorktreeCmd({
+                repoPath,
+                worktreePath,
+                scope,
+            });
         });
         return {
             worktreePath,
@@ -118,8 +123,10 @@ export const pluginServerHost: PluginServerHost = {
         }).catch(() => {
             /* if the daemon has no live panes for this folder, continue with deletion */
         });
-        await wait({
-            milliseconds: 250,
+        await tracePerfSpan('wait after killing panes', async () => {
+            await wait({
+                milliseconds: 250,
+            });
         });
         await removeWorktree({
             worktreePath,
@@ -132,6 +139,6 @@ export const pluginServerHost: PluginServerHost = {
         await forgetFolderSessions(worktreePath);
         forgetFolderActivity(worktreePath);
         await deleteFolderState(worktreePath);
-        await refreshFolderInfoNow();
+        await tracePerfSpan('refresh folder info', refreshFolderInfoNow);
     },
 };

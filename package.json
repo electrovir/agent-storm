@@ -26,6 +26,7 @@
         "format": "virmator format",
         "init": "tsx packages/scripts/src/init.script.ts",
         "lint": "virmator lint fix",
+        "perf-report": "tsx packages/scripts/src/perf-report.script.ts",
         "publish": "virmator publish \"npm run test:all\"",
         "start": "npm run init && tsx packages/scripts/src/start.script.ts",
         "start:debug": "AGENT_STORM_INSTANCE=debug AGENT_STORM_DATA_DIR=\"$HOME/.agent-storm-debug\" BACKEND_PORT=41890 FRONTEND_PORT=41891 npm start",

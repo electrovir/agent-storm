@@ -13,6 +13,7 @@ import {
 import {randomUUID} from 'node:crypto';
 import {Worker} from 'node:worker_threads';
 import {defineShape} from 'object-shape-tester';
+import {tracePerfSpan} from './perf-trace.js';
 
 /**
  * The file name the plugin build gives the bundled worker, beside the plugin's server bundle.
@@ -109,6 +110,22 @@ export type SqliteWorkerResponse =
       };
 
 /**
+ * Names a query's span by its statement and table, like `sqlite SELECT Thread`, since full
+ * statements are long and carry values.
+ */
+function describeSql(sql: string) {
+    const statement = /^\s*(\w+)/.exec(sql)?.[1]?.toUpperCase() || '';
+    const table = /\b(?:from|into|update)\s+(?:[`"]?\w+[`"]?\.)?[`"]?(\w+)/i.exec(sql)?.[1] || '';
+    return [
+        'sqlite',
+        statement,
+        table,
+    ]
+        .filter(Boolean)
+        .join(' ');
+}
+
+/**
  * Same as `new PrismaBetterSqlite3({url})` from `@prisma/adapter-better-sqlite3`, but every query
  * runs in a worker thread. better-sqlite3 blocks while SQLite reads or writes the disk, so on the
  * main thread a busy disk freezes everything else the process does.
@@ -186,18 +203,21 @@ export function createSqliteWorkerAdapter({
                     return Promise.reject(workerState.exitError);
                 }
                 const id = randomUUID();
-                return new Promise<SqliteWorkerCalls[Method]['result']>((resolve, reject) => {
-                    pendingCalls.set(id, {
-                        resolve: resolve satisfies (
-                            result: SqliteWorkerCalls[Method]['result'],
-                        ) => void as (result: unknown) => void,
-                        reject,
+                const sql = params && 'query' in params ? params.query.sql : undefined;
+                return tracePerfSpan(sql ? describeSql(sql) : `sqlite ${method}`, () => {
+                    return new Promise<SqliteWorkerCalls[Method]['result']>((resolve, reject) => {
+                        pendingCalls.set(id, {
+                            resolve: resolve satisfies (
+                                result: SqliteWorkerCalls[Method]['result'],
+                            ) => void as (result: unknown) => void,
+                            reject,
+                        });
+                        worker.postMessage({
+                            id,
+                            method,
+                            params,
+                        } satisfies SqliteWorkerRequest<Method>);
                     });
-                    worker.postMessage({
-                        id,
-                        method,
-                        params,
-                    } satisfies SqliteWorkerRequest<Method>);
                 });
             }
 

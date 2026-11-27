@@ -1,6 +1,8 @@
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {execFile, type ExecFileOptions} from 'node:child_process';
+import {basename} from 'node:path';
 import {promisify} from 'node:util';
+import {tracePerfSpan} from './perf-trace.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +29,35 @@ export async function runCommand(
         }
     >,
 ) {
+    /** Only plain words like `worktree add`, so paths, refs, and long queries stay out of names. */
+    const subcommand = args
+        .filter((arg) => /^[a-z][a-z-]*$/.test(arg))
+        .slice(0, 2)
+        .join(' ');
+    return await tracePerfSpan(`${basename(command)} ${subcommand}`.trim(), async () => {
+        return await runCommandUntraced({
+            command,
+            args,
+            timeout,
+            stdin,
+            options,
+        });
+    });
+}
+
+async function runCommandUntraced({
+    command,
+    args,
+    timeout,
+    stdin,
+    options,
+}: Readonly<{
+    command: string;
+    args: ReadonlyArray<string>;
+    timeout: AnyDuration;
+    stdin: string | undefined;
+    options: Omit<ExecFileOptions, 'timeout' | 'encoding'>;
+}>) {
     const timeoutMilliseconds = convertDuration(timeout, {
         milliseconds: true,
     }).milliseconds;

@@ -1,10 +1,13 @@
-import {type PaneKind} from '@agent-storm/common';
-import {wrapPromiseInTimeout} from '@augment-vir/common';
+import {PaneKind} from '@agent-storm/common';
+import {check} from '@augment-vir/assert';
+import {awaitedForEach, wrapPromiseInTimeout} from '@augment-vir/common';
+import {tracePerfSpan} from 'agent-storm-util';
 import {type AnyDuration} from 'date-vir';
 import {createConnection, type Socket} from 'node:net';
 import {daemonSocket} from '../file-paths.js';
 import {
     DaemonAction,
+    defaultSessionId,
     encodeControlFrame,
     encodeDataFrame,
     FrameDecoder,
@@ -23,7 +26,6 @@ import {
     type StatusEntry,
     type StatusResponse,
     type TerminalColors,
-    type VerifyLaunchResponse,
 } from './protocol.js';
 
 function connect(): Promise<Socket> {
@@ -49,6 +51,24 @@ const daemonReplyTimeout: AnyDuration = {
  * destroyed either way, since every action but `Attach` gets exactly one reply.
  */
 export async function requestDaemonReply<Response extends {ok: true}>({
+    socket,
+    handshake,
+    timeout,
+}: Readonly<{
+    socket: Socket;
+    handshake: Readonly<ClientHandshake>;
+    timeout: Readonly<AnyDuration>;
+}>) {
+    return await tracePerfSpan(`daemon ${handshake.action}`, async () => {
+        return await readDaemonReply<Response>({
+            socket,
+            handshake,
+            timeout,
+        });
+    });
+}
+
+async function readDaemonReply<Response extends {ok: true}>({
     socket,
     handshake,
     timeout,
@@ -107,7 +127,33 @@ export async function fetchPaneStatuses(): Promise<StatusEntry[]> {
     const response = await singleShot<StatusResponse>({
         action: DaemonAction.Status,
     });
-    return response.panes;
+    /**
+     * A daemon started by a release that still had AI terminal tabs reports their panes until
+     * {@link killLegacyPanes} kills them.
+     */
+    return response.panes.filter((pane) => check.isEnumValue(pane.kind, PaneKind));
+}
+
+/**
+ * Kills each pane whose kind this release no longer has: the AI terminal tabs of a release before
+ * Build replaced them. The daemon outlives release updates, so they otherwise keep running unseen,
+ * and a Build thread converted from one would resume the Claude session it still holds.
+ */
+export async function killLegacyPanes() {
+    const response = await singleShot<StatusResponse>({
+        action: DaemonAction.Status,
+    });
+    /** One at a time: an older daemon takes a blocking process table snapshot for each kill. */
+    await awaitedForEach(
+        response.panes.filter((pane) => !check.isEnumValue(pane.kind, PaneKind)),
+        async (pane) => {
+            await killPaneSession({
+                folder: pane.folder,
+                kind: pane.kind,
+                sessionId: pane.sessionId || defaultSessionId,
+            });
+        },
+    );
 }
 
 /**
@@ -127,22 +173,16 @@ export async function restartPane({
     folder,
     kind,
     sessionId,
-    aiCmd,
-    conversationId,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
     sessionId?: string | undefined;
-    aiCmd?: string | undefined;
-    conversationId?: string | undefined;
 }>): Promise<void> {
     await singleShot<SimpleResponse>({
         action: DaemonAction.Restart,
         folder,
         kind,
         sessionId,
-        aiCmd,
-        conversationId,
     });
 }
 
@@ -168,25 +208,6 @@ export async function killFolderPanes({folder}: Readonly<{folder: string}>): Pro
         action: DaemonAction.Kill,
         folder,
     });
-}
-
-/** Whether `signature` is `payload` signed with the launch key of a running tab. */
-export async function verifyLaunchSignature({
-    launchId,
-    payload,
-    signature,
-}: Readonly<{
-    launchId: string;
-    payload: string;
-    signature: string;
-}>) {
-    const response = await singleShot<VerifyLaunchResponse>({
-        action: DaemonAction.VerifyLaunch,
-        launchId,
-        payload,
-        signature,
-    });
-    return response.isValid;
 }
 
 export async function listHostedProcessIds() {
@@ -317,9 +338,6 @@ export async function attachPane({
     kind,
     sessionId,
     colors,
-    aiCmd,
-    conversationId,
-    env,
     scrollbackLimit,
     onData,
     onExit,
@@ -333,16 +351,6 @@ export async function attachPane({
      * the pty's OSC 10 / 11 color queries.
      */
     colors?: Readonly<TerminalColors> | undefined;
-    /**
-     * Current `aiCmd` from agent-storm config — forwarded to the daemon's attach handshake so a
-     * fresh AI PTY honors the user's configured command rather than whatever was in env when the
-     * daemon started.
-     */
-    aiCmd?: string | undefined;
-    /** Set as `AGENT_STORM_CONVERSATION_ID` in the PTY's environment if this attach spawns it. */
-    conversationId?: string | undefined;
-    /** See `AttachHandshake.env`. */
-    env?: Readonly<Record<string, string>> | undefined;
     /**
      * Client-requested cap on replayed scrollback lines, forwarded to the daemon's attach
      * handshake. The daemon truncates the buffered scrollback to the last N lines before replaying
@@ -362,9 +370,6 @@ export async function attachPane({
             kind,
             sessionId,
             colors,
-            aiCmd,
-            conversationId,
-            env,
             scrollbackLimit,
         }),
     );
