@@ -1,8 +1,9 @@
 import {defineSettingsSection} from '@agent-storm/core/frontend';
 import {html, listen} from 'element-vir';
+import {reviewActivityId} from '../../review-api.js';
 import {listQueueRepos} from '../../util/pr-queues.js';
 import {type ReviewedRepo} from '../../util/pr-reviews.js';
-import {findReviewState, reviewActivityId} from '../../util/review-state.js';
+import {findReviewState} from '../../util/review-state.js';
 import {VirSettingsReview} from './vir-settings-review.element.js';
 
 /** The init command run in each new review checkout, and the automation around reviews. */

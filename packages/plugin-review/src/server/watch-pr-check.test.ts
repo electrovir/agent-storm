@@ -3,6 +3,7 @@ import {
     RawActorType,
     RawAuthorAssociation,
     RawCheckResult,
+    RawCheckStatus,
     RawMergeable,
     RawMergeState,
     RawPrState,
@@ -237,6 +238,95 @@ describe(classifyPrCheck.name, () => {
         );
     });
 
+    it('reports a newer workflow failure while an older run is still going', () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        mergeStateStatus: RawMergeState.Unstable,
+                        statusCheckRollup: [
+                            {
+                                name: 'lint',
+                                workflowName: 'CI',
+                                conclusion: RawCheckResult.Failure,
+                                startedAt: '2026-10-01T00:00:01Z',
+                                detailsUrl:
+                                    'https://github.com/owner/name/actions/runs/300/job/3000',
+                            },
+                            {
+                                name: 'build',
+                                workflowName: 'CI',
+                                status: RawCheckStatus.InProgress,
+                                startedAt: '2026-10-01T00:01:00Z',
+                                detailsUrl:
+                                    'https://github.com/owner/name/actions/runs/200/job/2000',
+                            },
+                        ],
+                    },
+                    threads: [],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    failingChecks: true,
+                    needs: true,
+                },
+            ),
+            {
+                failingChecks: [
+                    'lint',
+                ],
+                needs: [
+                    PrNeed.Tests,
+                ],
+            },
+        );
+    });
+
+    it('only lets a later attempt of the same job hide a failure in that workflow run', () => {
+        assert.deepEquals(
+            [
+                'build',
+                'lint',
+            ].map((name) => {
+                return classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        mergeStateStatus: RawMergeState.Unstable,
+                        statusCheckRollup: [
+                            {
+                                name: 'lint',
+                                workflowName: 'CI',
+                                conclusion: RawCheckResult.Failure,
+                                startedAt: '2026-10-01T00:00:01Z',
+                                detailsUrl:
+                                    'https://github.com/owner/name/actions/runs/300/job/3000',
+                            },
+                            {
+                                name,
+                                workflowName: 'CI',
+                                status: RawCheckStatus.InProgress,
+                                startedAt: '2026-10-01T00:01:00Z',
+                                detailsUrl:
+                                    'https://github.com/owner/name/actions/runs/300/job/3001',
+                            },
+                        ],
+                    },
+                    threads: [],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }).failingChecks;
+            }),
+            [
+                ['lint'],
+                [],
+            ],
+        );
+    });
+
     it('merges past a cancelled check', () => {
         assert.deepEquals(
             selectFrom(
@@ -328,6 +418,20 @@ describe(classifyPrCheck.name, () => {
                                 },
                             },
                         ],
+                        reviews: [
+                            {
+                                author: {
+                                    login: 'summary-only',
+                                },
+                                state: RawReviewState.ChangesRequested,
+                            },
+                            {
+                                author: {
+                                    login: 'line-commenter',
+                                },
+                                state: RawReviewState.ChangesRequested,
+                            },
+                        ],
                     },
                     threads: [
                         {
@@ -386,6 +490,14 @@ describe(classifyPrCheck.name, () => {
                                 submittedAt: '2026-10-02T00:00:00Z',
                             },
                         ],
+                        reviews: [
+                            {
+                                author: {
+                                    login: 'stranger',
+                                },
+                                state: RawReviewState.ChangesRequested,
+                            },
+                        ],
                     },
                     threads: [],
                     viewerLogin: 'viewer',
@@ -442,6 +554,149 @@ describe(classifyPrCheck.name, () => {
             }).changesRequestedBy,
             [
                 'commenter',
+            ],
+        );
+    });
+
+    it('re-requests a change request that a later comment hides, handing the viewer to watch mode', () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: {
+                        ...baseRawPr,
+                        reviewDecision: RawReviewDecision.ChangesRequested,
+                        latestReviews: [
+                            'reviewer',
+                            'viewer',
+                        ].map((login) => {
+                            return {
+                                author: {
+                                    login,
+                                },
+                                authorAssociation: RawAuthorAssociation.Member,
+                                state: RawReviewState.Commented,
+                                submittedAt: '2026-10-03T00:00:00Z',
+                            };
+                        }),
+                        reviews: [
+                            'reviewer',
+                            'viewer',
+                        ].flatMap((login) => {
+                            return [
+                                {
+                                    author: {
+                                        login,
+                                    },
+                                    state: RawReviewState.ChangesRequested,
+                                    commit: {
+                                        oid: 'old1234',
+                                    },
+                                },
+                                {
+                                    author: {
+                                        login,
+                                    },
+                                    state: RawReviewState.Commented,
+                                },
+                            ];
+                        }),
+                    },
+                    threads: [],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    reReviewLogins: true,
+                    isViewerReReviewDue: true,
+                },
+            ),
+            {
+                reReviewLogins: [
+                    'reviewer',
+                ],
+                isViewerReReviewDue: true,
+            },
+        );
+    });
+
+    it('recognizes a hand-off waiting for a collaborator reply', () => {
+        assert.deepEquals(
+            selectFrom(
+                classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: baseRawPr,
+                    threads: [
+                        createThread(handOff),
+                    ],
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }),
+                {
+                    needs: true,
+                    isAwaitingThreadAnswer: true,
+                    isBlockedOnHuman: true,
+                },
+            ),
+            {
+                needs: [],
+                isAwaitingThreadAnswer: true,
+                isBlockedOnHuman: false,
+            },
+        );
+    });
+
+    it('owes the viewer a look at their thread a pass answered until they approve the head', () => {
+        const pr: RawPrView = {
+            ...baseRawPr,
+            assignees: [
+                {
+                    login: 'viewer',
+                },
+            ],
+        };
+        const threads = [
+            createThread([
+                {
+                    login: 'viewer',
+                    body: 'Rename this.',
+                },
+                {
+                    login: 'viewer',
+                    body: 'AI: Renamed it.',
+                },
+            ]),
+        ];
+        assert.deepEquals(
+            [
+                pr,
+                {
+                    ...pr,
+                    reviews: [
+                        {
+                            author: {
+                                login: 'viewer',
+                            },
+                            state: RawReviewState.Approved,
+                            submittedAt: '2026-10-04T00:00:00Z',
+                            commit: {
+                                oid: baseRawPr.headRefOid,
+                            },
+                        },
+                    ],
+                },
+            ].map((testPr) => {
+                return classifyPrCheck({
+                    trustedBotLogins: [],
+                    pr: testPr,
+                    threads,
+                    viewerLogin: 'viewer',
+                    checkedAt: '2026-10-31T00:00:00Z',
+                }).isViewerThreadAnswerDue;
+            }),
+            [
+                true,
+                false,
             ],
         );
     });

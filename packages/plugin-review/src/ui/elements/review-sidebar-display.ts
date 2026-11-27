@@ -37,7 +37,7 @@ export type ReviewSidebarQueues = Readonly<
     >
 >;
 
-/** The Build sidebar's tooltips describe the viewer's own review, which an assignee doesn't give. */
+/** {@link prStatusTooltips} describe the viewer's own review, which an assignee doesn't give. */
 const assigneePrStatusTooltips: Record<PrStatus, string> = {
     [PrStatus.None]: '',
     [PrStatus.AwaitingReview]: 'Awaiting review.',

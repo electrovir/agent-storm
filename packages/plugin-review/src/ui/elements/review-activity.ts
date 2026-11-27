@@ -2,6 +2,7 @@ import {defineActivity, type AppContext} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
 import {getObjectTypedValues} from '@augment-vir/common';
 import {html} from 'element-vir';
+import {reviewActivityId} from '../../review-api.js';
 import {
     getReviewablePrs,
     getShownPrQueues,
@@ -11,7 +12,7 @@ import {
 } from '../../util/pr-queues.js';
 import {reviewMemory} from '../../util/review-memory.js';
 import {resolveReviewRoute, subPathsForPullRequest} from '../../util/review-route.js';
-import {createReviewState, findReviewState, reviewActivityId} from '../../util/review-state.js';
+import {createReviewState, findReviewState} from '../../util/review-state.js';
 import {VirReviewQueueSidebar} from './vir-review-queue-sidebar.element.js';
 import {VirReviewStage} from './vir-review-stage.element.js';
 

@@ -1,3 +1,5 @@
+// cspell:words meslo menlo
+
 import {
     type GitHubReviewThread,
     type PushEvent,
@@ -100,6 +102,10 @@ export const VirReviewPaneConversations = defineAppElement<{
         .review-request {
             padding: 0 8px;
         }
+
+        .commit-hash {
+            font-family: 'MesloLGS NF', Menlo, monospace;
+        }
     `,
     render({inputs, state, updateState, host}) {
         const actions = createConversationActions({
@@ -193,6 +199,11 @@ export const VirReviewPaneConversations = defineAppElement<{
                         : nothing}
                     <span class="comment-author">${push.pusher || 'Someone'}</span>
                     ${push.isForcePush ? 'force pushed' : 'pushed'}
+                    ${push.commitHash
+                        ? html`
+                              <span class="commit-hash">${push.commitHash}</span>
+                          `
+                        : nothing}
                     <span>${relativeTime(push.createdAt)}</span>
                 </div>
             `;

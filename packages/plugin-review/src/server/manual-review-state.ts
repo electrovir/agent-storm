@@ -82,25 +82,20 @@ export type ListedManualReviewEntry = ReturnType<
     typeof listManualReviewEntries<typeof manualReviewEntryShape>
 >[number];
 
-/** Undefined when the skill never recorded the branch or its state file can't be read. */
-export async function readManualReviewEntry({
-    owner,
-    repoName,
-    branchName,
-}: Readonly<PullRequestBranch>) {
-    try {
-        const entry = (await readManualReviewFile(manualReviewStatePath))[`${owner}/${repoName}`]?.[
-            branchName
-        ];
+async function readManualReviewEntryLookup() {
+    const file = await readManualReviewFile(manualReviewStatePath).catch(() => undefined);
+    return ({owner, repoName, branchName}: Readonly<PullRequestBranch>) => {
+        const entry = file?.[`${owner}/${repoName}`]?.[branchName];
         return checkValidShape(entry, manualReviewEntryShape) ? entry : undefined;
-    } catch {
-        return undefined;
-    }
+    };
 }
 
-/** Undefined until the skill records a status for the branch. */
-export async function readManualReviewState(branch: Readonly<PullRequestBranch>) {
-    const entry = await readManualReviewEntry(branch);
+/** Undefined when the skill never recorded the branch or its state file can't be read. */
+export async function readManualReviewEntry(branch: Readonly<PullRequestBranch>) {
+    return (await readManualReviewEntryLookup())(branch);
+}
+
+function toManualReviewState(entry: Readonly<ManualReviewEntry> | undefined) {
     return entry?.status && entry.isPending != undefined && entry.lastUpdatedAt != undefined
         ? ({
               status: entry.status,
@@ -111,6 +106,16 @@ export async function readManualReviewState(branch: Readonly<PullRequestBranch>)
         : undefined;
 }
 
+/** Undefined until the skill records a status for the branch. */
+export async function readManualReviewState(branch: Readonly<PullRequestBranch>) {
+    return toManualReviewState(await readManualReviewEntry(branch));
+}
+
+export async function readManualReviewStateLookup() {
+    const findEntry = await readManualReviewEntryLookup();
+    return (branch: Readonly<PullRequestBranch>) => toManualReviewState(findEntry(branch));
+}
+
 /** Called with every entry whose status changed since the previous read of the state file. */
 export type ManualReviewListener = (
     changedEntries: ReadonlyArray<ListedManualReviewEntry>,
@@ -119,7 +124,7 @@ export type ManualReviewListener = (
 const manualReviewWatch: {
     listeners: ReadonlyArray<ManualReviewListener>;
     /** Undefined until the first successful read. */
-    previousEntries: ReadonlyArray<ListedManualReviewEntry> | undefined;
+    previousEntries: ReadonlyMap<string, ManualReviewEntry> | undefined;
     /** Undefined while nothing listens. */
     stopPolling: (() => void) | undefined;
 } = {
@@ -162,7 +167,7 @@ const pendingStatusCleanups: Readonly<
         minPendingAge: {
             milliseconds: 0,
         },
-        settledStatus: ManualReviewStatus.Started,
+        settledStatus: ManualReviewStatus.Aborted,
     },
     [ManualReviewStatus.Aborted]: {
         scripts: [
@@ -247,6 +252,21 @@ async function readProcessFolders(processIds: ReadonlyArray<string>) {
         },
     );
     return parseLsofFolders(output);
+}
+
+/**
+ * Whether a process working in `cwd` runs inside the review folder `folder`, the folder itself
+ * included. `doesPathContain` alone is false for equal paths, and review scripts run from the
+ * folder itself.
+ */
+export function isInReviewFolder({folder, cwd}: Readonly<{folder: string; cwd: string}>) {
+    return (
+        cwd === folder ||
+        doesPathContain({
+            potentialParentPath: folder,
+            potentialChildPath: cwd,
+        })
+    );
 }
 
 /** Parses the `p<pid>` and `n<path>` lines of `lsof -Fn` into each pid's path. */
@@ -390,9 +410,9 @@ async function clearOrphanedPendingEntries(entries: ReadonlyArray<ListedManualRe
                     runsCleanupScript(status, command) &&
                     (!folder ||
                         !cwd ||
-                        doesPathContain({
-                            potentialParentPath: folder,
-                            potentialChildPath: cwd,
+                        isInReviewFolder({
+                            folder,
+                            cwd,
                         }))
                 );
             })
@@ -489,7 +509,10 @@ async function abortReviewsWithoutFolder(entries: ReadonlyArray<ListedManualRevi
     );
 }
 
-async function pollManualReviewFile() {
+async function pollManualReviewFile(stopPolling: () => void) {
+    if (manualReviewWatch.stopPolling !== stopPolling) {
+        return;
+    }
     try {
         const entries = listManualReviewEntries({
             file: await readManualReviewFile(manualReviewStatePath),
@@ -502,15 +525,23 @@ async function pollManualReviewFile() {
                 `Failed to abort manual reviews whose folder is gone: ${extractErrorMessage(error)}`,
             );
         });
+        if (manualReviewWatch.stopPolling !== stopPolling) {
+            return;
+        }
         const previousEntries = manualReviewWatch.previousEntries;
-        manualReviewWatch.previousEntries = entries;
+        manualReviewWatch.previousEntries = new Map<string, ManualReviewEntry>(
+            entries.map((listed) => {
+                return [
+                    toEntryKey(listed),
+                    listed.entry,
+                ];
+            }),
+        );
         if (!previousEntries) {
             return;
         }
         const changedEntries = entries.filter((listed) => {
-            const previous = previousEntries.find((previousListed) => {
-                return toEntryKey(previousListed) === toEntryKey(listed);
-            })?.entry;
+            const previous = previousEntries.get(toEntryKey(listed));
             return (
                 !previous ||
                 previous.status !== listed.entry.status ||
@@ -551,10 +582,17 @@ export function listenToManualReviewState(listener: ManualReviewListener) {
         listener,
     ];
     if (!manualReviewWatch.stopPolling) {
-        void pollManualReviewFile();
-        manualReviewWatch.stopPolling = createBlockingInterval(pollManualReviewFile, {
-            seconds: 2,
-        }).clearInterval;
+        const interval = createBlockingInterval(
+            async () => {
+                await initialPoll;
+                await pollManualReviewFile(interval.clearInterval);
+            },
+            {
+                seconds: 2,
+            },
+        );
+        manualReviewWatch.stopPolling = interval.clearInterval;
+        const initialPoll = pollManualReviewFile(interval.clearInterval);
     }
     return () => {
         manualReviewWatch.listeners = manualReviewWatch.listeners.filter((existing) => {

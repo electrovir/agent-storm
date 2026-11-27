@@ -1,10 +1,9 @@
 import {type AppContext} from '@agent-storm/core/frontend';
 import {assertWrap} from '@augment-vir/assert';
 import {Observable} from 'element-vir';
+import {reviewActivityId} from '../review-api.js';
 import {createPrQueues, type PrQueueKind} from './pr-queues.js';
 import {createPrReviews} from './pr-reviews.js';
-
-export const reviewActivityId = 'review';
 
 /** Everything the Review plugin keeps for the app's whole life. */
 export function createReviewState() {

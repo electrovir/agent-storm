@@ -60,11 +60,6 @@ export const VirReviewPaneThread = defineAppElement<{
                 cursor: pointer;
                 font-size: 12px;
             }
-
-            &[open] > summary {
-                border-bottom: 1px solid
-                    ${viraThemeByKeys.grey['behind-bg'].decoration.background.value};
-            }
         }
 
         .thread-path {

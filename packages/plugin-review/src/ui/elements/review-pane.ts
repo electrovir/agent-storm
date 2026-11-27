@@ -72,7 +72,6 @@ export const reviewPane: PaneDefinition = {
         ];
     },
     icon: createSizedIcon(LucideScanEyeIcon, 14),
-    hasAi: false,
     mounting: PaneMounting.Always,
     isAvailable() {
         return true;

@@ -7,7 +7,6 @@ import {
     GitHubReviewState,
     isTrustedBot,
     ManualReviewStatus,
-    PaneKind,
     PaneStatus,
     parseInsertedCodeOwners,
     PrStatus,
@@ -23,6 +22,7 @@ import {
     toOpenPrStatus,
     type GitHubReview,
     type GitHubReviewRequest,
+    type ManualReviewState,
     type PullRequestBranch,
     type PullRequestRef,
     type ReviewPr,
@@ -84,12 +84,13 @@ import {
     postedVerdictStatuses,
     readManualReviewEntry,
     readManualReviewState,
+    readManualReviewStateLookup,
     toReviewFolder,
     type ListedManualReviewEntry,
 } from './manual-review-state.js';
 import {deleteReviewFolder} from './review-folders.js';
 import {readReviewHost} from './review-host.js';
-import {readReviewThreadStatus} from './review-threads.js';
+import {readReviewThreadStatusLookup} from './review-threads.js';
 
 const githubUserFields = {
     login: '',
@@ -487,49 +488,51 @@ function createPrQueue({
     };
 
     /**
-     * Statuses come from the server's shared branch store, so a newer answer from the Build tab's
-     * lookups shows here too.
+     * Statuses come from the server's shared branch store, so a newer answer from a folder's PR
+     * lookup shows here too.
      */
     async function snapshot() {
-        const statusLookup = await readReviewHost().getPaneStatusLookup();
+        const pullRequests = cache.pullRequests;
+        const fetchStartedAt = cache.fetchStartedAt;
+        const updatedAt = cache.updatedAt;
+        const [
+            aiStatusLookup,
+            findManualReview,
+        ] = await Promise.all([
+            readReviewThreadStatusLookup({
+                folders: pullRequests.map(toReviewFolder),
+                origin: ThreadOrigin.Review,
+            }),
+            pullRequests.length ? readManualReviewStateLookup() : undefined,
+        ]);
         return {
-            pullRequests: await Promise.all(
-                cache.pullRequests.map(async (pr) => {
-                    const folder = toReviewFolder(pr);
-                    const manualReview = await readManualReviewState(pr);
-                    return {
-                        ...pr,
-                        isAwaitingViewerReview:
-                            pr.isAwaitingViewerReview &&
-                            !(
-                                manualReview &&
-                                !manualReview.isPending &&
-                                submittedReviewStatuses[manualReview.status] &&
-                                manualReview.lastUpdatedAt > cache.fetchStartedAt
-                            ),
-                        panes: {
-                            [PaneKind.Ai]: await readReviewThreadStatus({
-                                folder,
-                                origin: ThreadOrigin.Review,
-                            }),
-                            [PaneKind.Shell]: statusLookup(folder, PaneKind.Shell),
-                        },
-                        prStatus: await applyManualReviewStatus({
-                            prStatus:
-                                readReviewHost().readBranchPrStatus({
-                                    owner: pr.owner,
-                                    name: pr.repoName,
-                                    branchName: pr.branchName,
-                                    url: pr.url,
-                                }) || pr.prStatus,
-                            owner: pr.owner,
-                            repoName: pr.repoName,
-                            branchName: pr.branchName,
-                        }),
-                    };
-                }),
-            ),
-            updatedAt: cache.updatedAt,
+            pullRequests: pullRequests.map((pr) => {
+                const folder = toReviewFolder(pr);
+                const manualReview = findManualReview?.(pr);
+                return {
+                    ...pr,
+                    isAwaitingViewerReview:
+                        pr.isAwaitingViewerReview &&
+                        !(
+                            manualReview &&
+                            !manualReview.isPending &&
+                            submittedReviewStatuses[manualReview.status] &&
+                            manualReview.lastUpdatedAt > fetchStartedAt
+                        ),
+                    threadStatus: aiStatusLookup(folder),
+                    prStatus: toManualReviewPrStatus({
+                        prStatus:
+                            readReviewHost().readBranchPrStatus({
+                                owner: pr.owner,
+                                name: pr.repoName,
+                                branchName: pr.branchName,
+                                url: pr.url,
+                            }) || pr.prStatus,
+                        review: manualReview,
+                    }),
+                };
+            }),
+            updatedAt,
             isUpdating: !!cache.inFlightUpdate,
             error: cache.error,
         };
@@ -714,32 +717,41 @@ const reviewQueue = createPrQueue({
     organize: organizeReviewQueue,
     async afterUpdate(pullRequests) {
         await handleDroppedReviewFolders();
-        queueHooks.afterReviewUpdate?.(pullRequests);
+        await Promise.all(
+            queueHooks.afterReviewUpdate.map(async (listener) => {
+                await listener(pullRequests);
+            }),
+        );
     },
 });
 
 const queueHooks: {
-    afterReviewUpdate: ((pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => void) | undefined;
+    afterReviewUpdate: ReadonlyArray<
+        (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => MaybePromise<void>
+    >;
     afterAssigneeUpdate: ReadonlyArray<
         (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => MaybePromise<void>
     >;
 } = {
-    afterReviewUpdate: undefined,
+    afterReviewUpdate: [],
     afterAssigneeUpdate: [],
 };
 
 /**
- * Calls `listener` after every update of the Reviewer list. Replaces any earlier listener. Returns
- * a function that removes it.
+ * Calls `listener` after every update of the Reviewer list, alongside any earlier listeners.
+ * Returns a function that removes it.
  */
 export function listenToReviewQueue(
-    listener: (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => void,
+    listener: (pullRequests: ReadonlyArray<Readonly<ReviewQueuePr>>) => MaybePromise<void>,
 ) {
-    queueHooks.afterReviewUpdate = listener;
+    queueHooks.afterReviewUpdate = [
+        ...queueHooks.afterReviewUpdate,
+        listener,
+    ];
     return () => {
-        if (queueHooks.afterReviewUpdate === listener) {
-            queueHooks.afterReviewUpdate = undefined;
-        }
+        queueHooks.afterReviewUpdate = queueHooks.afterReviewUpdate.filter((existing) => {
+            return existing !== listener;
+        });
     };
 }
 
@@ -1163,21 +1175,35 @@ const owedReviewStatuses: Readonly<Record<PrStatus, boolean>> = {
 
 /**
  * Turns a review the viewer owes into `ReviewStarted` once the manual-review skill has finished
- * setting it up.
+ * setting it up and watch mode is done changing the branch.
  */
 export async function applyManualReviewStatus({
     prStatus,
+    isWatchModeBusy,
     ...branch
 }: Readonly<
     PullRequestBranch & {
         prStatus: PrStatus;
+        /** From watch mode's `isWatchModeBusy` for the branch's checkout. */
+        isWatchModeBusy: boolean;
     }
 >) {
-    if (!owedReviewStatuses[prStatus]) {
+    if (!owedReviewStatuses[prStatus] || isWatchModeBusy) {
         return prStatus;
     }
-    const review = await readManualReviewState(branch);
-    return review?.status === ManualReviewStatus.Started && !review.isPending
+    return toManualReviewPrStatus({
+        prStatus,
+        review: await readManualReviewState(branch),
+    });
+}
+
+function toManualReviewPrStatus({
+    prStatus,
+    review,
+}: Readonly<{prStatus: PrStatus; review: Readonly<ManualReviewState> | undefined}>) {
+    return owedReviewStatuses[prStatus] &&
+        review?.status === ManualReviewStatus.Started &&
+        !review.isPending
         ? PrStatus.ReviewStarted
         : prStatus;
 }
@@ -1349,8 +1375,8 @@ function createReviewPrGraphql(number: number) {
         '      }',
         `      reviews(first: ${maxReviewPrReviews}) { nodes { ${reviewFields} } }`,
         `      timelineItems(last: ${maxReviewPrReviews}, itemTypes: [REVIEW_REQUESTED_EVENT]) { nodes { ... on ReviewRequestedEvent { id createdAt actor { login avatarUrl } requestedReviewer { ... on User { login } } } } }`,
-        `      commits: timelineItems(last: ${maxReviewPrReviews}, itemTypes: [PULL_REQUEST_COMMIT]) { nodes { ... on PullRequestCommit { id commit { committedDate author { avatarUrl user { login } } } } } }`,
-        `      forcePushes: timelineItems(last: ${maxReviewPrReviews}, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) { nodes { ... on HeadRefForcePushedEvent { id createdAt actor { login avatarUrl } } } }`,
+        `      commits: timelineItems(last: ${maxReviewPrReviews}, itemTypes: [PULL_REQUEST_COMMIT]) { nodes { ... on PullRequestCommit { id commit { abbreviatedOid committedDate author { avatarUrl user { login } } } } } }`,
+        `      forcePushes: timelineItems(last: ${maxReviewPrReviews}, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) { nodes { ... on HeadRefForcePushedEvent { id createdAt actor { login avatarUrl } afterCommit { abbreviatedOid } } } }`,
         `      reviewRequests(first: ${maxReviewPrReviews}) { nodes { ${reviewRequestFields} } }`,
         `      latestOpinionatedReviews(first: ${maxReviewPrReviews}) { nodes { ${reviewFields} } }`,
         '    }',
@@ -1430,6 +1456,7 @@ const reviewPrPageShape = defineShape({
                     {
                         id: '',
                         commit: {
+                            abbreviatedOid: '',
                             committedDate: '',
                             author: nullableShape({
                                 avatarUrl: '',
@@ -1450,6 +1477,9 @@ const reviewPrPageShape = defineShape({
                         actor: nullableShape({
                             login: '',
                             avatarUrl: '',
+                        }),
+                        afterCommit: nullableShape({
+                            abbreviatedOid: '',
                         }),
                     },
                 ],
@@ -1591,7 +1621,10 @@ async function fetchReviewPr({owner, repoName, number}: Readonly<PullRequestRef>
             }),
             reviews: pullRequest.reviews.nodes
                 .filter((rawReview) => {
-                    return rawReview.author?.login === page.viewer.login;
+                    return (
+                        rawReview.author?.login === page.viewer.login ||
+                        rawReview.state === RawReviewState.Approved
+                    );
                 })
                 .map(toReview)
                 .filter((review) => {
@@ -1617,6 +1650,7 @@ async function fetchReviewPr({owner, repoName, number}: Readonly<PullRequestRef>
                         pusherAvatarUrl: item.commit.author?.avatarUrl || '',
                         createdAt: item.commit.committedDate,
                         isForcePush: false,
+                        commitHash: item.commit.abbreviatedOid,
                     };
                 }),
                 ...pullRequest.forcePushes.nodes.map((event) => {
@@ -1626,6 +1660,7 @@ async function fetchReviewPr({owner, repoName, number}: Readonly<PullRequestRef>
                         pusherAvatarUrl: event.actor?.avatarUrl || '',
                         createdAt: event.createdAt,
                         isForcePush: true,
+                        commitHash: event.afterCommit?.abbreviatedOid || '',
                     };
                 }),
             ].toSorted((first, second) => first.createdAt.localeCompare(second.createdAt)),
@@ -1892,10 +1927,7 @@ function organizePrs({
                 isViewerAuthor: !!login && pr.author?.login === login,
                 isAwaitingViewerReview: !!pr.viewerLatestReviewRequest,
                 hasViewerReviewed: latestReviewTime(pr) != undefined,
-                panes: {
-                    [PaneKind.Ai]: PaneStatus.None,
-                    [PaneKind.Shell]: PaneStatus.None,
-                },
+                threadStatus: PaneStatus.None,
                 author: pr.author?.login || '',
                 authorAvatarUrl: pr.author?.avatarUrl || '',
                 isAuthorTrusted:

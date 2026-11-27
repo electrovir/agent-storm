@@ -25,6 +25,8 @@ const threadTabNames: Readonly<Record<ThreadOrigin, string>> = {
     [ThreadOrigin.Watch]: 'AI Watch',
     [ThreadOrigin.SideChat]: 'AI Chat',
     [ThreadOrigin.PaneChat]: 'AI Chat',
+    [ThreadOrigin.SelfImprove]: 'AI Chat',
+    [ThreadOrigin.Bot]: 'AI Chat',
 };
 
 /** A verdict can only be posted while the skill holds a review that hasn't posted yet. */

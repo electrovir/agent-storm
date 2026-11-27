@@ -4,7 +4,6 @@ import {
     finishedPrStatuses,
     GitHubPollingDisableReason,
     ManualReviewStatus,
-    PaneKind,
     PaneStatus,
     PrStatus,
     RawPrState,
@@ -18,28 +17,34 @@ import {
 import {assertWrap, check, waitUntil} from '@augment-vir/assert';
 import {
     awaitedFilter,
+    ensureError,
     extractErrorMessage,
     getEnumValues,
     getObjectTypedEntries,
+    groupArrayBy,
     log,
     omitObjectKeys,
     PromiseQueue,
     removeDuplicates,
     typedObjectFromEntries,
+    wait,
 } from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
 import {
     extractCommandStderr,
+    gitTimeout,
     instanceName,
     looksRateLimited,
     manualReviewSkillDir,
     normalizePath,
     reviewBranchPrefix,
+    runCommand,
     tryGit,
     userDataDir,
     writeFileAtomically,
 } from 'agent-storm-util';
 import {convertDuration, createFullDateInUserTimezone, toLocaleString} from 'date-vir';
+import {createHash} from 'node:crypto';
 import {mkdir, readFile, rm, stat, writeFile} from 'node:fs/promises';
 import {join, resolve} from 'node:path';
 import {
@@ -59,7 +64,7 @@ import {
 } from './manual-review-state.js';
 import {hasReviewableChanges} from './push-review.js';
 import {isManualReviewHereCopy} from './review-folders.js';
-import {readReviewBuildV2, readReviewHost} from './review-host.js';
+import {readReviewBuild, readReviewHost} from './review-host.js';
 import {readReviewThreadStatus} from './review-threads.js';
 import {
     fetchPrCheck,
@@ -117,11 +122,22 @@ const watchEntryShape = defineShape({
     hasChecked: false,
     /** Consecutive checks that found checks pending and nothing else to do. */
     pendingPolls: 0,
+    /** Whether the PR's checks were still running at the last check that asked GitHub. */
+    hasPendingChecks: false,
     /**
      * The PR state, from {@link createIdleStateKey}, that the last pass pushed nothing for. No pass
      * is sent again until the PR moves on from it.
      */
     idleStateKey: '',
+    /** The PR's base commit when `idleStateKey` was set. */
+    idleBaseSha: '',
+    /** Unix milliseconds when `idleStateKey` was set. */
+    idleAt: 0,
+    /**
+     * The local work, from {@link createLocalStateKey}, that the last local changes pass did not
+     * push. No local changes pass is sent again until that work changes.
+     */
+    localChangesIdleKey: '',
     failureCount: 0,
     /** Passes in a row whose Watch thread failed before finishing. */
     exitedPassCount: 0,
@@ -162,6 +178,10 @@ const watchEntryShape = defineShape({
         sentAt: 0,
         headSha: '',
         tasks: [enumShape(WatchTask)],
+        work: nullableShape({
+            actionableThreadIds: [''],
+            failingChecks: [''],
+        }),
     }),
 });
 
@@ -202,15 +222,26 @@ const defaultEntry: WatchEntry = {
     pass: undefined,
 };
 
+/**
+ * Whether watch mode may still change the folder's PR on its own: a pass is running, or the PR's
+ * checks, which can fail or bring review comments for a pass to address, are still running. False
+ * while watch mode is off.
+ */
+export function isWatchModeBusy(folder: string) {
+    const entry = watchState.entries[folder];
+    return (
+        !!entry?.isEnabled && (entry.status === WatchModeStatus.Working || entry.hasPendingChecks)
+    );
+}
+
 /** What the sidebar shows for a folder. */
 export function getWatchModeInfo(folder: string) {
     const entry = watchState.entries[folder];
+    const status = entry?.isEnabled ? entry.status : WatchModeStatus.Off;
+    const message = status === entry?.status ? entry.message : '';
     return {
-        status: entry?.status || WatchModeStatus.Off,
-        message:
-            entry?.status === WatchModeStatus.Off && isSettledStop(entry.message)
-                ? ''
-                : entry?.message || '',
+        status,
+        message: status === WatchModeStatus.Off && isSettledStop(message) ? '' : message,
         sessionId: '',
     };
 }
@@ -231,11 +262,6 @@ function isSettledStop(message: string) {
 /** Keeps a slow save from landing after, and overwriting, a newer one. */
 const saveQueue = new PromiseQueue();
 
-/** The message a pause restores once it ends, kept from before an earlier pause when there was one. */
-function toResumeMessage(entry: Readonly<WatchEntry>) {
-    return entry.status === WatchModeStatus.Watching ? entry.message : entry.resumeMessage;
-}
-
 async function saveEntries() {
     const contents = JSON.stringify(watchState.entries, undefined, 4);
     try {
@@ -251,15 +277,35 @@ async function saveEntries() {
 }
 
 async function updateEntry(folder: string, update: Readonly<Partial<WatchEntry>>) {
+    const nextEntry = {
+        ...(watchState.entries[folder] || defaultEntry),
+        ...update,
+    };
     watchState.entries = {
         ...watchState.entries,
-        [folder]: {
-            ...(watchState.entries[folder] || defaultEntry),
-            ...update,
-        },
+        [folder]: nextEntry,
     };
     await saveEntries();
-    return watchState.entries[folder] || defaultEntry;
+    return nextEntry;
+}
+
+async function pauseWatching({
+    folder,
+    entry,
+    message,
+}: Readonly<{folder: string; entry: Readonly<WatchEntry>; message: string}>) {
+    if (
+        watchState.entries[folder] !== entry ||
+        (entry.status === WatchModeStatus.Paused && entry.message === message)
+    ) {
+        return;
+    }
+    await updateEntry(folder, {
+        status: WatchModeStatus.Paused,
+        message,
+        resumeMessage:
+            entry.status === WatchModeStatus.Watching ? entry.message : entry.resumeMessage,
+    });
 }
 
 async function stopWatching({
@@ -290,18 +336,19 @@ async function resumeFoldersWithNewPr(deps: Readonly<WatchModeDeps>) {
     if (!stoppedEntries.length) {
         return;
     }
-    const folders = await deps.listFolders();
+    const foldersByPath = groupArrayBy(await deps.listFolders(), (folder) => {
+        return normalizePath(folder.path);
+    });
     await Promise.all(
         stoppedEntries.map(
             async ([
                 folder,
                 entry,
             ]) => {
-                const info = folders.find((folderInfo) => {
-                    return normalizePath(folderInfo.path) === folder;
-                });
+                const info = foldersByPath[folder]?.[0];
                 const prNumber = Number(info?.prUrl?.split('/').at(-1));
                 if (
+                    watchState.entries[folder] === entry &&
                     info &&
                     prNumber &&
                     prNumber !== entry.closedPrNumber &&
@@ -351,26 +398,43 @@ function isReviewFolder(folder: string) {
     });
 }
 
-/** The sidebar folder, outside review folders, checked out on the branch of the same repo. */
-async function findReviewedCheckout({
+export async function findReviewedCheckouts({
     deps,
-    branch,
+    branches,
 }: Readonly<{
     deps: Readonly<WatchModeDeps>;
-    branch: Readonly<PullRequestBranch>;
+    branches: ReadonlyArray<Readonly<PullRequestBranch>>;
 }>) {
+    if (!branches.length) {
+        return [];
+    }
+    const branchNames = new Set(branches.map((branch) => branch.branchName));
     const folders = await deps.listFolders();
     const candidates = await Promise.all(
         folders
-            .filter((folder) => folder.branch === branch.branchName && !isReviewFolder(folder.path))
+            .filter((folder) => {
+                return (
+                    folder.branch != undefined &&
+                    branchNames.has(folder.branch) &&
+                    !isReviewFolder(folder.path)
+                );
+            })
             .map(async (folder) => {
-                const slug = await readReviewHost().getRepoSlug(folder.path);
-                return slug?.owner === branch.owner && slug.name === branch.repoName
-                    ? folder.path
-                    : undefined;
+                return {
+                    folder,
+                    slug: await readReviewHost().getRepoSlug(folder.path),
+                };
             }),
     );
-    return candidates.find(check.isTruthy);
+    return branches.map((branch) => {
+        return candidates.find(({folder, slug}) => {
+            return (
+                folder.branch === branch.branchName &&
+                slug?.owner === branch.owner &&
+                slug.name === branch.repoName
+            );
+        })?.folder.path;
+    });
 }
 
 const reviewCopyStopMessage = 'This is a manual-review copy, not a branch to watch.';
@@ -410,11 +474,12 @@ async function watchNewlyReviewedCheckouts({
         );
     });
     await Promise.all(
-        hereCopyEntries.map(async (branch) => {
-            const folder = await findReviewedCheckout({
+        (
+            await findReviewedCheckouts({
                 deps,
-                branch,
-            });
+                branches: hereCopyEntries,
+            })
+        ).map(async (folder) => {
             if (folder && !watchState.entries[folder]?.isEnabled) {
                 await setWatchMode({
                     folder,
@@ -523,16 +588,10 @@ async function watchAssignedCheckouts({
     if (await isAutoWatchModeDisabled()) {
         return;
     }
-    const folders = await Promise.all(
-        pullRequests
-            .filter((pullRequest) => pullRequest.branchName)
-            .map(async (branch) => {
-                return await findReviewedCheckout({
-                    deps,
-                    branch,
-                });
-            }),
-    );
+    const folders = await findReviewedCheckouts({
+        deps,
+        branches: pullRequests.filter((pullRequest) => pullRequest.branchName),
+    });
     await Promise.all(
         removeDuplicates(folders.filter(check.isTruthy).map((folder) => normalizePath(folder)))
             /**
@@ -608,21 +667,25 @@ async function readLocalState({
             localHeadSha: '',
         };
     }
-    /** The PR's head commit may have been pushed from elsewhere, so it isn't always local yet. */
-    await runGit(folder, [
-        'fetch',
-        '--quiet',
-        'origin',
-        branch,
-    ]);
+    const compareArgs = [
+        'rev-list',
+        '--left-right',
+        '--count',
+        `HEAD...${headSha}`,
+    ];
+    const localCounts = await runGit(folder, compareArgs);
+    if (localCounts == undefined) {
+        /** The PR's head commit may have been pushed from elsewhere, so it isn't always local yet. */
+        await runGit(folder, [
+            'fetch',
+            '--quiet',
+            'origin',
+            branch,
+        ]);
+    }
     const counts = assertWrap
         .isDefined(
-            await runGit(folder, [
-                'rev-list',
-                '--left-right',
-                '--count',
-                `HEAD...${headSha}`,
-            ]),
+            localCounts ?? (await runGit(folder, compareArgs)),
             `Couldn't compare ${folder} with the PR's head commit.`,
         )
         .split(/\s+/)
@@ -639,6 +702,33 @@ async function readLocalState({
             `git rev-parse HEAD failed in ${folder}.`,
         ),
     };
+}
+
+/** Changes whenever the checkout's commits or uncommitted work do. */
+async function createLocalStateKey(folder: string) {
+    const headSha = await runGit(folder, [
+        'rev-parse',
+        'HEAD',
+    ]);
+    const status = await runGit(folder, [
+        'status',
+        '--porcelain',
+        '--untracked-files=all',
+    ]);
+    return createHash('sha256')
+        .update(
+            [
+                headSha,
+                status,
+                status === ''
+                    ? ''
+                    : await runGit(folder, [
+                          'diff',
+                          'HEAD',
+                      ]),
+            ].join('\n'),
+        )
+        .digest('hex');
 }
 
 async function readDefaultBranch(folder: string) {
@@ -710,6 +800,60 @@ async function isRebaseOnlyPush({
 }
 
 /**
+ * Requests review from `logins`, then re-reads the request and repeats it for anyone it no longer
+ * lists. A review by the requesting account that GitHub files moments before, such as the note
+ * {@link requestReviews} leaves, can clear the account's own request after GitHub accepted it, and
+ * no removal event shows on the PR. Its return type is annotated because it calls itself.
+ */
+async function requestReviewersUntilHeld({
+    folder,
+    reviewersPath,
+    logins,
+    checksLeft,
+}: Readonly<{
+    folder: string;
+    reviewersPath: string;
+    logins: ReadonlyArray<string>;
+    checksLeft: number;
+}>): Promise<void> {
+    await runGhIn(folder, [
+        'api',
+        '-X',
+        'POST',
+        reviewersPath,
+        ...logins.flatMap((login) => {
+            return [
+                '-f',
+                `reviewers[]=${login}`,
+            ];
+        }),
+    ]);
+    if (!checksLeft) {
+        return;
+    }
+    await wait({
+        seconds: 10,
+    });
+    const requestedLogins = (
+        await runGhIn(folder, [
+            'api',
+            reviewersPath,
+            '--jq',
+            '.users[].login',
+        ])
+    ).split('\n');
+    const droppedLogins = logins.filter((login) => !requestedLogins.includes(login));
+    if (droppedLogins.length) {
+        await requestReviewersUntilHeld({
+            folder,
+            reviewersPath,
+            logins: droppedLogins,
+            checksLeft: checksLeft - 1,
+        });
+    }
+}
+
+/**
  * Also leaves a file comment on the PR's first file with `reason`, for the reviewers to resolve.
  * The comment goes first: GitHub files it as a review by the account posting it, and that review
  * clears the account's own request when the account is one of the reviewers.
@@ -776,18 +920,12 @@ async function requestReviews({
             `Failed to explain the review request on ${prCheck.url}: ${extractErrorMessage(error)}`,
         );
     }
-    await runGhIn(folder, [
-        'api',
-        '-X',
-        'POST',
-        `repos/${slug.owner}/${slug.name}/pulls/${prCheck.number}/requested_reviewers`,
-        ...newReviewers.flatMap((login) => {
-            return [
-                '-f',
-                `reviewers[]=${login}`,
-            ];
-        }),
-    ]);
+    await requestReviewersUntilHeld({
+        folder,
+        reviewersPath: `repos/${slug.owner}/${slug.name}/pulls/${prCheck.number}/requested_reviewers`,
+        logins: newReviewers,
+        checksLeft: isRepeat ? 0 : 3,
+    });
 }
 
 /** Squash when the repo allows it, else a merge commit, else rebase. */
@@ -910,12 +1048,12 @@ async function startPass({
         return;
     }
     await (
-        await readReviewBuildV2()
+        await readReviewBuild()
     ).sendToPluginThread({
         cwd: folder,
         origin: ThreadOrigin.Watch,
         prUrl: prCheck?.url || '',
-        text: `Agent-storm watch mode pass for: ${orderedTasks.join(', ')}. Read this pass's new file ${passFilePath} and follow ${watchModeInstructionsPath} for its tasks and PR check. Re-read that file every pass, since it changes.`,
+        text: `Agent Storm watch mode pass for: ${orderedTasks.join(', ')}. Read this pass's new file ${passFilePath} and follow ${watchModeInstructionsPath} for its tasks and PR check. Re-read that file every pass, since it changes.`,
     });
     await updateEntry(folder, {
         status: WatchModeStatus.Working,
@@ -924,6 +1062,12 @@ async function startPass({
             sentAt: Date.now(),
             headSha: prCheck?.headSha || '',
             tasks: orderedTasks,
+            ...(prCheck && {
+                work: {
+                    actionableThreadIds: prCheck.actionableThreadIds,
+                    failingChecks: prCheck.failingChecks,
+                },
+            }),
         },
     });
 }
@@ -992,7 +1136,7 @@ async function readPassResult({
  */
 async function compactWatchThread(folder: string) {
     const thread = await (
-        await readReviewBuildV2()
+        await readReviewBuild()
     ).findPluginThread({
         cwd: folder,
         origin: ThreadOrigin.Watch,
@@ -1001,7 +1145,7 @@ async function compactWatchThread(folder: string) {
     if (!thread || thread.status === AiThreadStatus.NeedsApproval) {
         return;
     }
-    await (await readReviewBuildV2()).compactThread(thread.id);
+    await (await readReviewBuild()).compactThread(thread.id);
     try {
         await waitUntil.isTrue(
             async () => {
@@ -1069,6 +1213,34 @@ const closedPrStates: Readonly<
     },
 };
 
+const gitCannotStartMessage = 'Git could not start.';
+
+/**
+ * GitHub can drop the viewer's review request with no removal event on the PR, so the request for
+ * an answered thread is made again on each check rather than once.
+ */
+const viewerThreadAnswerReason =
+    'watch mode answered your review threads and is waiting on your reply. Your threads are left open for you to resolve.';
+
+/**
+ * When git can't start, such as at macOS's per-user process limit, every folder reads as having no
+ * branch and no remote.
+ */
+async function canStartGit() {
+    return await runCommand(
+        'git',
+        [
+            '--version',
+        ],
+        {
+            timeout: gitTimeout,
+        },
+    ).then(
+        () => true,
+        () => false,
+    );
+}
+
 async function checkFolder({
     folder,
     entry,
@@ -1083,7 +1255,9 @@ async function checkFolder({
 }>) {
     const branch = await readReviewHost().getCurrentBranch(folder);
     const slug = await readReviewHost().getRepoSlug(folder);
-    if (!branch) {
+    if ((!branch || !slug) && !(await canStartGit())) {
+        throw new Error(gitCannotStartMessage);
+    } else if (!branch) {
         await stopWatching({
             folder,
             message: 'HEAD is detached, so there is no PR to watch.',
@@ -1116,10 +1290,7 @@ async function checkFolder({
     });
     const prChangeKey = openPrChangeKey
         ? [
-              (await runGit(folder, [
-                  'rev-parse',
-                  'HEAD',
-              ])) || '',
+              await createLocalStateKey(folder),
               openPrChangeKey,
           ].join(' ')
         : '';
@@ -1132,6 +1303,7 @@ async function checkFolder({
         prChangeKey &&
         prChangeKey === entry.prChangeKey &&
         !finishedPass &&
+        entry.pendingPolls + 1 < maxPendingPolls &&
         (entry.status === WatchModeStatus.Watching || !!entry.resumeMessage) &&
         Date.now() - entry.fullCheckAt <
             convertDuration(
@@ -1177,18 +1349,42 @@ async function checkFolder({
         branch,
         viewerLogin,
     });
-    const local = await readLocalState({
+    const unsyncedLocal = await readLocalState({
         folder,
         branch,
         headSha: prCheck?.headSha || '',
     });
+    /** A checkout with nothing of its own to lose catches up to a PR pushed from somewhere else. */
+    const local =
+        unsyncedLocal.behindCount &&
+        !unsyncedLocal.aheadCount &&
+        !unsyncedLocal.isDirty &&
+        (await runGit(folder, [
+            'merge',
+            '--ff-only',
+            '--quiet',
+            prCheck?.headSha || '',
+        ])) != undefined
+            ? await readLocalState({
+                  folder,
+                  branch,
+                  headSha: prCheck?.headSha || '',
+              })
+            : unsyncedLocal;
     const isFirstCheck = !entry.hasChecked;
     const ticketTasks =
         isFirstCheck && !findTicketCandidates(prCheck, branch).length
             ? [WatchTask.LinearTicket]
             : [];
     const localTasks = local.isDirty || local.aheadCount > 0 ? [WatchTask.LocalChanges] : [];
+    const localStateKey = localTasks.length ? await createLocalStateKey(folder) : '';
+    const localChangesIdleKey =
+        finishedPass?.tasks.includes(WatchTask.LocalChanges) && !isPassExited
+            ? localStateKey
+            : entry.localChangesIdleKey;
     await updateEntry(folder, {
+        localChangesIdleKey,
+        hasPendingChecks: !!prCheck?.pendingCount,
         hasChecked: true,
         failureCount: 0,
         prChangeKey,
@@ -1210,7 +1406,7 @@ async function checkFolder({
                 'rev-parse',
                 'HEAD',
             ]),
-            local.isDirty,
+            localStateKey || false,
         ]);
         /** A pass that chose not to open the PR would otherwise be started again on every check. */
         if (
@@ -1268,16 +1464,29 @@ async function checkFolder({
             : []),
     ];
     const needTaskList = prCheck.needs.map((need) => needTasks[need]).filter(check.isTruthy);
-    /** Feedback that lands mid-pass isn't in that pass's tasks, so the pass didn't look at it. */
-    const isEveryNeedPassed = needTaskList.every((task) => finishedPass?.tasks.includes(task));
-    const idleStateKey =
-        finishedPass && !isNewPush && !isPassExited && isEveryNeedPassed
-            ? createIdleStateKey(prCheck)
-            : entry.idleStateKey;
+    const passWork = finishedPass?.work;
+    const hasNewPassWork =
+        !!finishedPass &&
+        (needTaskList.some((task) => !finishedPass.tasks.includes(task)) ||
+            (!!passWork &&
+                (prCheck.actionableThreadIds.some(
+                    (id) => !passWork.actionableThreadIds.includes(id),
+                ) ||
+                    prCheck.failingChecks.some((name) => !passWork.failingChecks.includes(name)))));
+    const isPassIdle = !!finishedPass && !isNewPush && !isPassExited && !hasNewPassWork;
+    const idleStateKey = isPassIdle
+        ? createIdleStateKey(prCheck)
+        : hasNewPassWork
+          ? ''
+          : entry.idleStateKey;
+    const idleBaseSha = isPassIdle ? prCheck.baseSha : entry.idleBaseSha;
+    const idleAt = isPassIdle ? Date.now() : entry.idleAt;
     await updateEntry(folder, {
         pushCount,
         pushLog,
         idleStateKey,
+        idleBaseSha,
+        idleAt,
         lastHumanActivityAt: hasNewHumanActivity
             ? prCheck.humanActivityAt
             : entry.lastHumanActivityAt,
@@ -1332,7 +1541,20 @@ async function checkFolder({
                 at: entry.viewerReviewOwedAt,
                 reason: entry.viewerReviewOwedReason,
             }
-          : undefined;
+          : prCheck.isViewerReReviewDue
+            ? {
+                  at: prCheck.checkedAt,
+                  reason: 'none of the threads from your changes-requested review is still unresolved, so it is ready for another look.',
+              }
+            : prCheck.isViewerThreadAnswerDue
+              ? {
+                    at:
+                        entry.viewerReviewOwedReason === viewerThreadAnswerReason
+                            ? entry.viewerReviewOwedAt
+                            : prCheck.checkedAt,
+                    reason: viewerThreadAnswerReason,
+                }
+              : undefined;
     await updateEntry(folder, {
         viewerReviewOwedAt: viewerReviewOwed?.at || '',
         viewerReviewOwedReason: viewerReviewOwed?.reason || '',
@@ -1347,9 +1569,9 @@ async function checkFolder({
             isRepeat: entry.viewerReviewNotedAt === viewerReviewOwed.at,
         });
     }
-    /** `viewerReviewOwed` handles the viewer for a code push. */
+    /** `viewerReviewOwed` handles the viewer whenever it is set. */
     const answeredLogins = answeredAssignees.filter((login) => {
-        return !isPushToReview || login !== viewerLogin;
+        return !viewerReviewOwed || login !== viewerLogin;
     });
     if (answeredLogins.length) {
         await requestReviews({
@@ -1414,6 +1636,26 @@ async function checkFolder({
                 'Waiting for the local branch to catch up with the PR. If it has truly diverged, sync it by hand.',
         });
         return;
+    } else if (localTasks.length && localStateKey !== localChangesIdleKey) {
+        /** The waits below can last days, and the local work belongs in the PR before then. */
+        await startPass({
+            folder,
+            tasks: [
+                ...localTasks,
+                ...needTaskList,
+                ...ticketTasks,
+            ],
+            prCheck,
+            branch,
+        });
+        return;
+    } else if (localTasks.length) {
+        await updateEntry(folder, {
+            status: WatchModeStatus.Paused,
+            message:
+                'The last pass did not commit the local changes. Its reason is in the Watch thread. Commit them yourself, or turn watch mode off and on to retry.',
+        });
+        return;
     } else if (prCheck.isAwaitingViewerReview) {
         await updateEntry(folder, {
             status: WatchModeStatus.Watching,
@@ -1422,7 +1664,23 @@ async function checkFolder({
         return;
     }
 
-    if (needTaskList.length && idleStateKey === createIdleStateKey(prCheck)) {
+    /**
+     * A failure the last pass blamed on the base can be fixed there later, and a re-run keeps
+     * testing the old base, so a base that moved on gets another pass now and then.
+     */
+    const isBaseRetryDue =
+        needTaskList.includes(WatchTask.Tests) &&
+        prCheck.baseSha !== idleBaseSha &&
+        Date.now() - idleAt >=
+            convertDuration(
+                {
+                    hours: 1,
+                },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds;
+    if (needTaskList.length && idleStateKey === createIdleStateKey(prCheck) && !isBaseRetryDue) {
         await updateEntry(folder, {
             status: WatchModeStatus.Watching,
             message: `The last pass found nothing to push for: ${needTaskList.join(', ')}. Waiting for the PR to change. Check the Watch thread.`,
@@ -1515,11 +1773,15 @@ async function checkFolder({
     await updateEntry(folder, {
         status: WatchModeStatus.Watching,
         pendingPolls,
-        message: prCheck.isAwaitingThreadAnswer
-            ? 'Waiting on a human to answer or 👍 a review thread.'
-            : prCheck.pendingCount
-              ? 'Waiting on checks.'
-              : 'Waiting on reviews.',
+        message: prCheck.isViewerReReviewDue
+            ? 'Every thread from your changes request is resolved. Waiting for you to review again.'
+            : prCheck.isViewerThreadAnswerDue
+              ? 'Your review threads were answered. Waiting for you to reply to or resolve them.'
+              : prCheck.isAwaitingThreadAnswer
+                ? 'Waiting on a human to answer or 👍 a review thread.'
+                : prCheck.pendingCount
+                  ? 'Waiting on checks.'
+                  : 'Waiting on reviews.',
     });
 }
 
@@ -1539,7 +1801,12 @@ async function runFolder(folder: string) {
         const passResult = await readPassResult({
             folder,
             entry,
-        });
+        }).catch(ensureError);
+        if (watchState.entries[folder] !== entry) {
+            return;
+        } else if (passResult instanceof Error) {
+            throw passResult;
+        }
         const gitHubPause = readReviewHost().readGitHubPause();
         const pauseMessage = gitHubPause
             ? `Paused until ${toLocaleString(createFullDateInUserTimezone(gitHubPause.resumeAtMs), {
@@ -1557,13 +1824,11 @@ async function runFolder(folder: string) {
             return;
         } else if (pauseMessage) {
             /** A finished pass stays recorded, so the check after the pause still counts its push. */
-            if (entry.message !== pauseMessage) {
-                await updateEntry(folder, {
-                    status: WatchModeStatus.Paused,
-                    message: pauseMessage,
-                    resumeMessage: toResumeMessage(entry),
-                });
-            }
+            await pauseWatching({
+                folder,
+                entry,
+                message: pauseMessage,
+            });
             return;
         } else if (
             !passResult &&
@@ -1578,35 +1843,42 @@ async function runFolder(folder: string) {
                 ).milliseconds
         ) {
             return;
-        } else if (
-            (await readReviewHost().getPaneSessionStatusLookup())(folder).some((session) => {
-                return session.kind === PaneKind.Ai && busyPaneStatuses[session.status];
-            }) ||
-            (await readReviewHost().isFolderBusyInPlugins(folder))
-        ) {
+        } else if (await readReviewHost().isFolderBusyInPlugins(folder)) {
             /**
              * Another tab may be mid-rebase or mid-push, so the branch can look broken until it
              * finishes. A finished pass stays recorded so its push is still counted afterward.
              */
-            await updateEntry(folder, {
-                status: WatchModeStatus.Paused,
+            await pauseWatching({
+                folder,
+                entry,
                 message: "Waiting for this folder's AI tabs to finish.",
-                resumeMessage: toResumeMessage(entry),
             });
             return;
+        } else if (watchState.entries[folder] !== entry) {
+            return;
         } else if (passResult) {
-            await updateEntry(folder, {
+            const entryAfterPass = await updateEntry(folder, {
                 pass: undefined,
                 exitedPassCount: passResult.isExited ? entry.exitedPassCount + 1 : 0,
             });
             /** A failed thread has nothing to compact, and the next pass restarts it. */
-            if (!passResult.isExited) {
-                await compactWatchThread(folder);
+            if (!passResult.isExited && watchState.entries[folder] === entryAfterPass) {
+                await compactWatchThread(folder).catch((error: unknown) => {
+                    log.warning(
+                        `Failed to compact the Watch thread for ${folder}: ${extractErrorMessage(error)}`,
+                    );
+                });
+            }
+            if (watchState.entries[folder] !== entryAfterPass) {
+                return;
             }
         }
         const checkedEntry = await updateEntry(folder, {
             lastCheckAt: Date.now(),
         });
+        if (watchState.entries[folder] !== checkedEntry) {
+            return;
+        }
         await checkFolder({
             folder,
             entry: checkedEntry,
@@ -1630,7 +1902,13 @@ async function runFolder(folder: string) {
             return;
         }
         log.warning(`Watch mode failed for ${folder}: ${message}`);
-        if (failureCount >= 2) {
+        if (message.startsWith('PTY daemon')) {
+            /** The local PTY daemon stalling says nothing about the PR, so the next run retries. */
+            return;
+        } else if (message === gitCannotStartMessage) {
+            /** Neither does git failing to start. */
+            return;
+        } else if (failureCount >= 2) {
             await stopWatching({
                 folder,
                 message: `Stopped after an error: ${message}`,

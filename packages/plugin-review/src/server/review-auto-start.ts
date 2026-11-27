@@ -20,9 +20,14 @@ import {
     readReviewQueue,
     resolveReviewFolder,
 } from './github-review-queue.js';
-import {readManualReviewEntry, readManualReviewState} from './manual-review-state.js';
+import {
+    readManualReviewEntry,
+    readManualReviewState,
+    toReviewFolder,
+} from './manual-review-state.js';
 import {readReviewHost} from './review-host.js';
 import {readReviewThreadStatus} from './review-threads.js';
+import {findReviewedCheckouts} from './watch-mode.js';
 
 /** An unreadable settings file leaves automatic reviews on, like the setting's default. */
 async function isAutoManualReviewDisabled() {
@@ -207,7 +212,8 @@ async function findUnreadOutdatedReviewFolder(pullRequest: Readonly<ReviewQueueP
         review.isPending ||
         !review.headSha ||
         review.headSha === pullRequest.headSha ||
-        !review.folder ||
+        /** A review started in any other checkout would have `start` switch that checkout's branch. */
+        review.folder !== toReviewFolder(pullRequest) ||
         review.comments?.length
     ) {
         return undefined;
@@ -250,12 +256,27 @@ async function restartOutdatedReview({
             });
             return;
         }
+        const [checkout] = await findReviewedCheckouts({
+            deps: readReviewHost(),
+            branches: [
+                pullRequest,
+            ],
+        });
         await deps.sendToReviewThread({
-            folder,
+            /**
+             * Build's sidebar row spins, and the checkout's AI Review tab shows the run, only for
+             * the review thread whose folder is the checkout itself.
+             */
+            folder: checkout || folder,
             prUrl: pullRequest.url,
+            /**
+             * Names the thread's own folder: an agent told to run in another folder hands the run
+             * to a new sidebar thread there.
+             */
             prompt: createManualReviewPrompt({
                 pullRequest,
-                folder,
+                folder: checkout || folder,
+                isPrCheckedOut: !!checkout,
             }),
         });
         log.info(

@@ -1,5 +1,4 @@
 import {
-    AgentStormMarkIcon,
     defineAppElement,
     sidebarTooltipOptions,
     spinAnimationCss,
@@ -7,7 +6,6 @@ import {
     VirSidebarSearch,
 } from '@agent-storm/core/frontend';
 import {getObjectTypedValues} from '@augment-vir/common';
-import {convertDuration} from 'date-vir';
 import {css, defineElementEvent, html, listen, nothing} from 'element-vir';
 import {
     createSizedIcon,
@@ -23,23 +21,21 @@ import {
     viraThemeByKeys,
 } from 'vira';
 import {PrQueueKind} from '../../util/pr-queues.js';
-import {compactAge} from '../../util/relative-time.js';
 import {prQueueTabs, type ReviewSidebarQueues} from './review-sidebar-display.js';
 import {VirReviewSidebarSettingsMenu} from './vir-review-sidebar-settings-menu.element.js';
 
 /** Same tap-target sizing as the Build sidebar's mobile header buttons. */
 const mobileRefreshIcon = createSizedIcon(LucideRotateCwIcon, 24);
-const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 /**
- * The Review sidebar's brand row, search, refresh status, and list tabs. The search's events and
- * its settings menu's `settingsRequested` event bubble out unchanged.
+ * The Review sidebar's search, refresh status, and list tabs. The search's events and its settings
+ * menu's `settingsRequested` event bubble out unchanged.
  */
 export const VirReviewSidebarHeader = defineAppElement<{
     queues: ReviewSidebarQueues | undefined;
     /** Already resolved against `fixedQueue`. */
     selectedQueue: PrQueueKind;
-    /** Shows only this list's label beside the brand mark in place of the list tabs. */
+    /** Shows only this list's label in place of the list tabs. */
     fixedQueue?: PrQueueKind | undefined;
     mobileModal?: boolean | undefined;
     searchQuery: string;
@@ -50,13 +46,6 @@ export const VirReviewSidebarHeader = defineAppElement<{
     events: {
         refreshRequested: defineElementEvent<PrQueueKind>(),
         queueSelected: defineElementEvent<PrQueueKind>(),
-    },
-    state() {
-        return {
-            /** Re-rendered on an interval so the queue's age label keeps counting up. */
-            now: Date.now(),
-            nowInterval: undefined as ReturnType<typeof setInterval> | undefined,
-        };
     },
     styles: css`
         :host {
@@ -135,29 +124,7 @@ export const VirReviewSidebarHeader = defineAppElement<{
             }
         }
     `,
-    init({updateState}) {
-        updateState({
-            nowInterval: setInterval(
-                () => {
-                    updateState({
-                        now: Date.now(),
-                    });
-                },
-                convertDuration(
-                    {
-                        minutes: 1,
-                    },
-                    {
-                        milliseconds: true,
-                    },
-                ).milliseconds,
-            ),
-        });
-    },
-    cleanup({state}) {
-        clearInterval(state.nowInterval);
-    },
-    render({inputs, state, dispatch, events}) {
+    render({inputs, dispatch, events}) {
         const shownQueue = inputs.queues?.[inputs.selectedQueue].queue;
         const isUpdating = !!shownQueue?.isUpdating;
 
@@ -200,12 +167,11 @@ export const VirReviewSidebarHeader = defineAppElement<{
 
         return html`
             <div class="header" ?data-mobile=${inputs.mobileModal}>
-                <span class="title">
-                    <${ViraIcon.assign({
-                        icon: brandMarkIcon,
-                    })}></${ViraIcon}>
-                    ${inputs.fixedQueue ? renderQueueLabel(inputs.fixedQueue) : nothing}
-                </span>
+                ${inputs.fixedQueue
+                    ? html`
+                          <span class="title">${renderQueueLabel(inputs.fixedQueue)}</span>
+                      `
+                    : nothing}
                 <span class="updates">
                     <${VirSidebarSearch.assign({
                         query: inputs.searchQuery,
@@ -216,16 +182,6 @@ export const VirReviewSidebarHeader = defineAppElement<{
                               <${ViraIcon.assign({
                                   icon: LucideLoaderIcon,
                               })}></${ViraIcon}>
-                          `
-                        : nothing}
-                    ${shownQueue?.updatedAt
-                        ? html`
-                              <span>
-                                  ${compactAge({
-                                      timestamp: shownQueue.updatedAt,
-                                      now: state.now,
-                                  })}
-                              </span>
                           `
                         : nothing}
                     <${ViraButton.assign({

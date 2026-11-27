@@ -1,10 +1,9 @@
 import {GitHubReviewState, type GitHubReview} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
-import {css, html, nothing, unsafeCSS, unsafeHTML} from 'element-vir';
+import {css, html, nothing, unsafeCSS} from 'element-vir';
 import {ViraLink, viraThemeByKeys, ViraThemeColorName} from 'vira';
-import {sanitizeGitHubHtml} from '../../util/github-markdown.js';
 import {relativeTime} from '../../util/relative-time.js';
-import {commentHeaderStyles, markdownStyles} from './review-pane-styles.js';
+import {commentHeaderStyles} from './review-pane-styles.js';
 import {renderTag, reviewStateLabels} from './review-pane-tags.js';
 import {verdictReviewStates} from './review-sent-verdict.js';
 
@@ -17,15 +16,9 @@ const reviewStateTagColors: Record<GitHubReviewState, ViraThemeColorName> = {
 };
 
 /**
- * Bodies the manual-review skill posts when no summary is given, because GitHub requires a body for
- * these verdicts. The verdict tag already says the same thing.
+ * A submitted review in the Review pane's conversation list. Shows the verdict but never the
+ * review's body text.
  */
-const fillerReviewBodies = [
-    'Requesting changes.',
-    'Reviewed.',
-];
-
-/** A submitted review in the Review pane's conversation list. */
 export const VirReviewPaneReview = defineAppElement<{
     review: Readonly<GitHubReview>;
 }>()({
@@ -36,7 +29,6 @@ export const VirReviewPaneReview = defineAppElement<{
         }
 
         ${commentHeaderStyles}
-        ${markdownStyles}
 
         .review {
             display: flex;
@@ -114,18 +106,6 @@ export const VirReviewPaneReview = defineAppElement<{
                         </${ViraLink}>
                     </div>
                 </div>
-                ${inputs.review.bodyHtml &&
-                !fillerReviewBodies.includes(
-                    new DOMParser()
-                        .parseFromString(inputs.review.bodyHtml, 'text/html')
-                        .body.textContent.trim(),
-                )
-                    ? html`
-                          <div class="markdown">
-                              ${unsafeHTML(sanitizeGitHubHtml(inputs.review.bodyHtml))}
-                          </div>
-                      `
-                    : nothing}
             </div>
         `;
     },

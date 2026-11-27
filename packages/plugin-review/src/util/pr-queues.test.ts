@@ -1,10 +1,4 @@
-import {
-    PaneKind,
-    PaneStatus,
-    PrStatus,
-    type ReviewQueue,
-    type ReviewQueuePr,
-} from '@agent-storm/common';
+import {PaneStatus, PrStatus, type ReviewQueue, type ReviewQueuePr} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {getReviewablePrs, getShownPrQueues, PrQueueKind, type PrQueues} from './pr-queues.js';
@@ -28,10 +22,7 @@ function createPr(overrides: Partial<ReviewQueuePr>): ReviewQueuePr {
         isViewerAuthor: false,
         isAwaitingViewerReview: true,
         hasViewerReviewed: false,
-        panes: {
-            [PaneKind.Ai]: PaneStatus.None,
-            [PaneKind.Shell]: PaneStatus.None,
-        },
+        threadStatus: PaneStatus.None,
         author: 'someone',
         authorAvatarUrl: '',
         isAuthorTrusted: true,

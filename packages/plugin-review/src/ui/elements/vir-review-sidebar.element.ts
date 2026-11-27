@@ -28,8 +28,8 @@ import {VirReviewSidebarSettingsMenu} from './vir-review-sidebar-settings-menu.e
 
 /**
  * The Review tab's sidebar: every open PR waiting on the `gh` account's review, or on the Assignee
- * tab every open PR assigned to it, grouped under its repo the way the Build sidebar groups
- * worktrees under their root. The viewer's own PRs open on GitHub; every other PR can be selected.
+ * tab every open PR assigned to it, grouped under its repo. The viewer's own PRs open on GitHub;
+ * every other PR can be selected.
  */
 export const VirReviewSidebar = defineAppElement<{
     /** {@link pullRequestRouteKey} of the selected PR. */
@@ -38,7 +38,7 @@ export const VirReviewSidebar = defineAppElement<{
     queues: ReviewSidebarQueues | undefined;
     /** Picking a list tab only emits `queueSelected`; the parent feeds the pick back in here. */
     selectedQueue?: PrQueueKind | undefined;
-    /** Shows only this list, with its label beside the brand mark in place of the list tabs. */
+    /** Shows only this list, with its label in place of the list tabs. */
     fixedQueue?: PrQueueKind | undefined;
     hideBorder?: boolean | undefined;
     mobileModal?: boolean | undefined;

@@ -804,6 +804,7 @@ const prCacheByFolder = new Map<
     {
         fetching: ReturnType<typeof queryFolderPr>;
         startedAt: number;
+        hasFailed: boolean;
     }
 >();
 
@@ -850,7 +851,8 @@ export function startFolderPrCacheReset() {
 
 /**
  * Everything the GitHub pane needs for one folder, or null when there's nothing to show: the folder
- * isn't a git checkout, its `origin` isn't on github.com, or the branch has no PR.
+ * isn't a git checkout, its `origin` isn't on github.com, or the branch has no PR. The return type
+ * is explicit because a read can retry after its cache entry changes.
  */
 export async function fetchFolderPr({
     folder,
@@ -858,7 +860,7 @@ export async function fetchFolderPr({
 }: Readonly<{
     folder: string;
     forceRefresh?: boolean | undefined;
-}>) {
+}>): ReturnType<typeof queryFolderPr> {
     const cacheKey = normalizePath(folder);
     const cached = prCacheByFolder.get(cacheKey);
     if (
@@ -871,28 +873,43 @@ export async function fetchFolderPr({
               }).milliseconds)
     ) {
         const pr = await cached.fetching;
+        const current = prCacheByFolder.get(cacheKey);
         /** The client only forces past an empty answer once the folder list has found a PR. */
-        if (pr || !forceRefresh) {
+        if (current === cached && (pr || !forceRefresh)) {
             return pr;
+        } else if (
+            current &&
+            current !== cached &&
+            (!forceRefresh || canReuseForForcedRefresh(current.startedAt))
+        ) {
+            return await fetchFolderPr({
+                folder,
+            });
         }
     }
+    const previous = prCacheByFolder.get(cacheKey);
     const entry = {
         fetching: queryFolderPr(folder),
         startedAt: Date.now(),
+        hasFailed: false,
     };
     prCacheByFolder.set(cacheKey, entry);
-    try {
-        return await entry.fetching;
-    } catch (error) {
+    const pr = await entry.fetching.catch((error: unknown) => {
+        entry.hasFailed = true;
         if (prCacheByFolder.get(cacheKey) === entry) {
-            if (cached) {
-                prCacheByFolder.set(cacheKey, cached);
+            if (previous && !previous.hasFailed) {
+                prCacheByFolder.set(cacheKey, previous);
             } else {
                 prCacheByFolder.delete(cacheKey);
             }
         }
         throw error;
-    }
+    });
+    return prCacheByFolder.get(cacheKey) === entry
+        ? pr
+        : await fetchFolderPr({
+              folder,
+          });
 }
 
 /**

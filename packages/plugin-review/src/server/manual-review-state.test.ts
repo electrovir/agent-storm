@@ -1,7 +1,7 @@
 // cspell:words fcwd
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {parseLsofFolders} from './manual-review-state.js';
+import {isInReviewFolder, parseLsofFolders} from './manual-review-state.js';
 
 describe(parseLsofFolders.name, () => {
     it('pairs each pid with the path listed after it', () => {
@@ -36,6 +36,28 @@ describe(parseLsofFolders.name, () => {
             {
                 '101': '/reviews/owner/repo/1',
             },
+        );
+    });
+});
+
+describe(isInReviewFolder.name, () => {
+    it('counts the folder itself and its subfolders, but not a sibling', () => {
+        assert.deepEquals(
+            [
+                '/reviews/owner/repo/1',
+                '/reviews/owner/repo/1/src',
+                '/reviews/owner/repo/12',
+            ].map((cwd) => {
+                return isInReviewFolder({
+                    folder: '/reviews/owner/repo/1',
+                    cwd,
+                });
+            }),
+            [
+                true,
+                true,
+                false,
+            ],
         );
     });
 });

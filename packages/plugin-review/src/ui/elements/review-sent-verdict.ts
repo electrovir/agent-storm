@@ -20,6 +20,7 @@ export function withSentVerdict(
         !sentVerdict ||
         details.reviews.some((review) => {
             return (
+                review.author === details.viewer.login &&
                 verdictReviewStates.includes(review.state) &&
                 Date.parse(review.createdAt) >= sentVerdict.requestedAt
             );

@@ -23,9 +23,10 @@ import {
     omitObjectKeys,
     removeDuplicates,
     typedObjectFromEntries,
+    wait,
 } from '@augment-vir/common';
 import {runGhCommand} from 'agent-storm-util';
-import {convertDuration, getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
+import {type AnyDuration, convertDuration, getNowInUtcTimezone, toUtcIsoString} from 'date-vir';
 import {createHash} from 'node:crypto';
 import {
     assertWrapValidShape,
@@ -302,24 +303,29 @@ const threadStatusRoles: Readonly<
         {
             isWork: boolean;
             awaitsViewerThumbsUp: boolean;
+            awaitsHumanAnswer: boolean;
         }
     >
 > = {
     [ThreadStatus.Actionable]: {
         isWork: true,
         awaitsViewerThumbsUp: false,
+        awaitsHumanAnswer: false,
     },
     [ThreadStatus.HumanReplied]: {
         isWork: true,
         awaitsViewerThumbsUp: false,
+        awaitsHumanAnswer: false,
     },
     [ThreadStatus.AwaitingHuman]: {
         isWork: false,
         awaitsViewerThumbsUp: false,
+        awaitsHumanAnswer: true,
     },
     [ThreadStatus.NeedsViewerThumbsUp]: {
         isWork: false,
         awaitsViewerThumbsUp: true,
+        awaitsHumanAnswer: false,
     },
 };
 
@@ -330,6 +336,14 @@ export enum PrNeed {
     ReRequestReview = 're-request review',
     MergeBlocked = 'merge blocked',
 }
+
+const supersedesChangeRequest: Readonly<Record<RawReviewState, boolean>> = {
+    [RawReviewState.Approved]: true,
+    [RawReviewState.ChangesRequested]: true,
+    [RawReviewState.Commented]: false,
+    [RawReviewState.Dismissed]: true,
+    [RawReviewState.Pending]: false,
+};
 
 function toLogin(value: Readonly<{login: string}> | null | undefined) {
     return value?.login || '';
@@ -453,8 +467,8 @@ function workflowRunId(statusCheck: Readonly<RawStatusCheck>) {
 /**
  * A newer workflow run's job can start before an older run's job does, which made a stale pass look
  * like the latest run while GitHub blocked the merge on the newer failure. GitHub hands out run ids
- * in creation order, so those decide. A re-run attempt keeps its run id, so start time breaks
- * ties.
+ * in creation order, so those decide. A re-run attempt keeps its run id, so start time breaks ties
+ * between attempts of the same job.
  */
 function isNewerCheck({
     statusCheck,
@@ -465,9 +479,14 @@ function isNewerCheck({
 }>) {
     const runId = workflowRunId(statusCheck);
     const otherRunId = workflowRunId(than);
-    return runId == undefined || otherRunId == undefined || runId === otherRunId
-        ? checkStartedAt(statusCheck) > checkStartedAt(than)
-        : runId > otherRunId;
+    if (runId != undefined && otherRunId != undefined) {
+        if (runId !== otherRunId) {
+            return runId > otherRunId;
+        } else if (checkName(statusCheck) !== checkName(than)) {
+            return false;
+        }
+    }
+    return checkStartedAt(statusCheck) > checkStartedAt(than);
 }
 
 /**
@@ -493,22 +512,24 @@ function isRunning(statusCheck: Readonly<RawStatusCheck>) {
 
 /** A rerun leaves the superseded run in the rollup, so only the latest run of each check counts. */
 function latestChecks(rollup: ReadonlyArray<Readonly<RawStatusCheck>>) {
-    return getLatestByName(rollup).filter((statusCheck) => !!checkName(statusCheck));
-}
-
-function getLatestByName(rollup: ReadonlyArray<Readonly<RawStatusCheck>>) {
-    return removeDuplicates(rollup.map(checkName)).map((name) => {
-        return rollup
-            .filter((statusCheck) => checkName(statusCheck) === name)
-            .reduce((latest, statusCheck) => {
-                return isNewerCheck({
-                    statusCheck,
-                    than: latest,
-                })
-                    ? statusCheck
-                    : latest;
-            });
+    const latestByName = new Map<string, Readonly<RawStatusCheck>>();
+    rollup.forEach((statusCheck) => {
+        const name = checkName(statusCheck);
+        if (!name) {
+            return;
+        }
+        const latest = latestByName.get(name);
+        if (
+            !latest ||
+            isNewerCheck({
+                statusCheck,
+                than: latest,
+            })
+        ) {
+            latestByName.set(name, statusCheck);
+        }
     });
+    return [...latestByName.values()];
 }
 
 export type PrCheck = ReturnType<typeof classifyPrCheck>;
@@ -550,9 +571,9 @@ export function classifyPrCheck({
                 ).filter(check.isTruthy),
             };
         });
-    const actionableCount = unresolvedThreads.filter((thread) => {
-        return threadStatusRoles[thread.status].isWork;
-    }).length;
+    const actionableThreadIds = unresolvedThreads
+        .filter((thread) => threadStatusRoles[thread.status].isWork)
+        .map((thread) => thread.id);
     const thumbsUpWaitCount = unresolvedThreads.filter((thread) => {
         return threadStatusRoles[thread.status].awaitsViewerThumbsUp;
     }).length;
@@ -580,7 +601,10 @@ export function classifyPrCheck({
                     !runningWorkflowChecks.some((running) => {
                         return (
                             running.workflowName === statusCheck.workflowName &&
-                            (running.startedAt || '9999') > (statusCheck.startedAt || '')
+                            isNewerCheck({
+                                statusCheck: running,
+                                than: statusCheck,
+                            })
                         );
                     })
                 );
@@ -615,24 +639,38 @@ export function classifyPrCheck({
             ].includes(review.state)
         );
     });
-    const reReviewLogins = removeDuplicates(
-        collaboratorReviews
-            .filter((review) => review.state === RawReviewState.ChangesRequested)
-            .map((review) => toLogin(review.author))
-            .filter((login) => {
-                return (
-                    !!login &&
-                    !openThreadAuthors.includes(login) &&
-                    !requestedReviewers.includes(login) &&
-                    login !== authorLogin
-                );
-            }),
-    );
+    const changeRequestsByLogin = new Map<string, boolean>();
+    pr.reviews.forEach(({author, state}) => {
+        const login = toLogin(author);
+        if (login && (supersedesChangeRequest[state] || !changeRequestsByLogin.has(login))) {
+            changeRequestsByLogin.set(login, state === RawReviewState.ChangesRequested);
+        }
+    });
+    /** Logins whose latest approval, change request, or dismissal is a change request. */
+    const changesRequestedBy = [...changeRequestsByLogin.keys()].filter((login) => {
+        return changeRequestsByLogin.get(login);
+    });
+    const collaboratorLogins = collaboratorReviews.map((review) => toLogin(review.author));
+    /**
+     * From `reviews` rather than `latestReviews`, where a later comment hides the change request,
+     * such as a pass's reply posted from the viewer's account. The viewer is left out: GitHub drops
+     * the viewer's request for their own review as soon as a pass posts another reply, so
+     * `isViewerReReviewDue` hands that case to watch mode's owed-review requests instead.
+     */
+    const reReviewLogins = changesRequestedBy.filter((login) => {
+        return (
+            collaboratorLogins.includes(login) &&
+            !openThreadAuthors.includes(login) &&
+            !requestedReviewers.includes(login) &&
+            login !== authorLogin &&
+            login !== viewerLogin
+        );
+    });
     const isConflicted =
         mergeable === RawMergeable.Conflicting || mergeState === RawMergeState.Dirty;
     const baseNeeds = [
         isConflicted && PrNeed.MergeConflict,
-        actionableCount > 0 && PrNeed.Comments,
+        actionableThreadIds.length > 0 && PrNeed.Comments,
         failingChecks.length > 0 && PrNeed.Tests,
         reReviewLogins.length > 0 && PrNeed.ReRequestReview,
     ].filter(check.isTruthy);
@@ -690,7 +728,7 @@ export function classifyPrCheck({
         }),
         requestedReviewers,
         unresolvedThreads,
-        actionableCount,
+        actionableThreadIds,
         pendingCount,
         gatingPendingCount,
         failingChecks,
@@ -708,26 +746,35 @@ export function classifyPrCheck({
         viewerVerdictAt: viewerVerdict?.submittedAt || '',
         /** The commit the viewer's latest approval or change request was on. */
         viewerVerdictSha: viewerVerdict?.commit?.oid || '',
-        /** Logins whose latest approval, change request, or dismissal is a change request. */
-        changesRequestedBy: removeDuplicates(
-            pr.reviews.map((review) => toLogin(review.author)).filter(check.isTruthy),
-        ).filter((login) => {
-            return (
-                pr.reviews.findLast((review) => {
-                    return (
-                        toLogin(review.author) === login &&
-                        [
-                            RawReviewState.Approved,
-                            RawReviewState.ChangesRequested,
-                            RawReviewState.Dismissed,
-                        ].includes(review.state)
-                    );
-                })?.state === RawReviewState.ChangesRequested
-            );
-        }),
+        changesRequestedBy,
+        /**
+         * Every thread from the viewer's change request is resolved, and the head has moved past
+         * it.
+         */
+        isViewerReReviewDue:
+            changesRequestedBy.includes(viewerLogin) &&
+            !openThreadAuthors.includes(viewerLogin) &&
+            viewerVerdict?.commit?.oid !== pr.headRefOid,
+        /**
+         * A pass answered a thread the viewer opened and handed it back to them, and the viewer
+         * hasn't approved the head since.
+         */
+        isViewerThreadAnswerDue:
+            unresolvedThreads.some((thread) => {
+                return (
+                    thread.openedBy === viewerLogin &&
+                    threadStatusRoles[thread.status].awaitsHumanAnswer
+                );
+            }) &&
+            !(
+                viewerVerdict?.state === RawReviewState.Approved &&
+                viewerVerdict.commit?.oid === pr.headRefOid
+            ),
         isBlockedOnHuman: thumbsUpWaitCount > 0 || isAwaitingRequestedReview,
         /** A review thread waits on a human's answer or the viewer's 👍. */
-        isAwaitingThreadAnswer: thumbsUpWaitCount > 0,
+        isAwaitingThreadAnswer:
+            thumbsUpWaitCount > 0 ||
+            unresolvedThreads.some((thread) => threadStatusRoles[thread.status].awaitsHumanAnswer),
         /** ISO time of the latest collaborator review or comment, empty when there is none. */
         humanActivityAt,
     };
@@ -751,7 +798,7 @@ export function formatPrCheck(prCheck: Readonly<PrCheck>) {
         ...prCheck.reviews.map((review) => `review: ${review.login} ${review.state}`),
         ...prCheck.requestedReviewers.map((login) => `review requested: ${login}`),
         `unresolved threads: ${prCheck.unresolvedThreads.length}`,
-        `actionable threads: ${prCheck.actionableCount}`,
+        `actionable threads: ${prCheck.actionableThreadIds.length}`,
         ...prCheck.unresolvedThreads.map((thread) => {
             return [
                 `unresolved thread: ${thread.id} ${thread.status}`,
@@ -972,6 +1019,16 @@ export function toBranchChangeKeys({
     });
 }
 
+type BranchChangeBatch = {
+    branches: ReadonlyArray<string> | undefined;
+    startedAt: number;
+    fetching: Promise<ReadonlyArray<string>>;
+};
+
+const branchChangeBatchWindow: AnyDuration = {
+    milliseconds: 250,
+};
+
 /**
  * Each repo's batched change check, by `owner/repo`, with when each branch last asked for it so a
  * branch no longer watched drops out of the batch.
@@ -980,13 +1037,7 @@ const branchChangeCache = new Map<
     string,
     {
         requestedAt: Readonly<Record<string, number>>;
-        batch:
-            | {
-                  branches: ReadonlyArray<string>;
-                  startedAt: number;
-                  fetching: Promise<ReadonlyArray<string>>;
-              }
-            | undefined;
+        batch: BranchChangeBatch | undefined;
     }
 >();
 
@@ -1060,10 +1111,9 @@ export async function readBranchChangeKey({
         ),
         [branch]: now,
     };
-    const branches = getObjectTypedKeys(requestedAt);
-    const batch =
+    const batch: BranchChangeBatch =
         cached?.batch &&
-        cached.batch.branches.includes(branch) &&
+        (!cached.batch.branches || cached.batch.branches.includes(branch)) &&
         now - cached.batch.startedAt <
             convertDuration(
                 {
@@ -1075,12 +1125,18 @@ export async function readBranchChangeKey({
             ).milliseconds
             ? cached.batch
             : {
-                  branches,
+                  branches: undefined,
                   startedAt: now,
-                  fetching: fetchBranchChangeKeys({
-                      owner,
-                      repoName,
-                      branches,
+                  fetching: wait(branchChangeBatchWindow).then(async () => {
+                      const branches = getObjectTypedKeys(
+                          branchChangeCache.get(repoKey)?.requestedAt || requestedAt,
+                      );
+                      batch.branches = branches;
+                      return await fetchBranchChangeKeys({
+                          owner,
+                          repoName,
+                          branches,
+                      });
                   }),
               };
     branchChangeCache.set(repoKey, {
@@ -1088,7 +1144,7 @@ export async function readBranchChangeKey({
         batch,
     });
     try {
-        return (await batch.fetching)[batch.branches.indexOf(branch)] || '';
+        return (await batch.fetching)[batch.branches?.indexOf(branch) ?? -1] || '';
     } catch {
         const current = branchChangeCache.get(repoKey);
         if (current?.batch === batch) {

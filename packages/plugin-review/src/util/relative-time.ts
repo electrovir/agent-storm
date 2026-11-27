@@ -1,12 +1,4 @@
-import {assertWrap} from '@augment-vir/assert';
-import {
-    type AnyDuration,
-    convertDuration,
-    getNowInUserTimezone,
-    maybeCreateFullDate,
-    toRelativeString,
-    utcTimezone,
-} from 'date-vir';
+import {getNowInUserTimezone, maybeCreateFullDate, toRelativeString, utcTimezone} from 'date-vir';
 
 /** "3 hours ago" for a GitHub UTC ISO timestamp; the raw string if it doesn't parse. */
 export function relativeTime(isoTimestamp: string): string {
@@ -33,66 +25,4 @@ export function relativeTime(isoTimestamp: string): string {
             decimalCount: 0,
         },
     );
-}
-
-/** Largest first; the first one that fits the elapsed time labels it. */
-const ageUnits: ReadonlyArray<{
-    label: string;
-    size: AnyDuration;
-}> = [
-    {
-        label: 'y',
-        size: {
-            years: 1,
-        },
-    },
-    {
-        label: 'w',
-        size: {
-            weeks: 1,
-        },
-    },
-    {
-        label: 'd',
-        size: {
-            days: 1,
-        },
-    },
-    {
-        label: 'h',
-        size: {
-            hours: 1,
-        },
-    },
-    {
-        label: 'm',
-        size: {
-            minutes: 1,
-        },
-    },
-];
-
-/**
- * Time from `timestamp` to `now` (both ms) in only its largest unit, abbreviated, like `5m`. Under
- * a minute reads `0m`.
- */
-export function compactAge({timestamp, now}: Readonly<{timestamp: number; now: number}>) {
-    const elapsed = Math.max(0, now - timestamp);
-    const unit = assertWrap.isDefined(
-        ageUnits.find((ageUnit, index) => {
-            return (
-                index === ageUnits.length - 1 ||
-                elapsed >=
-                    convertDuration(ageUnit.size, {
-                        milliseconds: true,
-                    }).milliseconds
-            );
-        }),
-    );
-    return `${Math.floor(
-        elapsed /
-            convertDuration(unit.size, {
-                milliseconds: true,
-            }).milliseconds,
-    )}${unit.label}`;
 }

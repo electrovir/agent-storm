@@ -204,7 +204,7 @@ export const VirReviewSidebarRow = defineAppElement<{
                         );
                     })}
                 >
-                    <span class="chips">${renderPaneChip('AI', inputs.pr.panes.ai)}</span>
+                    <span class="chips">${renderPaneChip('AI', inputs.pr.threadStatus)}</span>
                     ${inputs.isUnderParent
                         ? html`
                               <span class="chain-connector"></span>
