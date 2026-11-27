@@ -16,6 +16,8 @@ import {
 } from '@agent-storm/common';
 import {defineShape, enumShape, nullableShape, recordShape} from 'object-shape-tester';
 
+export {reviewActivityId} from '@agent-storm/common';
+
 const folderRequestShape = defineShape({
     folder: '',
 });
@@ -195,8 +197,8 @@ export const reviewApi = definePluginApi({
             requestShape: defineShape({
                 ...pullRequestRefShape.default,
                 /**
-                 * The server caches each PR by its repo and head branch, which the Build tab
-                 * shares.
+                 * The server caches each PR by its repo and head branch, which folders' PR lookups
+                 * share.
                  */
                 branchName: '',
                 /** True skips the server's cache and queries GitHub. */
@@ -216,8 +218,9 @@ export const reviewApi = definePluginApi({
             }),
         },
         /**
-         * Sends `prompt` to the folder's review thread, a Build V2 thread hidden from Build V2's
-         * own list, starting one with the folder's default model when it has none.
+         * Sends `prompt` to the folder's review thread, a Build thread hidden from Build's own
+         * list, starting one when it has none. Runs on the Manual review model setting, else the
+         * folder's default model.
          */
         sendToReviewThread: {
             requestShape: defineShape({

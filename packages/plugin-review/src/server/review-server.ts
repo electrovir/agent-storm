@@ -1,4 +1,4 @@
-import {buildV2ExportsKey, ManualReviewStatus, ThreadOrigin} from '@agent-storm/common';
+import {buildExportsKey, ManualReviewStatus, ThreadOrigin} from '@agent-storm/common';
 import {definePluginServer} from '@agent-storm/core/server';
 import {check} from '@augment-vir/assert';
 import {instanceName, normalizePath} from 'agent-storm-util';
@@ -34,8 +34,9 @@ import {
 } from './review-comments.js';
 import {readReviewExplanations} from './review-explanations.js';
 import {findManualReviewCopy, sweepDeletingReviewFolders} from './review-folders.js';
-import {readReviewBuildV2, setReviewBuildV2, setReviewHost} from './review-host.js';
-import {getWatchModeInfo, setWatchMode, startWatchMode} from './watch-mode.js';
+import {readReviewBuild, setReviewBuild, setReviewHost} from './review-host.js';
+import {startReviewNotifications} from './review-notifications.js';
+import {getWatchModeInfo, isWatchModeBusy, setWatchMode, startWatchMode} from './watch-mode.js';
 
 const ok = {
     ok: true,
@@ -45,7 +46,7 @@ export default definePluginServer({
     api: reviewApi,
     async start({host, waitForPlugin}) {
         setReviewHost(host);
-        setReviewBuildV2(async () => await waitForPlugin(buildV2ExportsKey));
+        setReviewBuild(async () => await waitForPlugin(buildExportsKey));
 
         async function sendToReviewThread({
             folder,
@@ -57,7 +58,7 @@ export default definePluginServer({
             prUrl: string;
         }>) {
             return await (
-                await readReviewBuildV2()
+                await readReviewBuild()
             ).sendToPluginThread({
                 cwd: normalizePath(folder),
                 origin: ThreadOrigin.Review,
@@ -70,6 +71,7 @@ export default definePluginServer({
         const stops = [
             startFolderPrCacheReset(),
             startPostedVerdictWatch(),
+            startReviewNotifications(host),
             await startWatchMode(host),
             listenToManualReviewState(async (changedEntries) => {
                 /** The Approve and Request Changes buttons hold their status until the post lands. */
@@ -182,7 +184,7 @@ export default definePluginServer({
                             ThreadOrigin.Watch,
                         ].map(async (origin) => {
                             return await (
-                                await readReviewBuildV2()
+                                await readReviewBuild()
                             ).findPluginThread({
                                 cwd: normalizePath(folder),
                                 origin,
@@ -221,14 +223,19 @@ export default definePluginServer({
                 },
             },
             folderHooks: {
-                overridePrStatus: applyManualReviewStatus,
+                async overridePrStatus({folder, ...params}) {
+                    return await applyManualReviewStatus({
+                        ...params,
+                        isWatchModeBusy: isWatchModeBusy(folder),
+                    });
+                },
                 readWatchMode: getWatchModeInfo,
             },
             stop() {
                 stops.forEach((stop) => stop());
                 stopPrQueues();
                 setReviewHost(undefined);
-                setReviewBuildV2(undefined);
+                setReviewBuild(undefined);
             },
         };
     },

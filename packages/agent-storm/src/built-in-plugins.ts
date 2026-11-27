@@ -24,10 +24,6 @@ export const builtInPlugins: ReadonlyArray<
         isEnabledByDefault: true,
     },
     {
-        id: 'build-v2',
-        isEnabledByDefault: true,
-    },
-    {
         id: 'terminal',
         isEnabledByDefault: true,
     },
@@ -44,7 +40,7 @@ export const builtInPlugins: ReadonlyArray<
         isEnabledByDefault: true,
     },
     {
-        id: 'viewer',
+        id: 'bots',
         isEnabledByDefault: true,
     },
     {

@@ -10,7 +10,7 @@
     "browserEntry": "browser.js",
     "coreVersionRange": "*",
     "dependencies": [
-        "build-v2"
+        "build"
     ],
     "description": "PR review queues and review tabs.",
     "id": "review",

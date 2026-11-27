@@ -5,14 +5,12 @@ export const usagePluginId = 'usage';
 
 /** The plugin whose AI run spent the tokens. */
 export enum UsageSource {
-    BuildV1 = 'buildV1',
-    BuildV2 = 'buildV2',
+    Build = 'build',
     Review = 'review',
 }
 
 export const usageSourceLabels: Readonly<Record<UsageSource, string>> = {
-    [UsageSource.BuildV1]: 'Build',
-    [UsageSource.BuildV2]: 'Build V2',
+    [UsageSource.Build]: 'Build',
     [UsageSource.Review]: 'Review',
 };
 

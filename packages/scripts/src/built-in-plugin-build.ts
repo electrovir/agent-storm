@@ -106,6 +106,43 @@ function createDatabaseSyncPlugin({
     };
 }
 
+/**
+ * Patches one line of `@codemirror/view`. Safari 27.2's JIT can compute a block widget's length on
+ * that line as `undefined`, after which CodeMirror's tile update loops forever and the Diff pane
+ * freezes. Staging a file while scrolled deep inside it triggers this. Moving the length into a
+ * local variable avoids the JIT bug. The build fails when CodeMirror changes that line, so an
+ * upgrade gets the freeze re-checked.
+ */
+function createCodemirrorSafariJitPlugin(): Plugin {
+    const jitBugLine =
+        'let tile = this.cache.findWidget(widget, to - from, flags) || WidgetTile.of(widget, this.view, to - from, flags);';
+    return {
+        name: 'agent-storm-codemirror-safari-jit',
+        setup(build) {
+            build.onLoad(
+                {
+                    filter: /[\\/]@codemirror[\\/]view[\\/]dist[\\/]index\.js$/,
+                },
+                async ({path}) => {
+                    const source = await readFile(path, 'utf8');
+                    if (!source.includes(jitBugLine)) {
+                        throw new Error(
+                            `@codemirror/view no longer contains the line patched by ${createCodemirrorSafariJitPlugin.name}. Check whether staging a file while scrolled deep inside it still freezes the Diff pane in Safari without the patch: remove the patch if not, otherwise update the patched line.`,
+                        );
+                    }
+                    return {
+                        contents: source.replace(
+                            jitBugLine,
+                            'const widgetLength = to - from; let tile = this.cache.findWidget(widget, widgetLength, flags) || WidgetTile.of(widget, this.view, widgetLength, flags);',
+                        ),
+                        loader: 'js',
+                    };
+                },
+            );
+        },
+    };
+}
+
 type BuiltInPluginBuild = {
     packageDir: string;
     /** Files and folders a build reads that esbuild's metafile doesn't list as inputs. */
@@ -131,13 +168,31 @@ async function createBuiltInPluginBuilds({
     });
     /** A server part reads its Markdown files from beside its bundle. */
     const serverDir = resolve(packageDir, 'src', 'server');
+    const serverFileNames = await readdir(serverDir).catch(() => undefined);
+    const markdownFileNames = (serverFileNames || []).filter((fileName) => {
+        return fileName.endsWith('.md');
+    });
     await Promise.all(
-        (await readdir(serverDir).catch(() => []))
-            .filter((fileName) => fileName.endsWith('.md'))
-            .map(async (fileName) => {
-                await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
-            }),
+        markdownFileNames.map(async (fileName) => {
+            await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
+        }),
     );
+    /**
+     * No bundle imports these, so a rebuild never copies them again. Watch mode's AI passes read
+     * their instructions from the copy, so an edit must reach it without an app restart.
+     */
+    if (isWatching && serverFileNames) {
+        watch(serverDir, async (event, fileName) => {
+            if (!fileName?.endsWith('.md')) {
+                return;
+            }
+            try {
+                await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
+            } catch {
+                /** A deleted or mid-save file is copied again on its next change event. */
+            }
+        });
+    }
     const browserEntryPath = resolve(packageDir, 'src', 'index.ts');
     const serverEntryPath = resolve(packageDir, 'src', 'server', `${pluginId}-server.ts`);
     const schemaPath = resolve(packageDir, 'prisma', 'schema.prisma');
@@ -197,6 +252,7 @@ async function createBuiltInPluginBuilds({
                         manifestPath,
                         outDir,
                     }),
+                    createCodemirrorSafariJitPlugin(),
                     createPluginEsbuildPlugin({
                         dependencies: typedObjectFromEntries(
                             (manifest.dependencies || []).map((dependencyId) => {

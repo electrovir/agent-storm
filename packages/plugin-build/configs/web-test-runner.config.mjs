@@ -11,6 +11,23 @@ const baseConfig = defineConfig({
 /** @type {import('@web/test-runner').TestRunnerConfig} */
 const webTestRunnerConfig = {
     ...baseConfig,
+    /**
+     * `src/server/` runs in Node, so its tests run there through `virmator test node`. So does the
+     * Viewer's Markdown test: the `development` build of micromark this runner resolves imports the
+     * CommonJS `debug` package, which browsers can't load.
+     */
+    files: [
+        baseConfig.files,
+        '!src/server/**',
+        '!src/util/viewer-document.test.ts',
+    ].flat(),
+    coverageConfig: {
+        ...baseConfig.coverageConfig,
+        exclude: [
+            ...baseConfig.coverageConfig.exclude,
+            'src/server/**',
+        ],
+    },
 };
 
 export default webTestRunnerConfig;

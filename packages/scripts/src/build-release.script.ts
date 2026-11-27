@@ -1,10 +1,5 @@
 import {daemonProtocolVersion} from '@agent-storm/server/src/daemon/protocol.js';
-import {
-    agentLaunchScriptPath,
-    claudeHookSourceDir,
-    daemonScriptPath,
-    monorepoRoot,
-} from '@agent-storm/server/src/file-paths.js';
+import {daemonScriptPath, monorepoRoot} from '@agent-storm/server/src/file-paths.js';
 import {releaseBuildGlobalName} from '@agent-storm/server/src/release-build.js';
 import {extractExtension, log} from '@augment-vir/common';
 import {runShellCommand} from '@augment-vir/node';
@@ -16,7 +11,7 @@ import {
 } from 'agent-storm';
 import {build} from 'esbuild';
 import {cp, mkdir, readdir, readFile, rm, writeFile} from 'node:fs/promises';
-import {basename, resolve} from 'node:path';
+import {resolve} from 'node:path';
 import {assertValidShape, defineShape} from 'object-shape-tester';
 import {buildBuiltInPlugins} from './built-in-plugin-build.js';
 
@@ -135,7 +130,6 @@ await build({
         resolve(serverSourceDir, 'index.ts'),
         resolve(serverSourceDir, 'launcher', 'launcher.ts'),
         daemonScriptPath,
-        agentLaunchScriptPath,
     ],
     entryNames: '[name]',
     outdir: serverOutDir,
@@ -164,9 +158,6 @@ await Promise.all([
     writeReleaseDaemonProtocolVersion({
         releaseDir,
         daemonProtocolVersion,
-    }),
-    cp(claudeHookSourceDir, resolve(serverOutDir, basename(claudeHookSourceDir)), {
-        recursive: true,
     }),
     ...markdownFileNames.map(async (fileName) => {
         await cp(resolve(serverSourceDir, fileName), resolve(serverOutDir, fileName));
@@ -205,5 +196,5 @@ await runShellCommand(
 );
 
 log.success(
-    `Built agent-storm ${releaseBuild.version} (${releaseBuild.commit}) into ${releaseDir} and ${assetDir}`,
+    `Built Agent Storm ${releaseBuild.version} (${releaseBuild.commit}) into ${releaseDir} and ${assetDir}`,
 );

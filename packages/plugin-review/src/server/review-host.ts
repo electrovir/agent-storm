@@ -1,12 +1,12 @@
-import {type BuildV2ServerExports} from '@agent-storm/common';
+import {type BuildServerExports} from '@agent-storm/common';
 import {type PluginServerHost} from '@agent-storm/core/server';
 
 const reviewServer: {
     host: PluginServerHost | undefined;
-    waitForBuildV2: (() => Promise<BuildV2ServerExports | undefined>) | undefined;
+    waitForBuild: (() => Promise<BuildServerExports | undefined>) | undefined;
 } = {
     host: undefined,
-    waitForBuildV2: undefined,
+    waitForBuild: undefined,
 };
 
 /** Called by the plugin's `start` before anything reads the host. */
@@ -23,23 +23,23 @@ export function readReviewHost() {
 }
 
 /** Called by the plugin's `start` before anything runs a review thread. */
-export function setReviewBuildV2(
-    waitForBuildV2: (() => Promise<BuildV2ServerExports | undefined>) | undefined,
+export function setReviewBuild(
+    waitForBuild: (() => Promise<BuildServerExports | undefined>) | undefined,
 ) {
-    reviewServer.waitForBuildV2 = waitForBuildV2;
+    reviewServer.waitForBuild = waitForBuild;
 }
 
 /**
- * Build V2's server part, which runs the review's AI work as threads. Waits out a Build V2 restart,
- * and throws while Build V2 isn't running.
+ * Build's server part, which runs the review's AI work as threads. Waits out a Build restart, and
+ * throws while Build isn't running.
  */
-export async function readReviewBuildV2() {
-    if (!reviewServer.waitForBuildV2) {
-        throw new Error('The review plugin read Build V2 before its server part started.');
+export async function readReviewBuild() {
+    if (!reviewServer.waitForBuild) {
+        throw new Error('The review plugin read Build before its server part started.');
     }
-    const buildV2 = await reviewServer.waitForBuildV2();
-    if (!buildV2) {
-        throw new Error('Reviews run as Build V2 threads, and Build V2 is not running.');
+    const build = await reviewServer.waitForBuild();
+    if (!build) {
+        throw new Error('Reviews run as Build threads, and Build is not running.');
     }
-    return buildV2;
+    return build;
 }

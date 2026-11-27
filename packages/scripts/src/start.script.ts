@@ -300,6 +300,8 @@ forward('SIGHUP');
 
 child.on('exit', (code, signal) => {
     if (signal) {
+        /** The `forward` handler would catch this re-raised signal, so the script would never exit. */
+        process.removeAllListeners(signal);
         process.kill(process.pid, signal);
     } else {
         process.exit(code ?? 0);

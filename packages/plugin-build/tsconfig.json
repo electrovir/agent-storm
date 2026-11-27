@@ -16,16 +16,19 @@
     "extends": "../../configs/tsconfig.base.json",
     "references": [
         {
+            "path": "../agent-storm"
+        },
+        {
             "path": "../common"
         },
         {
             "path": "../core"
         },
         {
-            "path": "../plugin-build-v2"
+            "path": "../plugin-review"
         },
         {
-            "path": "../plugin-review"
+            "path": "../plugin-usage"
         }
     ]
 }
