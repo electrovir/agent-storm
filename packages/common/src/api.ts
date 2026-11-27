@@ -27,6 +27,7 @@ import {
     GitHubReaction,
     GitHubReviewState,
     ManualReviewStatus,
+    NotificationDelivery,
     PaneKind,
     PaneStatus,
     PrStatus,
@@ -35,6 +36,7 @@ import {
     SplitDirection,
     WatchModeStatus,
 } from './enums.js';
+import {notificationShape} from './notifications.js';
 import {
     FolderSettingsApproval,
     PluginDecision,
@@ -135,55 +137,6 @@ const forgeSettingsJsonSchemas = {
 } as const satisfies Record<ForgeType, JSONSchema>;
 /* eslint-enable @typescript-eslint/no-unnecessary-template-expression */
 
-/** One AI the user (or a folder settings file) defines. */
-const aiDefinitionJsonSchema = {
-    type: 'object',
-    additionalProperties: false,
-    title: 'AI',
-    properties: {
-        /** Opaque and stable: every override references an AI by this, never by name. */
-        id: {
-            type: 'string',
-            title: 'Id',
-        },
-        name: {
-            type: 'string',
-            title: 'Name',
-        },
-        resumeSessionCommand: {
-            type: 'string',
-            title: 'Resume session command',
-            description:
-                'Launched when an AI pane spawns for an existing tab (e.g. `claude --continue`).',
-        },
-        /**
-         * Used instead of `resumeSessionCommand` when the pane is deliberately starting over: a tab
-         * the user just created. Empty falls back to `resumeSessionCommand`.
-         */
-        newSessionCommand: {
-            type: 'string',
-            title: 'New session command',
-            description: 'Launched for a brand-new tab (e.g. `claude`).',
-        },
-        /**
-         * Bare filename inside the avatars directory, not a path — the file is read back through
-         * `/ai/avatar`. Absent when the user hasn't dropped an image.
-         */
-        avatarFile: {
-            type: 'string',
-            title: 'Avatar file',
-        },
-    },
-    required: [
-        'id',
-        'name',
-        'resumeSessionCommand',
-        'newSessionCommand',
-    ],
-} as const satisfies JSONSchema;
-
-export const aiDefinitionShape = mapSchemaToShape(aiDefinitionJsonSchema);
-
 /**
  * One font role's font. An empty family or a size of 0 leaves that part at the app's own font for
  * the role.
@@ -210,6 +163,16 @@ const fontRoleJsonSchema = {
     ],
 } as const satisfies JSONSchema;
 
+const notificationDeliveryJsonSchema = {
+    type: 'string',
+    enum: [
+        NotificationDelivery.InApp,
+        NotificationDelivery.Persistent,
+        NotificationDelivery.Push,
+    ],
+    title: 'Delivery',
+} as const satisfies JSONSchema;
+
 /**
  * Single source of truth for the user's settings, saved to `~/.agent-storm/settings.json`. Defined
  * as a JSON Schema so:
@@ -231,29 +194,8 @@ const fontRoleJsonSchema = {
 export const settingsJsonSchema = {
     type: 'object',
     additionalProperties: false,
-    title: 'agent-storm settings',
+    title: 'Agent Storm settings',
     properties: {
-        /**
-         * Every AI the user has defined: a display name, the command that resumes its last
-         * conversation, the command that starts a fresh one, and an optional avatar. Managed by the
-         * Settings modal's AI section.
-         */
-        aiDefinitions: {
-            type: 'array',
-            default: [],
-            title: 'AI definitions',
-            items: aiDefinitionJsonSchema,
-        },
-        /**
-         * Which definition every folder falls back to. Empty (or naming a deleted definition)
-         * resolves to the first entry in `aiDefinitions`, so the default is never dangling.
-         */
-        defaultAiId: {
-            type: 'string',
-            default: '',
-            title: 'Default AI',
-            description: 'Id of the AI used by folders with no override.',
-        },
         postWorktreeCmd: {
             type: 'string',
             default: '',
@@ -366,35 +308,6 @@ export const settingsJsonSchema = {
                 'code',
                 'terminal',
             ],
-        },
-        /**
-         * Per-folder AI choice, set from the "Change AI" modal. A worktree with no entry inherits
-         * its worktree-root's entry, and a folder with neither falls back to its folder settings
-         * files' `defaultAiId`, then to this file's.
-         */
-        folderAiIds: {
-            type: 'array',
-            default: [],
-            title: 'Folder AI overrides',
-            items: {
-                type: 'object',
-                additionalProperties: false,
-                title: 'Folder AI override',
-                properties: {
-                    folder: {
-                        type: 'string',
-                        title: 'Folder',
-                    },
-                    aiId: {
-                        type: 'string',
-                        title: 'AI id',
-                    },
-                },
-                required: [
-                    'folder',
-                    'aiId',
-                ],
-            },
         },
         /**
          * Settings scoped to one git forge. Each forge gets its own shape rather than one shared
@@ -558,7 +471,7 @@ export const settingsJsonSchema = {
             default: false,
             title: 'Disable update checks',
             description:
-                "When on, agent-storm stops checking GitHub for new commits on the dev branch and hides the sidebar's update banner.",
+                "When on, Agent Storm stops checking GitHub for new commits on the dev branch and hides the sidebar's update banner.",
         },
         /** Intentionally absent from `required` so configs written by older builds still load. */
         enableDebugLogs: {
@@ -574,7 +487,7 @@ export const settingsJsonSchema = {
             default: false,
             title: 'Disable automatic watch mode',
             description:
-                'When on, watch mode only runs where you turn it on. Agent-storm stops turning it on for checkouts of PRs assigned to you, for a worktree once its branch gets its first PR, for a checkout once its `/manual-review here` verdict posts, and for folders it paused while they had nothing to do.',
+                'When on, watch mode only runs where you turn it on. Agent Storm stops turning it on for checkouts of PRs assigned to you, for a worktree once its branch gets its first PR, for a checkout once its `/manual-review here` verdict posts, and for folders it paused while they had nothing to do.',
         },
         /** Intentionally absent from `required` so configs written by older builds still load. */
         disableAutoManualReview: {
@@ -582,7 +495,15 @@ export const settingsJsonSchema = {
             default: false,
             title: 'Disable automatic manual reviews',
             description:
-                "When on, a manual review only starts when you click Start Manual Review. Agent-storm stops starting reviews for PRs waiting on you, restarting them when your review is requested again or the PR gets new commits, and reviewing a Build folder's branch once it gets a PR.",
+                "When on, a manual review only starts when you click Start Manual Review. Agent Storm stops starting reviews for PRs waiting on you, restarting them when your review is requested again or the PR gets new commits, and reviewing a Build folder's branch once it gets a PR.",
+        },
+        /** Intentionally absent from `required` so configs written by older builds still load. */
+        disableSelfImprovement: {
+            type: 'boolean',
+            default: false,
+            title: 'Disable self-improvement',
+            description:
+                "When on, agent-storm stops improving itself while you're away. Otherwise, with debug logging on, once you've been away for hours an AI thread works on a copy of this checkout to make agent-storm faster, cheaper in tokens and GitHub rate limits, less buggy, and cleaner, then stops when you're back and proposes its changes for you to approve.",
         },
         /**
          * Path to a TLS certificate. When set, the vite dev server serves the frontend over https
@@ -598,15 +519,82 @@ export const settingsJsonSchema = {
             description:
                 'Path to a .crt file. When set, the frontend is served over https using this certificate and the .key file of the same name beside it. Leave empty to serve over http.',
         },
+        /** Intentionally absent from `required` so configs written by older builds still load. */
+        muteNotifications: {
+            type: 'boolean',
+            default: false,
+            title: 'Mute all notifications',
+            description:
+                'When on, no notification shows, in-app or by push, whatever each type and folder choice says.',
+        },
+        /**
+         * The user's choice for each notification type and delivery they changed. A missing pair
+         * follows the type's default.
+         */
+        notifications: {
+            type: 'array',
+            default: [],
+            title: 'Notifications',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                title: 'Notification choice',
+                properties: {
+                    typeId: {
+                        type: 'string',
+                        title: 'Notification type id',
+                    },
+                    delivery: notificationDeliveryJsonSchema,
+                    isEnabled: {
+                        type: 'boolean',
+                        title: 'Enabled',
+                    },
+                },
+                required: [
+                    'typeId',
+                    'delivery',
+                    'isEnabled',
+                ],
+            },
+        },
+        /** Choices for one folder, which beat `notifications`. A worktree inherits its repo's. */
+        folderNotifications: {
+            type: 'array',
+            default: [],
+            title: 'Folder notification overrides',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                title: 'Folder notification choice',
+                properties: {
+                    folder: {
+                        type: 'string',
+                        title: 'Folder',
+                    },
+                    typeId: {
+                        type: 'string',
+                        title: 'Notification type id',
+                    },
+                    delivery: notificationDeliveryJsonSchema,
+                    isEnabled: {
+                        type: 'boolean',
+                        title: 'Enabled',
+                    },
+                },
+                required: [
+                    'folder',
+                    'typeId',
+                    'delivery',
+                    'isEnabled',
+                ],
+            },
+        },
     },
     required: [
-        'aiDefinitions',
-        'defaultAiId',
         'postWorktreeCmd',
         'folderPostWorktreeCmds',
         'review',
         'typography',
-        'folderAiIds',
         'forges',
         'useWebgl',
         'sidebarGrouping',
@@ -617,15 +605,15 @@ export const settingsShape = mapSchemaToShape(settingsJsonSchema);
 
 /** Setting keys that a settings section's own element renders instead of a generic schema row. */
 export const customSettingKeys = [
-    'aiDefinitions',
-    'defaultAiId',
     'folderPostWorktreeCmds',
     'review',
     'typography',
-    'folderAiIds',
     'forges',
     'pluginSettings',
     'keyboardShortcuts',
+    'muteNotifications',
+    'notifications',
+    'folderNotifications',
 ] as const satisfies ReadonlyArray<keyof typeof settingsJsonSchema.properties>;
 
 type CustomSettingKey = (typeof customSettingKeys)[number];
@@ -643,12 +631,9 @@ export type SchemaSettingKey = Exclude<
 export const folderSettingsJsonSchema = {
     type: 'object',
     additionalProperties: false,
-    title: 'agent-storm folder settings',
+    title: 'Agent Storm folder settings',
     properties: {
         postWorktreeCmd: settingsJsonSchema.properties.postWorktreeCmd,
-        defaultAiId: settingsJsonSchema.properties.defaultAiId,
-        /** Added to the user's own AIs. The user's own win when ids collide. */
-        aiDefinitions: settingsJsonSchema.properties.aiDefinitions,
         review: {
             type: 'object',
             additionalProperties: false,
@@ -705,7 +690,6 @@ export const paneSessionStatusShape = defineShape({
 
 /** One status per pane kind, reducing every session of that kind in a folder to one value. */
 export const paneStatusesShape = defineShape({
-    [PaneKind.Ai]: enumShape(PaneStatus),
     [PaneKind.Shell]: enumShape(PaneStatus),
 } satisfies Record<PaneKind, unknown>);
 
@@ -720,16 +704,6 @@ export const folderInfoShape = defineShape({
      */
     createdAtMs: 0,
     isWorktreeRoot: false,
-    /**
-     * Id of the AI this folder resolves to — the backend already walked the per-folder override →
-     * worktree-root override → folder settings files → `defaultAiId` chain, so the frontend never
-     * recreates that lookup. Empty when no AI is defined at all.
-     */
-    aiId: '',
-    /** The AI this folder would resolve to without its own per-folder override. */
-    inheritedAiId: '',
-    /** AIs this folder's settings files define, beside the user's own. */
-    folderAiDefinitions: [aiDefinitionShape],
     branch: nullableShape(''),
     git: {
         dirty: false,
@@ -760,15 +734,6 @@ export const folderInfoShape = defineShape({
     },
 });
 
-/**
- * A request, made by an AI running in agent-storm, for every open frontend to switch to `folder`.
- * Each frontend acts on a given `requestId` once.
- */
-const folderActivationShape = defineShape({
-    folder: '',
-    requestId: '',
-});
-
 const foldersResponseShape = defineShape({
     folders: [folderInfoShape],
     /**
@@ -777,16 +742,10 @@ const foldersResponseShape = defineShape({
      */
     settingsRevision: 0,
     repos: [savedRepoShape],
-    /** Only set for a short while after the request is made. */
-    folderActivation: nullableShape(folderActivationShape),
     /** Changes whenever the stored UI layout does, so a poller only fetches `/ui-layout` then. */
     uiLayoutRevision: 0,
     /** Changes whenever `/plugins` would answer differently, so a poller only fetches it then. */
     pluginsRevision: '',
-});
-
-const folderActionRequestShape = defineShape({
-    folder: '',
 });
 
 /**
@@ -798,28 +757,6 @@ export const sessionMetaShape = defineShape({
     id: '',
     name: '',
     /**
-     * Per-tab AI override, set from the tab's "Change AI" item. Empty means the tab uses whatever
-     * its folder resolves to. Lives with the session rather than in config because it's per-tab app
-     * state, exactly like `name`.
-     */
-    aiId: '',
-    /**
-     * Agent-storm's id for the conversation this tab holds, handed to the AI process as
-     * `AGENT_STORM_CONVERSATION_ID` so a wrapper script can map it to the CLI's own session id.
-     * Unlike `id`, it changes whenever the tab starts a new conversation.
-     */
-    conversationId: '',
-    /** Whether the tab's next AI spawn should use the new-session command instead of resuming. */
-    isNewConversation: false,
-    /**
-     * The AI this tab's process was last started with. A running process keeps its command when
-     * `aiId` or the folder's AI changes, so this, not `aiId`, says what a live tab is running.
-     * Missing for tabs last started before it was recorded.
-     */
-    launchedAiId: optionalShape('', {
-        alsoUndefined: true,
-    }),
-    /**
      * The pane group the tab belongs to, when the folder has more than one (see
      * {@link toPaneGroupKey}). Missing for the folder's own tabs.
      */
@@ -829,12 +766,10 @@ export const sessionMetaShape = defineShape({
 });
 
 /**
- * Full session list for one folder, both kinds at once. Every session mutation returns this so the
- * frontend replaces its list wholesale instead of patching and risking drift from the server's
- * ordering.
+ * Full session list for one folder. Every session mutation returns this so the frontend replaces
+ * its list wholesale instead of patching and risking drift from the server's ordering.
  */
 export const folderSessionsShape = defineShape({
-    [PaneKind.Ai]: [sessionMetaShape],
     [PaneKind.Shell]: [sessionMetaShape],
 } satisfies Record<PaneKind, unknown>);
 
@@ -865,14 +800,6 @@ const sessionCloseRequestShape = defineShape({
     sessionId: '',
 });
 
-/** Empty `aiId` clears the tab's override, returning it to whatever its folder resolves to. */
-const sessionSetAiRequestShape = defineShape({
-    folder: '',
-    kind: enumShape(PaneKind),
-    sessionId: '',
-    aiId: '',
-});
-
 /**
  * `sessionId` is optional so a browser left open across an upgrade (a phone on the LAN page, say)
  * keeps working: an omitted value resolves to the folder's first session, which is exactly the
@@ -884,45 +811,8 @@ const paneActionRequestShape = defineShape({
     sessionId: nullableShape(''),
 });
 
-const createWorktreeRequestShape = defineShape({
-    repoPath: '',
-    name: '',
-    /**
-     * AI chosen in the "Add worktree" modal. Null/undefined (or empty) → don't write an override
-     * entry; the worktree inherits its repo's choice, or the global default.
-     */
-    aiId: nullableShape(''),
-});
-
-const deleteWorktreeRequestShape = defineShape({
-    worktreePath: '',
-});
-
 const okResponseShape = defineShape({
     ok: true,
-});
-
-const uploadRequestShape = defineShape({
-    filename: '',
-    dataBase64: '',
-});
-
-const aiAvatarUploadResponseShape = defineShape({
-    /** Bare filename to store in the AI definition's `avatarFile`. */
-    avatarFile: '',
-});
-
-const aiAvatarRequestShape = defineShape({
-    avatarFile: '',
-});
-
-/**
- * An avatar's bytes, base64-encoded. Served through the API rather than a plain image URL because
- * every request to the backend needs the bearer header, which an `<img src>` can't carry.
- */
-const aiAvatarResponseShape = defineShape({
-    dataBase64: '',
-    mimeType: '',
 });
 
 const pathRequestShape = defineShape({
@@ -1159,8 +1049,8 @@ export const reviewQueuePrShape = defineShape({
     isAwaitingViewerReview: false,
     /** The viewer has submitted a review of the PR before. A pending review doesn't count. */
     hasViewerReviewed: false,
-    /** Live pane statuses of the PR's review folder, like a Build folder's `panes`. */
-    panes: paneStatusesShape,
+    /** What the AI Chat thread reviewing the PR is doing. */
+    threadStatus: enumShape(PaneStatus),
     /** Empty when the author's account was deleted. */
     author: '',
     authorAvatarUrl: '',
@@ -1211,6 +1101,8 @@ const pushEventShape = defineShape({
     pusherAvatarUrl: '',
     createdAt: '',
     isForcePush: false,
+    /** Abbreviated. Empty when GitHub no longer has a force push's resulting commit. */
+    commitHash: '',
 });
 
 /**
@@ -1239,7 +1131,7 @@ export const reviewPrShape = defineShape({
      * when that account is assigned to the PR.
      */
     threads: [gitHubReviewThreadShape],
-    /** Only the reviews the `gh` account submitted, oldest first. */
+    /** The reviews the `gh` account submitted plus every other reviewer's approvals, oldest first. */
     reviews: [gitHubReviewShape],
     /** Only requests for the `gh` account's review, oldest first. */
     reviewRequests: [reviewRequestEventShape],
@@ -1481,6 +1373,127 @@ export const pluginEventsWebSocket = defineWebSocket({
     }),
 });
 
+/**
+ * The server sends this event on {@link pluginEventsWebSocket}, with an empty `pluginId`, every
+ * {@link pluginEventsHeartbeatInterval}, so a window can tell a socket the network dropped without
+ * closing it from one that is only quiet.
+ */
+export const pluginEventsHeartbeatEvent = 'heartbeat';
+
+/** How often the server sends {@link pluginEventsHeartbeatEvent}. */
+export const pluginEventsHeartbeatInterval = {
+    milliseconds: 15_000,
+} as const;
+
+/** Whether the user is looking at a window, and the route it shows. */
+export const notificationWindowStateShape = defineShape({
+    isActive: false,
+    /** The route the window shows. */
+    paths: [
+        '',
+    ],
+});
+
+/** The toasts the user dismissed in one window, which every other window drops too. */
+const dismissedNotificationsShape = defineShape({
+    dismissedIds: [
+        '',
+    ],
+});
+
+/**
+ * Carries notifications to each open window, which shows them as toasts. A window tells the server
+ * whether the user is looking at it, so a device that just showed a toast isn't also pushed to. A
+ * window also reports the toasts its user dismissed, which the server passes on to every other
+ * window.
+ */
+export const notificationsWebSocket = defineWebSocket({
+    path: '/notifications',
+    clientMessage: defineShape(
+        unionShape(notificationWindowStateShape, dismissedNotificationsShape),
+    ),
+    hostMessage: defineShape(unionShape(notificationShape, dismissedNotificationsShape)),
+});
+
+/** A device's Web Push subscription, as `PushSubscription.toJSON()` gives its parts. */
+export const pushSubscriptionShape = defineShape({
+    endpoint: '',
+    p256dh: '',
+    auth: '',
+});
+
+/** The server's VAPID public key, which a device subscribes to push with. */
+export const pushKeyEndpoint = defineEndpoint({
+    path: '/push/key',
+    requests: {
+        [HttpMethod.Get]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        publicKey: '',
+                    }),
+                },
+            },
+        },
+    },
+});
+
+/** Saves a device's push subscription, which every later push goes to. */
+export const pushSubscribeEndpoint = defineEndpoint({
+    path: '/push/subscribe',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: pushSubscriptionShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        ok: true,
+                    }),
+                },
+            },
+        },
+    },
+});
+
+/** Forgets a device's push subscription. */
+export const pushUnsubscribeEndpoint = defineEndpoint({
+    path: '/push/unsubscribe',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                endpoint: '',
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        ok: true,
+                    }),
+                },
+            },
+        },
+    },
+});
+
+/** Pushes a test notification to one device. */
+export const pushTestEndpoint = defineEndpoint({
+    path: '/push/test',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: defineShape({
+                endpoint: '',
+            }),
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: defineShape({
+                        /** Empty when the push service accepted it. */
+                        errorMessage: '',
+                    }),
+                },
+            },
+        },
+    },
+});
+
 /** The side a diff list reads as one stacked review, or `false` for a single-file diff. */
 export const diffReviewSideShape = unionShape(enumShape(GitDiffSide), exactShape(false));
 
@@ -1614,7 +1627,7 @@ const paneGroupKeySeparator = '\0';
 
 /**
  * Keys a pane group's tab layout. A folder's own pane group is keyed by its path. A scoped one,
- * such as a Build V2 thread's, shares the folder's terminals' working directory but keeps its own
+ * such as a Build thread's, shares the folder's terminals' working directory but keeps its own
  * tabs.
  */
 export function toPaneGroupKey({
@@ -1673,8 +1686,8 @@ export const uiLayoutShape = defineShape({
         values: false,
     }),
     /**
-     * The latest value of each remembered selection (such as the Build tab's selected folder),
-     * keyed by its storage key. A window uses it when neither it nor its browser remembers one.
+     * The latest value of each remembered selection (such as the Review tab's selected PR), keyed
+     * by its storage key. A window uses it when neither it nor its browser remembers one.
      */
     rememberedSelections: recordShape({
         keys: '',
@@ -1836,14 +1849,13 @@ export const switchUpdateEndpoint = defineEndpoint({
 const onboardingStatusShape = defineShape({
     /** Setup was never finished or skipped, and no folder is saved yet. */
     shouldShowOnboarding: false,
-    /** A named instance runs the default instance's hooks, so it can't install its own. */
-    canInstallClaudeHooks: false,
-    areClaudeHooksInstalled: false,
     /** `gh auth status` succeeds. */
     isGitHubConnected: false,
     /** Only a release started by `npx agent-storm`, on macOS or Linux, can start at login. */
     canStartAtLogin: false,
     isStartAtLoginEnabled: false,
+    /** Runs from a git checkout, not a release or a named instance, so it can improve itself. */
+    canSelfImprove: false,
 });
 
 export const onboardingEndpoint = defineEndpoint({
@@ -1867,23 +1879,6 @@ export const onboardingEndpoint = defineEndpoint({
     },
 });
 
-/**
- * Registers agent-storm's Claude Code hooks in `~/.claude/settings.json`, beside the user's own.
- * Once any of them is registered, the server keeps them all current on every start.
- */
-export const claudeHooksInstallEndpoint = defineEndpoint({
-    path: '/claude-hooks/install',
-    requests: {
-        [HttpMethod.Post]: {
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: onboardingStatusShape,
-                },
-            },
-        },
-    },
-});
-
 /** Adds or removes the login item. It takes effect at the next login and doesn't start anything now. */
 export const startAtLoginEndpoint = defineEndpoint({
     path: '/start-at-login',
@@ -1895,34 +1890,6 @@ export const startAtLoginEndpoint = defineEndpoint({
             responses: {
                 [HttpStatus.Ok]: {
                     responseData: onboardingStatusShape,
-                },
-            },
-        },
-    },
-});
-
-export const createWorktreeEndpoint = defineEndpoint({
-    path: '/worktrees/create',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: createWorktreeRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const deleteWorktreeEndpoint = defineEndpoint({
-    path: '/worktrees/delete',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: deleteWorktreeRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
                 },
             },
         },
@@ -1952,20 +1919,6 @@ export const paneInputEndpoint = defineEndpoint({
     requests: {
         [HttpMethod.Post]: {
             requestData: paneInputRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
-                },
-            },
-        },
-    },
-});
-
-export const killPanesEndpoint = defineEndpoint({
-    path: '/panes/kill',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: folderActionRequestShape,
             responses: {
                 [HttpStatus.Ok]: {
                     responseData: okResponseShape,
@@ -2036,24 +1989,6 @@ export const sessionCloseEndpoint = defineEndpoint({
     },
 });
 
-/**
- * Points one tab at a specific AI (or back at its folder's choice). The caller restarts the tab's
- * pane afterward, which is what makes the new command take effect.
- */
-export const sessionSetAiEndpoint = defineEndpoint({
-    path: '/sessions/set-ai',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: sessionSetAiRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: folderSessionsShape,
-                },
-            },
-        },
-    },
-});
-
 const clientErrorRequestShape = defineShape({
     /** `error.message`, or the stringified value when something other than an `Error` was thrown. */
     message: '',
@@ -2083,6 +2018,15 @@ export const clientErrorEndpoint = defineEndpoint({
         },
     },
 });
+
+/** The debug log's events that time one request, which `npm run perf-report` summarizes. */
+export enum TimedDebugLogEvent {
+    /** A server request other than a plugin call. */
+    Request = 'request',
+    PluginCall = 'plugin-call',
+    /** A request's round trip as the browser saw it. */
+    ClientRequest = 'client-request',
+}
 
 export const clientDebugLogRequestShape = defineShape({
     /** Random per page load, to tell apart windows writing at the same time. */
@@ -2218,6 +2162,20 @@ export const restartDaemonEndpoint = defineEndpoint({
     },
 });
 
+/** The user touched the app, which holds off work that waits for them to be away. */
+export const userInputEndpoint = defineEndpoint({
+    path: '/user-input',
+    requests: {
+        [HttpMethod.Post]: {
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
 export const touchRepoEndpoint = defineEndpoint({
     path: '/repos/touch',
     requests: {
@@ -2232,17 +2190,13 @@ export const touchRepoEndpoint = defineEndpoint({
     },
 });
 
-/**
- * Adds a repo to the repo list, or touches it if it's already there. `aiId`, when set, becomes the
- * new repo's AI override.
- */
+/** Adds a repo to the repo list, or touches it if it's already there. */
 export const addRepoEndpoint = defineEndpoint({
     path: '/repos/add',
     requests: {
         [HttpMethod.Post]: {
             requestData: defineShape({
                 path: '',
-                aiId: '',
             }),
             responses: {
                 [HttpStatus.Ok]: {
@@ -2250,22 +2204,6 @@ export const addRepoEndpoint = defineEndpoint({
                         repos: [savedRepoShape],
                         isNew: false,
                     }),
-                },
-            },
-        },
-    },
-});
-
-export const removeRepoEndpoint = defineEndpoint({
-    path: '/repos/remove',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: defineShape({
-                path: '',
-            }),
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: okResponseShape,
                 },
             },
         },
@@ -2339,40 +2277,6 @@ export const createPathEndpoint = defineEndpoint({
     },
 });
 
-/**
- * Stores an avatar image dropped onto the Settings modal's AI editor and hands back the filename to
- * record in the definition. Separate from the terminal plugin's uploads because those are throwaway
- * files pasted into a terminal, while these have to outlive a reboot alongside the config.
- */
-export const aiAvatarUploadEndpoint = defineEndpoint({
-    path: '/ai/avatar/upload',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: uploadRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: aiAvatarUploadResponseShape,
-                },
-            },
-        },
-    },
-});
-
-/** POST rather than GET so the filename travels in the body and the bearer header applies. */
-export const aiAvatarEndpoint = defineEndpoint({
-    path: '/ai/avatar',
-    requests: {
-        [HttpMethod.Post]: {
-            requestData: aiAvatarRequestShape,
-            responses: {
-                [HttpStatus.Ok]: {
-                    responseData: aiAvatarResponseShape,
-                },
-            },
-        },
-    },
-});
-
 export const ptyWebSocket = defineWebSocket({
     path: '/pty',
     clientMessage: ptyClientMessageShape,
@@ -2424,35 +2328,33 @@ export const agentStormService = defineApi({
         installUpdateEndpoint,
         switchUpdateEndpoint,
         onboardingEndpoint,
-        claudeHooksInstallEndpoint,
         startAtLoginEndpoint,
-        createWorktreeEndpoint,
-        deleteWorktreeEndpoint,
         restartPaneEndpoint,
-        killPanesEndpoint,
         paneInputEndpoint,
         sessionListEndpoint,
         sessionCreateEndpoint,
         sessionRenameEndpoint,
         sessionCloseEndpoint,
-        sessionSetAiEndpoint,
-        aiAvatarUploadEndpoint,
-        aiAvatarEndpoint,
         clientErrorEndpoint,
         clientDebugLogEndpoint,
         clientPerfEndpoint,
         clientFreezeEndpoint,
         restartDaemonEndpoint,
+        userInputEndpoint,
         touchRepoEndpoint,
         addRepoEndpoint,
-        removeRepoEndpoint,
         hideRepoEndpoint,
         checkPathEndpoint,
         createPathEndpoint,
+        pushKeyEndpoint,
+        pushSubscribeEndpoint,
+        pushUnsubscribeEndpoint,
+        pushTestEndpoint,
     ],
     webSockets: [
         ptyWebSocket,
         pluginEventsWebSocket,
+        notificationsWebSocket,
     ],
 });
 
@@ -2468,9 +2370,7 @@ export type Settings = SchemaShapeToType<
 >;
 export type FolderSettings = typeof folderSettingsShape.runtimeType;
 export type SavedRepo = typeof savedRepoShape.runtimeType;
-export type AiDefinition = Settings['aiDefinitions'][number];
 export type FolderInfo = typeof folderInfoShape.runtimeType;
-export type FolderActivation = typeof folderActivationShape.runtimeType;
 export type PaneSessionStatus = typeof paneSessionStatusShape.runtimeType;
 export type UpdateStatus = typeof updateStatusResponseShape.runtimeType;
 export type OnboardingStatus = typeof onboardingStatusShape.runtimeType;

@@ -1,9 +1,11 @@
 import {definePlugin} from '@agent-storm/core/frontend';
+import {getObjectTypedValues} from '@augment-vir/common';
+import {reviewNotificationTypes} from './notification-types.js';
+import {reviewActivityId} from './review-api.js';
 import {reviewActivity} from './ui/elements/review-activity.js';
 import {reviewPane} from './ui/elements/review-pane.js';
 import {reviewSettingsSection} from './ui/elements/review-settings-section.js';
 import {reviewExtension} from './util/review-extension.js';
-import {reviewActivityId} from './util/review-state.js';
 
 export const reviewPlugin = definePlugin({
     id: reviewActivityId,
@@ -21,4 +23,5 @@ export const reviewPlugin = definePlugin({
     settingsSections: [
         reviewSettingsSection,
     ],
+    notificationTypes: getObjectTypedValues(reviewNotificationTypes),
 });

@@ -1,4 +1,5 @@
 import {
+    type NotificationType,
     type PaneKind,
     type SchemaSettingKey,
     type SessionMeta,
@@ -39,14 +40,15 @@ export enum SettingsSection {
     Plugins = 'plugins',
     Ai = 'ai',
     Folders = 'folders',
+    Notifications = 'notifications',
     Forges = 'forges',
     Maintenance = 'maintenance',
 }
 
 /**
  * A page of the Settings modal that a plugin adds. It shows in the Plugins section once its plugin
- * is picked there, beside the plugin's other pages. `Details` is whatever the page's opener passes
- * through {@link createSettingsTarget}.
+ * is picked there, beside the plugin's other pages, unless it sets `coreSection`. `Details` is
+ * whatever the page's opener passes through {@link createSettingsTarget}.
  */
 export type SettingsSectionContribution<Details = undefined> = Readonly<{
     /** Prefixed by the owning plugin's id, so no two plugins' sections can collide. */
@@ -61,6 +63,11 @@ export type SettingsSectionContribution<Details = undefined> = Readonly<{
     schemaKeys: ReadonlyArray<SchemaSettingKey>;
 }> &
     PartialWithUndefined<{
+        /**
+         * Shows the section below that core page's own settings instead of in the Plugins section.
+         * That page's "Restore defaults" button ignores the section's `defaults`.
+         */
+        coreSection: SettingsSection;
         /**
          * What the page's "Restore defaults" button checks and does. Omitted, it restores
          * `schemaKeys`.
@@ -153,6 +160,8 @@ export type AppContext = Readonly<{
     settingsSections: ReadonlyArray<AnySettingsSectionContribution>;
     /** Every plugin's keyboard shortcut actions, listed in the Keyboard shortcuts section. */
     shortcutActions: ReadonlyArray<ShortcutAction>;
+    /** Every plugin's notification types, listed in the Notifications section. */
+    notificationTypes: ReadonlyArray<NotificationType>;
     /** Set inside an Activity tab, which can't hold another and doesn't touch remembered selections. */
     isInActivityTab: boolean;
     /**
@@ -378,7 +387,7 @@ export type PaneGroupExtension<
             folder: string;
             /**
              * Keys this group's tabs in `context.uiLayout`. Differs from `folder` for a scoped
-             * group, such as a Build V2 thread's.
+             * group, such as a Build thread's.
              */
             layoutKey: string;
             context: AppContext;
@@ -473,8 +482,6 @@ export type PaneDefinition<TabStateShape extends Shape = typeof noTabStateShape>
     /** The kind's entries in the new-tab menu. */
     newTabEntries(view: PaneGroupView): ReadonlyArray<NewTabEntry<TabStateShape>>;
     icon: ViraIconSvg;
-    /** Whether the pane runs an AI, which its tab shows and its menu can change. */
-    hasAi: boolean;
     mounting: PaneMounting;
     isAvailable(view: PaneGroupView): boolean;
     render(params: PaneRenderParams<TabStateShape>): HtmlInterpolation;
@@ -543,6 +550,11 @@ export type PluginDefinition<Fields extends PluginSettingFields = PluginSettingF
          * `readShortcuts`.
          */
         shortcutActions: ReadonlyArray<ShortcutAction>;
+        /**
+         * What the plugin's server part can notify the user of with `host.notify`. The
+         * Notifications section of the Settings modal lists them.
+         */
+        notificationTypes: ReadonlyArray<NotificationType>;
         /**
          * Typed settings the Settings modal renders a form for, in a page of the plugin's own. Read
          * them with the context's `readPluginSettings`.

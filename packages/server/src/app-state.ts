@@ -1,7 +1,9 @@
 import {
     approvedFolderSettingsShape,
     GitHubPollingDisableReason,
+    notificationShape,
     pluginDecisionRecordShape,
+    pushSubscriptionShape,
     savedRepoShape,
 } from '@agent-storm/common';
 import {readFileIfExists} from '@augment-vir/node';
@@ -39,6 +41,14 @@ const appStateShape = defineShape({
     }),
     /** Folder settings files whose commands and code the user approved. */
     approvedFolderSettings: optionalShape([approvedFolderSettingsShape], {
+        alsoUndefined: true,
+    }),
+    /** Every device that turned on push notifications. */
+    pushSubscriptions: optionalShape([pushSubscriptionShape], {
+        alsoUndefined: true,
+    }),
+    /** Persistent toasts no window has dismissed yet, shown again in each window that connects. */
+    notifications: optionalShape([notificationShape], {
         alsoUndefined: true,
     }),
 });

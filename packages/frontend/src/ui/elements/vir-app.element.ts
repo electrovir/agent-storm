@@ -1,3 +1,4 @@
+import {type AppNotification} from '@agent-storm/common';
 import {
     applyThemeMode,
     applyTypography,
@@ -18,21 +19,57 @@ import {
     type AppContext,
     type SettingsTarget,
 } from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
+import {wait} from '@augment-vir/common';
 import {colorCss} from '@electrovir/color';
 import {css, html, listen, nothing, Observable} from 'element-vir';
 import {themeDefaultKey} from 'theme-vir';
 import {viraTheme, ViraThemeClient} from 'vira';
 import {resolveActivityRoute} from '../../util/activity-route.js';
+import {startInAppNotifications} from '../../util/in-app-notifications.js';
+import {closePushNotifications, startPushNotifications} from '../../util/push-notifications.js';
 import {bookRouteBase, router} from '../../util/router.js';
+import {startUserInputReports} from '../../util/user-input-reports.js';
 import {trackVisualViewportHeight} from '../../util/visual-viewport.js';
 import {activityPane} from './activity-pane.js';
 import {VirActivityPanel} from './vir-activity-panel.element.js';
 import {VirAppModals} from './vir-app-modals.element.js';
 import {VirMainTabs} from './vir-main-tabs.element.js';
 import {VirMobileSidebar} from './vir-mobile-sidebar.element.js';
+import {VirNotificationToasts} from './vir-notification-toasts.element.js';
 
 installClientErrorLog();
 installClientPerfLog();
+startUserInputReports();
+
+function dismissNotifications(
+    notifications: Observable<ReadonlyArray<AppNotification>>,
+    ids: ReadonlyArray<string>,
+) {
+    const remaining = notifications.value.filter((notification) => {
+        return !ids.includes(notification.id);
+    });
+    if (remaining.length !== notifications.value.length) {
+        notifications.setValue(remaining);
+    }
+}
+
+/**
+ * The toasts that open `paths`. A persistent one would otherwise outlive what it announced, such as
+ * a thread's "Finished." staying up through the thread's next turn.
+ */
+function findRouteNotificationIds(
+    notifications: ReadonlyArray<AppNotification>,
+    paths: ReadonlyArray<string>,
+) {
+    return notifications
+        .filter((notification) => {
+            return check.jsonEquals(notification.paths, [
+                ...paths,
+            ]);
+        })
+        .map((notification) => notification.id);
+}
 
 export const VirApp = defineAppElement()({
     tagName: 'vir-app',
@@ -63,6 +100,10 @@ export const VirApp = defineAppElement()({
             isSettingsOpen: new Observable<boolean>({
                 defaultValue: false,
             }),
+            /** The toasts on screen, oldest first. */
+            notifications: new Observable<ReadonlyArray<AppNotification>>({
+                defaultValue: [],
+            }),
             plugins: createPluginRegistry({
                 hostPanes: [
                     activityPane,
@@ -79,6 +120,7 @@ export const VirApp = defineAppElement()({
                     });
                 },
             }),
+            inAppNotifications: undefined as ReturnType<typeof startInAppNotifications> | undefined,
             disposers: [] as ReadonlyArray<() => void>,
         };
     },
@@ -128,8 +170,47 @@ export const VirApp = defineAppElement()({
             state.isSettingsOpen.setValue(true);
         }
         globalThis.addEventListener('keydown', openSettingsOnShortcut, true);
+        const inAppNotifications = startInAppNotifications({
+            async onNotification(notification) {
+                const replacedIds = findRouteNotificationIds(
+                    state.notifications.value,
+                    notification.paths,
+                );
+                state.notifications.setValue([
+                    ...state.notifications.value
+                        .filter((existing) => !replacedIds.includes(existing.id))
+                        .slice(-4),
+                    notification,
+                ]);
+                if (notification.isPersistent) {
+                    return;
+                }
+                await wait({
+                    seconds: 10,
+                });
+                dismissNotifications(state.notifications, [
+                    notification.id,
+                ]);
+            },
+            onDismissed(dismissedIds) {
+                dismissNotifications(state.notifications, dismissedIds);
+            },
+            async onRouteSeen(paths) {
+                const seenIds = findRouteNotificationIds(state.notifications.value, paths);
+                dismissNotifications(state.notifications, seenIds);
+                inAppNotifications.sendDismissed(seenIds);
+                await closePushNotifications(paths);
+            },
+        });
         updateState({
+            inAppNotifications,
             disposers: [
+                () => inAppNotifications.stop(),
+                startPushNotifications((paths) => {
+                    router.setRoute({
+                        paths,
+                    });
+                }),
                 state.folderData.listen(true, ({snapshot}) => {
                     applyTypography(snapshot?.settings);
                 }),
@@ -276,7 +357,7 @@ export const VirApp = defineAppElement()({
             state: resolved.state,
             subPaths: resolved.subPaths,
         });
-        document.title = title ? `agent-storm • ${title}` : 'agent-storm';
+        document.title = title ? `Agent Storm • ${title}` : 'Agent Storm';
         const isMobile = state.screenSize === ScreenSize.Mobile;
         const activityId = resolved.activity?.id || '';
 
@@ -322,6 +403,28 @@ export const VirApp = defineAppElement()({
                 settingsTarget: state.settingsTarget,
                 isSettingsOpen: state.isSettingsOpen,
             })}></${VirAppModals}>
+            <${VirNotificationToasts.assign({
+                notifications: state.notifications.value,
+                notificationTypes: context.notificationTypes,
+            })}
+                ${listen(VirNotificationToasts.events.open, (event) => {
+                    dismissNotifications(state.notifications, [
+                        event.detail.id,
+                    ]);
+                    state.inAppNotifications?.sendDismissed([
+                        event.detail.id,
+                    ]);
+                    context.navigate(event.detail.paths);
+                })}
+                ${listen(VirNotificationToasts.events.dismiss, (event) => {
+                    dismissNotifications(state.notifications, [
+                        event.detail,
+                    ]);
+                    state.inAppNotifications?.sendDismissed([
+                        event.detail,
+                    ]);
+                })}
+            ></${VirNotificationToasts}>
         `;
     },
 });

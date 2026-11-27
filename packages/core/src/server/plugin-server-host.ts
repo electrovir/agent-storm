@@ -3,12 +3,14 @@ import {
     type FolderSessions,
     type FolderSettings,
     type GitHubPollingDisableReason,
+    type NotifyParams,
     type PaneKind,
     type PaneSessionStatus,
-    type PaneStatus,
     type PrStatus,
     type SessionMeta,
     type Settings,
+    type SharedTabLayout,
+    type TabSelection,
 } from '@agent-storm/common';
 import {type MaybePromise} from '@augment-vir/common';
 
@@ -61,6 +63,12 @@ export type HostedProcessExit = Readonly<{
     stderr: string;
 }>;
 
+/** A pane group's tabs and which of them are selected. */
+export type PaneGroupState = {
+    tabLayout: SharedTabLayout;
+    tabSelection: TabSelection | undefined;
+};
+
 /**
  * The app's own state and machinery a plugin's server part reaches through, so the plugin never
  * imports the app's server. Every listener registration returns a function that removes it, which a
@@ -72,20 +80,6 @@ export type PluginServerHost = Readonly<{
     loadFolderSettings(folder: string): Promise<FolderSettings[]>;
     /** The sidebar's folders. */
     listFolders(): Promise<ReadonlyArray<Readonly<FolderInfo>>>;
-    /**
-     * The Claude session each AI tab last started, as Claude's session hook recorded it. Empty
-     * while the hooks aren't installed. A tab's earlier sessions aren't kept.
-     */
-    listClaudeTabSessions(): Promise<
-        ReadonlyArray<
-            Readonly<{
-                /** Normalized path. */
-                folder: string;
-                conversationId: string;
-                claudeSessionId: string;
-            }>
-        >
-    >;
     /**
      * Calls `listener` when a sweep finds a PR on a folder whose previous sweep found none. A
      * folder's first sweep never counts.
@@ -179,15 +173,34 @@ export type PluginServerHost = Readonly<{
     /** Every folder the pty daemon holds a pane in. */
     listPaneFolders(): Promise<string[]>;
     killFolderPanes(params: Readonly<{folder: string}>): Promise<void>;
-    getPaneStatusLookup(): Promise<(folder: string, kind: PaneKind) => PaneStatus>;
     getPaneSessionStatusLookup(): Promise<(folder: string) => ReadonlyArray<PaneSessionStatus>>;
     /** The tabs of the folder's pane the daemon holds a running process for. */
     getLivePaneSessionIds(folder: string, kind: PaneKind): Promise<ReadonlyArray<string>>;
     /** Deletes the UI state the app keeps for the folder, for a folder that's being deleted. */
     deleteFolderState(folder: string): Promise<void>;
+    /**
+     * Moves the folder's own pane group, its tabs' sessions included, into the pane group `scope`,
+     * with the layout `changeLayout` returns. Undefined from `changeLayout` leaves the scoped pane
+     * group to start from its default tabs.
+     */
+    moveFolderPaneGroup(
+        params: Readonly<{
+            folder: string;
+            scope: string;
+            changeLayout(state: Readonly<PaneGroupState>): PaneGroupState | undefined;
+        }>,
+    ): Promise<void>;
     getFolderSessions(folder: string): Promise<FolderSessions>;
     createFolderSession(
-        params: Readonly<{folder: string; kind: PaneKind}>,
+        params: Readonly<{
+            folder: string;
+            kind: PaneKind;
+            /**
+             * The pane group the tab joins, as `VirPaneGroup`'s `scope`. Empty for the folder's
+             * own.
+             */
+            scope?: string | undefined;
+        }>,
     ): Promise<FolderSessions>;
     findFolderSession(params: PaneSessionTarget): Promise<SessionMeta | undefined>;
     renameFolderSession(
@@ -197,9 +210,6 @@ export type PluginServerHost = Readonly<{
             }
         >,
     ): Promise<FolderSessions>;
-    /** Whether Claude in the conversation is idle at its prompt, per its activity hook. */
-    isClaudeReady(conversationId: string): Promise<boolean>;
-    isClaudeAwaitingPermission(conversationId: string): Promise<boolean>;
     /** Starts the tab's process if it isn't running, the way opening its pane would. */
     spawnPane(params: PaneSessionTarget): Promise<void>;
     /** Types `text` into the tab and submits it, starting the tab's process first if needed. */
@@ -210,8 +220,6 @@ export type PluginServerHost = Readonly<{
             }
         >,
     ): Promise<void>;
-    /** Sends `prompt` to the folder's first AI tab once its AI is ready for it. */
-    launchFolderSession(params: Readonly<{folder: string; prompt: string}>): Promise<void>;
     /**
      * Types `command` into the folder's first shell tab, making one when it has none. False,
      * without typing anything, while that tab is running something.
@@ -227,6 +235,11 @@ export type PluginServerHost = Readonly<{
             folder: string;
             /** The new folder's name, which is also its new branch's name. */
             name: string;
+            /**
+             * The pane group, such as a Build thread's, that gets a new shell tab to run the
+             * post-worktree command in. Without one, the folder's first shell tab runs it.
+             */
+            scope?: string | undefined;
         }>,
     ): Promise<{worktreePath: string}>;
     /**
@@ -236,6 +249,12 @@ export type PluginServerHost = Readonly<{
     deleteWorktree(params: Readonly<{worktreePath: string}>): Promise<void>;
     getCurrentBranch(folder: string): Promise<string | null>;
     getRepoSlug(folder: string): Promise<RepoSlug | null>;
+    /**
+     * Notifies the user by each delivery their settings turn on for the type, and for the folder
+     * when one is given. List the type in the plugin's `notificationTypes` too, so Settings shows
+     * it.
+     */
+    notify(params: NotifyParams): Promise<void>;
     /** Calls `listener` whenever a read of a folder's git state finds it changed. */
     listenToGitInfoChanges(
         listener: (
@@ -247,6 +266,18 @@ export type PluginServerHost = Readonly<{
             }>,
         ) => void,
     ): () => void;
+    /**
+     * The git checkout the app runs from, which self-improvement works on a copy of. Unset for a
+     * release, which has no checkout, and for a named instance.
+     */
+    findAppCheckoutPath(): string | undefined;
+    /**
+     * Epoch milliseconds of the user's last input in any open copy of the app, which reports it
+     * throttled. Undefined until their first.
+     */
+    readLastUserInputAt(): Promise<number | undefined>;
+    /** Calls `listener` whenever the app reports the user's input. */
+    listenToUserInput(listener: () => void): () => void;
 }>;
 
 /** What a plugin's server part adds to the app's own folder info. */
@@ -256,6 +287,8 @@ export type PluginFolderHooks = Readonly<{
         | ((
               params: Readonly<{
                   prStatus: PrStatus;
+                  /** The checkout the branch is in. */
+                  folder: string;
                   owner: string;
                   repoName: string;
                   branchName: string;

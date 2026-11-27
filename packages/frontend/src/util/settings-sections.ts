@@ -112,10 +112,7 @@ const coreSettingsSections: Readonly<
         label: 'AI',
         group: 'Agents',
         searchTerms: [
-            'avatar',
-            'command',
             'model',
-            'default ai',
         ],
         schemaCardTitle: undefined,
         schemaKeys: [],
@@ -133,6 +130,18 @@ const coreSettingsSections: Readonly<
         schemaKeys: [
             'postWorktreeCmd',
         ],
+    },
+    [SettingsSection.Notifications]: {
+        label: 'Notifications',
+        group: 'Agents',
+        searchTerms: [
+            'notification',
+            'push',
+            'alert',
+            'toast',
+        ],
+        schemaCardTitle: undefined,
+        schemaKeys: [],
     },
     [SettingsSection.Forges]: {
         label: 'Git forges',
@@ -173,8 +182,9 @@ export const coreSettingsSectionPages: ReadonlyArray<CoreSettingsSectionPage> = 
 });
 
 /**
- * Every section in the order search lists them: core's in their own order, with every plugin
- * section after the Plugins section, in the order the plugins were registered.
+ * Every section in the order search lists them: core's in their own order, each followed by the
+ * plugin sections it shows, with every other plugin section after the Plugins section, in the order
+ * the plugins were registered.
  */
 export function listSettingsSections(
     pluginSections: ReadonlyArray<AnySettingsSectionContribution>,
@@ -182,12 +192,19 @@ export function listSettingsSections(
     return coreSettingsSectionPages.flatMap((page) => {
         return [
             page,
-            ...(page.id === SettingsSection.Plugins ? pluginSections : []),
+            ...pluginSections.filter((section) => {
+                return page.id === SettingsSection.Plugins
+                    ? !section.coreSection
+                    : section.coreSection === page.id;
+            }),
         ];
     });
 }
 
-/** Each plugin that has a settings section, with its sections, in the plugins' order. */
+/**
+ * Each plugin that has a settings section in the Plugins section, with those sections, in the
+ * plugins' order.
+ */
 export function groupPluginSettingsSections({
     plugins,
     sections,
@@ -199,15 +216,17 @@ export function groupPluginSettingsSections({
         .map((plugin) => {
             return {
                 plugin,
-                sections: sections.filter((section) => section.pluginId === plugin.id),
+                sections: sections.filter((section) => {
+                    return section.pluginId === plugin.id && !section.coreSection;
+                }),
             };
         })
         .filter((group) => group.sections.length);
 }
 
 /**
- * The section `id` names, or the General section when none does, like a plugin's section from
- * before that plugin was turned off.
+ * The section `id` names, or the core page it shows in, or the General section when none does, like
+ * a plugin's section from before that plugin was turned off.
  */
 export function findSettingsSection({
     sections,
@@ -216,8 +235,7 @@ export function findSettingsSection({
     sections: ReadonlyArray<SettingsSectionPage>;
     id: string;
 }>) {
-    return (
-        sections.find((section) => section.id === id) ||
-        sections.find((section) => section.id === SettingsSection.General)
-    );
+    const section = sections.find((entry) => entry.id === id);
+    const pageId = section?.coreSection || section?.id || SettingsSection.General;
+    return sections.find((entry) => entry.id === pageId);
 }

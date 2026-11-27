@@ -4,42 +4,40 @@ import {
     activityBarSaveEndpoint,
     addRepoEndpoint,
     agentStormService,
-    aiAvatarEndpoint,
-    aiAvatarUploadEndpoint,
     checkPathEndpoint,
-    claudeHooksInstallEndpoint,
     clientDebugLogEndpoint,
     clientErrorEndpoint,
     clientFreezeEndpoint,
     clientPerfEndpoint,
     createPathEndpoint,
-    createWorktreeEndpoint,
-    deleteWorktreeEndpoint,
     foldersEndpoint,
     folderSettingsApprovalEndpoint,
     folderSettingsEndpoint,
     hideRepoEndpoint,
     installUpdateEndpoint,
-    killPanesEndpoint,
+    notificationsWebSocket,
     onboardingEndpoint,
     paneInputEndpoint,
     PaneKind,
-    paneKindRunsAi,
     pluginCallEndpoint,
     pluginCodeEndpoint,
     pluginDecisionEndpoint,
+    pluginEventsHeartbeatEvent,
+    pluginEventsHeartbeatInterval,
     pluginEventsWebSocket,
     pluginsEndpoint,
     ptyWebSocket,
+    pushKeyEndpoint,
+    pushSubscribeEndpoint,
+    pushTestEndpoint,
+    pushUnsubscribeEndpoint,
     rememberedSelectionSaveEndpoint,
-    removeRepoEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
     sessionCloseEndpoint,
     sessionCreateEndpoint,
     sessionListEndpoint,
     sessionRenameEndpoint,
-    sessionSetAiEndpoint,
     settingsEndpoint,
     startAtLoginEndpoint,
     switchUpdateEndpoint,
@@ -47,14 +45,13 @@ import {
     touchRepoEndpoint,
     uiLayoutEndpoint,
     updateCheckEndpoint,
+    userInputEndpoint,
     type SavedRepo,
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
-    awaitedFilter,
     convertByteSize,
     extractErrorMessage,
-    getObjectTypedKeys,
     HttpMethod,
     HttpStatus,
     log,
@@ -71,22 +68,25 @@ import fastify, {type FastifyInstance} from 'fastify';
 import {appendFileSync, renameSync, statSync} from 'node:fs';
 import {appendFile, mkdir, stat} from 'node:fs/promises';
 import {parseUrl} from 'url-vir';
-import {getFolderActivation, startLaunchRequestWatch, type LaunchRequest} from './agent-launch.js';
-import {readAiAvatar, saveAiAvatar} from './ai-avatar.js';
 import {loadAppState, updateAppState} from './app-state.js';
 import {extractBearerToken, initAuth, verifyAuthToken} from './auth.js';
-import {recordClaudeInterrupt} from './claude-activity.js';
 import {startConfigBackupLoop} from './config-backup.js';
 import {
     attachPane,
-    killFolderPanes,
+    killLegacyPanes,
     killPaneSession,
     restartPane,
     shutdownDaemon,
     type PaneAttachment,
 } from './daemon/daemon-client.js';
 import {ensureDaemon, waitForDaemonGone} from './daemon/ensure-daemon.js';
-import {appendDebugLog, pruneDebugLogs, startGhCallDebugLog} from './debug-log.js';
+import {
+    appendDebugLog,
+    logPluginCallDebug,
+    pruneDebugLogs,
+    startGhCallDebugLog,
+    startRequestDebugLog,
+} from './debug-log.js';
 import {
     clientErrorLogPath,
     failedPaneInputsPath,
@@ -105,22 +105,23 @@ import {
     readFolderSettingsFiles,
     saveFolderSettingsApproval,
 } from './folder-settings.js';
-import {addWorktree} from './git.js';
-import {installClaudeHooks, updateInstalledClaudeHooks} from './install-claude-hooks.js';
 import {startLivePaneTracking} from './live-panes.js';
+import {migrateBuildPluginId} from './migrate-build-plugin-id.js';
 import {migrateReviewFolders} from './migrate-review-folders.js';
-import {finishOnboarding, readOnboardingStatus, setStartAtLogin} from './onboarding.js';
 import {
-    launchFolderSession,
-    resolveAiForSession,
-    resolvePaneLaunch,
-    runPostWorktreeCmd,
-    sendPaneText,
-    spawnPane,
-} from './pane-launch.js';
+    addPushSubscription,
+    readVapidKeys,
+    removeNotificationSocket,
+    removePushSubscriptions,
+    sendDismissedNotifications,
+    sendSavedNotifications,
+    sendTestPush,
+    setNotificationSocket,
+} from './notifications.js';
+import {finishOnboarding, readOnboardingStatus, setStartAtLogin} from './onboarding.js';
+import {sendPaneText} from './pane-launch.js';
 import {appendPerfLog, logServerStartup, startServerPerfLog} from './perf-log.js';
 import {readPluginWatchMode} from './plugin-folder-hooks.js';
-import {pluginServerHost} from './plugin-server-host.js';
 import {callPluginServer, startPluginServers} from './plugin-servers.js';
 import {
     readActivePluginCode,
@@ -133,24 +134,13 @@ import {launcherOriginEnvVar, releaseBuild} from './release-build.js';
 import {
     createFolderSession,
     findOrCreateFirstSession,
-    forgetFolderSessions,
-    pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
-    setFolderSessionAi,
-    startNewConversation,
 } from './sessions.js';
 import {migrateLegacyConfigFiles} from './settings-migration.js';
-import {
-    combineAiDefinitions,
-    loadSettings,
-    readSettingsRevision,
-    saveSettings,
-    setFolderAiId,
-    updateSettings,
-} from './settings.js';
+import {loadSettings, readSettingsRevision, saveSettings} from './settings.js';
 import {readTlsOptions} from './tls-options.js';
 import {
     loadUiLayout,
@@ -161,6 +151,7 @@ import {
     saveTabLayout,
 } from './ui-layout.js';
 import {getUpdateStatus, startUpdateInstall, switchToPreparedUpdate} from './update-check.js';
+import {recordUserInput} from './user-input.js';
 
 /** Past this size the server log is moved to a `.old` copy, so a long session can't fill the disk. */
 const maxServerLogBytes = 20_000_000;
@@ -244,17 +235,10 @@ type SocketAttachment = {
     attachment: PaneAttachment;
     folder: string;
     kind: PaneKind;
-    /** Set only for AI panes, whose interrupt key presses feed {@link recordClaudeInterrupt}. */
-    conversationId: string | undefined;
 };
 
 const attachmentsByWebSocket = new WeakMap<object, SocketAttachment>();
 
-/**
- * The hooks go first so running Claude sessions stop writing to the old conversation state folder
- * before it's moved.
- */
-await updateInstalledClaudeHooks();
 await migrateLegacyConfigFiles();
 
 await migrateReviewFolders({
@@ -275,9 +259,15 @@ await migrateReviewFolders({
         },
     ],
 });
+await migrateBuildPluginId();
 void pruneFolderStates();
 
 await ensureDaemon();
+await killLegacyPanes().catch((error: unknown) => {
+    log.warning(
+        `Stopping the AI tabs an earlier release left running failed, so they run until the PTY daemon restarts: ${extractErrorMessage(error)}`,
+    );
+});
 
 await loadFolderActivity();
 
@@ -290,6 +280,16 @@ await initAuth();
 await startPluginServers((message) => {
     pluginEventSockets.forEach((socket) => socket.send(message));
 });
+
+setInterval(() => {
+    pluginEventSockets.forEach((socket) => {
+        socket.send({
+            pluginId: '',
+            event: pluginEventsHeartbeatEvent,
+            data: {},
+        });
+    });
+}, pluginEventsHeartbeatInterval.milliseconds);
 
 const implementor = createApiImplementor<undefined>()(agentStormService);
 
@@ -304,24 +304,7 @@ const settingsImplementation = implementor.implementEndpoint(settingsEndpoint, {
     async [HttpMethod.Put]({requestData}) {
         await saveSettings(requestData);
         const settings = await loadSettings();
-        const approvals = await loadFolderSettingsApprovals();
-        await pruneSessionAiIds({
-            async findValidAiIds(folder) {
-                const files = await readFolderSettingsFiles({
-                    folder: normalizePath(folder),
-                    approvals,
-                });
-                /** A file that's unreadable or held back may define AIs that tabs still use. */
-                if (files.some((file) => file.problem)) {
-                    return undefined;
-                }
-                return combineAiDefinitions({
-                    settings,
-                    folderLayers: files.map((file) => file.folderSettings).filter(check.isTruthy),
-                }).map((definition) => definition.id);
-            },
-        });
-        /** A changed AI or default has to reach `/folders` before the frontend's next poll. */
+        /** A changed setting has to reach `/folders` before the frontend's next poll. */
         await refreshFolderInfoNow();
         return {
             [HttpStatus.Ok]: {
@@ -405,6 +388,7 @@ const pluginCodeImplementation = implementor.implementEndpoint(pluginCodeEndpoin
 
 const pluginCallImplementation = implementor.implementEndpoint(pluginCallEndpoint, {
     async [HttpMethod.Post]({requestData}) {
+        const startedAt = Date.now();
         try {
             return {
                 [HttpStatus.Ok]: {
@@ -421,6 +405,12 @@ const pluginCallImplementation = implementor.implementEndpoint(pluginCallEndpoin
                     },
                 },
             };
+        } finally {
+            await logPluginCallDebug({
+                pluginId: requestData.pluginId,
+                call: requestData.call,
+                startedAt,
+            });
         }
     },
 });
@@ -436,6 +426,81 @@ const pluginEventsImplementation = implementor.implementWebSocket(pluginEventsWe
     },
     close({webSocket}) {
         pluginEventSockets.delete(webSocket);
+    },
+});
+
+const notificationsImplementation = implementor.implementWebSocket(notificationsWebSocket, {
+    async open({webSocket}) {
+        setNotificationSocket(webSocket, {
+            isActive: false,
+            paths: [],
+        });
+        await sendSavedNotifications(webSocket);
+    },
+    async message({webSocket, message}) {
+        if ('dismissedIds' in message) {
+            await sendDismissedNotifications({
+                socket: webSocket,
+                dismissedIds: message.dismissedIds,
+            });
+        } else {
+            setNotificationSocket(webSocket, message);
+        }
+    },
+    close({webSocket}) {
+        removeNotificationSocket(webSocket);
+    },
+});
+
+const pushKeyImplementation = implementor.implementEndpoint(pushKeyEndpoint, {
+    async [HttpMethod.Get]() {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    publicKey: (await readVapidKeys()).publicKey,
+                },
+            },
+        };
+    },
+});
+
+const pushSubscribeImplementation = implementor.implementEndpoint(pushSubscribeEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await addPushSubscription(requestData);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const pushUnsubscribeImplementation = implementor.implementEndpoint(pushUnsubscribeEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        await removePushSubscriptions([
+            requestData.endpoint,
+        ]);
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const pushTestImplementation = implementor.implementEndpoint(pushTestEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    errorMessage: await sendTestPush(requestData.endpoint),
+                },
+            },
+        };
     },
 });
 
@@ -456,16 +521,6 @@ const addRepoImplementation = implementor.implementEndpoint(addRepoEndpoint, {
                 ],
             };
         });
-        const aiId = requestData.aiId.trim();
-        if (isNew && aiId) {
-            await updateSettings((settings) => {
-                return setFolderAiId({
-                    settings,
-                    folder: path,
-                    aiId,
-                });
-            });
-        }
         /**
          * Re-enumerate folder targets now so the new repo shows up in `/folders` immediately
          * instead of waiting for the next background sweep (git/PR fields fill in over the next
@@ -477,26 +532,6 @@ const addRepoImplementation = implementor.implementEndpoint(addRepoEndpoint, {
                 responseData: {
                     repos: (await loadAppState()).repos,
                     isNew,
-                },
-            },
-        };
-    },
-});
-
-const removeRepoImplementation = implementor.implementEndpoint(removeRepoEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        const path = normalizePath(requestData.path);
-        await updateAppState((state) => {
-            return {
-                ...state,
-                repos: state.repos.filter((repo) => repo.path !== path),
-            };
-        });
-        await refreshFolderInfoNow();
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
                 },
             },
         };
@@ -560,7 +595,6 @@ const foldersImplementation = implementor.implementEndpoint(foldersEndpoint, {
                             }),
                         };
                     }),
-                    folderActivation: getFolderActivation(),
                     settingsRevision: await readSettingsRevision(),
                     repos: (await loadAppState()).repos,
                     uiLayoutRevision: readUiLayoutRevision(),
@@ -625,64 +659,12 @@ const onboardingImplementation = implementor.implementEndpoint(onboardingEndpoin
     },
 });
 
-const claudeHooksInstallImplementation = implementor.implementEndpoint(claudeHooksInstallEndpoint, {
-    async [HttpMethod.Post]() {
-        await installClaudeHooks();
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await readOnboardingStatus(),
-            },
-        };
-    },
-});
-
 const startAtLoginImplementation = implementor.implementEndpoint(startAtLoginEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         await setStartAtLogin(requestData.isEnabled);
         return {
             [HttpStatus.Ok]: {
                 responseData: await readOnboardingStatus(),
-            },
-        };
-    },
-});
-
-const createWorktreeImplementation = implementor.implementEndpoint(createWorktreeEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        const {worktreePath} = await addWorktree(requestData);
-        const aiId = requestData.aiId?.trim();
-        if (aiId) {
-            await updateSettings((settings) => {
-                return setFolderAiId({
-                    settings,
-                    folder: worktreePath,
-                    aiId,
-                });
-            });
-        }
-        await refreshFolderInfoNow();
-        await runPostWorktreeCmd({
-            repoPath: requestData.repoPath,
-            worktreePath,
-        });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-const deleteWorktreeImplementation = implementor.implementEndpoint(deleteWorktreeEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await pluginServerHost.deleteWorktree(requestData);
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
             },
         };
     },
@@ -768,106 +750,18 @@ const sessionCloseImplementation = implementor.implementEndpoint(sessionCloseEnd
     },
 });
 
-const sessionSetAiImplementation = implementor.implementEndpoint(sessionSetAiEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        const folder = normalizePath(requestData.folder);
-        const sessions = await setFolderSessionAi({
-            folder,
-            kind: requestData.kind,
-            sessionId: requestData.sessionId,
-            aiId: requestData.aiId,
-        });
-        const resolvedAis = paneKindRunsAi[requestData.kind]
-            ? await Promise.all(
-                  sessions[requestData.kind].map(async (session) => {
-                      return {
-                          sessionId: session.id,
-                          aiId: (
-                              await resolveAiForSession({
-                                  folder,
-                                  sessionId: session.id,
-                              })
-                          )?.id,
-                      };
-                  }),
-              )
-            : [];
-        const switchedAiId = resolvedAis.find(
-            (entry) => entry.sessionId === requestData.sessionId,
-        )?.aiId;
-        /**
-         * Switching onto an AI another tab in this folder already runs is the same as adding a
-         * second tab for it: resuming would open that other tab's conversation.
-         */
-        const isSharedAi =
-            !!switchedAiId &&
-            resolvedAis.some((entry) => {
-                return entry.sessionId !== requestData.sessionId && entry.aiId === switchedAiId;
-            });
-        return {
-            [HttpStatus.Ok]: {
-                responseData: isSharedAi
-                    ? await startNewConversation({
-                          folder,
-                          kind: requestData.kind,
-                          sessionId: requestData.sessionId,
-                      })
-                    : sessions,
-            },
-        };
-    },
-});
-
-const aiAvatarUploadImplementation = implementor.implementEndpoint(aiAvatarUploadEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    avatarFile: await saveAiAvatar(requestData),
-                },
-            },
-        };
-    },
-});
-
-const aiAvatarImplementation = implementor.implementEndpoint(aiAvatarEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        return {
-            [HttpStatus.Ok]: {
-                responseData: await readAiAvatar(requestData.avatarFile),
-            },
-        };
-    },
-});
-
 const restartPaneImplementation = implementor.implementEndpoint(restartPaneEndpoint, {
     async [HttpMethod.Post]({requestData}) {
-        /**
-         * Forward the tab's resolved resume command so a "Restart" picks up any recent change to
-         * which AI it uses (the daemon caches nothing about config — every fresh spawn uses
-         * whatever the backend hands it).
-         */
         const folder = normalizePath(requestData.folder);
         const sessionId = await resolveSessionId({
             folder,
             kind: requestData.kind,
             sessionId: requestData.sessionId ?? undefined,
         });
-        const launch = await resolvePaneLaunch({
-            folder,
-            kind: requestData.kind,
-            sessionId,
-        });
         await restartPane({
             folder,
             kind: requestData.kind,
             sessionId,
-            aiCmd: launch.aiCmd,
-            conversationId: launch.conversationId,
-        });
-        await launch.markStarted({
-            isRunning: true,
-            isNew: true,
         });
         return {
             [HttpStatus.Ok]: {
@@ -904,100 +798,6 @@ const paneInputImplementation = implementor.implementEndpoint(paneInputEndpoint,
             });
             throw error;
         }
-        return {
-            [HttpStatus.Ok]: {
-                responseData: {
-                    ok: true,
-                },
-            },
-        };
-    },
-});
-
-/**
- * Activates the requested folder the way selecting it in the sidebar does, except that no open
- * frontend switches to it: its repo counts as recently used, its shell and AI tabs start with `env`
- * added to their environment, and a non-empty `prompt` is typed into the AI tab.
- */
-async function launchRequestedSession({
-    folder: requestedFolder,
-    prompt,
-    env,
-}: Readonly<LaunchRequest>) {
-    /** The requester usually just created this folder, so the cached listing may predate it. */
-    await refreshFolderInfoNow();
-    const folder = normalizePath(requestedFolder);
-    const isKnownFolder = (await getCachedFolders()).some((info) => {
-        return info.path === folder;
-    });
-    if (!isKnownFolder) {
-        return `"${folder}" is not a folder agent-storm shows. Create it inside a repo agent-storm already lists, then retry.`;
-    }
-    const firstSessionIds = {
-        [PaneKind.Ai]: await findOrCreateFirstSession({
-            folder,
-            kind: PaneKind.Ai,
-        }),
-        [PaneKind.Shell]: await findOrCreateFirstSession({
-            folder,
-            kind: PaneKind.Shell,
-        }),
-    } satisfies Record<PaneKind, string>;
-    if (getObjectTypedKeys(env).length) {
-        const runningKinds = await awaitedFilter(
-            getObjectTypedKeys(firstSessionIds),
-            async (kind) => {
-                return (await getLivePaneSessionIds(folder, kind)).includes(firstSessionIds[kind]);
-            },
-        );
-        if (runningKinds.length) {
-            return `"${folder}" can't take "env" while its ${runningKinds.join(' and ')} ${runningKinds.length > 1 ? 'tabs are' : 'tab is'} running. Close ${runningKinds.length > 1 ? 'them' : 'it'}, then retry.`;
-        }
-    }
-    await updateOwningRepo({
-        folder,
-        update(repo) {
-            return {
-                ...repo,
-                lastInteractedAtMs: Date.now(),
-            };
-        },
-    });
-    spawnPane({
-        folder,
-        kind: PaneKind.Shell,
-        sessionId: firstSessionIds[PaneKind.Shell],
-        env,
-    }).catch((error: unknown) => {
-        log.error(`Failed to start the shell tab in "${folder}": ${String(error)}`);
-    });
-    /** Starting a fresh AI can take longer than the requester should wait for an answer. */
-    (prompt
-        ? launchFolderSession({
-              folder,
-              prompt,
-              env,
-          })
-        : spawnPane({
-              folder,
-              kind: PaneKind.Ai,
-              sessionId: firstSessionIds[PaneKind.Ai],
-              env,
-          })
-    ).catch((error: unknown) => {
-        log.error(`Failed to launch an AI session in "${folder}": ${String(error)}`);
-    });
-    return undefined;
-}
-
-const killPanesImplementation = implementor.implementEndpoint(killPanesEndpoint, {
-    async [HttpMethod.Post]({requestData}) {
-        await killFolderPanes(requestData);
-        /**
-         * "Kill panes" means all of them, so the tab lists go too — the folder should come back
-         * with a clean single tab per kind rather than a row of tabs whose PTYs are all dead.
-         */
-        await forgetFolderSessions(requestData.folder);
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -1070,6 +870,19 @@ const clientPerfImplementation = implementor.implementEndpoint(clientPerfEndpoin
             event: 'window',
             ...requestData,
         });
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
+const userInputImplementation = implementor.implementEndpoint(userInputEndpoint, {
+    async [HttpMethod.Post]() {
+        await recordUserInput();
         return {
             [HttpStatus.Ok]: {
                 responseData: {
@@ -1226,16 +1039,6 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
             kind,
             sessionId: searchParams.sessionId,
         });
-        /**
-         * Resolve which AI this tab runs on every attach so the daemon's spawned PTY (when this is
-         * the first attach for the folder + kind pair) uses whatever the user has set. Failure is
-         * non-fatal — the daemon falls back to its built-in default (`claude`).
-         */
-        const launch = await resolvePaneLaunch({
-            folder,
-            kind,
-            sessionId,
-        });
         const attachment = await attachPane({
             folder,
             kind,
@@ -1244,8 +1047,6 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 foreground: searchParams.foreground,
                 background: searchParams.background,
             },
-            aiCmd: launch.aiCmd,
-            conversationId: launch.conversationId,
             scrollbackLimit,
             onData(data) {
                 webSocket.send(data);
@@ -1256,12 +1057,10 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
                 }
             },
         });
-        await launch.markStarted(attachment);
         attachmentsByWebSocket.set(webSocket, {
             attachment,
             folder,
             kind,
-            conversationId: paneKindRunsAi[kind] ? launch.conversationId : undefined,
         });
     },
     message({webSocket, message}) {
@@ -1274,10 +1073,6 @@ const ptyImplementation = implementor.implementWebSocket(ptyWebSocket, {
              * which the browser sends on its own and so say nothing about the user being here.
              */
             recordFolderActivity(socketAttachment.folder);
-            /** Escape and Ctrl+C on their own are how a Claude turn gets interrupted. */
-            if (socketAttachment.conversationId && (message === '\u001B' || message === '\u0003')) {
-                recordClaudeInterrupt(socketAttachment.conversationId);
-            }
             socketAttachment.attachment.write(message);
             return;
         } else if ('colors' in message) {
@@ -1331,7 +1126,6 @@ const implementation = implementApi<undefined>()(agentStormService, {
         pluginCodeImplementation,
         pluginCallImplementation,
         addRepoImplementation,
-        removeRepoImplementation,
         uiLayoutImplementation,
         tabLayoutSaveImplementation,
         activityBarSaveImplementation,
@@ -1341,33 +1135,32 @@ const implementation = implementApi<undefined>()(agentStormService, {
         installUpdateImplementation,
         switchUpdateImplementation,
         onboardingImplementation,
-        claudeHooksInstallImplementation,
         startAtLoginImplementation,
-        createWorktreeImplementation,
-        deleteWorktreeImplementation,
         restartPaneImplementation,
-        killPanesImplementation,
         paneInputImplementation,
         sessionListImplementation,
         sessionCreateImplementation,
         sessionRenameImplementation,
         sessionCloseImplementation,
-        sessionSetAiImplementation,
-        aiAvatarUploadImplementation,
-        aiAvatarImplementation,
         clientErrorImplementation,
         clientDebugLogImplementation,
         clientPerfImplementation,
         clientFreezeImplementation,
         restartDaemonImplementation,
+        userInputImplementation,
         touchRepoImplementation,
         hideRepoImplementation,
         checkPathImplementation,
         createPathImplementation,
+        pushKeyImplementation,
+        pushSubscribeImplementation,
+        pushUnsubscribeImplementation,
+        pushTestImplementation,
     ],
     webSockets: [
         ptyImplementation,
         pluginEventsImplementation,
+        notificationsImplementation,
     ],
 });
 
@@ -1409,6 +1202,7 @@ const server = tlsOptions
       }) satisfies FastifyInstance<any, any, any> as FastifyInstance)
     : fastify(serverOptions);
 startServerPerfLog(server);
+startRequestDebugLog(server);
 await attachApi(server, implementation, {
     externalOrigin: launcherOrigin || `${tlsOptions ? 'https' : 'http'}://localhost:${port}`,
 });
@@ -1435,7 +1229,6 @@ const listenAddress = await server.listen({
     host: launcherOrigin ? '127.0.0.1' : '0.0.0.0',
 });
 
-await startLaunchRequestWatch(launchRequestedSession);
 /** Resuming every tab can take a while, and the server is already usable without them. */
 startLivePaneTracking().catch((error: unknown) => {
     log.warning(`Failed to restore tabs: ${extractErrorMessage(error)}`);
@@ -1444,4 +1237,4 @@ await logServerStartup();
 startGhCallDebugLog();
 await pruneDebugLogs();
 
-log.success(`agent-storm server listening on ${listenAddress}`);
+log.success(`Agent Storm server listening on ${listenAddress}`);

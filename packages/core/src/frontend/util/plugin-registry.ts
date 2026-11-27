@@ -57,7 +57,8 @@ export type PluginContributions = Readonly<{
         | 'panes'
         | 'paneGroupExtensions'
         | 'settingsSections'
-        | 'shortcutActions']-?: NonNullable<PluginDefinition[Key]>;
+        | 'shortcutActions'
+        | 'notificationTypes']-?: NonNullable<PluginDefinition[Key]>;
 }>;
 
 async function fetchPlugins() {
@@ -412,7 +413,6 @@ function createLazyPane({
                 : LucidePuzzleIcon,
             14,
         ),
-        hasAi: false,
         mounting: PaneMounting.WhileDisplayed,
         isAvailable() {
             return true;
@@ -550,6 +550,7 @@ export function createPluginRegistry({
                 paneGroupExtensions: [],
                 settingsSections: [],
                 shortcutActions: [],
+                notificationTypes: [],
             },
             problems: {},
             outdatedPluginIds: [],
@@ -918,6 +919,9 @@ export function createPluginRegistry({
                     ];
                 }),
                 shortcutActions: runningPlugins.flatMap((plugin) => plugin.shortcutActions || []),
+                notificationTypes: runningPlugins.flatMap(
+                    (plugin) => plugin.notificationTypes || [],
+                ),
             },
             problems: {
                 ...typedObjectFromEntries(

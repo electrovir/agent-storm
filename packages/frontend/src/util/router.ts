@@ -11,6 +11,11 @@ export const bookRouteBase = 'book';
  * element-book route.
  */
 export const router = new SpaRouter<ReadonlyArray<string>, undefined, undefined>({
+    /**
+     * `vir-app` and the in-app notifications socket each listen to the route, and spa-router-vir
+     * throws on a second listener by default.
+     */
+    maxListenerCount: 2,
     sanitizeRoute(rawRoute) {
         return {
             paths: rawRoute.paths,

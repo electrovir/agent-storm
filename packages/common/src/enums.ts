@@ -1,8 +1,24 @@
 // cspell:words forgejo, gitea
 
 export enum PaneKind {
-    Ai = 'ai',
     Shell = 'shell',
+}
+
+/**
+ * How the app tells the user about a notification: where it shows, and whether it stays. Plugins
+ * can't add one.
+ */
+export enum NotificationDelivery {
+    /** A toast in each open window. */
+    InApp = 'inApp',
+    /**
+     * Toasts and push notifications stay until dismissed instead of hiding on their own. Off by
+     * default, whatever the type's `isOptIn`. A push notification only stays where the browser
+     * honors `requireInteraction`.
+     */
+    Persistent = 'persistent',
+    /** The operating system's notification, sent to each device that turned them on. */
+    Push = 'push',
 }
 
 /** The parts of the UI that each get their own font family and size in Settings. */
@@ -13,18 +29,9 @@ export enum FontRole {
     Prompt = 'prompt',
     /** The Diff and Review panes. */
     Code = 'code',
-    /** The AI and Shell tabs. */
+    /** The Shell tabs. */
     Terminal = 'terminal',
 }
-
-/**
- * Whether a pane kind runs an AI. Only those tabs hold a conversation, which can be resumed or
- * started over.
- */
-export const paneKindRunsAi: Readonly<Record<PaneKind, boolean>> = {
-    [PaneKind.Ai]: true,
-    [PaneKind.Shell]: false,
-};
 
 /** The kind, and default tab id, of the Diff pane. Stored in every folder's tab layout. */
 export const diffPaneId = 'diff';
@@ -269,7 +276,8 @@ export enum PrStatus {
     AwaitingReview = 'awaitingReview',
     /**
      * Same as `AwaitingReview` except the viewer's local manual review of the branch is set up and
-     * ready to read.
+     * ready to read, and, for a checkout watch mode is on in, no watch mode pass or PR check is
+     * still running.
      */
     ReviewStarted = 'reviewStarted',
     /** Same as `AwaitingReview` except the viewer's latest verdict on the PR requested changes. */

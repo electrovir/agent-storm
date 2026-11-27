@@ -2,7 +2,6 @@
 
 import {
     checkPathEndpoint,
-    claudeHooksInstallEndpoint,
     defaultSettings,
     ForgeType,
     onboardingEndpoint,
@@ -17,7 +16,6 @@ import {
     areShortcutsModified,
     defineAppElement,
     fetchApi,
-    isActivityEnabled,
     localStorageClient,
     restoreShortcuts,
     ScreenSize,
@@ -68,6 +66,7 @@ import {
     ViraThemeColorName,
     ViraThemeSwitcher,
 } from 'vira';
+import {listActivityToggles, setActivityEnabled} from '../../util/activity-toggles.js';
 import {createBatchedWriter} from '../../util/batched-writer.js';
 import {
     coreSettingsSectionPages,
@@ -76,9 +75,9 @@ import {
     listSettingsSections,
     type SettingsSectionPage,
 } from '../../util/settings-sections.js';
-import {VirSettingsAi} from './vir-settings-ai.element.js';
 import {VirSettingsFolders} from './vir-settings-folders.element.js';
 import {VirSettingsKeyboardShortcuts} from './vir-settings-keyboard-shortcuts.element.js';
+import {VirSettingsNotifications} from './vir-settings-notifications.element.js';
 import {VirSettingsPlugins} from './vir-settings-plugins.element.js';
 import {VirSettingsSchemaRow, type SettingSchema} from './vir-settings-schema-row.element.js';
 import {VirSettingsTypography} from './vir-settings-typography.element.js';
@@ -193,6 +192,18 @@ const customSectionDefaults: Readonly<Record<string, SectionDefaults | undefined
         isModified: areShortcutsModified,
         restore: restoreShortcuts,
     },
+    [SettingsSection.Notifications]: {
+        isModified(settings) {
+            return !!settings.notifications?.length || !!settings.folderNotifications?.length;
+        },
+        restore(settings) {
+            return {
+                ...settings,
+                notifications: [],
+                folderNotifications: [],
+            };
+        },
+    },
     [SettingsSection.Forges]: {
         isModified(settings) {
             return forgeCards.some((card) => {
@@ -271,8 +282,6 @@ export const VirSettingsModal = defineAppElement<{
             /** Undefined until loaded, and when it fails to load, which hides the rows it drives. */
             onboardingStatus: undefined as OnboardingStatus | undefined,
             startAtLoginError: '',
-            claudeHooksError: '',
-            isInstallingClaudeHooks: false,
         };
     },
     styles: css`
@@ -440,14 +449,6 @@ export const VirSettingsModal = defineAppElement<{
                             window.location.reload();
                             return;
                         }
-                        if (
-                            !isDefault({
-                                value: previous.aiDefinitions,
-                                defaultValue: saved.aiDefinitions,
-                            })
-                        ) {
-                            await inputs.context.paneRestarts.bumpAiConfig();
-                        }
                         if (previous.tlsCertPath !== saved.tlsCertPath) {
                             /**
                              * Checked after the write: the certificate lives on the server's
@@ -569,27 +570,6 @@ export const VirSettingsModal = defineAppElement<{
             }
         }
 
-        async function installClaudeHooks() {
-            if (state.isInstallingClaudeHooks || state.onboardingStatus?.areClaudeHooksInstalled) {
-                return;
-            }
-            updateState({
-                isInstallingClaudeHooks: true,
-                claudeHooksError: '',
-            });
-            try {
-                updateState({
-                    onboardingStatus: await fetchApi(claudeHooksInstallEndpoint, HttpMethod.Post),
-                    isInstallingClaudeHooks: false,
-                });
-            } catch (error: unknown) {
-                updateState({
-                    isInstallingClaudeHooks: false,
-                    claudeHooksError: extractErrorMessage(error),
-                });
-            }
-        }
-
         function setScrollbackLimit(text: string) {
             const value = Number(text);
             const isValid =
@@ -606,23 +586,6 @@ export const VirSettingsModal = defineAppElement<{
                 scrollbackDraft: text,
             });
         }
-
-        function setActivityEnabled(activityId: string, isEnabled: boolean) {
-            inputs.context.uiLayout.setActivityBar({
-                enabledActivities: {
-                    ...inputs.context.uiLayout.value.layout?.enabledActivities,
-                    [activityId]: isEnabled,
-                },
-            });
-        }
-
-        /** Stand-ins for a pending plugin's activities, which the user can't turn on or off. */
-        const switchableActivities = inputs.context.activities.filter((activity) => {
-            return !inputs.context.plugins.value.pendingActivityIds.includes(activity.id);
-        });
-        const enabledActivityCount = switchableActivities.filter((activity) => {
-            return isActivityEnabled(inputs.context, activity);
-        }).length;
 
         /**
          * WebKit clamps the scroll of a view that got shorter without firing `scrollend`, which
@@ -657,9 +620,7 @@ export const VirSettingsModal = defineAppElement<{
             const restartDescription =
                 'Kills every running terminal session and starts the daemon that holds them again.';
             const startAtLoginDescription =
-                'Starts agent-storm in the background when you log in. Takes effect at your next login.';
-            const claudeHooksDescription =
-                "Lets each AI tab resume its own conversation and show when Claude is working. Adds agent-storm's hooks to ~/.claude/settings.json beside your own.";
+                'Starts Agent Storm in the background when you log in. Takes effect at your next login.';
 
             return [
                 {
@@ -709,11 +670,11 @@ export const VirSettingsModal = defineAppElement<{
                         </${VirSettingsRow}>
                     `,
                 },
-                ...switchableActivities.map((activity): SettingsEntry => {
+                ...listActivityToggles({
+                    context: inputs.context,
+                    activities: inputs.context.activities,
+                }).map(({activity, isEnabled, isLastEnabled}): SettingsEntry => {
                     const rowTitle = activity.label;
-                    const isEnabled = isActivityEnabled(inputs.context, activity);
-                    /** With every activity off, the app would have nothing to show. */
-                    const isLastEnabled = isEnabled && enabledActivityCount === 1;
                     return {
                         section: SettingsSection.Activities,
                         cardTitle:
@@ -728,7 +689,11 @@ export const VirSettingsModal = defineAppElement<{
                                 isModified: isEnabled !== activity.isEnabledByDefault,
                             })}
                                 ${listen(VirSettingsRow.events.reset, () => {
-                                    setActivityEnabled(activity.id, activity.isEnabledByDefault);
+                                    setActivityEnabled({
+                                        context: inputs.context,
+                                        activity,
+                                        isEnabled: activity.isEnabledByDefault,
+                                    });
                                 })}
                             >
                                 <${ViraCheckbox.assign({
@@ -736,7 +701,11 @@ export const VirSettingsModal = defineAppElement<{
                                     isDisabled: isLastEnabled,
                                 })}
                                     ${listen(ViraCheckbox.events.valueChange, (event) => {
-                                        setActivityEnabled(activity.id, event.detail);
+                                        setActivityEnabled({
+                                            context: inputs.context,
+                                            activity,
+                                            isEnabled: event.detail,
+                                        });
                                     })}
                                 ></${ViraCheckbox}>
                             </${VirSettingsRow}>
@@ -843,35 +812,30 @@ export const VirSettingsModal = defineAppElement<{
                           } satisfies SettingsEntry,
                       ]
                     : []),
-                ...(state.onboardingStatus?.canInstallClaudeHooks
+                ...(state.onboardingStatus?.canSelfImprove && settings.enableDebugLogs
                     ? [
                           {
                               section: SettingsSection.Maintenance,
                               cardTitle: undefined,
                               searchText: [
-                                  'Claude Code hooks',
-                                  claudeHooksDescription,
+                                  settingsJsonSchema.properties.disableSelfImprovement.title,
+                                  settingsJsonSchema.properties.disableSelfImprovement.description,
                               ],
                               template: html`
-                                  <${VirSettingsRow.assign({
-                                      rowTitle: 'Claude Code hooks',
-                                      description: claudeHooksDescription,
-                                      errorMessage: state.claudeHooksError,
-                                  })}>
-                                      <${ViraButton.assign({
-                                          text: state.onboardingStatus.areClaudeHooksInstalled
-                                              ? 'Installed'
-                                              : state.isInstallingClaudeHooks
-                                                ? 'Installing...'
-                                                : 'Install',
-                                          buttonSize: ViraSize.Small,
-                                          isDisabled:
-                                              state.isInstallingClaudeHooks ||
-                                              state.onboardingStatus.areClaudeHooksInstalled,
+                                  <${VirSettingsSchemaRow.assign({
+                                      schema: settingsJsonSchema.properties.disableSelfImprovement,
+                                      value: settings.disableSelfImprovement,
+                                      defaultValue: defaultSettings.disableSelfImprovement,
+                                  })}
+                                      ${listen(VirSettingsSchemaRow.events.valueChange, (event) => {
+                                          changeSettings((current) => {
+                                              return {
+                                                  ...current,
+                                                  disableSelfImprovement: event.detail === true,
+                                              };
+                                          });
                                       })}
-                                          ${listen('click', installClaudeHooks)}
-                                      ></${ViraButton}>
-                                  </${VirSettingsRow}>
+                                  ></${VirSettingsSchemaRow}>
                               `,
                           } satisfies SettingsEntry,
                       ]
@@ -997,16 +961,8 @@ export const VirSettingsModal = defineAppElement<{
             [SettingsSection.Plugins](params) {
                 return renderPluginsPage(params);
             },
-            [SettingsSection.Ai]({settings}) {
-                return html`
-                    <${VirSettingsAi.assign({
-                        settings,
-                    })}
-                        ${listen(VirSettingsAi.events.settingsChange, (event) => {
-                            changeSettings(event.detail);
-                        })}
-                    ></${VirSettingsAi}>
-                `;
+            [SettingsSection.Ai]({entries}) {
+                return renderEntries(entries);
             },
             [SettingsSection.Folders]({settings, entries}) {
                 return html`
@@ -1026,6 +982,20 @@ export const VirSettingsModal = defineAppElement<{
                             });
                         })}
                     ></${VirSettingsFolders}>
+                `;
+            },
+            [SettingsSection.Notifications]({settings}) {
+                return html`
+                    <${VirSettingsNotifications.assign({
+                        settings,
+                        folderInfo: inputs.context.folderData.value.folderInfo,
+                        notificationTypes: inputs.context.notificationTypes,
+                        plugins: inputs.context.plugins.value.runningPlugins,
+                    })}
+                        ${listen(VirSettingsNotifications.events.settingsChange, (event) => {
+                            changeSettings(event.detail);
+                        })}
+                    ></${VirSettingsNotifications}>
                 `;
             },
             [SettingsSection.Forges]({entries}) {
@@ -1163,10 +1133,26 @@ export const VirSettingsModal = defineAppElement<{
                       changeSettings,
                   })
                 : check.isEnumValue(section.id, SettingsSection)
-                  ? sectionContent[section.id]({
-                        settings,
-                        entries: sectionEntries,
-                    })
+                  ? html`
+                        ${sectionContent[section.id]({
+                            settings,
+                            entries: sectionEntries,
+                        })}
+                        ${inputs.context.settingsSections
+                            .filter((hosted) => hosted.coreSection === section.id)
+                            .map((hosted) => {
+                                return hosted.render
+                                    ? hosted.render({
+                                          context: inputs.context,
+                                          settings,
+                                          details: undefined,
+                                          changeSettings,
+                                      })
+                                    : renderEntries(
+                                          entries.filter((entry) => entry.section === hosted.id),
+                                      );
+                            })}
+                    `
                   : renderEntries(sectionEntries);
         }
 

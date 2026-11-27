@@ -16,12 +16,19 @@ const pluginSection = defineSettingsSection({
     schemaKeys: [],
 });
 
+const hostedSection = defineSettingsSection({
+    ...pluginSection,
+    name: 'hosted',
+    coreSection: SettingsSection.Ai,
+});
+
 const sections = listSettingsSections([
     pluginSection,
+    hostedSection,
 ]);
 
 describe(listSettingsSections.name, () => {
-    it('lists plugin sections right after the Plugins section', () => {
+    it('lists plugin sections right after the Plugins section or the core page they show in', () => {
         assert.deepEquals(
             sections.map((section) => section.id),
             [
@@ -33,7 +40,9 @@ describe(listSettingsSections.name, () => {
                 SettingsSection.Plugins,
                 'example:settings',
                 SettingsSection.Ai,
+                'example:hosted',
                 SettingsSection.Folders,
+                SettingsSection.Notifications,
                 SettingsSection.Forges,
                 SettingsSection.Maintenance,
             ],
@@ -42,7 +51,7 @@ describe(listSettingsSections.name, () => {
 });
 
 describe(groupPluginSettingsSections.name, () => {
-    it('groups sections by plugin and skips plugins without any', () => {
+    it('groups sections by plugin, skipping plugins without any and sections shown in core pages', () => {
         const otherSection = defineSettingsSection({
             ...pluginSection,
             name: 'other',
@@ -62,6 +71,7 @@ describe(groupPluginSettingsSections.name, () => {
                 sections: [
                     pluginSection,
                     otherSection,
+                    hostedSection,
                 ],
             }).map((group) => {
                 return [
@@ -90,6 +100,15 @@ describe(findSettingsSection.name, () => {
                 id: 'example:settings',
             })?.id,
             'example:settings',
+        );
+    });
+    it('finds the core page a hosted plugin section shows in', () => {
+        assert.strictEquals(
+            findSettingsSection({
+                sections,
+                id: 'example:hosted',
+            })?.id,
+            SettingsSection.Ai,
         );
     });
     it('falls back to General for an id with no section, like the old diff and review ids', () => {
