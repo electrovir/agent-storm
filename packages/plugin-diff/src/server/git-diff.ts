@@ -10,21 +10,27 @@ import {
 } from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
 import {
-    arrayToObject,
     awaitedForEach,
     extractErrorMessage,
     extractExtension,
     filterMap,
     retry,
+    typedObjectFromEntries,
 } from '@augment-vir/common';
 import {doesPathContain} from '@augment-vir/node';
-import {extractCommandStderr, gitTimeout, readOnlyGitEnv, runCommand} from 'agent-storm-util';
+import {
+    extractCommandStderr,
+    gitTimeout,
+    hasErrorCode,
+    readOnlyGitEnv,
+    runCommand,
+} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {execFile} from 'node:child_process';
 import {readFile, rm} from 'node:fs/promises';
 import {isAbsolute, resolve} from 'node:path';
 import {promisify} from 'node:util';
-import {type diffApi, type GitDiffFile, type GitDiffStatus} from '../diff-api.js';
+import {type diffApi, type GitDiffStatus} from '../diff-api.js';
 
 /**
  * Buffer ceiling for these git calls. `git show` of a single blob is bounded by
@@ -129,112 +135,109 @@ type StatusEntry = {
     unstagedChange: GitFileChange | undefined;
 };
 
+const statusChangeKeys = {
+    [GitDiffSide.Staged]: 'stagedChange',
+    [GitDiffSide.Unstaged]: 'unstagedChange',
+} as const satisfies Record<IndexSide, keyof StatusEntry>;
+
 /**
  * Parse `git status --porcelain=v1 -z`. Records are NUL-terminated `XY <path>`; a rename or copy
- * record is followed by one extra NUL-terminated field holding the original path. That trailing
- * field is the reason for the `skipNext` carry — the parser has to consume a second record for
- * those entries rather than treat it as its own file.
+ * record is followed by one extra NUL-terminated field holding the original path.
  */
 function parseStatus(raw: string): StatusEntry[] {
-    const records = raw.split('\0').filter((record) => record);
-    return records.reduce<{
-        entries: StatusEntry[];
-        skipNext: boolean;
-    }>(
-        (accumulated, record, index) => {
-            if (accumulated.skipNext) {
-                return {
-                    entries: accumulated.entries,
-                    skipNext: false,
-                };
-            }
-            const indexLetter = record.slice(0, 1);
-            const worktreeLetter = record.slice(1, 2);
-            const isRenameOrCopy = indexLetter === 'R' || indexLetter === 'C';
-            return {
-                entries: [
-                    ...accumulated.entries,
-                    {
-                        path: record.slice(3),
-                        oldPath: isRenameOrCopy ? records[index + 1] : undefined,
-                        /**
-                         * `?` in the index column means untracked, which is an unstaged-only state
-                         * — there is nothing in the index to compare against yet.
-                         */
-                        stagedChange:
-                            indexLetter === ' ' || indexLetter === '?'
-                                ? undefined
-                                : changeFromStatusLetter(indexLetter),
-                        unstagedChange:
-                            worktreeLetter === ' '
-                                ? undefined
-                                : changeFromStatusLetter(worktreeLetter),
-                    },
-                ],
-                skipNext: isRenameOrCopy,
-            };
-        },
-        {
-            entries: [],
-            skipNext: false,
-        },
-    ).entries;
+    const records = raw
+        .split('\0')
+        .filter((record) => record)
+        .values();
+    return Array.from(records, (record) => {
+        const indexLetter = record.slice(0, 1);
+        const worktreeLetter = record.slice(1, 2);
+        const isRenameOrCopy = indexLetter === 'R' || indexLetter === 'C';
+        return {
+            path: record.slice(3),
+            oldPath: isRenameOrCopy ? records.next().value : undefined,
+            /**
+             * `?` in the index column means untracked, which is an unstaged-only state — there is
+             * nothing in the index to compare against yet.
+             */
+            stagedChange:
+                indexLetter === ' ' || indexLetter === '?'
+                    ? undefined
+                    : changeFromStatusLetter(indexLetter),
+            unstagedChange:
+                worktreeLetter === ' ' ? undefined : changeFromStatusLetter(worktreeLetter),
+        };
+    });
+}
+
+async function readStatusEntries(folder: string) {
+    const status = await runGitText(folder, [
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--untracked-files=all',
+    ]);
+    return parseStatus(status || '');
+}
+
+async function readChangedPaths({folder, side}: Readonly<{folder: string; side: IndexSide}>) {
+    return filterMap(
+        await readStatusEntries(folder),
+        (entry) => entry[statusChangeKeys[side]] && entry.path,
+        check.isTruthy,
+    );
 }
 
 /**
- * Parse `git diff --numstat -z --no-renames`, whose every record is `<insertions>\t<deletions>\t
- * <path>`. `--no-renames` is what keeps that uniform: with rename detection on, a renamed file
- * splits its path across two extra NUL-separated fields and the parse needs lookahead. Binary files
- * report `-` for both counts, which becomes `0`.
+ * Parse `git diff --numstat -z`. Renames leave the path empty and put the old and new paths in the
+ * next two NUL-separated fields. Binary files report `-` for both counts, which becomes `0`.
  */
 function parseNumstat(
     raw: string,
 ): Partial<Record<string, {insertions: number; deletions: number}>> {
-    return arrayToObject(
-        raw.split('\0').filter((record) => record),
-        (record) => {
+    const records = raw
+        .split('\0')
+        .filter((record) => record)
+        .values();
+    return typedObjectFromEntries(
+        Array.from(records, (record) => {
             const [
                 insertionsRaw,
                 deletionsRaw,
-                path,
+                ...pathParts
             ] = record.split('\t');
-            if (!path) {
-                return undefined;
+            const pathInRecord = pathParts.join('\t');
+            if (!pathInRecord) {
+                records.next();
             }
-            return {
-                key: path,
-                value: {
-                    insertions: Number(insertionsRaw) || 0,
-                    deletions: Number(deletionsRaw) || 0,
-                },
-            };
-        },
+            const path = pathInRecord || records.next().value;
+            return path
+                ? ([
+                      path,
+                      {
+                          insertions: Number(insertionsRaw) || 0,
+                          deletions: Number(deletionsRaw) || 0,
+                      },
+                  ] as const)
+                : undefined;
+        }).filter(check.isTruthy),
     );
 }
 
 export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
     const [
-        statusRaw,
+        entries,
         stagedNumstatRaw,
         unstagedNumstatRaw,
     ] = await Promise.all([
-        runGitText(folder, [
-            'status',
-            '--porcelain=v1',
-            '-z',
-            '--untracked-files=all',
-        ]),
-        /**
-         * Fails on a repo with no commits yet — there is no `HEAD` to diff against. The status call
-         * still works there, so an undefined numstat just means every file shows `0/0`.
-         */
+        readStatusEntries(folder),
+        /** Git compares against an empty tree before the first commit when no commit is supplied. */
         runGitText(folder, [
             'diff',
             '--numstat',
             '-z',
             '--no-renames',
             '--cached',
-            'HEAD',
             '--',
         ]),
         runGitText(folder, [
@@ -246,7 +249,7 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
         ]),
     ]);
 
-    if (statusRaw == undefined) {
+    if (!entries.length) {
         return {
             staged: [],
             unstaged: [],
@@ -254,35 +257,29 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
         };
     }
 
-    const stagedCounts = parseNumstat(stagedNumstatRaw || '');
-    const unstagedCounts = parseNumstat(unstagedNumstatRaw || '');
-    const entries = parseStatus(statusRaw);
-
-    function toFile(
-        entry: Readonly<StatusEntry>,
-        change: GitFileChange,
-        counts: Partial<Record<string, {insertions: number; deletions: number}>>,
-    ): GitDiffFile {
-        return {
-            path: entry.path,
-            change,
-            oldPath: entry.oldPath,
-            insertions: counts[entry.path]?.insertions ?? 0,
-            deletions: counts[entry.path]?.deletions ?? 0,
-        };
+    function filesForSide(side: IndexSide, counts: ReturnType<typeof parseNumstat>) {
+        return filterMap(
+            entries,
+            (entry) => {
+                const change = entry[statusChangeKeys[side]];
+                if (!change) {
+                    return undefined;
+                }
+                return {
+                    path: entry.path,
+                    change,
+                    oldPath: entry.oldPath,
+                    insertions: counts[entry.path]?.insertions ?? 0,
+                    deletions: counts[entry.path]?.deletions ?? 0,
+                };
+            },
+            check.isTruthy,
+        );
     }
 
     return {
-        staged: filterMap(
-            entries,
-            (entry) => entry.stagedChange && toFile(entry, entry.stagedChange, stagedCounts),
-            check.isTruthy,
-        ),
-        unstaged: filterMap(
-            entries,
-            (entry) => entry.unstagedChange && toFile(entry, entry.unstagedChange, unstagedCounts),
-            check.isTruthy,
-        ),
+        staged: filesForSide(GitDiffSide.Staged, parseNumstat(stagedNumstatRaw || '')),
+        unstaged: filesForSide(GitDiffSide.Unstaged, parseNumstat(unstagedNumstatRaw || '')),
         pullRequest: [],
     };
 }
@@ -292,38 +289,34 @@ export async function getDiffStatus(folder: string): Promise<GitDiffStatus> {
  * rename's `R`) then the path, and a rename's record carries its old path before its new one.
  */
 function parseNameStatus(raw: string) {
-    const fields = raw.split('\0').filter((field) => field);
-    return fields.reduce<{
-        files: Pick<GitDiffFile, 'path' | 'oldPath' | 'change'>[];
-        skipCount: number;
-    }>(
-        (accumulated, field, index) => {
-            if (accumulated.skipCount) {
-                return {
-                    files: accumulated.files,
-                    skipCount: accumulated.skipCount - 1,
-                };
-            }
-            const letter = field.slice(0, 1);
-            const isRenameOrCopy = letter === 'R' || letter === 'C';
-            return {
-                files: [
-                    ...accumulated.files,
-                    {
-                        path: fields[index + (isRenameOrCopy ? 2 : 1)] || '',
-                        oldPath: isRenameOrCopy ? fields[index + 1] : undefined,
-                        change: changeFromStatusLetter(letter),
-                    },
-                ],
-                skipCount: isRenameOrCopy ? 2 : 1,
-            };
-        },
-        {
-            files: [],
-            skipCount: 0,
-        },
-    ).files;
+    const fields = raw
+        .split('\0')
+        .filter((field) => field)
+        .values();
+    return Array.from(fields, (field) => {
+        const letter = field.slice(0, 1);
+        const isRenameOrCopy = letter === 'R' || letter === 'C';
+        const oldPath = isRenameOrCopy ? fields.next().value : undefined;
+        return {
+            path: fields.next().value || '',
+            oldPath,
+            change: changeFromStatusLetter(letter),
+        };
+    });
 }
+
+/**
+ * Each folder's PR status by base branch, with the two commits it compares. Mutated in place: a
+ * cache that lives as long as the server.
+ */
+const pullRequestStatuses = new Map<
+    string,
+    Readonly<{
+        headCommit: string;
+        baseCommit: string;
+        status: Promise<GitDiffStatus>;
+    }>
+>();
 
 /**
  * The files a PR into `baseBranch` changes, the way GitHub lists them: committed changes since the
@@ -335,8 +328,12 @@ export async function getPullRequestStatus({
     baseBranch,
 }: Readonly<{folder: string; baseBranch: string}>): Promise<GitDiffStatus> {
     /** Each starts with `refs/`, so a branch name can't be read as an option. */
-    const baseCommits = await Promise.all(
+    const [
+        headCommit,
+        ...baseCommits
+    ] = await Promise.all(
         [
+            'HEAD',
             `refs/remotes/origin/${baseBranch}`,
             `refs/heads/${baseBranch}`,
         ].map(async (ref) => {
@@ -355,12 +352,48 @@ export async function getPullRequestStatus({
         throw new Error(
             `Branch '${baseBranch}' isn't in this repo. Fetch it to see the PR's diff.`,
         );
+    } else if (!headCommit) {
+        throw new Error(`This branch shares no history with '${baseBranch}'.`);
     }
+    /**
+     * The status only depends on the two commits, and the diff pane polls it, so the `merge-base`
+     * and diffs (seconds in a big repo) only run again once either commit moves.
+     */
+    const key = `${folder}\0${baseBranch}`;
+    const cached = pullRequestStatuses.get(key);
+    if (cached?.headCommit === headCommit && cached.baseCommit === baseCommit) {
+        return await cached.status;
+    }
+    const entry = {
+        headCommit,
+        baseCommit,
+        status: diffCommits({
+            folder,
+            baseBranch,
+            baseCommit,
+            headCommit,
+        }),
+    };
+    pullRequestStatuses.set(key, entry);
+    entry.status.catch(() => {
+        if (pullRequestStatuses.get(key) === entry) {
+            pullRequestStatuses.delete(key);
+        }
+    });
+    return await entry.status;
+}
+
+async function diffCommits({
+    folder,
+    baseBranch,
+    baseCommit,
+    headCommit,
+}: Readonly<{folder: string; baseBranch: string; baseCommit: string; headCommit: string}>) {
     const mergeBase = (
         await runGitText(folder, [
             'merge-base',
             baseCommit,
-            'HEAD',
+            headCommit,
         ])
     )?.trim();
     if (!mergeBase) {
@@ -376,16 +409,16 @@ export async function getPullRequestStatus({
             '-z',
             '--find-renames',
             mergeBase,
-            'HEAD',
+            headCommit,
             '--',
         ]),
         runGitText(folder, [
             'diff',
             '--numstat',
             '-z',
-            '--no-renames',
+            '--find-renames',
             mergeBase,
-            'HEAD',
+            headCommit,
             '--',
         ]),
     ]);
@@ -404,7 +437,7 @@ export async function getPullRequestStatus({
             };
         }),
         pullRequestBase: mergeBase,
-    };
+    } satisfies GitDiffStatus;
 }
 
 /**
@@ -448,7 +481,12 @@ async function readBlob({folder, spec}: Readonly<{folder: string; spec: string}>
                 milliseconds: true,
             }).milliseconds,
         },
-    ).catch(() => undefined);
+    ).catch((error: unknown) => {
+        if (hasErrorCode(error, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')) {
+            throw new Error("Git output exceeded the Diff pane's size limit.");
+        }
+        return undefined;
+    });
     return result?.stdout ?? Buffer.alloc(0);
 }
 
@@ -852,11 +890,14 @@ export async function setSideStaged({
     side,
 }: Readonly<{folder: string; side: GitDiffSide}>): Promise<void> {
     assertIndexSide(side);
-    const status = await getDiffStatus(folder);
-    await awaitedForEach(status[side], async (file) => {
+    const paths = await readChangedPaths({
+        folder,
+        side,
+    });
+    await awaitedForEach(paths, async (path) => {
         await setFileStaged({
             folder,
-            path: file.path,
+            path,
             side,
         });
     });
@@ -902,11 +943,14 @@ async function discardUnstagedFileChanges({
  * the same `index.lock` reason {@link setSideStaged} is.
  */
 export async function discardUnstagedChanges(folder: string): Promise<void> {
-    const status = await getDiffStatus(folder);
-    await awaitedForEach(status.unstaged, async (file) => {
+    const paths = await readChangedPaths({
+        folder,
+        side: GitDiffSide.Unstaged,
+    });
+    await awaitedForEach(paths, async (path) => {
         await discardUnstagedFileChanges({
             folder,
-            path: file.path,
+            path,
         });
     });
 }

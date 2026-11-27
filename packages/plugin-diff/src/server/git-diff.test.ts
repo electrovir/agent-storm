@@ -1,6 +1,6 @@
 // cspell:words unstages, endobj
 
-import {GitDiffSide, GitFileChange} from '@agent-storm/common';
+import {GitDiffSide, GitFileChange, maxDiffFileBytes} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {execFile} from 'node:child_process';
@@ -27,15 +27,20 @@ const committedLines = [
     'five',
 ];
 
-/** A repo whose only file is {@link committedLines}, committed, plus that file's absolute path. */
-async function createRepo() {
+async function createEmptyRepo() {
     const folder = await mkdtemp(join(tmpdir(), 'agent-storm-diff-'));
-    const filePath = join(folder, 'file.txt');
     await exec('git', [
         'init',
         '--initial-branch=main',
         folder,
     ]);
+    return folder;
+}
+
+/** A repo whose only file is {@link committedLines}, committed, plus that file's absolute path. */
+async function createRepo() {
+    const folder = await createEmptyRepo();
+    const filePath = join(folder, 'file.txt');
     await exec('git', [
         '-C',
         folder,
@@ -105,6 +110,39 @@ async function writeEditAndUntracked({
     await writeTwoEdits(filePath);
     await writeFile(join(folder, 'new.txt'), 'brand new\n');
 }
+
+describe(getDiffStatus.name, () => {
+    it('counts staged lines before the first commit', async () => {
+        const folder = await createEmptyRepo();
+        try {
+            const path = 'file.txt';
+            await writeFile(join(folder, path), 'first\nsecond\n');
+            await exec('git', [
+                '-C',
+                folder,
+                'add',
+                '--',
+                path,
+            ]);
+
+            const status = await getDiffStatus(folder);
+            assert.deepEquals(status.staged, [
+                {
+                    path,
+                    change: GitFileChange.Added,
+                    oldPath: undefined,
+                    insertions: 2,
+                    deletions: 0,
+                },
+            ]);
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+});
 
 describe(setSideStaged.name, () => {
     it('stages every unstaged file, including untracked ones', async () => {
@@ -334,6 +372,37 @@ const redPngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==';
 
 describe(getDiffFileContents.name, () => {
+    it('reports an error when a staged file exceeds the Git read limit', async () => {
+        const folder = await createEmptyRepo();
+        const path = 'oversized.txt';
+        try {
+            await writeFile(join(folder, path), Buffer.alloc(maxDiffFileBytes * 5, 'x'));
+            await exec('git', [
+                '-C',
+                folder,
+                'add',
+                path,
+            ]);
+
+            await assert.throws(
+                getDiffFileContents({
+                    folder,
+                    path,
+                    side: GitDiffSide.Staged,
+                    allowLarge: true,
+                }),
+                {
+                    matchMessage: "Git output exceeded the Diff pane's size limit.",
+                },
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+
     it('returns both sides of a modified image as data URLs', async () => {
         const {folder} = await createRepo();
         try {
@@ -502,6 +571,120 @@ describe(getPullRequestStatus.name, () => {
                 [
                     `${committedLines.join('\n')}\n`,
                     `${committedLines.join('\n')}\nsix\n`,
+                ],
+            );
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+
+    it('counts only the edited lines when a PR renames a file', async () => {
+        const {folder} = await createRepo();
+        const renamedPath = 'renamed.txt';
+        try {
+            await exec('git', [
+                '-C',
+                folder,
+                'switch',
+                '--create',
+                'feature',
+            ]);
+            await exec('git', [
+                '-C',
+                folder,
+                'mv',
+                'file.txt',
+                renamedPath,
+            ]);
+            await writeFile(
+                join(folder, renamedPath),
+                [
+                    ...committedLines.slice(0, -1),
+                    'FIVE',
+                    '',
+                ].join('\n'),
+            );
+            await exec('git', [
+                '-C',
+                folder,
+                'commit',
+                '--all',
+                '-m',
+                'Rename and edit the file',
+            ]);
+
+            const status = await getPullRequestStatus({
+                folder,
+                baseBranch: 'main',
+            });
+            assert.deepEquals(status.pullRequest, [
+                {
+                    path: renamedPath,
+                    oldPath: 'file.txt',
+                    change: GitFileChange.Renamed,
+                    insertions: 1,
+                    deletions: 1,
+                },
+            ]);
+        } finally {
+            await rm(folder, {
+                force: true,
+                recursive: true,
+            });
+        }
+    });
+
+    it('reads again once the branch moves', async () => {
+        const {folder} = await createRepo();
+        try {
+            await exec('git', [
+                '-C',
+                folder,
+                'switch',
+                '--create',
+                'feature',
+            ]);
+            const before = await getPullRequestStatus({
+                folder,
+                baseBranch: 'main',
+            });
+            await writeFile(join(folder, 'added.txt'), 'added\n');
+            await exec('git', [
+                '-C',
+                folder,
+                'add',
+                'added.txt',
+            ]);
+            await exec('git', [
+                '-C',
+                folder,
+                'commit',
+                '-m',
+                'add a file',
+            ]);
+            const after = await getPullRequestStatus({
+                folder,
+                baseBranch: 'main',
+            });
+            assert.deepEquals(
+                [
+                    before.pullRequest,
+                    after.pullRequest,
+                ],
+                [
+                    [],
+                    [
+                        {
+                            path: 'added.txt',
+                            oldPath: undefined,
+                            change: GitFileChange.Added,
+                            insertions: 1,
+                            deletions: 0,
+                        },
+                    ],
                 ],
             );
         } finally {

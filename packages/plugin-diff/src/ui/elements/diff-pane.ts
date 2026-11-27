@@ -148,7 +148,6 @@ export function defineDiffPane({
             ];
         },
         icon: createSizedIcon(LucideFileDiffIcon, 14),
-        hasAi: false,
         /** The diff costs nothing while hidden (no socket, no subprocess). */
         mounting: PaneMounting.OnceDisplayed,
         isAvailable() {

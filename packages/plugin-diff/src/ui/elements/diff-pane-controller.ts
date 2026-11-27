@@ -3,13 +3,14 @@
 import {GitDiffSide, type DiffSelection, type ReviewComment} from '@agent-storm/common';
 import {isDarkMode} from '@agent-storm/core/frontend';
 import {check} from '@augment-vir/assert';
-import {PromiseQueue, extractErrorMessage} from '@augment-vir/common';
+import {extractErrorMessage, PromiseQueue} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {type GitDiffFileContents, type GitDiffStatus} from '../../diff-api.js';
 import {diffMemory} from '../../util/diff-memory.js';
 import {
     allSelectValues,
     findSelected,
+    findSelectValueForPath,
     nextSideValue,
     reselectValue,
     withFilesMoved,
@@ -117,6 +118,11 @@ export function createDiffPaneState() {
         /** Suppresses overlapping refreshes and disables the bulk and hunk buttons mid-write. */
         busy: false,
         /**
+         * Whether the poll's last refresh is still reading. A busy machine can make one take longer
+         * than the poll's interval, and starting more then only piles up `git` processes.
+         */
+        isPolling: false,
+        /**
          * Every index write goes through this one at a time: git takes `index.lock` for the
          * duration of each write, and parallel calls would lose all but one of them to a lock
          * error.
@@ -175,6 +181,15 @@ export function createDiffPaneController({
         /** Stores a selection change in the list's tab. */
         saveSelection(selection: Readonly<DiffSelection>): void;
     }>) {
+    function toSelectionState(selectedValue: DiffPaneState['selectedValue']) {
+        return {
+            selectedValue,
+            diffContent: undefined,
+            diffError: undefined,
+            activeChunkIndex: 0,
+        };
+    }
+
     /**
      * Show a status, carrying the selection and marks over to it.
      *
@@ -186,7 +201,7 @@ export function createDiffPaneController({
         updateState({
             status,
             statusError: undefined,
-            selectedValue,
+            ...(selectedValue === state.selectedValue ? {} : toSelectionState(selectedValue)),
             /**
              * A marked file that just got staged, discarded, or committed is gone from the list
              * under its old value, and keeping it marked would aim the next bulk click at a file
@@ -216,18 +231,22 @@ export function createDiffPaneController({
      * Re-read status and, if a file is open, its contents. Both writes go through the same content
      * comparison the editor rebuild uses, so a poll that finds nothing new is inert.
      *
-     * Reads overlap whenever git is slower than the poll, so a read that lands after a newer one
-     * was shown, after the folder changed, or after the user opened another file is dropped rather
-     * than shown over the newer state.
+     * Discard a result when its folder or PR base changes or a newer refresh updates the pane. A
+     * file read must also match the selected file when it returns.
      */
     async function refresh() {
         const folder = inputs.folder;
+        const pullRequestBaseBranch = inputs.pullRequestBaseBranch;
         const readNumber = state.readsStarted + 1;
         updateState({
             readsStarted: readNumber,
         });
         function isOutdated() {
-            return state.armedFolder !== folder || readNumber < state.firstCurrentRead;
+            return (
+                state.armedFolder !== folder ||
+                inputs.pullRequestBaseBranch !== pullRequestBaseBranch ||
+                readNumber < state.firstCurrentRead
+            );
         }
         const [
             statusRead,
@@ -236,7 +255,7 @@ export function createDiffPaneController({
         ] = await Promise.all([
             readStatus({
                 folder,
-                pullRequestBaseBranch: inputs.pullRequestBaseBranch,
+                pullRequestBaseBranch,
             }),
             inputs.enableComments ? readReviewComments(folder) : undefined,
             inputs.enableComments ? readReviewExplanations(folder) : undefined,
@@ -327,12 +346,19 @@ export function createDiffPaneController({
                 armedFolder: inputs.folder,
                 refreshTimer: setInterval(
                     () => {
-                        if (!state.busy) {
+                        if (!state.busy && !state.isPolling) {
+                            updateState({
+                                isPolling: true,
+                            });
                             /**
-                             * Not awaited: the timer can't wait on a callback, and overlapping
-                             * reads are expected and sorted out by `refresh` itself.
+                             * Not awaited: the timer can't wait on a callback, and reads started
+                             * outside the poll can still overlap, which `refresh` sorts out.
                              */
-                            void refresh();
+                            void refresh().finally(() => {
+                                updateState({
+                                    isPolling: false,
+                                });
+                            });
                         }
                     },
                     convertDuration(refreshInterval, {
@@ -402,12 +428,7 @@ export function createDiffPaneController({
             setReviewSide(undefined);
             return;
         }
-        updateState({
-            selectedValue: value,
-            diffContent: undefined,
-            diffError: undefined,
-            activeChunkIndex: 0,
-        });
+        updateState(toSelectionState(value));
         setReviewSide(undefined);
         await refresh();
     }
@@ -505,18 +526,10 @@ export function createDiffPaneController({
             ],
         });
         if (state.status) {
-            const previousValue = state.selectedValue;
-            const selectedValue = showStatus({
+            showStatus({
                 status: withFilesMoved(state.status, targets),
                 folder: inputs.folder,
             });
-            if (selectedValue !== previousValue) {
-                updateState({
-                    diffContent: undefined,
-                    diffError: undefined,
-                    activeChunkIndex: 0,
-                });
-            }
         }
         await runIndexWrite(async () => {
             try {
@@ -544,12 +557,7 @@ export function createDiffPaneController({
         }
         const nextValue = nextSideValue(state.status, selected);
         if (nextValue) {
-            updateState({
-                selectedValue: nextValue,
-                diffContent: undefined,
-                diffError: undefined,
-                activeChunkIndex: 0,
-            });
+            updateState(toSelectionState(nextValue));
         }
         await onStageWholeFiles([
             selected,
@@ -681,10 +689,11 @@ export function createDiffPaneController({
 
     /** Opens the comment's file and centers its line. */
     async function openComment(comment: Readonly<ReviewComment>) {
-        const values = allSelectValues(state.status).filter((value) => {
-            return findSelected(state.status, value)?.file.path === comment.path;
+        const value = findSelectValueForPath({
+            status: state.status,
+            path: comment.path,
+            preferredValue: state.selectedValue,
         });
-        const value = values.find((entry) => entry === state.selectedValue) || values[0];
         if (!value) {
             return;
         }

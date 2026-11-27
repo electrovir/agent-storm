@@ -398,7 +398,11 @@ export const VirDiffPane = defineAppElement<{
                   `;
 
         const isCodeViewHidden =
-            !!state.reviewSide || !selected || !!content?.tooLargeOrBinary || !!content?.isImage;
+            !!state.reviewSide ||
+            !selected ||
+            !content ||
+            content.tooLargeOrBinary ||
+            content.isImage;
         const svgImageContent = isCodeViewHidden
             ? undefined
             : toSvgImageContent({

@@ -29,7 +29,7 @@ export const VirDiffCodeView = defineAppElement<{
     /** Identifies the open file across polls; a new key is a new file. */
     fileKey: string | undefined;
     path: string | undefined;
-    /** Undefined while the file loads, which leaves the previous file's editor in place. */
+    /** Undefined while the file loads. */
     content: GitDiffFileContents | undefined;
     hideWhitespace: boolean;
     unified: boolean;
@@ -187,11 +187,16 @@ export const VirDiffCodeView = defineAppElement<{
         }
 
         /**
-         * An image or a binary has no hunks, so the last text file's chunks would otherwise stay
-         * armed: the jump buttons would scroll a hidden editor and the ruler would mark a file
-         * nobody is looking at.
+         * A newly opened file that is still loading, an image, or a binary has no hunks, so the
+         * last text file's chunks would otherwise stay armed: the jump buttons would scroll a
+         * hidden editor and the ruler would mark a file nobody is looking at.
          */
-        if (content && (content.isImage || content.tooLargeOrBinary) && state.rendered) {
+        if (
+            state.rendered &&
+            (state.rendered.fileKey !== inputs.fileKey ||
+                content?.isImage ||
+                content?.tooLargeOrBinary)
+        ) {
             state.rendered.editor?.destroy();
             state.editorParent?.replaceChildren();
             updateState({

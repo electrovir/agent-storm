@@ -109,6 +109,11 @@ export const VirDiffReviewFile = defineAppElement<{
              */
             loadedFile: undefined as GitDiffFile | undefined,
             /**
+             * Whether a read is still running. A newer `file` waits for it, so polls on a busy
+             * machine don't pile up reads, and the render after it lands starts the newest one.
+             */
+            isLoading: false,
+            /**
              * Undefined until the first read lands. A re-read keeps showing the previous contents
              * until it does, so a poll that picked up an edit doesn't flash the file empty.
              */
@@ -206,9 +211,10 @@ export const VirDiffReviewFile = defineAppElement<{
         }
 
         const file = inputs.file;
-        if (state.isNear && state.loadedFile !== file) {
+        if (state.isNear && state.loadedFile !== file && !state.isLoading) {
             updateState({
                 loadedFile: file,
+                isLoading: true,
             });
             void createPluginApiClient(diffApi)
                 .call('readFile', {
@@ -221,19 +227,17 @@ export const VirDiffReviewFile = defineAppElement<{
                 })
                 .then(
                     (content) => {
-                        if (state.loadedFile === file) {
-                            updateState({
-                                content,
-                                loadError: undefined,
-                            });
-                        }
+                        updateState({
+                            content,
+                            loadError: undefined,
+                            isLoading: false,
+                        });
                     },
                     (error: unknown) => {
-                        if (state.loadedFile === file) {
-                            updateState({
-                                loadError: extractErrorMessage(error),
-                            });
-                        }
+                        updateState({
+                            loadError: extractErrorMessage(error),
+                            isLoading: false,
+                        });
                     },
                 );
         }

@@ -2,7 +2,13 @@ import {GitDiffSide, GitFileChange} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {type GitDiffFile} from '../diff-api.js';
-import {findSelected, nextSideValue, reselectValue, toSelectValue} from './diff-status.js';
+import {
+    findSelected,
+    findSelectValueForPath,
+    nextSideValue,
+    reselectValue,
+    toSelectValue,
+} from './diff-status.js';
 
 function createFile(path: string): GitDiffFile {
     return {
@@ -56,6 +62,44 @@ describe(findSelected.name, () => {
                     'first.ts',
                 ].join('\0'),
             ),
+        );
+    });
+});
+
+describe(findSelectValueForPath.name, () => {
+    it('keeps the open side and falls back to file menu order', () => {
+        const path = 'first.ts';
+        const stagedStatus = {
+            ...status,
+            staged: [
+                ...status.staged,
+                createFile(path),
+            ],
+        };
+        const preferredValue = toSelectValue(GitDiffSide.Unstaged, path);
+        assert.deepEquals(
+            [
+                findSelectValueForPath({
+                    status: stagedStatus,
+                    path,
+                    preferredValue,
+                }),
+                findSelectValueForPath({
+                    status: stagedStatus,
+                    path,
+                    preferredValue: undefined,
+                }),
+                findSelectValueForPath({
+                    status: stagedStatus,
+                    path: 'missing.ts',
+                    preferredValue,
+                }),
+            ],
+            [
+                preferredValue,
+                toSelectValue(GitDiffSide.Staged, path),
+                undefined,
+            ],
         );
     });
 });

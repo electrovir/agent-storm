@@ -2,9 +2,10 @@
 
 import {GitDiffSide} from '@agent-storm/common';
 import {check} from '@augment-vir/assert';
+import {getObjectTypedEntries, groupArrayBy} from '@augment-vir/common';
 import {type GitDiffFile, type GitDiffStatus} from '../diff-api.js';
 
-/** The status list each side's files are read from. */
+/** The status list for each side, in file menu order. */
 export const statusFilesKeys = {
     [GitDiffSide.Staged]: 'staged',
     [GitDiffSide.Unstaged]: 'unstaged',
@@ -68,6 +69,24 @@ export function findSelected(
         : undefined;
 }
 
+function applyMovesToSide({
+    files,
+    outgoing,
+    incoming,
+}: Readonly<{
+    files: ReadonlyArray<GitDiffFile>;
+    outgoing: ReadonlyArray<SelectedFile>;
+    incoming: ReadonlyArray<SelectedFile>;
+}>) {
+    const outgoingPaths = new Set(outgoing.map(({file}) => file.path));
+    const remaining = files.filter(({path}) => !outgoingPaths.has(path));
+    const remainingPaths = new Set(remaining.map(({path}) => path));
+    return [
+        ...remaining,
+        ...incoming.filter(({file}) => !remainingPaths.has(file.path)).map(({file}) => file),
+    ];
+}
+
 /**
  * Status as it reads once `moves` have crossed the index, so a stage click shows its result before
  * git confirms it. A file already on the far side keeps that entry, so a partly staged file's line
@@ -77,43 +96,47 @@ export function withFilesMoved(
     status: Readonly<GitDiffStatus>,
     moves: ReadonlyArray<SelectedFile>,
 ): GitDiffStatus {
-    function remaining(side: GitDiffSide, files: ReadonlyArray<GitDiffFile>) {
-        return files.filter((file) => {
-            return !moves.some((move) => move.side === side && move.file.path === file.path);
-        });
+    if (!moves.length) {
+        return status;
     }
-    function arrivals(from: GitDiffSide, existing: ReadonlyArray<GitDiffFile>) {
-        return moves
-            .filter((move) => {
-                return move.side === from && !existing.some((file) => file.path === move.file.path);
-            })
-            .map((move) => move.file);
-    }
-    const staged = remaining(GitDiffSide.Staged, status.staged);
-    const unstaged = remaining(GitDiffSide.Unstaged, status.unstaged);
+    const movesBySide = groupArrayBy(moves, ({side}) => side);
+    const stagedMoves = movesBySide[GitDiffSide.Staged] || [];
+    const unstagedMoves = movesBySide[GitDiffSide.Unstaged] || [];
     return {
         ...status,
-        staged: [
-            ...staged,
-            ...arrivals(GitDiffSide.Unstaged, staged),
-        ],
-        unstaged: [
-            ...unstaged,
-            ...arrivals(GitDiffSide.Staged, unstaged),
-        ],
+        staged: applyMovesToSide({
+            files: status.staged,
+            outgoing: stagedMoves,
+            incoming: unstagedMoves,
+        }),
+        unstaged: applyMovesToSide({
+            files: status.unstaged,
+            outgoing: unstagedMoves,
+            incoming: stagedMoves,
+        }),
     };
 }
 
 /** Flat, ordered list of every file across both sides — the order the file-jump buttons walk. */
 export function allSelectValues(status: Readonly<GitDiffStatus> | undefined): string[] {
-    if (!status) {
-        return [];
-    }
-    return [
-        ...status.staged.map((file) => toSelectValue(GitDiffSide.Staged, file.path)),
-        ...status.unstaged.map((file) => toSelectValue(GitDiffSide.Unstaged, file.path)),
-        ...status.pullRequest.map((file) => toSelectValue(GitDiffSide.PullRequest, file.path)),
-    ];
+    return toMenuGroups(status).flatMap(({side, files}) => {
+        return files.map((file) => toSelectValue(side, file.path));
+    });
+}
+
+export function findSelectValueForPath({
+    status,
+    path,
+    preferredValue,
+}: Readonly<{
+    status: Readonly<GitDiffStatus> | undefined;
+    path: GitDiffFile['path'];
+    preferredValue: string | undefined;
+}>) {
+    const values = toMenuGroups(status).flatMap(({side, files}) => {
+        return files.some((file) => file.path === path) ? [toSelectValue(side, path)] : [];
+    });
+    return values.find((value) => value === preferredValue) || values[0];
 }
 
 /**
@@ -164,18 +187,17 @@ export function toMenuGroups(status: Readonly<GitDiffStatus> | undefined): FileM
     if (!status) {
         return [];
     }
-    return [
-        {
-            side: GitDiffSide.Staged,
-            files: status.staged,
-        },
-        {
-            side: GitDiffSide.Unstaged,
-            files: status.unstaged,
-        },
-        {
-            side: GitDiffSide.PullRequest,
-            files: status.pullRequest,
-        },
-    ].filter((group) => group.files.length);
+    return getObjectTypedEntries(statusFilesKeys)
+        .map(
+            ([
+                side,
+                filesKey,
+            ]) => {
+                return {
+                    side,
+                    files: status[filesKey],
+                };
+            },
+        )
+        .filter(({files}) => files.length);
 }

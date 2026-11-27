@@ -33,10 +33,7 @@ const pullRequest: ReviewQueuePr = {
     isViewerAuthor: false,
     isAwaitingViewerReview: true,
     hasViewerReviewed: false,
-    panes: {
-        [PaneKind.Ai]: PaneStatus.None,
-        [PaneKind.Shell]: PaneStatus.None,
-    },
+    threadStatus: PaneStatus.None,
     author: 'someone',
     authorAvatarUrl: '',
     isAuthorTrusted: true,
@@ -47,9 +44,6 @@ function createSession(id: string) {
     return {
         id,
         name: '',
-        aiId: '',
-        conversationId: '',
-        isNewConversation: false,
     };
 }
 
@@ -57,10 +51,6 @@ function createSession(id: string) {
 function listFolderGroupTabs(extensionInputs: PaneGroupExtensionInputs) {
     const layout = createDefaultTabLayout({
         sessions: {
-            [PaneKind.Ai]: [
-                createSession('ai1'),
-                createSession('ai2'),
-            ],
             [PaneKind.Shell]: [
                 createSession('sh1'),
             ],
@@ -81,12 +71,8 @@ describe('Diff and Review default placement', () => {
     it('puts both tabs at the ends of a Build folder', () => {
         assert.deepEquals(listFolderGroupTabs({}), [
             [
-                'ai:ai1',
-                'ai:ai2',
-                diffPaneId,
-            ],
-            [
                 'shell:sh1',
+                diffPaneId,
                 reviewPaneId,
             ],
         ]);
@@ -95,10 +81,6 @@ describe('Diff and Review default placement', () => {
         assert.deepEquals(listFolderGroupTabs(createReviewExtensionInputs(pullRequest)), [
             [
                 diffPaneId,
-                'ai:ai1',
-                'ai:ai2',
-            ],
-            [
                 reviewPaneId,
                 'shell:sh1',
             ],

@@ -1,5 +1,6 @@
 import {type GitDiffSide, type ReviewComment} from '@agent-storm/common';
 import {defineAppElement} from '@agent-storm/core/frontend';
+import {groupArrayBy} from '@augment-vir/common';
 import {css, html, listen, repeat} from 'element-vir';
 import {viraThemeByKeys} from 'vira';
 import {type GitDiffFile} from '../../diff-api.js';
@@ -129,6 +130,13 @@ export const VirDiffReview = defineAppElement<{
                 <div class="note">Nothing to review on this side.</div>
             `;
         }
+        /**
+         * Quoted so a file named like an `Object.prototype` member, such as `constructor`, can't
+         * collide with it in `groupArrayBy`'s plain object.
+         */
+        const commentsByPath = groupArrayBy(inputs.reviewComments, ({path}) => {
+            return JSON.stringify(path);
+        });
         /** Keyed by path so a file leaving the list can't hand its mounted editor to the next one. */
         return html`
             ${repeat(
@@ -151,9 +159,7 @@ export const VirDiffReview = defineAppElement<{
                             isDark: inputs.isDark,
                             isMobile: inputs.isMobile,
                             enableComments: inputs.enableComments,
-                            reviewComments: inputs.reviewComments.filter((comment) => {
-                                return comment.path === file.path;
-                            }),
+                            reviewComments: commentsByPath[JSON.stringify(file.path)] || [],
                             commentingLine:
                                 inputs.commentDraft?.path === file.path
                                     ? inputs.commentDraft.line
