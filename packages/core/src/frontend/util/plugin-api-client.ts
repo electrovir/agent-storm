@@ -1,5 +1,6 @@
 import {
     pluginCallEndpoint,
+    pluginEventsHeartbeatInterval,
     pluginEventsWebSocket,
     type AnyPluginApiDefinition,
     type PluginCallRequest,
@@ -8,9 +9,12 @@ import {
 } from '@agent-storm/common';
 import {extractErrorMessage, log, wait} from '@augment-vir/common';
 import {HttpMethod, type ClientWebSocket} from '@rest-vir/api';
-import {assertValidShape, checkValidShape} from 'object-shape-tester';
+import {type AnyDuration} from 'date-vir';
+import {assertValidShape} from 'object-shape-tester';
 import {client, fetchApi} from './api-client.js';
 import {ensureSecret} from './auth.js';
+import {reportClientError} from './client-error-log.js';
+import {logRequestTiming} from './debug-log.js';
 
 type PluginEventListener = Readonly<{
     pluginId: string;
@@ -27,14 +31,34 @@ const pluginEvents: {
     /** Run each time the socket opens again after having been closed. */
     reconnectListeners: ReadonlyArray<() => void>;
     hasConnected: boolean;
+    /** Counts connection attempts, so a replaced socket's late messages and close are ignored. */
+    connectionCount: number;
+    /** `Date.now()` of the current socket's last message, or of its connection attempt. */
+    lastMessageAt: number;
+    hasSilenceCheck: boolean;
 } = {
     listeners: [],
     socket: undefined,
     reconnectListeners: [],
     hasConnected: false,
+    connectionCount: 0,
+    lastMessageAt: 0,
+    hasSilenceCheck: false,
 };
 
+/** Several missed server heartbeats in a row. */
+const silentSocketLimit = {
+    milliseconds: pluginEventsHeartbeatInterval.milliseconds * 3,
+} as const satisfies AnyDuration;
+
 async function connectPluginEvents(): Promise<PluginEventsSocket | undefined> {
+    pluginEvents.connectionCount += 1;
+    const connection = pluginEvents.connectionCount;
+    pluginEvents.lastMessageAt = Date.now();
+    startSilenceCheck();
+    function isCurrent() {
+        return connection === pluginEvents.connectionCount;
+    }
     try {
         const socket = await client.connectWebSocket(pluginEventsWebSocket, {
             protocols: [
@@ -42,6 +66,10 @@ async function connectPluginEvents(): Promise<PluginEventsSocket | undefined> {
             ],
             listeners: {
                 message({message}) {
+                    if (!isCurrent()) {
+                        return;
+                    }
+                    pluginEvents.lastMessageAt = Date.now();
                     pluginEvents.listeners
                         .filter((listener) => {
                             return (
@@ -52,17 +80,27 @@ async function connectPluginEvents(): Promise<PluginEventsSocket | undefined> {
                         .forEach((listener) => listener.callback(message.data));
                 },
                 async close() {
+                    if (!isCurrent()) {
+                        return;
+                    }
                     pluginEvents.socket = undefined;
                     await reconnectPluginEvents();
                 },
             },
         });
+        if (!isCurrent()) {
+            await socket.close();
+            return undefined;
+        }
         if (pluginEvents.hasConnected) {
             pluginEvents.reconnectListeners.forEach((listener) => listener());
         }
         pluginEvents.hasConnected = true;
         return socket;
     } catch (error) {
+        if (!isCurrent()) {
+            return undefined;
+        }
         log.warning(`Can't open the plugin events socket: ${extractErrorMessage(error)}`);
         pluginEvents.socket = undefined;
         await reconnectPluginEvents();
@@ -77,6 +115,31 @@ async function reconnectPluginEvents() {
     if (pluginEvents.listeners.length && !pluginEvents.socket) {
         pluginEvents.socket = connectPluginEvents();
     }
+}
+
+/**
+ * A socket the network drops without a closing handshake can go a long time without firing `close`,
+ * and until it does the page gets no events and never reconnects. The server's heartbeat keeps a
+ * working socket from going this quiet, so silence means the socket is gone.
+ */
+function startSilenceCheck() {
+    if (pluginEvents.hasSilenceCheck) {
+        return;
+    }
+    pluginEvents.hasSilenceCheck = true;
+    setInterval(() => {
+        void replaceSilentSocket();
+    }, pluginEventsHeartbeatInterval.milliseconds);
+}
+
+async function replaceSilentSocket() {
+    const silentSocket = pluginEvents.socket;
+    if (!silentSocket || Date.now() - pluginEvents.lastMessageAt < silentSocketLimit.milliseconds) {
+        return;
+    }
+    log.warning('The plugin events socket went silent. Reconnecting.');
+    pluginEvents.socket = connectPluginEvents();
+    await (await silentSocket)?.close();
 }
 
 async function addPluginEventListener(listener: PluginEventListener) {
@@ -107,12 +170,18 @@ export function createPluginApiClient<const Api extends AnyPluginApiDefinition>(
             call: Call,
             request: PluginCallRequest<Api, Call>,
         ): Promise<PluginCallResponse<Api, Call>> {
+            const startedAt = performance.now();
             const result = await fetchApi(pluginCallEndpoint, HttpMethod.Post, {
                 requestData: {
                     pluginId: api.pluginId,
                     call,
                     request,
                 },
+            }).finally(() => {
+                logRequestTiming({
+                    name: `${api.pluginId}.${call}`,
+                    startedAt,
+                });
             });
             if ('errorMessage' in result) {
                 throw new Error(result.errorMessage);
@@ -132,11 +201,18 @@ export function createPluginApiClient<const Api extends AnyPluginApiDefinition>(
                 pluginId: api.pluginId,
                 event,
                 callback(data) {
-                    if (checkValidShape(data, api.events[event])) {
-                        callback(data);
-                    } else {
-                        log.warning(`Dropped a malformed '${event}' event from '${api.pluginId}'.`);
+                    try {
+                        assertValidShape(data, api.events[event]);
+                    } catch (error) {
+                        const message = `Dropped a malformed '${event}' event from '${api.pluginId}': ${extractErrorMessage(error)}`;
+                        log.warning(message);
+                        reportClientError({
+                            error: new Error(message),
+                            source: 'plugin events',
+                        });
+                        return;
                     }
+                    callback(data);
                 },
             };
             void addPluginEventListener(listener);

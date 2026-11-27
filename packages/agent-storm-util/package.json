@@ -1,6 +1,6 @@
 {
     "name": "agent-storm-util",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "description": "Node.js helpers shared by agent-storm, its launcher, and its plugins.",
     "keywords": [
         "agent-storm",

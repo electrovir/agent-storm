@@ -98,15 +98,15 @@ export const VirAuthModal = defineAppElement()({
         return html`
             <${ViraModal.assign({
                 open: state.open,
-                modalTitle: 'agent-storm auth',
+                modalTitle: 'Agent Storm auth',
                 blockLightDismissal: true,
             })}>
                 <div class="body">
                     <div class="description">
-                        Paste the auth secret agent-storm printed in its terminal output when it
+                        Paste the auth secret Agent Storm printed in its terminal output when it
                         first started. It's printed only once. To make a new one, delete the
                         <code>auth-secret</code>
-                        file that output names, then restart agent-storm.
+                        file that output names, then restart Agent Storm.
                     </div>
                     <${ViraInput.assign({
                         value: state.pending,

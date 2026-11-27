@@ -39,7 +39,6 @@ export const activityPane: PaneDefinition<typeof activityTabStateShape> = {
         return [];
     },
     icon: createSizedIcon(LucideAppWindowIcon, 14),
-    hasAi: false,
     /** The Build activity holds live terminals, which unmounting would tear down. */
     mounting: PaneMounting.OnceDisplayed,
     isAvailable(view) {

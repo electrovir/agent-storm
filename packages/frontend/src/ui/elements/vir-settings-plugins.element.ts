@@ -19,7 +19,7 @@ const statusLabels: Readonly<Record<PluginStatus, string>> = {
     [PluginStatus.Changed]: 'Changed since you approved it',
     [PluginStatus.Blocked]: 'Blocked',
     [PluginStatus.Invalid]: "Can't run",
-    [PluginStatus.IncompatibleCore]: "Can't run on this version of agent-storm",
+    [PluginStatus.IncompatibleCore]: "Can't run on this version of Agent Storm",
     [PluginStatus.MissingDependency]: "Off, since a plugin it depends on isn't running",
 };
 

@@ -9,9 +9,9 @@ export type PaneRestartedEvent = {
 };
 
 /**
- * Respawn every session of both kinds under one folder, then remount their terminals. Unlike "Kill
- * panes" the tab list survives — this is the recovery path for panes whose processes are gone (a
- * daemon that ran out of PTYs, an agent that crashed) rather than a teardown.
+ * Respawn every session under one folder, then remount their terminals. Unlike "Kill panes" the tab
+ * list survives — this is the recovery path for panes whose processes are gone (a daemon that ran
+ * out of PTYs, an agent that crashed) rather than a teardown.
  */
 export async function restartFolderPanes({
     folder,

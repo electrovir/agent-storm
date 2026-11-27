@@ -1,9 +1,11 @@
 import {
+    AgentStormMarkIcon,
     countElementsBefore,
     defineAppElement,
     findElementIndexAt,
     isActivityEnabled,
     listInlineTabElements,
+    sidebarContextMenuOffset,
     trackPointerDrag,
     type AppContext,
 } from '@agent-storm/core/frontend';
@@ -12,21 +14,26 @@ import {type FullSpaRoute} from 'spa-router-vir';
 import {
     createSizedIcon,
     LucideTriangleAlertIcon,
+    ViraIcon,
     ViraTabs,
     ViraTabsBarDirection,
     viraThemeByKeys,
     ViraThemeColorName,
+    type ViraMenuItemEntry,
     type ViraTab,
 } from 'vira';
 import {orderMainTabs} from '../../util/activity-route.js';
+import {listActivityToggles, setActivityEnabled} from '../../util/activity-toggles.js';
 import {router} from '../../util/router.js';
 
 const dropLineThicknessPx = 2;
+const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 
 /**
  * The app's outermost navigation: a vertical strip pinned to the left of the sidebar, or with
- * `isHorizontal` a row, which is what fits above the sidebar inside the mobile modal. Tabs drag to
- * reorder, and the order is shared by every window.
+ * `isHorizontal` a row, which is what fits above the sidebar inside the mobile modal. Only the
+ * vertical strip shows the brand mark, above its tabs. Tabs drag to reorder, and every tab's
+ * context menu shows or hides each tab. Both are shared by every window.
  */
 export const VirMainTabs = defineAppElement<{
     context: AppContext;
@@ -56,10 +63,22 @@ export const VirMainTabs = defineAppElement<{
             font-size: 12px;
         }
 
+        :host(:not([data-horizontal])) {
+            flex-direction: column;
+        }
+
         .tabs {
             display: flex;
             flex-grow: 1;
             min-width: 0;
+            min-height: 0;
+        }
+
+        .brand-mark {
+            display: flex;
+            justify-content: center;
+            padding: 8px 0;
+            border-right: 1px solid ${viraThemeByKeys.grey.foreground.decoration.foreground.value};
         }
 
         .drop-line {
@@ -78,6 +97,24 @@ export const VirMainTabs = defineAppElement<{
             context.activities,
         );
         const shownTabs = order.filter((tab) => isActivityEnabled(context, tab));
+        const visibilityMenuEntries = listActivityToggles({
+            context,
+            activities: order,
+        }).map(({activity, isEnabled, isLastEnabled}): ViraMenuItemEntry => {
+            return {
+                content: activity.label,
+                selected: isEnabled,
+                disabled: isLastEnabled,
+                keepOpenAfterInteraction: true,
+                onClick() {
+                    setActivityEnabled({
+                        context,
+                        activity,
+                        isEnabled: !isEnabled,
+                    });
+                },
+            };
+        });
 
         /** A main tab returns to what it last had selected. */
         function toTargetRoute(route: Readonly<Partial<FullSpaRoute>>) {
@@ -197,6 +234,15 @@ export const VirMainTabs = defineAppElement<{
         const dropLine = state.dropLine;
 
         return html`
+            ${isVertical
+                ? html`
+                      <div class="brand-mark">
+                          <${ViraIcon.assign({
+                              icon: brandMarkIcon,
+                          })}></${ViraIcon}>
+                      </div>
+                  `
+                : nothing}
             <div
                 class="tabs"
                 role="tablist"
@@ -232,6 +278,7 @@ export const VirMainTabs = defineAppElement<{
                             icon: isPending
                                 ? createSizedIcon(LucideTriangleAlertIcon, 14)
                                 : undefined,
+                            contextMenuEntries: visibilityMenuEntries,
                             paths: {
                                 path: tab.id,
                                 fullPaths: [
@@ -257,6 +304,7 @@ export const VirMainTabs = defineAppElement<{
                     color: ViraThemeColorName.blue,
                     shouldFillWidth: !isVertical,
                     shouldRotateLabels: isVertical,
+                    contextMenuPopoverOffset: sidebarContextMenuOffset,
                 })}></${ViraTabs}>
             </div>
             ${dropLine

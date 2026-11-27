@@ -113,24 +113,23 @@ export function getPrRingDisplay(folder: Readonly<FolderInfo>) {
 }
 
 /**
- * Higher outranks lower, following the checks in the server's `toOpenPrStatus`. Approved and
- * ChangesRequested never compete, unresolved comments outrank only an approval, and
- * `AwaitingReview` only falls through to its last check when nothing above it applies.
- * `ReReviewRequested` never competes with `AwaitingReview`. Negative for statuses with no ring
- * worth ranking, which sort below the local-changes ring's 0.
+ * Sidebar status sort order, higher first. This only orders rows: which status a PR gets is decided
+ * by the server's `toOpenPrStatus`, where unresolved comments outrank only an approval, so this
+ * order deliberately differs from that precedence. Negative for statuses with no ring worth
+ * ranking, which sort below the local-changes ring's 0.
  */
 export const prRingRanks: Readonly<Record<PrStatus, number>> = {
     [PrStatus.None]: -1,
     [PrStatus.Closed]: -1,
     [PrStatus.Approved]: 1,
-    [PrStatus.UnresolvedComments]: 2,
-    [PrStatus.ChangesRequested]: 3,
-    [PrStatus.ChecksFailed]: 4,
-    [PrStatus.AwaitingOtherReviews]: 5,
-    [PrStatus.OthersRequestedChanges]: 6,
-    [PrStatus.AwaitingReview]: 7,
-    [PrStatus.ReReviewRequested]: 8,
-    [PrStatus.ReviewStarted]: 9,
+    [PrStatus.ChangesRequested]: 2,
+    [PrStatus.ChecksFailed]: 3,
+    [PrStatus.AwaitingOtherReviews]: 4,
+    [PrStatus.OthersRequestedChanges]: 5,
+    [PrStatus.AwaitingReview]: 6,
+    [PrStatus.ReReviewRequested]: 7,
+    [PrStatus.ReviewStarted]: 8,
+    [PrStatus.UnresolvedComments]: 9,
     [PrStatus.ReadyToMerge]: 10,
     [PrStatus.Merged]: 11,
 };

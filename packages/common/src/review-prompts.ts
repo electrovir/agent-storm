@@ -2,7 +2,7 @@ import type {ReviewQueuePr} from './api.js';
 
 /** The skill's last step opens VS Code unless this is set. */
 export const skipEditorInstruction =
-    'Run the runner with CODE_REVIEW_SKIP_EDITOR=1 in its environment so it does not open an editor; agent-storm opens its Diff tab instead.';
+    'Run the runner with CODE_REVIEW_SKIP_EDITOR=1 in its environment so it does not open an editor; Agent Storm opens its Diff tab instead.';
 
 /**
  * A `/manual-review` subcommand pinned to `folder`. For a Build folder the skill finds the folder's
@@ -29,10 +29,23 @@ export function createManualReviewPrompt({
     folder: string;
     isPrCheckedOut?: boolean | undefined;
 }>) {
-    return [
-        isPrCheckedOut ? '/manual-review here' : `/manual-review start ${pullRequest.url}`,
-        `Run it in ${folder} rather than in any other checkout.`,
-        `If that folder is empty, first make it a checkout of ${pullRequest.owner}/${pullRequest.repoName}: a detached git worktree (git worktree add --detach) of an existing local clone if there is one, otherwise a git clone. Then run the start runner from it.`,
-        skipEditorInstruction,
-    ].join(' ');
+    /**
+     * A `here` prompt must not mention the start runner: agents read it as license to run
+     * `run-review.sh` in the Build folder itself, checking the review branch out over the folder's
+     * own branch instead of reviewing in a copy.
+     */
+    return (
+        isPrCheckedOut
+            ? [
+                  '/manual-review here',
+                  `Run it from ${folder} with run-here.sh, which reviews in a copy and never checks out the review branch in ${folder} itself.`,
+              ]
+            : [
+                  `/manual-review start ${pullRequest.url}`,
+                  `Run it in ${folder} rather than in any other checkout.`,
+                  `If that folder is empty, first make it a checkout of ${pullRequest.owner}/${pullRequest.repoName}: a detached git worktree (git worktree add --detach) of an existing local clone if there is one, otherwise a git clone. Then run the start runner from it.`,
+              ]
+    )
+        .concat(skipEditorInstruction)
+        .join(' ');
 }

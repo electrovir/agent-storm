@@ -6,7 +6,6 @@ import {
     sessionCreateEndpoint,
     sessionListEndpoint,
     sessionRenameEndpoint,
-    sessionSetAiEndpoint,
 } from '@agent-storm/common';
 import {extractErrorMessage, mapEnumToObject} from '@augment-vir/common';
 import {type EndpointRequestType, HttpMethod} from '@rest-vir/api';
@@ -18,10 +17,10 @@ type SessionRequest<Params> = Readonly<Omit<Params, 'folder'>>;
 export type FolderSessionsObservable = ReturnType<typeof createFolderSessions>;
 
 /**
- * One pane group's session tabs, both kinds, loaded on creation. Each mutation replaces the list
- * with the server's answer so tab order and names match it, and resolves to that answer, or to
- * `undefined` after putting the failure in `error`. Lists only the sessions in `scope`, so a scoped
- * pane group and the folder's own don't show each other's terminals.
+ * One pane group's session tabs, loaded on creation. Each mutation replaces the list with the
+ * server's answer so tab order and names match it, and resolves to that answer, or to `undefined`
+ * after putting the failure in `error`. Lists only the sessions in `scope`, so a scoped pane group
+ * and the folder's own don't show each other's terminals.
  */
 export function createFolderSessions({
     folder,
@@ -187,20 +186,6 @@ export function createFolderSessions({
         ) {
             return applySessions(
                 fetchApi(sessionCloseEndpoint, HttpMethod.Post, {
-                    requestData: {
-                        ...params,
-                        folder,
-                    },
-                }),
-            );
-        },
-        setAi(
-            params: SessionRequest<
-                EndpointRequestType<typeof sessionSetAiEndpoint, typeof HttpMethod.Post>
-            >,
-        ) {
-            return applySessions(
-                fetchApi(sessionSetAiEndpoint, HttpMethod.Post, {
                     requestData: {
                         ...params,
                         folder,

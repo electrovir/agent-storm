@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/bot",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "description": "Define bots that run on a schedule, do routine work in scripts, and call AI only when needed, inside Agent Storm or on their own.",
     "keywords": [
         "agent-storm",

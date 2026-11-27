@@ -15,7 +15,7 @@
             "type": "image/png"
         }
     ],
-    "name": "AgentStorm",
+    "name": "Agent Storm",
     "scope": "/",
     "short_name": "AGS",
     "start_url": "/",

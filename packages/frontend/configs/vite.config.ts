@@ -1,11 +1,13 @@
 import {type Settings} from '@agent-storm/common';
 import {type InjectedGlobalData} from '@agent-storm/core/frontend';
+import {check} from '@augment-vir/assert';
 import {Debounce, DebounceStyle, log, replaceExtension} from '@augment-vir/common';
 import {defineConfig} from '@virmator/frontend/configs/vite.config.base.js';
 import {findConfigFile, parseConfigContents} from 'config-vir';
 import {existsSync, mkdirSync, readdirSync, readFileSync, watch} from 'node:fs';
 import {homedir} from 'node:os';
 import {resolve} from 'node:path';
+import {gzip} from 'node:zlib';
 import {type Plugin} from 'vite';
 
 function envPort(name: string): number | undefined {
@@ -125,6 +127,66 @@ function pluginReloadPlugin(): Plugin {
 }
 
 /**
+ * Gzips the dev server's responses. Vite serves everything uncompressed, which a desktop on the
+ * same machine never notices, but a phone loading the app over the network downloads its full-size
+ * dependency bundles, many megabytes each, with no compression.
+ *
+ * Only a response sent whole with one `end(body)` call is compressed. That is how vite sends every
+ * transformed module and dependency bundle; anything streamed passes through untouched.
+ */
+function gzipPlugin(): Plugin {
+    return {
+        name: 'agent-storm-gzip',
+        configureServer(server) {
+            server.middlewares.use((request, response, next) => {
+                if (!/\bgzip\b/.test(request.headers['accept-encoding'] || '')) {
+                    next();
+                    return;
+                }
+                const end = response.end.bind(response);
+                Reflect.set(response, 'end', (chunk: unknown, ...rest: unknown[]) => {
+                    const body = check.isString(chunk)
+                        ? Buffer.from(chunk)
+                        : chunk instanceof Uint8Array
+                          ? chunk
+                          : undefined;
+                    if (
+                        !body ||
+                        body.byteLength < 1024 ||
+                        response.headersSent ||
+                        response.statusCode !== 200 ||
+                        response.hasHeader('content-encoding') ||
+                        !/javascript|css|json|html|svg|text/.test(
+                            String(response.getHeader('content-type')),
+                        )
+                    ) {
+                        return Reflect.apply(end, response, [
+                            chunk,
+                            ...rest,
+                        ]);
+                    }
+                    gzip(body, (error, zipped) => {
+                        if (error) {
+                            Reflect.apply(end, response, [
+                                chunk,
+                                ...rest,
+                            ]);
+                            return;
+                        }
+                        response.setHeader('content-encoding', 'gzip');
+                        response.setHeader('content-length', zipped.byteLength);
+                        response.setHeader('vary', 'accept-encoding');
+                        end(zipped);
+                    });
+                    return response;
+                });
+                next();
+            });
+        },
+    };
+}
+
+/**
  * TLS material for the dev server, or undefined to stay on http. The settings only ask for the
  * certificate, so the key is taken to be the file of the same name beside it.
  */
@@ -191,6 +253,7 @@ export default defineConfig(
             },
             plugins: [
                 ...(baseConfig.plugins || []),
+                gzipPlugin(),
                 tlsRestartPlugin(certPath),
                 pluginReloadPlugin(),
             ],

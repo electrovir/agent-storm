@@ -246,14 +246,6 @@ export const VirSettingsFolders = defineAppElement<{
 
         function renderFolderRows(selected: Readonly<FolderInfo>) {
             const settings = inputs.settings;
-            const override = settings.folderAiIds.find((entry) => entry.folder === selected.path);
-            const aiDefinitions = [
-                ...settings.aiDefinitions,
-                ...selected.folderAiDefinitions,
-            ];
-            const inherited = aiDefinitions.find(
-                (definition) => definition.id === selected.inheritedAiId,
-            );
             const repoPath = selected.parentRepoPath || selected.path;
             const repoName =
                 repoPath === selected.path
@@ -262,27 +254,6 @@ export const VirSettingsFolders = defineAppElement<{
             const initCommand =
                 settings.folderPostWorktreeCmds.find((entry) => entry.folder === repoPath)
                     ?.postWorktreeCmd || '';
-
-            function setAi(aiId: string) {
-                changeSettings((current) => {
-                    return {
-                        ...current,
-                        folderAiIds: [
-                            ...current.folderAiIds.filter(
-                                (entry) => entry.folder !== selected.path,
-                            ),
-                            ...(aiId
-                                ? [
-                                      {
-                                          folder: selected.path,
-                                          aiId,
-                                      },
-                                  ]
-                                : []),
-                        ],
-                    };
-                });
-            }
 
             /** An empty command falls back to the folder's settings files, then the default. */
             function setInitCommand(postWorktreeCmd: string) {
@@ -309,42 +280,6 @@ export const VirSettingsFolders = defineAppElement<{
             return html`
                 <span class="card-title">${toFolderLabel(selected, inputs.folderInfo)}</span>
                 <div class="card">
-                    <${VirSettingsRow.assign({
-                        rowTitle: 'AI',
-                        description: [
-                            selected.isWorktreeRoot ? 'Its worktrees inherit this choice.' : '',
-                            'A running AI pane keeps its AI until it restarts.',
-                        ]
-                            .filter(Boolean)
-                            .join(' '),
-                        isModified: !!override,
-                    })}
-                        ${listen(VirSettingsRow.events.reset, () => {
-                            setAi('');
-                        })}
-                    >
-                        <${ViraDropdown.assign({
-                            options: [
-                                {
-                                    value: '',
-                                    label: inherited ? `Inherit (${inherited.name})` : 'Inherit',
-                                },
-                                ...aiDefinitions.map((definition) => {
-                                    return {
-                                        value: definition.id,
-                                        label: definition.name,
-                                    };
-                                }),
-                            ],
-                            selected: [
-                                override?.aiId || '',
-                            ],
-                        })}
-                            ${listen(ViraDropdown.events.selectedValuesChange, (event) => {
-                                setAi(event.detail[0] || '');
-                            })}
-                        ></${ViraDropdown}>
-                    </${VirSettingsRow}>
                     <${VirSettingsRow.assign({
                         rowTitle: 'Init command',
                         description: repoName

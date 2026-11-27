@@ -4,9 +4,8 @@ import {
     restartPaneEndpoint,
     toPaneGroupKey,
     type PaneTab,
-    type SessionMeta,
 } from '@agent-storm/common';
-import {assertWrap, check} from '@augment-vir/assert';
+import {assertWrap} from '@augment-vir/assert';
 import {
     arrayToObject,
     getEnumValues,
@@ -24,7 +23,7 @@ import {
     type ViraMenuItemEntry,
 } from 'vira';
 import {fetchApi} from '../../util/api-client.js';
-import {logDebug} from '../../util/debug-log.js';
+import {isDebugLogEnabled, logDebug} from '../../util/debug-log.js';
 import {createFolderSessions, type FolderSessionsObservable} from '../../util/folder-sessions.js';
 import {resolveTabState} from '../../util/pane-layout.js';
 import {paneRestartKey} from '../../util/pane-restarts.js';
@@ -59,7 +58,6 @@ import {
     type TabLayout,
 } from '../../util/tab-layout.js';
 import {defineAppElement} from '../define-app-element.js';
-import {VirAiPickerModal} from './vir-ai-picker-modal.element.js';
 import {VirPaneTabLabel} from './vir-pane-tab-label.element.js';
 import {VirTabHost, type TabHostNewTabOption, type TabHostTab} from './vir-tab-host.element.js';
 
@@ -168,9 +166,6 @@ export const VirPaneGroup = defineAppElement<{
             sessionToFocus: undefined as string | undefined,
             /** The tab in the pane group the user last focused. */
             focusedTabId: undefined as string | undefined,
-            /** Session the "Change AI" picker is open for. Undefined when closed. */
-            changeAiSessionId: undefined as string | undefined,
-            changeAiSubmitting: false,
         };
     },
     init({inputs, updateState, host}) {
@@ -312,10 +307,10 @@ export const VirPaneGroup = defineAppElement<{
         }
 
         /** A stored layout the reducers can't trust is replaced, as if the folder had none. */
-        const baseLayout =
-            sharedLayout && isTabLayoutConsistent(sharedLayout)
-                ? uiLayout.getTabLayout(layoutKey)
-                : undefined;
+        const isSharedLayoutConsistent = sharedLayout
+            ? isTabLayoutConsistent(sharedLayout)
+            : undefined;
+        const baseLayout = isSharedLayoutConsistent ? uiLayout.getTabLayout(layoutKey) : undefined;
         const unloadedPaneIds = inputs.context.panes
             .map((pane) => pane.id)
             .filter((paneId) => inputs.context.plugins.value.unloadedIds.includes(paneId));
@@ -348,11 +343,13 @@ export const VirPaneGroup = defineAppElement<{
                       }),
             );
         if (!baseLayout) {
-            logDebug('paneGroup.render without base layout', {
-                folder: inputs.folder,
-                hasSharedLayout: !!sharedLayout,
-                isConsistent: sharedLayout ? isTabLayoutConsistent(sharedLayout) : undefined,
-            });
+            if (isDebugLogEnabled()) {
+                logDebug('paneGroup.render without base layout', {
+                    folder: inputs.folder,
+                    hasSharedLayout: !!sharedLayout,
+                    isConsistent: isSharedLayoutConsistent,
+                });
+            }
             uiLayout.updateTabLayout({
                 folder: layoutKey,
                 update() {
@@ -362,16 +359,19 @@ export const VirPaneGroup = defineAppElement<{
         }
         const layout = syncAllSessionTabs(initialLayout);
         /** Traces tab selections that revert, while debug logging is on. */
-        const renderedSelection = JSON.stringify(splitTabLayout(layout).selection);
-        if (loggedSelections.get(layoutKey) !== renderedSelection) {
-            loggedSelections.set(layoutKey, renderedSelection);
-            logDebug('paneGroup.render selection', {
-                folder: inputs.folder,
-                isActive: inputs.active,
-                selection: splitTabLayout(layout).selection,
-                windowSelection: uiLayout.value.selections[layoutKey],
-                serverSelection: uiLayout.value.layout.tabSelections[layoutKey],
-            });
+        if (isDebugLogEnabled()) {
+            const {selection} = splitTabLayout(layout);
+            const renderedSelection = JSON.stringify(selection);
+            if (loggedSelections.get(layoutKey) !== renderedSelection) {
+                loggedSelections.set(layoutKey, renderedSelection);
+                logDebug('paneGroup.render selection', {
+                    folder: inputs.folder,
+                    isActive: inputs.active,
+                    selection,
+                    windowSelection: uiLayout.value.selections[layoutKey],
+                    serverSelection: uiLayout.value.layout.tabSelections[layoutKey],
+                });
+            }
         }
         /**
          * Only the window the user is in writes session changes back, so a window still holding an
@@ -386,18 +386,34 @@ export const VirPaneGroup = defineAppElement<{
             writeLayout(syncAllSessionTabs);
         }
 
-        const sessionTabs = getEnumValues(PaneKind).flatMap((kind) => {
-            return sessions[kind].map((session) => {
-                return {
-                    tabId: toSessionTabId({
+        /** A map keeps the last value for a key, so reverse both lists to keep their first matches. */
+        const sessionTabsById = new Map<string, SessionTab>(
+            getEnumValues(PaneKind).flatMap((kind) => {
+                return sessions[kind].toReversed().map((session) => {
+                    return [
+                        toSessionTabId({
+                            kind,
+                            sessionId: session.id,
+                        }),
+                        {
+                            kind,
+                            session,
+                        },
+                    ];
+                });
+            }),
+        );
+        const statusByTabId = new Map<string, PaneStatus>(
+            info?.sessionStatuses.toReversed().map(({kind, sessionId, status}) => {
+                return [
+                    toSessionTabId({
                         kind,
-                        sessionId: session.id,
+                        sessionId,
                     }),
-                    kind,
-                    session,
-                };
-            });
-        });
+                    status,
+                ];
+            }),
+        );
 
         /** A plugin that loads after this pane group mounted brings its extension then. */
         const lateExtensions = inputs.context.paneGroupExtensions.filter((extension) => {
@@ -459,8 +475,7 @@ export const VirPaneGroup = defineAppElement<{
             return (
                 !!tab &&
                 !!panesById[tab.kind]?.isAvailable(view) &&
-                (!findSessionPaneKind(tab.kind) ||
-                    sessionTabs.some((entry) => entry.tabId === tabId))
+                (!findSessionPaneKind(tab.kind) || sessionTabsById.has(tabId))
             );
         }
 
@@ -491,38 +506,6 @@ export const VirPaneGroup = defineAppElement<{
             });
         });
 
-        /** The last page load's answer stands in until this one's first poll. */
-        const aiFolderInfo =
-            info ||
-            inputs.context.folderData.value.snapshot?.folders.find(
-                (folder) => folder.path === inputs.folder,
-            );
-        const aiDefinitions = [
-            ...(inputs.context.folderData.value.snapshot?.settings.aiDefinitions || []),
-            ...(aiFolderInfo?.folderAiDefinitions || []),
-        ];
-        const folderAiId = aiFolderInfo?.aiId || '';
-
-        /**
-         * The AI a session runs: while its process is alive, the one it was started with, since
-         * changing the AI doesn't restart every tab. Otherwise its own override, else the
-         * folder's.
-         */
-        function findSessionAi(session: Readonly<SessionMeta>, status: PaneStatus) {
-            const isLive = [
-                PaneStatus.Busy,
-                PaneStatus.Idle,
-                PaneStatus.Stalled,
-            ].includes(status);
-            return (
-                (isLive
-                    ? aiDefinitions.find((definition) => definition.id === session.launchedAiId)
-                    : undefined) ||
-                aiDefinitions.find((definition) => definition.id === session.aiId) ||
-                aiDefinitions.find((definition) => definition.id === folderAiId)
-            );
-        }
-
         async function restartSession({
             kind,
             sessionId,
@@ -543,41 +526,6 @@ export const VirPaneGroup = defineAppElement<{
                     ...state.restartKeys,
                     [sessionId]: (state.restartKeys[sessionId] || 0) + 1,
                 },
-            });
-        }
-
-        /**
-         * Saves a session's AI, then restarts it: a running session keeps whatever command it was
-         * spawned with.
-         */
-        async function changeSessionAi(aiId: string) {
-            const sessionId = state.changeAiSessionId;
-            if (!sessionId || state.changeAiSubmitting || !folderSessions) {
-                return;
-            }
-            updateState({
-                changeAiSubmitting: true,
-            });
-            const savedSessions = await folderSessions.setAi({
-                kind: PaneKind.Ai,
-                sessionId,
-                aiId,
-            });
-            try {
-                if (savedSessions) {
-                    await restartSession({
-                        kind: PaneKind.Ai,
-                        sessionId,
-                    });
-                    updateState({
-                        changeAiSessionId: undefined,
-                    });
-                }
-            } catch (error) {
-                folderSessions.reportError(error);
-            }
-            updateState({
-                changeAiSubmitting: false,
             });
         }
 
@@ -651,13 +599,11 @@ export const VirPaneGroup = defineAppElement<{
         function buildSessionMenu({
             sessionTab: {kind, session},
             label,
-            hasAi,
         }: Readonly<{
             sessionTab: SessionTab;
             label: string;
-            hasAi: boolean;
-        }>) {
-            const entries: ReadonlyArray<ViraMenuItemEntry | undefined> = [
+        }>): ViraMenuItemEntry[] {
+            return [
                 {
                     content: 'Rename',
                     onClick() {
@@ -680,17 +626,6 @@ export const VirPaneGroup = defineAppElement<{
                         }).catch((error: unknown) => folderSessions?.reportError(error));
                     },
                 },
-                hasAi
-                    ? {
-                          content: 'Change AI',
-                          onClick() {
-                              updateState({
-                                  changeAiSessionId: session.id,
-                                  changeAiSubmitting: false,
-                              });
-                          },
-                      }
-                    : undefined,
                 {
                     content: 'Close',
                     onClick() {
@@ -701,7 +636,6 @@ export const VirPaneGroup = defineAppElement<{
                     },
                 },
             ];
-            return entries.filter(check.isTruthy);
         }
 
         function describeTab(tab: Readonly<PaneTab>): TabHostTab {
@@ -730,7 +664,7 @@ export const VirPaneGroup = defineAppElement<{
                 tabStateShape: definition.tabStateShape,
                 tabState: tab.state,
             });
-            const sessionTab = sessionTabs.find((entry) => entry.tabId === tab.id);
+            const sessionTab = sessionTabsById.get(tab.id);
             if (sessionTab) {
                 const label =
                     sessionTab.session.name ||
@@ -738,21 +672,12 @@ export const VirPaneGroup = defineAppElement<{
                         tabState,
                         context: inputs.context,
                     });
-                const status =
-                    info?.sessionStatuses.find((entry) => {
-                        return (
-                            entry.kind === sessionTab.kind &&
-                            entry.sessionId === sessionTab.session.id
-                        );
-                    })?.status ?? PaneStatus.None;
+                const status = statusByTabId.get(tab.id) ?? PaneStatus.None;
                 return {
                     label: html`
                         <${VirPaneTabLabel.assign({
                             label,
                             icon: definition.icon,
-                            ai: definition.hasAi
-                                ? findSessionAi(sessionTab.session, status)
-                                : undefined,
                             status,
                         })}
                             ${renderKindTooltip({
@@ -768,7 +693,6 @@ export const VirPaneGroup = defineAppElement<{
                     menuEntries: buildSessionMenu({
                         sessionTab,
                         label,
-                        hasAi: definition.hasAi,
                     }),
                 };
             }
@@ -842,11 +766,6 @@ export const VirPaneGroup = defineAppElement<{
                             <${VirPaneTabLabel.assign({
                                 label: entry.label,
                                 icon: pane.icon,
-                                ai: pane.hasAi
-                                    ? aiDefinitions.find(
-                                          (definition) => definition.id === folderAiId,
-                                      )
-                                    : undefined,
                             })}></${VirPaneTabLabel}>
                         `,
                         kind: pane.id,
@@ -890,7 +809,7 @@ export const VirPaneGroup = defineAppElement<{
                 return !!pane && isMountedBy[pane.mounting];
             })
             .map((tab) => {
-                const sessionTab = sessionTabs.find((entry) => entry.tabId === tab.id);
+                const sessionTab = sessionTabsById.get(tab.id);
                 const restartCount = sessionTab
                     ? (state.restartKeys[sessionTab.session.id] || 0) +
                       (inputs.context.paneRestarts.value.keys[
@@ -912,10 +831,6 @@ export const VirPaneGroup = defineAppElement<{
                 };
             });
 
-        const selectedAiId =
-            sessions[PaneKind.Ai].find((session) => session.id === state.changeAiSessionId)?.aiId ||
-            '';
-
         return html`
             ${folderNameBar} ${errorLine}
             <${VirTabHost.assign({
@@ -935,10 +850,12 @@ export const VirPaneGroup = defineAppElement<{
                 isMobile,
             })}
                 ${listen(VirTabHost.events.layoutChanged, (event) => {
-                    logDebug('paneGroup.layoutChanged', {
-                        folder: inputs.folder,
-                        selection: splitTabLayout(event.detail).selection,
-                    });
+                    if (isDebugLogEnabled()) {
+                        logDebug('paneGroup.layoutChanged', {
+                            folder: inputs.folder,
+                            selection: splitTabLayout(event.detail).selection,
+                        });
+                    }
                     uiLayout.updateTabLayout({
                         folder: layoutKey,
                         update() {
@@ -984,25 +901,6 @@ export const VirPaneGroup = defineAppElement<{
                     },
                 )}
             </${VirTabHost}>
-            <${VirAiPickerModal.assign({
-                open: !!state.changeAiSessionId,
-                modalTitle: 'Change AI for this tab',
-                aiDefinitions,
-                selectedAiId,
-                inheritedName:
-                    aiDefinitions.find((definition) => definition.id === folderAiId)?.name || '',
-                submitting: state.changeAiSubmitting,
-            })}
-                ${listen(VirAiPickerModal.events.closeRequested, () => {
-                    updateState({
-                        changeAiSessionId: undefined,
-                        changeAiSubmitting: false,
-                    });
-                })}
-                ${listen(VirAiPickerModal.events.aiSaveRequested, async (event) => {
-                    await changeSessionAi(event.detail);
-                })}
-            ></${VirAiPickerModal}>
         `;
     },
 });
