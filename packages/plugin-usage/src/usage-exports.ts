@@ -39,6 +39,13 @@ export type UsageServerExports = Readonly<{
      * changed. Calls close together share one reading.
      */
     notifyRateLimitsChanged(provider: UsageProvider): void;
+    /**
+     * What the thread's AI runs since `since` (epoch milliseconds) cost. With `hasUnpricedTokens`,
+     * some ran on a model with no known price, so the real cost is higher.
+     */
+    readThreadCost(
+        params: Readonly<{threadId: string; since: number}>,
+    ): Promise<{costUsd: number; hasUnpricedTokens: boolean}>;
 }>;
 
 /**

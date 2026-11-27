@@ -2,13 +2,7 @@ import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {createFullDateInUserTimezone} from 'date-vir';
 import {UsageProvider} from '../usage-api.js';
-import {
-    findAxisTicks,
-    listRecentDays,
-    shortenPrUrl,
-    toProviderDailyValues,
-    UsageMeasure,
-} from './usage-chart.js';
+import {listRecentDays, shortenPrUrl, toProviderDailyValues, UsageMeasure} from './usage-chart.js';
 
 const totals = {
     inputTokens: 10,
@@ -77,30 +71,6 @@ describe(toProviderDailyValues.name, () => {
                         100,
                     ],
                 },
-            ],
-        );
-    });
-});
-
-describe(findAxisTicks.name, () => {
-    it('rounds the top up to a round step', () => {
-        assert.deepEquals(
-            [
-                findAxisTicks(7.3),
-                findAxisTicks(0),
-            ],
-            [
-                [
-                    0,
-                    2,
-                    4,
-                    6,
-                    8,
-                ],
-                [
-                    0,
-                    1,
-                ],
             ],
         );
     });

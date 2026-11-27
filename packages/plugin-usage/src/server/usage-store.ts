@@ -141,6 +141,27 @@ export function createUsageStore(prismaClient: PrismaClient) {
                 }),
             );
         },
+        async readThreadCost({threadId, since}: Readonly<{threadId: string; since: number}>) {
+            const totals = await prismaClient.usageRecord.aggregate({
+                where: {
+                    threadId,
+                    occurredAt: {
+                        gte: since,
+                    },
+                },
+                _sum: {
+                    costUsd: true,
+                },
+                _count: {
+                    _all: true,
+                    costUsd: true,
+                },
+            });
+            return {
+                costUsd: totals._sum.costUsd ?? 0,
+                hasUnpricedTokens: totals._count._all > totals._count.costUsd,
+            };
+        },
         /** Prices the records saved before a price for their model was known. */
         async estimateMissingCosts(prices: Readonly<ModelPrices>) {
             const models = await prismaClient.usageRecord.groupBy({
@@ -306,40 +327,6 @@ export function createUsageStore(prismaClient: PrismaClient) {
                     })
                     .sort((first, second) => second.totals.costUsd - first.totals.costUsd),
             };
-        },
-        async readTranscriptOffset(filePath: string) {
-            const progress = await prismaClient.transcriptProgress.findUnique({
-                where: {
-                    filePath,
-                },
-                select: {
-                    byteOffset: true,
-                },
-            });
-            return progress?.byteOffset || 0;
-        },
-        async saveTranscriptOffset({
-            filePath,
-            byteOffset,
-        }: Readonly<{
-            filePath: string;
-            byteOffset: number;
-        }>) {
-            await prismaClient.transcriptProgress.upsert({
-                where: {
-                    filePath,
-                },
-                create: {
-                    filePath,
-                    byteOffset,
-                },
-                update: {
-                    byteOffset,
-                },
-                select: {
-                    id: true,
-                },
-            });
         },
     };
 }

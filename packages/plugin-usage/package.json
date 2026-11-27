@@ -40,6 +40,7 @@
         "@prisma/client": "7.10.1",
         "agent-storm-util": "^0.8.0",
         "better-sqlite3": "^13.0.3",
+        "chart.js": "^4.6.1",
         "date-vir": "^9.4.1",
         "element-vir": "^27.0.2",
         "object-shape-tester": "^6.15.3",

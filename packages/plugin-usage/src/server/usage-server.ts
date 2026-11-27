@@ -1,6 +1,5 @@
 import {definePluginServer, type PluginCallHandlers} from '@agent-storm/core/server';
 import {
-    awaitedForEach,
     extractErrorMessage,
     getEnumValues,
     log,
@@ -9,16 +8,9 @@ import {
     wrapPromiseInTimeout,
 } from '@augment-vir/common';
 import {type AnyDuration, convertDuration} from 'date-vir';
-import {
-    type PlanLimits,
-    type PlanLimitWindow,
-    usageApi,
-    UsageProvider,
-    UsageSource,
-} from '../usage-api.js';
+import {type PlanLimits, type PlanLimitWindow, usageApi, UsageProvider} from '../usage-api.js';
 import {type UsageRecordInput, type UsageServerExports} from '../usage-exports.js';
 import {readClaudePlanLimits} from './claude-plan-limits.js';
-import {findSessionTranscripts, parseTranscriptUsage, readNewLines} from './claude-transcripts.js';
 import {readCodexPlanLimits} from './codex-plan-limits.js';
 import {loadModelPrices, type ModelPrices} from './model-prices.js';
 import {openUsageDatabase} from './usage-database.js';
@@ -47,7 +39,7 @@ const planLimitReaders: Readonly<
 
 export default definePluginServer({
     api: usageApi,
-    async start({emit, dataDir, host}) {
+    async start({emit, dataDir}) {
         const prismaClient = await openUsageDatabase(dataDir);
         const store = createUsageStore(prismaClient);
         await store.deleteOldPlanLimits();
@@ -62,7 +54,6 @@ export default definePluginServer({
                 Record<UsageProvider, ReturnType<typeof setTimeout>>
             >;
             usageEventTimer: ReturnType<typeof setTimeout> | undefined;
-            isIngesting: boolean;
             isStopped: boolean;
         } = {
             prices: {},
@@ -78,7 +69,6 @@ export default definePluginServer({
             planReads: {},
             planReadTimers: {},
             usageEventTimer: undefined,
-            isIngesting: false,
             isStopped: false,
         };
 
@@ -179,59 +169,6 @@ export default definePluginServer({
             await Promise.all(getEnumValues(UsageProvider).map(readPlanLimits));
         }
 
-        /** Logs the usage Claude recorded in Build's AI tabs since the last pass. */
-        async function ingestBuildTabTranscripts() {
-            if (state.isIngesting) {
-                return;
-            }
-            state.isIngesting = true;
-            try {
-                const [
-                    sessions,
-                    folders,
-                ] = await Promise.all([
-                    host.listClaudeTabSessions(),
-                    host.listFolders(),
-                ]);
-                await awaitedForEach(sessions, async (session) => {
-                    const folder = folders.find((info) => info.path === session.folder);
-                    const filePaths = await findSessionTranscripts({
-                        claudeSessionId: session.claudeSessionId,
-                        cwd: session.folder,
-                    });
-                    await awaitedForEach(filePaths, async (filePath) => {
-                        const {lines, nextOffset} = await readNewLines({
-                            filePath,
-                            byteOffset: await store.readTranscriptOffset(filePath),
-                        });
-                        await recordUsages(
-                            parseTranscriptUsage(lines).map((usage): UsageRecordInput => {
-                                return {
-                                    ...usage,
-                                    dedupeKey: `claude-message:${usage.messageId}`,
-                                    source: UsageSource.BuildV1,
-                                    provider: UsageProvider.Claude,
-                                    repoPath: folder?.parentRepoPath || session.folder,
-                                    folder: session.folder,
-                                    prUrl: folder?.prUrl || undefined,
-                                };
-                            }),
-                        );
-                        await store.saveTranscriptOffset({
-                            filePath,
-                            byteOffset: nextOffset,
-                        });
-                    });
-                });
-            } catch (error) {
-                log.warning(
-                    `Usage failed to read Build's Claude transcripts: ${extractErrorMessage(error)}`,
-                );
-            } finally {
-                state.isIngesting = false;
-            }
-        }
-
         async function refreshPrices() {
             try {
                 state.prices = await loadModelPrices(dataDir);
@@ -250,12 +187,6 @@ export default definePluginServer({
                 }),
             ),
             setInterval(
-                ingestBuildTabTranscripts,
-                toMilliseconds({
-                    seconds: 30,
-                }),
-            ),
-            setInterval(
                 refreshPrices,
                 toMilliseconds({
                     hours: 6,
@@ -263,8 +194,7 @@ export default definePluginServer({
             ),
         ];
 
-        /** Prices first, so the first transcript pass prices what it reads. */
-        void refreshPrices().then(ingestBuildTabTranscripts);
+        void refreshPrices();
         void readAllPlanLimits();
 
         const calls: PluginCallHandlers<typeof usageApi> = {
@@ -294,6 +224,9 @@ export default definePluginServer({
                     ]);
                 },
                 notifyRateLimitsChanged,
+                async readThreadCost(params) {
+                    return await store.readThreadCost(params);
+                },
             } satisfies UsageServerExports,
             async stop() {
                 state.isStopped = true;

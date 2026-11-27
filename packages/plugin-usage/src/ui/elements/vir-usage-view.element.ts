@@ -141,11 +141,19 @@ export const VirUsageView = defineAppElement()({
         :host {
             display: flex;
             flex-direction: column;
-            gap: 24px;
             padding: 24px;
             overflow-y: auto;
             height: 100%;
             box-sizing: border-box;
+        }
+
+        .content {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            width: 100%;
+            max-width: 1200px;
+            align-self: center;
         }
 
         h2 {
@@ -312,172 +320,180 @@ export const VirUsageView = defineAppElement()({
         }
 
         return html`
-            <div class="filters">
-                ${dayCountOptions.map((dayCount) => {
-                    return html`
-                        <${ViraButton.assign({
-                            text: `${dayCount} days`,
-                            buttonSize: ViraSize.Small,
-                            buttonEmphasis:
-                                dayCount === state.dayCount
-                                    ? ViraEmphasis.Standard
-                                    : ViraEmphasis.Subtle,
-                        })}
-                            ${listen('click', async () => {
-                                updateState({
-                                    dayCount,
-                                });
-                                await loadUsage({
-                                    state,
-                                    updateState,
-                                });
+            <div class="content">
+                <div class="filters">
+                    ${dayCountOptions.map((dayCount) => {
+                        return html`
+                            <${ViraButton.assign({
+                                text: `${dayCount} days`,
+                                buttonSize: ViraSize.Small,
+                                buttonEmphasis:
+                                    dayCount === state.dayCount
+                                        ? ViraEmphasis.Standard
+                                        : ViraEmphasis.Subtle,
                             })}
-                        ></${ViraButton}>
-                    `;
-                })}
-                <${ViraButton.assign({
-                    text: 'Check plan limits',
-                    icon: LucideRefreshCwIcon,
-                    buttonSize: ViraSize.Small,
-                    buttonEmphasis: ViraEmphasis.Subtle,
-                    isDisabled: state.isRefreshing,
-                })}
-                    ${listen('click', async () => {
-                        if (state.isRefreshing) {
-                            return;
-                        }
-                        updateState({
-                            isRefreshing: true,
-                        });
-                        try {
-                            const {planLimits} = await usageClient.call('refreshPlanLimits', {});
-                            updateState({
-                                planLimits,
-                            });
-                        } catch (error) {
-                            updateState({
-                                loadError: extractErrorMessage(error),
-                            });
-                        } finally {
-                            updateState({
-                                isRefreshing: false,
-                            });
-                        }
-                    })}
-                ></${ViraButton}>
-            </div>
-            ${state.loadError
-                ? html`
-                      <span class="error">${state.loadError}</span>
-                  `
-                : nothing}
-            <section>
-                <h2>Plan limits</h2>
-                <${VirUsagePlanLimits.assign({
-                    planLimits: state.planLimits,
-                    history: state.history,
-                    historyStartAt: findRangeStart(state.dayCount),
-                    isDark: state.isDark,
-                })}></${VirUsagePlanLimits}>
-            </section>
-            <section>
-                <h2>Spending in the last ${state.dayCount} days</h2>
-                <div class="tiles">
-                    <div class="tile">
-                        <span class="muted">Cost</span>
-                        <span class="tile-value">${renderCost(totals)}</span>
-                    </div>
-                    <div class="tile">
-                        <span class="muted">Tokens, including cache</span>
-                        <span class="tile-value">
-                            ${formatTokenCount(usageMeasureReaders[UsageMeasure.Tokens](totals))}
-                        </span>
-                    </div>
-                </div>
-                <div class="charts">
-                    <section>
-                        <h2>Daily cost</h2>
-                        <${VirUsageBarChart.assign({
-                            columnLabels: days.map(formatDay),
-                            series: createSeries(UsageMeasure.Cost),
-                            formatValue: measureFormatters[UsageMeasure.Cost],
-                        })}></${VirUsageBarChart}>
-                    </section>
-                    <section>
-                        <h2>Daily tokens</h2>
-                        <${VirUsageBarChart.assign({
-                            columnLabels: days.map(formatDay),
-                            series: createSeries(UsageMeasure.Tokens),
-                            formatValue: measureFormatters[UsageMeasure.Tokens],
-                        })}></${VirUsageBarChart}>
-                    </section>
-                </div>
-                <details>
-                    <summary>Daily numbers</summary>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Day</th>
-                                ${getEnumValues(UsageProvider).flatMap((provider) => {
-                                    return [
-                                        html`
-                                            <th>${usageProviderLabels[provider]} cost</th>
-                                        `,
-                                        html`
-                                            <th>${usageProviderLabels[provider]} tokens</th>
-                                        `,
-                                    ];
+                                ${listen('click', async () => {
+                                    updateState({
+                                        dayCount,
+                                    });
+                                    await loadUsage({
+                                        state,
+                                        updateState,
+                                    });
                                 })}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${days.toReversed().map((day) => {
-                                return html`
-                                    <tr>
-                                        <td>${formatDay(day)}</td>
-                                        ${getEnumValues(UsageProvider).flatMap((provider) => {
-                                            const entry = daily.find((usage) => {
-                                                return (
-                                                    usage.day === day && usage.provider === provider
-                                                );
-                                            });
-                                            return entry
-                                                ? [
-                                                      html`
-                                                          <td>${renderCost(entry.totals)}</td>
-                                                      `,
-                                                      html`
-                                                          <td>
-                                                              ${formatTokenCount(
-                                                                  usageMeasureReaders[
-                                                                      UsageMeasure.Tokens
-                                                                  ](entry.totals),
-                                                              )}
-                                                          </td>
-                                                      `,
-                                                  ]
-                                                : [
-                                                      html`
-                                                          <td>–</td>
-                                                      `,
-                                                      html`
-                                                          <td>–</td>
-                                                      `,
-                                                  ];
-                                        })}
-                                    </tr>
-                                `;
-                            })}
-                        </tbody>
-                    </table>
-                </details>
-            </section>
-            <section>
-                <h2>Where it went</h2>
-                <${VirUsageBreakdown.assign({
-                    groups: state.usage?.groups || [],
-                })}></${VirUsageBreakdown}>
-            </section>
+                            ></${ViraButton}>
+                        `;
+                    })}
+                    <${ViraButton.assign({
+                        text: 'Check plan limits',
+                        icon: LucideRefreshCwIcon,
+                        buttonSize: ViraSize.Small,
+                        buttonEmphasis: ViraEmphasis.Subtle,
+                        isDisabled: state.isRefreshing,
+                    })}
+                        ${listen('click', async () => {
+                            if (state.isRefreshing) {
+                                return;
+                            }
+                            updateState({
+                                isRefreshing: true,
+                            });
+                            try {
+                                const {planLimits} = await usageClient.call(
+                                    'refreshPlanLimits',
+                                    {},
+                                );
+                                updateState({
+                                    planLimits,
+                                });
+                            } catch (error) {
+                                updateState({
+                                    loadError: extractErrorMessage(error),
+                                });
+                            } finally {
+                                updateState({
+                                    isRefreshing: false,
+                                });
+                            }
+                        })}
+                    ></${ViraButton}>
+                </div>
+                ${state.loadError
+                    ? html`
+                          <span class="error">${state.loadError}</span>
+                      `
+                    : nothing}
+                <section>
+                    <h2>Plan limits</h2>
+                    <${VirUsagePlanLimits.assign({
+                        planLimits: state.planLimits,
+                        history: state.history,
+                        historyStartAt: findRangeStart(state.dayCount),
+                        isDark: state.isDark,
+                    })}></${VirUsagePlanLimits}>
+                </section>
+                <section>
+                    <h2>Spending in the last ${state.dayCount} days</h2>
+                    <div class="tiles">
+                        <div class="tile">
+                            <span class="muted">Cost</span>
+                            <span class="tile-value">${renderCost(totals)}</span>
+                        </div>
+                        <div class="tile">
+                            <span class="muted">Tokens, including cache</span>
+                            <span class="tile-value">
+                                ${formatTokenCount(
+                                    usageMeasureReaders[UsageMeasure.Tokens](totals),
+                                )}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="charts">
+                        <section>
+                            <h2>Daily cost</h2>
+                            <${VirUsageBarChart.assign({
+                                columnLabels: days.map(formatDay),
+                                series: createSeries(UsageMeasure.Cost),
+                                formatValue: measureFormatters[UsageMeasure.Cost],
+                            })}></${VirUsageBarChart}>
+                        </section>
+                        <section>
+                            <h2>Daily tokens</h2>
+                            <${VirUsageBarChart.assign({
+                                columnLabels: days.map(formatDay),
+                                series: createSeries(UsageMeasure.Tokens),
+                                formatValue: measureFormatters[UsageMeasure.Tokens],
+                            })}></${VirUsageBarChart}>
+                        </section>
+                    </div>
+                    <details>
+                        <summary>Daily numbers</summary>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Day</th>
+                                    ${getEnumValues(UsageProvider).flatMap((provider) => {
+                                        return [
+                                            html`
+                                                <th>${usageProviderLabels[provider]} cost</th>
+                                            `,
+                                            html`
+                                                <th>${usageProviderLabels[provider]} tokens</th>
+                                            `,
+                                        ];
+                                    })}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${days.toReversed().map((day) => {
+                                    return html`
+                                        <tr>
+                                            <td>${formatDay(day)}</td>
+                                            ${getEnumValues(UsageProvider).flatMap((provider) => {
+                                                const entry = daily.find((usage) => {
+                                                    return (
+                                                        usage.day === day &&
+                                                        usage.provider === provider
+                                                    );
+                                                });
+                                                return entry
+                                                    ? [
+                                                          html`
+                                                              <td>${renderCost(entry.totals)}</td>
+                                                          `,
+                                                          html`
+                                                              <td>
+                                                                  ${formatTokenCount(
+                                                                      usageMeasureReaders[
+                                                                          UsageMeasure.Tokens
+                                                                      ](entry.totals),
+                                                                  )}
+                                                              </td>
+                                                          `,
+                                                      ]
+                                                    : [
+                                                          html`
+                                                              <td>–</td>
+                                                          `,
+                                                          html`
+                                                              <td>–</td>
+                                                          `,
+                                                      ];
+                                            })}
+                                        </tr>
+                                    `;
+                                })}
+                            </tbody>
+                        </table>
+                    </details>
+                </section>
+                <section>
+                    <h2>Where it went</h2>
+                    <${VirUsageBreakdown.assign({
+                        groups: state.usage?.groups || [],
+                    })}></${VirUsageBreakdown}>
+                </section>
+            </div>
         `;
     },
 });

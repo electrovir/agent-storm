@@ -1,4 +1,3 @@
-import {assertWrap} from '@augment-vir/assert';
 import {createArray, getEnumValues} from '@augment-vir/common';
 import {
     calculateRelativeDate,
@@ -91,32 +90,6 @@ export function toProviderDailyValues({
             }),
         };
     });
-}
-
-/**
- * Evenly spaced axis ticks from zero to a round number at or above `max`, with a step of 1, 2, 2.5
- * or 5 times a power of ten.
- */
-export function findAxisTicks(max: number, targetTickCount = 4) {
-    if (max <= 0) {
-        return [
-            0,
-            1,
-        ];
-    }
-    const rawStep = max / targetTickCount;
-    const magnitude = 10 ** Math.floor(Math.log10(rawStep));
-    const step =
-        assertWrap.isDefined(
-            [
-                1,
-                2,
-                2.5,
-                5,
-                10,
-            ].find((multiple) => multiple * magnitude >= rawStep),
-        ) * magnitude;
-    return createArray(Math.ceil(max / step - 1e-9) + 1, (index) => index * step);
 }
 
 export function formatUsd(value: number) {
