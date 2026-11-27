@@ -57,7 +57,6 @@ async function readSettingsFile({
 }
 
 const dataFields = {
-    defaultAiId: 'repo-ai',
     forges: {
         [ForgeType.Github]: {
             trustedBotLogins: [
@@ -72,14 +71,6 @@ const commandFields = {
     review: {
         initCmd: 'npm ci',
     },
-    aiDefinitions: [
-        {
-            id: 'repo-ai',
-            name: 'Repo AI',
-            newSessionCommand: 'repo-ai',
-            resumeSessionCommand: 'repo-ai --continue',
-        },
-    ],
 };
 
 describe(readFolderSettingsFiles.name, () => {
@@ -174,7 +165,7 @@ describe(readFolderSettingsFiles.name, () => {
             await readSettingsFile({
                 fileName: 'settings.json',
                 contents: JSON.stringify({
-                    defaultAiId: 5,
+                    forges: 5,
                 }),
             }),
             [

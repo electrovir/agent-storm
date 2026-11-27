@@ -37,6 +37,7 @@ export async function applyPluginPrStatusOverrides({
     ...branch
 }: Readonly<{
     prStatus: PrStatus;
+    folder: string;
     owner: string;
     repoName: string;
     branchName: string;

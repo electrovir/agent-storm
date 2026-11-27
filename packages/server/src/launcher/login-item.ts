@@ -106,7 +106,7 @@ export function buildSystemdUnit({
 }: Readonly<LoginItemParams>) {
     return [
         '[Unit]',
-        'Description=agent-storm',
+        'Description=Agent Storm',
         '',
         '[Service]',
         `ExecStart=${quoteSystemdValue(nodePath)} ${quoteSystemdValue(launcherPath)}`,

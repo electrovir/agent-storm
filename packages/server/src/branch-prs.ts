@@ -9,9 +9,9 @@ type RepoPrCacheEntry = {
 };
 
 /**
- * Every PR the server knows about, by repo and then head branch. The Build tab's per-repo lookups
- * and the Review tab's queues both write here and both read from here, so the two tabs always show
- * whichever GitHub answer landed last.
+ * Every PR the server knows about, by repo and then head branch. Folders' per-repo lookups and the
+ * Review tab's queues both write here and both read from here, so both always show whichever GitHub
+ * answer landed last.
  *
  * Key: `${owner}/${name}`. See {@link repoCacheKey}.
  */

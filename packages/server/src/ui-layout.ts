@@ -6,6 +6,7 @@ import {
     type TabSelection,
     type UiLayout,
 } from '@agent-storm/common';
+import {type PaneGroupState} from '@agent-storm/core/server';
 import {
     omitObjectKeys,
     PromiseQueue,
@@ -105,6 +106,13 @@ async function readFolderState(stateDir: string) {
           });
 }
 
+async function writeFolderState(state: Readonly<typeof folderStateShape.runtimeType>) {
+    await writeFileAtomically({
+        path: join(toFolderStateDir(state), folderStateFileName),
+        contents: JSON.stringify(state, undefined, 4),
+    });
+}
+
 async function readFolderStates() {
     const dirNames = await readdir(folderStatesDir).catch((): string[] => []);
     const states = await Promise.all(
@@ -191,25 +199,18 @@ export async function saveTabLayout({
         if (!tabLayout) {
             return;
         }
-        await writeFileAtomically({
-            path: join(stateDir, folderStateFileName),
-            contents: JSON.stringify(
-                {
-                    folder,
-                    scope: scope || undefined,
-                    tabLayout,
-                    tabSelection: selection || existing?.tabSelection,
-                } satisfies typeof folderStateShape.runtimeType,
-                undefined,
-                4,
-            ),
+        await writeFolderState({
+            folder,
+            scope: scope || undefined,
+            tabLayout,
+            tabSelection: selection || existing?.tabSelection,
         });
     });
     return await loadUiLayout();
 }
 
 /** Rewrites the app layout file with `change`'s fields replacing the stored ones. */
-async function changeAppLayout(
+export async function changeAppLayout(
     change: (existing: Readonly<UiLayout>) => Partial<typeof appLayoutShape.runtimeType>,
 ) {
     await changeUiLayout(async () => {
@@ -308,4 +309,68 @@ export async function pruneFolderStates() {
             }
         }),
     );
+}
+
+/**
+ * Moves each pane group's state to the scope `renameScope` returns for it, for a plugin whose id
+ * changed.
+ */
+export async function renameFolderStateScopes(renameScope: (scope: string) => string) {
+    await changeUiLayout(async () => {
+        const states = await readFolderStates();
+        await Promise.all(
+            states.map(async (state) => {
+                const scope = state.scope && renameScope(state.scope);
+                if (scope === state.scope) {
+                    return;
+                }
+                await writeFolderState({
+                    ...state,
+                    scope,
+                });
+                await rm(toFolderStateDir(state), {
+                    recursive: true,
+                    force: true,
+                });
+            }),
+        );
+    });
+}
+
+/**
+ * Moves the state of the folder's own pane group to the pane group `scope`, as `changeLayout`
+ * changes it. Undefined from `changeLayout` drops the state instead.
+ */
+export async function moveFolderState({
+    folder,
+    scope,
+    changeLayout,
+}: Readonly<{
+    folder: string;
+    scope: string;
+    changeLayout(state: Readonly<PaneGroupState>): PaneGroupState | undefined;
+}>) {
+    await changeUiLayout(async () => {
+        const stateDir = toFolderStateDir({
+            folder,
+        });
+        const state = await readFolderState(stateDir);
+        const changed =
+            state &&
+            changeLayout({
+                tabLayout: state.tabLayout,
+                tabSelection: state.tabSelection,
+            });
+        if (changed) {
+            await writeFolderState({
+                ...changed,
+                folder,
+                scope,
+            });
+        }
+        await rm(stateDir, {
+            recursive: true,
+            force: true,
+        });
+    });
 }

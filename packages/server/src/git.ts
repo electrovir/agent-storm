@@ -23,6 +23,7 @@ import {
     moveAside,
     normalizePath,
     packGraphqlParts,
+    readOnlyGitEnv,
     runCommand,
     runGh,
     tryGit,
@@ -64,7 +65,19 @@ const cleanGitInfo: GitInfo = {
  * (which has no branch name to match a PR against).
  */
 export async function getCurrentBranch(folder: string): Promise<string | null> {
-    return (await getGitInfo(folder)).branch;
+    /**
+     * Not from {@link getGitInfo}: its `git status` scans the whole working tree, which takes
+     * seconds in a big checkout, and this is polled for every open review pane. `--abbrev-ref`
+     * prints `HEAD` when detached and fails on a branch with no commits, both null there too.
+     */
+    const branch = (
+        await tryGit(folder, [
+            'rev-parse',
+            '--abbrev-ref',
+            'HEAD',
+        ])
+    )?.trim();
+    return branch && branch !== 'HEAD' ? branch : null;
 }
 
 /**
@@ -663,12 +676,36 @@ export async function getRepoSlug(folder: string): Promise<RepoSlug | null> {
     ) {
         return stored.slug;
     }
-    const output = await tryGit(key, [
-        'remote',
-        'get-url',
-        'origin',
-    ]);
-    const slug = output ? parseGithubRemote(output) : null;
+    const output = await runCommand(
+        'git',
+        [
+            'remote',
+            'get-url',
+            'origin',
+        ],
+        {
+            cwd: key,
+            env: readOnlyGitEnv,
+            timeout: gitTimeout,
+        },
+    ).then(
+        (result) => result.stdout,
+        (error: unknown) => {
+            /**
+             * Git exits with a code when there's no `origin`. Git that never finished, such as at
+             * the user's process limit, says nothing about the remote, so that read isn't kept.
+             */
+            return check.isObject(error) &&
+                check.hasKey(error, 'code') &&
+                check.isNumber(error.code)
+                ? ''
+                : undefined;
+        },
+    );
+    if (output == undefined) {
+        return null;
+    }
+    const slug = parseGithubRemote(output);
     repoSlugStore.set(key, {
         slug,
         readAtMs: Date.now(),

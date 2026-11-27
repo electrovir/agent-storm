@@ -31,14 +31,11 @@ export function parseProcessTable(processTable: string): ProcessRow[] {
 }
 
 /**
- * Walk a process table to collect every descendant pid of `rootPid`, depth-first and excluding the
- * root itself. Used to tear down a pane's whole subtree: an interactive shell (`zsh -i`) enables
- * job control and runs the AI command (e.g. `codex`) in its own process group, so neither
- * `pty.kill()` (shell pid only) nor a single process-group signal reaches it — we have to find each
- * descendant by pid.
+ * Index one process snapshot for repeated lookups. Each lookup returns descendants depth-first,
+ * excluding the root itself.
  */
-export function collectDescendantPids(processTable: string, rootPid: number): number[] {
-    const childrenByParent = groupArrayBy(parseProcessTable(processTable), (row) => row.ppid);
+export function createDescendantPidLookup(rows: ReadonlyArray<Readonly<ProcessRow>>) {
+    const childrenByParent = groupArrayBy(rows, (row) => row.ppid);
 
     function walk(parentPid: number): number[] {
         return (childrenByParent[parentPid] ?? []).flatMap((row) => {
@@ -49,7 +46,7 @@ export function collectDescendantPids(processTable: string, rootPid: number): nu
         });
     }
 
-    return walk(rootPid);
+    return walk;
 }
 
 /** Absolute path so PATH lookup can't be hijacked (and to satisfy sonarjs/no-os-command-from-path). */
@@ -119,14 +116,14 @@ export function killProcessTree(
         processTable?: string | undefined;
     }>,
 ): boolean {
-    const table = processTable ?? snapshotProcessTable();
-    const root = parseProcessTable(table).find((row) => row.pid === rootPid);
+    const rows = parseProcessTable(processTable ?? snapshotProcessTable());
+    const root = rows.find((row) => row.pid === rootPid);
     if (root?.ppid !== expectedParentPid) {
         return false;
     }
     const pids = [
         rootPid,
-        ...collectDescendantPids(table, rootPid),
+        ...createDescendantPidLookup(rows)(rootPid),
     ];
     pids.forEach((pid) => signalPid(pid, 'SIGHUP'));
     if (immediate) {

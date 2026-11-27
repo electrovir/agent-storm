@@ -199,59 +199,39 @@ export function setGhCallLogger(logger: GhCallLogger | undefined) {
  * @category Internal
  */
 export function parseGhDebugOutput(stderr: string) {
-    const parsed = stderr.split('\n').reduce<{
+    /**
+     * Mutated in place: `GH_DEBUG=api` prints every response body, tens of thousands of lines for a
+     * big query, and copying the arrays per line made this quadratic and block the event loop for
+     * seconds.
+     */
+    const parsed: {
         stderrLines: string[];
         /** Lines of the request being read, kept in case its closing line never comes. */
         openRequest: string[] | undefined;
         requests: Record<string, string>[];
-    }>(
-        (state, line) => {
-            if (line.startsWith('* Request at ')) {
-                return {
-                    ...state,
-                    openRequest: [
-                        line,
-                    ],
-                };
-            } else if (state.openRequest && line.startsWith('* Request took ')) {
-                const headers = readHeaderLines(state.openRequest);
-                return {
-                    ...state,
-                    openRequest: undefined,
-                    requests: headers['x-ratelimit-resource']
-                        ? [
-                              ...state.requests,
-                              headers,
-                          ]
-                        : state.requests,
-                };
-            } else if (state.openRequest) {
-                return {
-                    ...state,
-                    openRequest: [
-                        ...state.openRequest,
-                        line,
-                    ],
-                };
-            } else {
-                /** `GH_DEBUG` also echoes each git command `gh` runs. */
-                return /^\[git .*\]$/.test(line)
-                    ? state
-                    : {
-                          ...state,
-                          stderrLines: [
-                              ...state.stderrLines,
-                              line,
-                          ],
-                      };
+    } = {
+        stderrLines: [],
+        openRequest: undefined,
+        requests: [],
+    };
+    stderr.split('\n').forEach((line) => {
+        if (line.startsWith('* Request at ')) {
+            parsed.openRequest = [
+                line,
+            ];
+        } else if (parsed.openRequest && line.startsWith('* Request took ')) {
+            const headers = readHeaderLines(parsed.openRequest);
+            parsed.openRequest = undefined;
+            if (headers['x-ratelimit-resource']) {
+                parsed.requests.push(headers);
             }
-        },
-        {
-            stderrLines: [],
-            openRequest: undefined,
-            requests: [],
-        },
-    );
+        } else if (parsed.openRequest) {
+            parsed.openRequest.push(line);
+        } else if (!/^\[git .*\]$/.test(line)) {
+            /** `GH_DEBUG` also echoes each git command `gh` runs. */
+            parsed.stderrLines.push(line);
+        }
+    });
     return {
         stderr: [
             ...parsed.stderrLines,

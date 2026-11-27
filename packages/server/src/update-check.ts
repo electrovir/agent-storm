@@ -301,7 +301,7 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
 export async function startUpdateInstall() {
     const version = await getLatestReleaseVersion();
     if (!version || !canSwitchVersions()) {
-        throw new Error('This agent-storm cannot install updates itself.');
+        throw new Error('This Agent Storm cannot install updates itself.');
     }
     updateInstallState.inFlight ??= installRelease({
         versionsDir,
@@ -309,7 +309,7 @@ export async function startUpdateInstall() {
     })
         .catch((error: unknown) => {
             updateInstallState.failedVersion = version;
-            log.error(`Failed to install agent-storm ${version}: ${extractErrorMessage(error)}`);
+            log.error(`Failed to install Agent Storm ${version}: ${extractErrorMessage(error)}`);
         })
         .finally(() => {
             updateInstallState.inFlight = undefined;
@@ -320,7 +320,7 @@ export async function startUpdateInstall() {
 export async function switchToPreparedUpdate() {
     const version = await getLatestReleaseVersion();
     if (!version || !canSwitchVersions()) {
-        throw new Error('This agent-storm cannot switch versions itself.');
+        throw new Error('This Agent Storm cannot switch versions itself.');
     } else if (
         !(await readReleaseCoreVersion(
             getVersionDir({
@@ -329,7 +329,7 @@ export async function switchToPreparedUpdate() {
             }),
         ))
     ) {
-        throw new Error(`agent-storm ${version} isn't installed yet.`);
+        throw new Error(`Agent Storm ${version} isn't installed yet.`);
     }
     process.send?.({
         switchTo: version,

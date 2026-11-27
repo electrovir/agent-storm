@@ -1,4 +1,4 @@
-import {PaneKind, PaneStatus, type SavedRepo} from '@agent-storm/common';
+import {PaneStatus, type SavedRepo} from '@agent-storm/common';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {
@@ -29,9 +29,6 @@ function soloRepoTarget() {
         parentRepoPath: null,
         createdAtMs: 0,
         isWorktreeRoot: false,
-        aiId: '',
-        inheritedAiId: '',
-        folderAiDefinitions: [],
     };
 }
 
@@ -42,18 +39,12 @@ function worktreeTargets() {
             parentRepoPath: null,
             createdAtMs: 0,
             isWorktreeRoot: true,
-            aiId: '',
-            inheritedAiId: '',
-            folderAiDefinitions: [],
         },
         {
             folder: worktreePath,
             parentRepoPath: rootPath,
             createdAtMs: 0,
             isWorktreeRoot: false,
-            aiId: '',
-            inheritedAiId: '',
-            folderAiDefinitions: [],
         },
     ];
 }
@@ -126,10 +117,8 @@ describe(computeRepoPrRefreshTtlByRepo.name, () => {
     it('polls a never-PR repo while it is active, so a first PR can be discovered', () => {
         const ttlByRepo = computeRepoPrRefreshTtlByRepo({
             targets: [soloRepoTarget()],
-            statusLookup(folder, kind) {
-                return folder === repoPath && kind === PaneKind.Ai
-                    ? PaneStatus.Idle
-                    : PaneStatus.None;
+            statusLookup(folder) {
+                return folder === repoPath ? PaneStatus.Idle : PaneStatus.None;
             },
             repos: [staleRepoConfig],
             onlyShowRecent: false,

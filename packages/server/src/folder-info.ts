@@ -1,5 +1,4 @@
 import {
-    aiDefinitionShape,
     folderInfoShape,
     ForgeType,
     GitHubPollingDisableReason,
@@ -48,7 +47,6 @@ import {
 } from './branch-prs.js';
 import {folderInfoCachePath, githubCachePath} from './file-paths.js';
 import {getFolderActivityAtMs} from './folder-activity.js';
-import {loadFolderSettings} from './folder-settings.js';
 import {
     fetchRateLimitResumeAtMs,
     fetchRepoPrs,
@@ -65,7 +63,7 @@ import {
 } from './git.js';
 import {applyPluginPrStatusOverrides} from './plugin-folder-hooks.js';
 import {getPaneSessionStatusLookup, getPaneStatusLookup} from './pty.js';
-import {loadSettings, resolveFolderAi} from './settings.js';
+import {loadSettings} from './settings.js';
 
 type PaneStatusLookup = (folder: string, kind: PaneKind) => PaneStatus;
 
@@ -439,6 +437,7 @@ async function getCachedPrInfo(
               ...pr,
               status: await applyPluginPrStatusOverrides({
                   prStatus: pr.status,
+                  folder,
                   owner: slug.owner,
                   repoName: slug.name,
                   branchName: branch,
@@ -452,10 +451,6 @@ const refreshTargetShape = defineShape({
     parentRepoPath: nullableShape(''),
     createdAtMs: 0,
     isWorktreeRoot: false,
-    /** Resolved AI for this folder, or empty when no AI is defined at all. */
-    aiId: '',
-    inheritedAiId: '',
-    folderAiDefinitions: [aiDefinitionShape],
     /** The saved repo's `lastInteractedAtMs`. Only set on top-level repo targets. */
     lastInteractedAtMs: optionalShape(0, {
         alsoUndefined: true,
@@ -479,36 +474,9 @@ async function getCreatedAtMs(folder: string): Promise<number> {
     }
 }
 
-/** The AI fields of a folder's {@link RefreshTarget}. */
-async function resolveTargetAi({
-    settings,
-    folder,
-    fallbackFolders,
-}: Readonly<{
-    settings: Readonly<Settings>;
-    folder: string;
-    fallbackFolders?: ReadonlyArray<string> | undefined;
-}>) {
-    const resolved = resolveFolderAi({
-        settings,
-        folderLayers: await loadFolderSettings(folder),
-        folder,
-        fallbackFolders,
-    });
-    return {
-        aiId: resolved.ai?.id || '',
-        inheritedAiId: resolved.inheritedAi?.id || '',
-        folderAiDefinitions: resolved.aiDefinitions.filter((definition) => {
-            return !settings.aiDefinitions.some((own) => own.id === definition.id);
-        }),
-    };
-}
-
 async function enumerateTargets({
-    settings,
     repos,
 }: Readonly<{
-    settings: Readonly<Settings>;
     repos: ReadonlyArray<SavedRepo>;
 }>): Promise<RefreshTarget[]> {
     const perRepo = await Promise.all(
@@ -520,10 +488,6 @@ async function enumerateTargets({
                 createdAtMs: await getCreatedAtMs(repo.path),
                 isWorktreeRoot: isRoot,
                 lastInteractedAtMs: repo.lastInteractedAtMs,
-                ...(await resolveTargetAi({
-                    settings,
-                    folder: repo.path,
-                })),
             };
             if (!isRoot) {
                 return [
@@ -540,11 +504,6 @@ async function enumerateTargets({
                             parentRepoPath: repo.path,
                             createdAtMs: await getCreatedAtMs(child),
                             isWorktreeRoot: false,
-                            ...(await resolveTargetAi({
-                                settings,
-                                folder: child,
-                                fallbackFolders: [repo.path],
-                            })),
                         };
                     }),
                 )),
@@ -628,9 +587,6 @@ function placeholderFolderInfo(target: RefreshTarget): FolderInfo {
         parentRepoPath: target.parentRepoPath,
         createdAtMs: target.createdAtMs,
         isWorktreeRoot: target.isWorktreeRoot,
-        aiId: target.aiId,
-        inheritedAiId: target.inheritedAiId,
-        folderAiDefinitions: target.folderAiDefinitions,
         branch: null,
         git: {
             dirty: false,
@@ -1147,46 +1103,51 @@ export function computeRepoPrRefreshTtlByRepo({
     everHadPrPaths: ReadonlySet<string>;
     nowMs: number;
 }>): Map<string, AnyDuration | undefined> {
-    const groupKeys = Array.from(new Set(targets.map(repoActivityKey)));
+    const reposByPath = Map.groupBy(repos, ({path}) => path);
     return new Map(
-        groupKeys.map((key) => {
-            const groupTargets = targets.filter((target) => repoActivityKey(target) === key);
-            const hasLivePane = groupTargets.some((target) => {
-                return getEnumValues(PaneKind).some(
-                    (kind) => livePaneStatuses[statusLookup(target.folder, kind)],
+        Array.from(
+            Map.groupBy(targets, repoActivityKey),
+            ([
+                key,
+                groupTargets,
+            ]) => {
+                const hasLivePane = groupTargets.some((target) => {
+                    return getEnumValues(PaneKind).some(
+                        (kind) => livePaneStatuses[statusLookup(target.folder, kind)],
+                    );
+                });
+                const isWorktreeGroup = groupTargets.some(
+                    (target) => target.isWorktreeRoot || !!target.parentRepoPath,
                 );
-            });
-            const isWorktreeGroup = groupTargets.some(
-                (target) => target.isWorktreeRoot || !!target.parentRepoPath,
-            );
-            const msSinceInteraction =
-                nowMs - (repos.find((repo) => repo.path === key)?.lastInteractedAtMs || 0);
-            const isActive =
-                hasLivePane ||
-                msSinceInteraction <
-                    convertDuration(recentInteraction, {
-                        milliseconds: true,
-                    }).milliseconds;
-            const isEligible = isActive || isWorktreeGroup || everHadPrPaths.has(key);
-            const isVisible =
-                !onlyShowRecent ||
-                isWorktreeGroup ||
-                hasLivePane ||
-                msSinceInteraction <
-                    convertDuration(sidebarRecencyWindow, {
-                        milliseconds: true,
-                    }).milliseconds;
-            if (!isEligible || !isVisible) {
+                const msSinceInteraction =
+                    nowMs - (reposByPath.get(key)?.[0]?.lastInteractedAtMs || 0);
+                const isActive =
+                    hasLivePane ||
+                    msSinceInteraction <
+                        convertDuration(recentInteraction, {
+                            milliseconds: true,
+                        }).milliseconds;
+                const isEligible = isActive || isWorktreeGroup || everHadPrPaths.has(key);
+                const isVisible =
+                    !onlyShowRecent ||
+                    isWorktreeGroup ||
+                    hasLivePane ||
+                    msSinceInteraction <
+                        convertDuration(sidebarRecencyWindow, {
+                            milliseconds: true,
+                        }).milliseconds;
+                if (!isEligible || !isVisible) {
+                    return [
+                        key,
+                        undefined,
+                    ];
+                }
                 return [
                     key,
-                    undefined,
+                    isActive ? hotRepoPrTtl : coldRepoPrTtl,
                 ];
-            }
-            return [
-                key,
-                isActive ? hotRepoPrTtl : coldRepoPrTtl,
-            ];
-        }),
+            },
+        ),
     );
 }
 

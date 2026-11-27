@@ -122,7 +122,7 @@ async function readOrInstallActiveVersion() {
         return activeVersions.active;
     }
     const version = await fetchLatestVersion();
-    log.info(`Installing agent-storm ${version}...`);
+    log.info(`Installing Agent Storm ${version}...`);
     await installRelease({
         versionsDir,
         version,
@@ -198,7 +198,7 @@ async function printPendingAuthSecret() {
     log.info(
         [
             `auth secret: ${secret}`,
-            'Save this. agent-storm only keeps its hash, so it is not shown again.',
+            'Save this. Agent Storm only keeps its hash, so it is not shown again.',
         ].join('\n'),
     );
     await rm(pendingAuthSecretPath, {
@@ -213,7 +213,7 @@ const launcherState: {origin: string | undefined} = {
 
 if (await isPortTaken(port)) {
     launcherState.origin = (await readLauncherOrigin()) || `http://localhost:${port}`;
-    log.info(`agent-storm is already running at ${launcherState.origin}`);
+    log.info(`Agent Storm is already running at ${launcherState.origin}`);
 } else {
     const version = await readOrInstallActiveVersion();
     await rm(launcherOriginPath, {
@@ -247,7 +247,7 @@ if (await isPortTaken(port)) {
                 minutes: 2,
             },
         },
-        `agent-storm didn't start. Its output is in ${launcherLogPath}`,
+        `Agent Storm didn't start. Its output is in ${launcherLogPath}`,
     );
 }
 

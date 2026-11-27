@@ -138,7 +138,7 @@ async function startServer(version: string): Promise<RunningServer> {
                 await switchTo(message.switchTo);
             } catch (error) {
                 log.error(
-                    `agent-storm failed to switch to ${message.switchTo}: ${extractErrorMessage(error)}`,
+                    `Agent Storm failed to switch to ${message.switchTo}: ${extractErrorMessage(error)}`,
                 );
                 process.exit(1);
             }
@@ -162,10 +162,10 @@ async function startServer(version: string): Promise<RunningServer> {
                         minutes: 1,
                     },
                 },
-                `agent-storm ${version} never started serving the app.`,
+                `Agent Storm ${version} never started serving the app.`,
             ),
             once(serverProcess, 'exit').then(() => {
-                throw new Error(`agent-storm ${version} exited while starting.`);
+                throw new Error(`Agent Storm ${version} exited while starting.`);
             }),
         ]);
     } catch (error) {
@@ -194,10 +194,10 @@ async function switchTo(version: string) {
                 versionsDir,
                 version,
             });
-            log.success(`agent-storm switched to ${version}.`);
+            log.success(`Agent Storm switched to ${version}.`);
         } catch (error) {
             log.error(
-                `agent-storm ${version} failed to start, so ${replacedServer.version} is running again: ${extractErrorMessage(error)}`,
+                `Agent Storm ${version} failed to start, so ${replacedServer.version} is running again: ${extractErrorMessage(error)}`,
             );
             const failedServer = launcherState.server;
             launcherState.server = undefined;
@@ -263,7 +263,7 @@ await writeFileAtomically({
 
 const activeVersions = await readActiveVersions(versionsDir);
 if (!activeVersions) {
-    throw new Error(`No agent-storm release is active in ${versionsDir}.`);
+    throw new Error(`No Agent Storm release is active in ${versionsDir}.`);
 }
 try {
     launcherState.server = await startServer(activeVersions.active);
@@ -272,7 +272,7 @@ try {
         throw error;
     }
     log.error(
-        `agent-storm ${activeVersions.active} failed to start, so ${activeVersions.previous} is running instead: ${extractErrorMessage(error)}`,
+        `Agent Storm ${activeVersions.active} failed to start, so ${activeVersions.previous} is running instead: ${extractErrorMessage(error)}`,
     );
     await rejectVersion({
         versionsDir,
@@ -281,4 +281,4 @@ try {
     launcherState.server = await startServer(activeVersions.previous);
 }
 
-log.success(`agent-storm ${launcherState.server.version} is running at ${publicAddress.origin}`);
+log.success(`Agent Storm ${launcherState.server.version} is running at ${publicAddress.origin}`);

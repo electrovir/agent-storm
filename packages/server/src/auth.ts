@@ -2,7 +2,7 @@ import {check} from '@augment-vir/assert';
 import {ensureErrorAndPrependMessage, log} from '@augment-vir/common';
 import {pendingAuthSecretPath} from 'agent-storm-util';
 import {doesPasswordMatchHash, hashPassword} from 'auth-vir';
-import {randomBytes} from 'node:crypto';
+import {createHash, randomBytes, timingSafeEqual} from 'node:crypto';
 import {watch, type FSWatcher} from 'node:fs';
 import {mkdir, readFile, writeFile} from 'node:fs/promises';
 import {authSecretFileName, authSecretPath, serverStateDir} from './file-paths.js';
@@ -20,7 +20,15 @@ const authState: {
     regenerating: Promise<void> | undefined;
     /** Set while this process writes the secret file, so its own write doesn't trigger a reload. */
     isWritingSelf: boolean;
+    /** The SHA-256 of the last token that matched `hash`, so it isn't checked with argon2 again. */
+    verifiedToken:
+        | {
+              hash: string;
+              tokenDigest: Buffer;
+          }
+        | undefined;
 } = {
+    verifiedToken: undefined,
     cachedHash: undefined,
     watcher: undefined,
     regenerating: undefined,
@@ -111,13 +119,32 @@ export async function initAuth(): Promise<void> {
 }
 
 export async function verifyAuthToken(provided: string | undefined): Promise<boolean> {
-    if (!provided || !authState.cachedHash) {
+    const hash = authState.cachedHash;
+    if (!provided || !hash) {
         return false;
     }
-    return await doesPasswordMatchHash({
+    /**
+     * Argon2 is slow on purpose and runs on the main thread, and every request checks the token, so
+     * a token that already matched this hash skips it. A wrong token still pays the full cost.
+     */
+    const tokenDigest = createHash('sha256').update(provided).digest();
+    if (
+        authState.verifiedToken?.hash === hash &&
+        timingSafeEqual(authState.verifiedToken.tokenDigest, tokenDigest)
+    ) {
+        return true;
+    }
+    const isMatch = await doesPasswordMatchHash({
         password: provided,
-        hash: authState.cachedHash,
+        hash,
     });
+    if (isMatch) {
+        authState.verifiedToken = {
+            hash,
+            tokenDigest,
+        };
+    }
+    return isMatch;
 }
 
 /**

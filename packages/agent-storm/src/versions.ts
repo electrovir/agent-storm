@@ -28,7 +28,7 @@ export function isReleaseVersion(version: string) {
 
 function assertValidVersion(version: string) {
     if (!isReleaseVersion(version)) {
-        throw new Error(`"${version}" is not an agent-storm release version, such as "v1.10.1".`);
+        throw new Error(`"${version}" is not an Agent Storm release version, such as "v1.10.1".`);
     }
 }
 
@@ -201,7 +201,7 @@ export async function activateVersion({
             }),
         ))
     ) {
-        throw new Error(`Cannot activate agent-storm ${version}: it isn't installed.`);
+        throw new Error(`Cannot activate Agent Storm ${version}: it isn't installed.`);
     }
     const current = await readActiveVersions(versionsDir);
     if (current?.active === version) {
@@ -229,7 +229,7 @@ export async function rejectVersion({
 }: Readonly<{versionsDir: string; version: string}>) {
     const current = await readActiveVersions(versionsDir);
     if (!current) {
-        throw new Error(`Cannot reject agent-storm ${version}: no version is active.`);
+        throw new Error(`Cannot reject Agent Storm ${version}: no version is active.`);
     } else if (current.active !== version) {
         await writeActiveVersions({
             versionsDir,
@@ -241,7 +241,7 @@ export async function rejectVersion({
         return;
     } else if (!current.previous) {
         throw new Error(
-            `Cannot reject agent-storm ${version}: no previous version to fall back to.`,
+            `Cannot reject Agent Storm ${version}: no previous version to fall back to.`,
         );
     }
     await writeActiveVersions({
@@ -389,7 +389,7 @@ export async function fetchLatestVersion() {
     ]);
     if (!response.ok) {
         throw new Error(
-            `Failed to look up the latest agent-storm release: HTTP ${response.status}.`,
+            `Failed to look up the latest Agent Storm release: HTTP ${response.status}.`,
         );
     }
     const {tag_name: version} = parseJsonWithShape(await response.text(), latestReleaseShape, {
@@ -420,20 +420,20 @@ async function fetchReleaseAssetSha256(version: string) {
         version,
     ]);
     if (!response.ok) {
-        throw new Error(`Failed to look up agent-storm ${version}: HTTP ${response.status}.`);
+        throw new Error(`Failed to look up Agent Storm ${version}: HTTP ${response.status}.`);
     }
     const release = parseJsonWithShape(await response.text(), releaseAssetsShape, {
         allowExtraKeys: true,
     });
     if (!release.immutable) {
         throw new Error(
-            `agent-storm ${version} is not an immutable release, so it is not installed.`,
+            `Agent Storm ${version} is not an immutable release, so it is not installed.`,
         );
     }
     const digest = release.assets.find((asset) => asset.name === releaseAssetName)?.digest || '';
     const sha256 = /^sha256:([0-9a-f]{64})$/.exec(digest)?.[1];
     if (!sha256) {
-        throw new Error(`agent-storm ${version} has no SHA-256 digest for ${releaseAssetName}.`);
+        throw new Error(`Agent Storm ${version} has no SHA-256 digest for ${releaseAssetName}.`);
     }
     return sha256;
 }
@@ -482,13 +482,13 @@ export async function installRelease({
             },
         );
         if (!response.ok) {
-            throw new Error(`Failed to download agent-storm ${version}: HTTP ${response.status}.`);
+            throw new Error(`Failed to download Agent Storm ${version}: HTTP ${response.status}.`);
         }
         const tarball = Buffer.from(await response.arrayBuffer());
         const actualSha256 = createHash('sha256').update(tarball).digest('hex');
         if (actualSha256 !== expectedSha256) {
             throw new Error(
-                `agent-storm ${version} download doesn't match its release's SHA-256, so it is not installed.`,
+                `Agent Storm ${version} download doesn't match its release's SHA-256, so it is not installed.`,
             );
         }
         await writeFile(tarballPath, tarball);

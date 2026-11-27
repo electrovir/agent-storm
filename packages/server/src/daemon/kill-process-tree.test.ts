@@ -5,7 +5,11 @@ import {wait} from '@augment-vir/common';
 import {currentOperatingSystem, OperatingSystem} from '@augment-vir/node';
 import {describe, it} from '@augment-vir/test';
 import {spawn} from 'node:child_process';
-import {collectDescendantPids, killProcessTree, parseProcessTable} from './kill-process-tree.js';
+import {
+    createDescendantPidLookup,
+    killProcessTree,
+    parseProcessTable,
+} from './kill-process-tree.js';
 
 const sampleTable = [
     '    1     0',
@@ -49,10 +53,12 @@ describe(parseProcessTable.name, () => {
     });
 });
 
-describe(collectDescendantPids.name, () => {
-    it('collects the full descendant subtree, deepest-first within each branch', () => {
+describe(createDescendantPidLookup.name, () => {
+    const findDescendantPids = createDescendantPidLookup(parseProcessTable(sampleTable));
+
+    it('collects the full descendant subtree in depth-first order', () => {
         assert.deepEquals(
-            collectDescendantPids(sampleTable, 100),
+            findDescendantPids(100),
             [
                 200,
                 300,
@@ -62,7 +68,7 @@ describe(collectDescendantPids.name, () => {
     });
 
     it('returns an empty list for a leaf process', () => {
-        assert.deepEquals(collectDescendantPids(sampleTable, 300), []);
+        assert.deepEquals(findDescendantPids(300), []);
     });
 });
 

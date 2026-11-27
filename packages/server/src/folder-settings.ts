@@ -116,7 +116,6 @@ async function readFolderSettingsFile({
         const commandFields = [
             parsed.postWorktreeCmd ? 'postWorktreeCmd' : '',
             parsed.review?.initCmd ? 'review.initCmd' : '',
-            parsed.aiDefinitions?.length ? 'aiDefinitions' : '',
         ].filter(check.isTruthy);
         const approval = findApproval({
             isApprovalNeeded: isExecutable || !!commandFields.length,
@@ -133,7 +132,6 @@ async function readFolderSettingsFile({
                 ? omitObjectKeys(parsed, [
                       'postWorktreeCmd',
                       'review',
-                      'aiDefinitions',
                   ])
                 : parsed,
             problem: isHeldBack
