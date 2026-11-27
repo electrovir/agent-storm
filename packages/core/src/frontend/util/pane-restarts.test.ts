@@ -18,19 +18,19 @@ function createTestPaneRestarts() {
 }
 
 describe(createPaneRestarts.name, () => {
-    it('counts each pane separately and bumps the AI config only for AI panes', async () => {
+    it('counts each pane separately', async () => {
         const {paneRestarts} = createTestPaneRestarts();
         await paneRestarts.restart({
             folder: '/repos/solo',
             kind: PaneKind.Shell,
         });
         await paneRestarts.restart({
-            folder: '/repos/solo',
-            kind: PaneKind.Ai,
+            folder: '/repos/other',
+            kind: PaneKind.Shell,
         });
         await paneRestarts.restart({
-            folder: '/repos/solo',
-            kind: PaneKind.Ai,
+            folder: '/repos/other',
+            kind: PaneKind.Shell,
         });
         assert.deepEquals(paneRestarts.value, {
             keys: {
@@ -39,29 +39,22 @@ describe(createPaneRestarts.name, () => {
                     kind: PaneKind.Shell,
                 })]: 1,
                 [paneRestartKey({
-                    folder: '/repos/solo',
-                    kind: PaneKind.Ai,
+                    folder: '/repos/other',
+                    kind: PaneKind.Shell,
                 })]: 2,
             },
-            aiConfigRevision: 2,
         });
     });
-    it('polls the folder list after every restart and AI config change', async () => {
+    it('polls the folder list after every restart', async () => {
         const {paneRestarts, refreshes} = createTestPaneRestarts();
         await paneRestarts.restart({
             folder: '/repos/solo',
             kind: PaneKind.Shell,
         });
-        await paneRestarts.bumpAiConfig();
-        assert.deepEquals(
-            {
-                aiConfigRevision: paneRestarts.value.aiConfigRevision,
-                refreshCount: refreshes.length,
-            },
-            {
-                aiConfigRevision: 1,
-                refreshCount: 2,
-            },
-        );
+        await paneRestarts.restart({
+            folder: '/repos/solo',
+            kind: PaneKind.Shell,
+        });
+        assert.isLengthExactly(refreshes, 2);
     });
 });

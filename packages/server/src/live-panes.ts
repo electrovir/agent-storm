@@ -1,40 +1,50 @@
 import {PaneKind, PaneStatus} from '@agent-storm/common';
-import {awaitedForEach, extractErrorMessage, log, wait, wrapInTry} from '@augment-vir/common';
+import {check} from '@augment-vir/assert';
+import {
+    awaitedForEach,
+    extractErrorMessage,
+    groupArrayBy,
+    log,
+    wait,
+    wrapInTry,
+    type Overwrite,
+} from '@augment-vir/common';
 import {writeFileAtomically} from 'agent-storm-util';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
-import {defineShape, enumShape, parseJsonWithShape} from 'object-shape-tester';
+import {defineShape, parseJsonWithShape} from 'object-shape-tester';
 import {livePanesPath} from './file-paths.js';
-import {sendPaneText, spawnPane} from './pane-launch.js';
+import {spawnPane} from './pane-launch.js';
 import {getAllPaneSessionStatuses} from './pty.js';
 import {hasFolderSession} from './sessions.js';
 
-const livePaneShape = defineShape({
-    folder: '',
-    kind: enumShape(PaneKind),
-    sessionId: '',
-    /** Only ever true for an AI pane in the middle of a task. */
-    isWorking: false,
+/**
+ * `kind` is any string because a file saved by an earlier version can name a pane kind that no
+ * longer exists, and one such pane failing the shape would drop every pane in the file.
+ */
+const recordedPanesShape = defineShape({
+    panes: [
+        {
+            folder: '',
+            kind: '',
+            sessionId: '',
+        },
+    ],
 });
 
-const livePanesShape = defineShape({
-    panes: [livePaneShape],
-});
-
-export type LivePane = typeof livePaneShape.runtimeType;
+export type LivePane = Overwrite<
+    (typeof recordedPanesShape.runtimeType)['panes'][number],
+    {
+        kind: PaneKind;
+    }
+>;
 
 type PaneId = Pick<LivePane, 'folder' | 'kind' | 'sessionId'>;
 
 export type TrackedPane = PaneId & {
     /** When the pane was first seen gone. Undefined while it is running. */
     goneSinceMs: number | undefined;
-    /** When the pane was last seen working. Undefined if it never was. */
-    lastWorkingAtMs: number | undefined;
 };
-
-/** Typed into each restored AI pane that was working. */
-const continuePrompt =
-    'Agent Storm was shut down while you were working, likely by a reboot. Pick up where you left off.';
 
 const isPaneStatusLive: Record<PaneStatus, boolean> = {
     [PaneStatus.None]: false,
@@ -44,24 +54,10 @@ const isPaneStatusLive: Record<PaneStatus, boolean> = {
     [PaneStatus.Exited]: false,
 };
 
-const isPaneStatusWorking: Record<PaneStatus, boolean> = {
-    [PaneStatus.None]: false,
-    [PaneStatus.Busy]: true,
-    [PaneStatus.Stalled]: true,
-    [PaneStatus.Idle]: false,
-    [PaneStatus.Exited]: false,
-};
-
-/** A busy shell is running a command, which can't be resumed by telling it to continue. */
-const canPaneKindResumeWork: Record<PaneKind, boolean> = {
-    [PaneKind.Ai]: true,
-    [PaneKind.Shell]: false,
-};
-
 /**
- * How long a pane is still remembered as running, or as working, after it stops. A shutdown or
- * reboot interrupts the AIs and kills the panes moments before it kills this server, and forgetting
- * them in that gap would leave nothing to restore.
+ * How long a pane is still remembered as running after it stops. A shutdown or reboot kills the
+ * panes moments before it kills this server, and forgetting them in that gap would leave nothing to
+ * restore.
  */
 const stoppedGracePeriod: AnyDuration = {
     seconds: 30,
@@ -76,14 +72,12 @@ function isWithinGracePeriod({sinceMs, nowMs}: Readonly<{sinceMs: number; nowMs:
     );
 }
 
-function matchesPane(pane: Readonly<PaneId>) {
-    return (other: Readonly<PaneId>) => {
-        return (
-            other.folder === pane.folder &&
-            other.kind === pane.kind &&
-            other.sessionId === pane.sessionId
-        );
-    };
+function paneKey({folder, kind, sessionId}: Readonly<PaneId>) {
+    return JSON.stringify([
+        folder,
+        kind,
+        sessionId,
+    ]);
 }
 
 /**
@@ -99,8 +93,10 @@ export function trackLivePanes({
     live: ReadonlyArray<Readonly<LivePane>>;
     nowMs: number;
 }>): TrackedPane[] {
+    const livePanesByKey = groupArrayBy(live, paneKey);
+    const trackedKeys = new Set(tracked.map(paneKey));
     const kept = tracked.flatMap((pane): TrackedPane[] => {
-        const livePane = live.find(matchesPane(pane));
+        const livePane = livePanesByKey[paneKey(pane)]?.[0];
         const goneSinceMs = livePane ? undefined : (pane.goneSinceMs ?? nowMs);
         if (
             goneSinceMs != undefined &&
@@ -115,19 +111,17 @@ export function trackLivePanes({
             {
                 ...pane,
                 goneSinceMs,
-                lastWorkingAtMs: livePane?.isWorking ? nowMs : pane.lastWorkingAtMs,
             },
         ];
     });
     const added = live
-        .filter((livePane) => !tracked.some(matchesPane(livePane)))
+        .filter((livePane) => !trackedKeys.has(paneKey(livePane)))
         .map((livePane): TrackedPane => {
             return {
                 folder: livePane.folder,
                 kind: livePane.kind,
                 sessionId: livePane.sessionId,
                 goneSinceMs: undefined,
-                lastWorkingAtMs: livePane.isWorking ? nowMs : undefined,
             };
         });
     return [
@@ -136,36 +130,38 @@ export function trackLivePanes({
     ];
 }
 
-/** What gets saved: a pane counts as working until it has been done for the whole grace period. */
-export function toRecordedPanes({
-    tracked,
-    nowMs,
-}: Readonly<{
-    tracked: ReadonlyArray<Readonly<TrackedPane>>;
-    nowMs: number;
-}>) {
+/** What gets saved: every tracked pane, without its tracking state. */
+export function toRecordedPanes(tracked: ReadonlyArray<Readonly<TrackedPane>>) {
     return tracked.map((pane): LivePane => {
         return {
             folder: pane.folder,
             kind: pane.kind,
             sessionId: pane.sessionId,
-            isWorking:
-                pane.lastWorkingAtMs != undefined &&
-                isWithinGracePeriod({
-                    sinceMs: pane.lastWorkingAtMs,
-                    nowMs,
-                }),
         };
     });
 }
 
-async function readRecordedPanes() {
-    const contents = await readFile(livePanesPath, 'utf8').catch(() => '');
-    return (
-        wrapInTry(() => parseJsonWithShape(contents, livePanesShape), {
+/** The panes a saved live panes file lists, skipping any whose kind no longer exists. */
+export function parseRecordedPanes(contents: string) {
+    const panes =
+        wrapInTry(() => parseJsonWithShape(contents, recordedPanesShape), {
             fallbackValue: undefined,
-        })?.panes || []
-    );
+        })?.panes || [];
+    return panes.flatMap((pane): LivePane[] => {
+        return check.isEnumValue(pane.kind, PaneKind)
+            ? [
+                  {
+                      folder: pane.folder,
+                      kind: pane.kind,
+                      sessionId: pane.sessionId,
+                  },
+              ]
+            : [];
+    });
+}
+
+async function readRecordedPanes() {
+    return parseRecordedPanes(await readFile(livePanesPath, 'utf8').catch(() => ''));
 }
 
 async function fetchLivePanes() {
@@ -176,20 +172,20 @@ async function fetchLivePanes() {
                 folder: entry.folder,
                 kind: entry.kind,
                 sessionId: entry.sessionId,
-                isWorking: canPaneKindResumeWork[entry.kind] && isPaneStatusWorking[entry.status],
             };
         });
 }
 
-/**
- * Starts each recorded pane that isn't running and whose tab still exists, and tells the AIs that
- * were working to continue. Working panes go first so their progress resumes soonest.
- */
-async function restorePanes(panes: ReadonlyArray<Readonly<LivePane>>) {
-    const live = await fetchLivePanes();
-    const toRestore = panes
-        .filter((pane) => !live.some(matchesPane(pane)))
-        .toSorted((first, second) => Number(second.isWorking) - Number(first.isWorking));
+/** Starts each recorded pane that isn't running and whose tab still exists. */
+async function restorePanes({
+    panes,
+    live,
+}: Readonly<{
+    panes: ReadonlyArray<Readonly<LivePane>>;
+    live: ReadonlyArray<Readonly<LivePane>>;
+}>) {
+    const liveKeys = new Set(live.map(paneKey));
+    const toRestore = panes.filter((pane) => !liveKeys.has(paneKey(pane)));
     await awaitedForEach(toRestore, async (pane) => {
         try {
             const target = {
@@ -200,17 +196,10 @@ async function restorePanes(panes: ReadonlyArray<Readonly<LivePane>>) {
             if (!(await hasFolderSession(target))) {
                 return;
             }
-            if (pane.isWorking) {
-                await sendPaneText({
-                    ...target,
-                    text: continuePrompt,
-                });
-            } else {
-                await spawnPane(target);
-            }
+            await spawnPane(target);
             /**
-             * Each spawn returns before its shell and AI CLI finish starting, so spawning a few
-             * hundred panes back to back pegs every core until they all settle.
+             * Each spawn returns before its shell finishes starting, so spawning a few hundred
+             * panes back to back pegs every core until they all settle.
              */
             await wait({
                 milliseconds: 500,
@@ -224,48 +213,41 @@ async function restorePanes(panes: ReadonlyArray<Readonly<LivePane>>) {
 }
 
 /**
- * Restarts every pane that was running when this server last ran, such as before a reboot, and
- * tells the AIs that were mid-task to continue. Then keeps recording which panes are running so the
- * next start can do the same.
+ * Restarts every pane that was running when this server last ran, such as before a reboot. Then
+ * keeps recording which panes are running so the next start can do the same.
  */
 export async function startLivePaneTracking() {
-    const recorded = await readRecordedPanes();
-    await restorePanes(recorded);
-    const startMs = Date.now();
     const state: {
-        tracked: TrackedPane[];
+        tracked: TrackedPane[] | undefined;
         written: string;
     } = {
-        tracked: recorded.map((pane) => {
-            return {
-                folder: pane.folder,
-                kind: pane.kind,
-                sessionId: pane.sessionId,
-                goneSinceMs: undefined,
-                lastWorkingAtMs: pane.isWorking ? startMs : undefined,
-            };
-        }),
+        tracked: undefined,
         written: '',
     };
-    async function runPass() {
-        /** An unreachable daemon says nothing about which panes are running, so the pass is skipped. */
-        const live = await fetchLivePanes().catch(() => undefined);
-        if (!live) {
+    async function runPass(live: ReadonlyArray<Readonly<LivePane>>) {
+        if (!state.tracked) {
+            const recorded = await readRecordedPanes();
+            await restorePanes({
+                panes: recorded,
+                live,
+            });
+            state.tracked = recorded.map((pane) => {
+                return {
+                    ...pane,
+                    goneSinceMs: undefined,
+                };
+            });
             return;
         }
-        const nowMs = Date.now();
         state.tracked = trackLivePanes({
             tracked: state.tracked,
             live,
-            nowMs,
+            nowMs: Date.now(),
         });
         const serialized = JSON.stringify(
             {
-                panes: toRecordedPanes({
-                    tracked: state.tracked,
-                    nowMs,
-                }),
-            } satisfies typeof livePanesShape.runtimeType,
+                panes: toRecordedPanes(state.tracked),
+            } satisfies typeof recordedPanesShape.runtimeType,
             undefined,
             4,
         );
@@ -280,7 +262,12 @@ export async function startLivePaneTracking() {
     function scheduleNextPass() {
         setTimeout(
             () => {
-                runPass()
+                /**
+                 * An unreachable daemon says nothing about which panes are running, so the pass is
+                 * skipped.
+                 */
+                fetchLivePanes()
+                    .then(runPass, () => undefined)
                     .catch((error: unknown) => {
                         log.warning(`Failed to record live tabs: ${extractErrorMessage(error)}`);
                     })
@@ -296,5 +283,9 @@ export async function startLivePaneTracking() {
             ).milliseconds,
         );
     }
-    scheduleNextPass();
+    try {
+        await runPass(await fetchLivePanes());
+    } finally {
+        scheduleNextPass();
+    }
 }

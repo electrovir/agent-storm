@@ -1,7 +1,6 @@
 import {PaneStatus, type PaneKind, type PaneSessionStatus} from '@agent-storm/common';
 import {getObjectTypedEntries, groupArrayBy, mapObjectValues} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
-import {applyClaudeActivity} from './claude-activity.js';
 import {fetchPaneStatuses} from './daemon/daemon-client.js';
 import {type StatusEntry} from './daemon/protocol.js';
 
@@ -14,6 +13,8 @@ const cacheState: {
     sessionIds: Partial<Record<string, string[]>>;
     sessionStatuses: Partial<Record<string, PaneSessionStatus[]>>;
     lastFetchAt: number;
+    /** Shared by every caller while the daemon answers, so they don't each ask it. */
+    inFlightRefresh: Promise<void> | undefined;
     /** Bumped by {@link invalidatePaneStatuses} so a fetch already in flight can't save stale data. */
     generation: number;
 } = {
@@ -21,6 +22,7 @@ const cacheState: {
     sessionIds: {},
     sessionStatuses: {},
     lastFetchAt: 0,
+    inFlightRefresh: undefined,
     generation: 0,
 };
 
@@ -102,7 +104,7 @@ function collectSessionStatuses(entries: ReadonlyArray<Readonly<StatusEntry>>) {
 /** Recursive, so its return type can't be inferred. */
 async function refreshStatuses(): Promise<void> {
     const generation = cacheState.generation;
-    const entries = await applyClaudeActivity(await fetchPaneStatuses());
+    const entries = await fetchPaneStatuses();
     if (generation !== cacheState.generation) {
         return refreshStatuses();
     }
@@ -112,14 +114,29 @@ async function refreshStatuses(): Promise<void> {
     cacheState.lastFetchAt = Date.now();
 }
 
+function startRefresh() {
+    cacheState.inFlightRefresh ||= refreshStatuses().finally(() => {
+        cacheState.inFlightRefresh = undefined;
+    });
+    return cacheState.inFlightRefresh;
+}
+
+/**
+ * Waits for the daemon only when there is no snapshot yet or {@link invalidatePaneStatuses} threw it
+ * out. A stale snapshot is returned right away while a newer one loads: the daemon can take seconds
+ * to answer while it streams every pane's output, and every sidebar poll would wait on it.
+ */
 async function ensureFresh(): Promise<void> {
-    if (
+    if (!cacheState.lastFetchAt) {
+        await startRefresh();
+    } else if (
         Date.now() - cacheState.lastFetchAt >
         convertDuration(cacheTtl, {
             milliseconds: true,
         }).milliseconds
     ) {
-        await refreshStatuses();
+        /** A failed refresh keeps the last snapshot, and the next read tries again. */
+        startRefresh().catch(() => undefined);
     }
 }
 

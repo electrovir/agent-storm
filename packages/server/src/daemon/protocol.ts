@@ -74,10 +74,9 @@ export class FrameDecoder {
  * gray background behind its prompt. Version 3 was that same feature mid-landing — it declared the
  * colors on the wire without answering anything — so the gate has to reject it too. Version 5
  * reports {@link StatusEntry.isRunningCommand}, without which the review init command could be typed
- * into a shell that's busy running something else. Version 6 applies {@link AttachHandshake.env}; an
- * earlier daemon ignores it, so a launch that asked for an environment would silently run without
- * it. Version 7 hosts the AI Chat's provider processes ({@link DaemonAction.ProcessAttach}), which
- * an earlier daemon rejects as unknown actions.
+ * into a shell that's busy running something else. Version 6 applies a requested environment to the
+ * PTYs it spawns. Version 7 hosts the AI Chat's provider processes
+ * ({@link DaemonAction.ProcessAttach}), which an earlier daemon rejects as unknown actions.
  *
  * The version is reported on {@link StatusResponse} rather than through a dedicated action because
  * `Status` is the only introspection action every historical daemon understands — see
@@ -95,12 +94,6 @@ export enum DaemonAction {
      * version-1 daemons, which is precisely why the version check must gate on `Status` first.
      */
     SessionKill = 'session-kill',
-    /**
-     * Checks a launch request's signature against the key of the AI tab it names. A daemon that
-     * predates this action rejects it as unknown, so the request is refused instead of the daemon
-     * being restarted, which would kill every pane.
-     */
-    VerifyLaunch = 'verify-launch',
     Shutdown = 'shutdown',
     /**
      * Attaches to a process the daemon hosts outside any terminal, starting it first when the
@@ -146,24 +139,6 @@ export type AttachHandshake = {
      */
     colors?: TerminalColors | undefined;
     /**
-     * Command to invoke for `PaneKind.Ai` when the daemon spawns the PTY for the first time. Sent
-     * on every attach because the daemon doesn't read agent-storm's config file — the backend does,
-     * and forwards the current value so config edits to `aiCmd` take effect on the next pane spawn
-     * (existing live PTYs keep their old command until restarted).
-     */
-    aiCmd?: string | undefined;
-    /**
-     * Set as `AGENT_STORM_CONVERSATION_ID` in a freshly spawned PTY's environment. Daemons older
-     * than this field ignore it, which only means their panes go without the variable.
-     */
-    conversationId?: string | undefined;
-    /**
-     * Extra environment variables for the PTY, applied only when this attach spawns it. The pane
-     * keeps them for its later restarts. They cannot replace the `AGENT_STORM_*` variables the
-     * daemon sets itself.
-     */
-    env?: Record<string, string> | undefined;
-    /**
      * Max scrollback lines to replay to this client on attach. When set, the daemon truncates the
      * pane's buffered scrollback to the last N lines before sending it. Omitted means replay the
      * full buffered scrollback.
@@ -181,10 +156,6 @@ export type RestartHandshake = {
     kind: PaneKind;
     /** See {@link AttachHandshake.sessionId}. */
     sessionId?: string | undefined;
-    /** See {@link AttachHandshake.aiCmd} — same plumbing, applied to the restart spawn. */
-    aiCmd?: string | undefined;
-    /** See {@link AttachHandshake.conversationId}. */
-    conversationId?: string | undefined;
 };
 
 /** Kills every session of every kind under `folder`. */
@@ -198,16 +169,6 @@ export type SessionKillHandshake = {
     folder: string;
     kind: PaneKind;
     sessionId: string;
-};
-
-export type VerifyLaunchHandshake = {
-    action: DaemonAction.VerifyLaunch;
-    /** The requesting tab's `AGENT_STORM_LAUNCH_ID`, which picks the key to verify with. */
-    launchId: string;
-    /** The exact text that was signed. */
-    payload: string;
-    /** Hex HMAC-SHA256 of `payload`, keyed by the tab's `AGENT_STORM_LAUNCH_KEY`. */
-    signature: string;
 };
 
 export type ShutdownHandshake = {
@@ -253,7 +214,6 @@ export type ClientHandshake =
     | RestartHandshake
     | KillHandshake
     | SessionKillHandshake
-    | VerifyLaunchHandshake
     | ShutdownHandshake;
 
 export type StatusEntry = {
@@ -312,12 +272,6 @@ export type ProcessExitNotification = {
 
 export type SimpleResponse = {
     ok: true;
-};
-
-export type VerifyLaunchResponse = {
-    ok: true;
-    /** False when the signature is wrong or no running tab has that launch id. */
-    isValid: boolean;
 };
 
 export type ErrorResponse = {

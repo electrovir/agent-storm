@@ -8,7 +8,7 @@ import {
     type PaneRenderParams,
 } from '@agent-storm/core/frontend';
 import {html, listen} from 'element-vir';
-import {createSizedIcon, LucideBotIcon, LucideSquareTerminalIcon} from 'vira';
+import {createSizedIcon, LucideSquareTerminalIcon} from 'vira';
 import {VirTerminal} from './vir-terminal.element.js';
 
 function renderTerminal({
@@ -49,30 +49,6 @@ function renderTerminal({
     `;
 }
 
-/** A tab running one of the folder's AI sessions. */
-export const aiPane: PaneDefinition = {
-    id: PaneKind.Ai,
-    tabStateShape: noTabStateShape,
-    label() {
-        return 'AI';
-    },
-    newTabEntries() {
-        return [
-            {
-                label: 'AI session',
-                state: undefined,
-            },
-        ];
-    },
-    icon: createSizedIcon(LucideBotIcon, 14),
-    hasAi: true,
-    mounting: PaneMounting.WhileDisplayed,
-    isAvailable() {
-        return true;
-    },
-    render: renderTerminal,
-};
-
 /** A tab running one of the folder's shell sessions. */
 export const shellPane: PaneDefinition = {
     id: PaneKind.Shell,
@@ -89,7 +65,6 @@ export const shellPane: PaneDefinition = {
         ];
     },
     icon: createSizedIcon(LucideSquareTerminalIcon, 14),
-    hasAi: false,
     mounting: PaneMounting.WhileDisplayed,
     isAvailable() {
         return true;

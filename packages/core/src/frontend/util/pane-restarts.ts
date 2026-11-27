@@ -1,4 +1,4 @@
-import {PaneKind} from '@agent-storm/common';
+import {type PaneKind} from '@agent-storm/common';
 import {Observable} from 'element-vir';
 import {type FolderDataObservable} from './folder-data.js';
 
@@ -16,20 +16,16 @@ export function paneRestartKey({
 export type PaneRestartsObservable = ReturnType<typeof createPaneRestarts>;
 
 /**
- * Counters for pane restarts that happen outside the pane: a sidebar's "Restart panes" and "Change
- * AI", and saving the AI config. Each one also polls the folder list, which carries the restarted
- * panes' new state.
+ * Counters for pane restarts that happen outside the pane, such as a sidebar's "Restart panes".
+ * Each one also polls the folder list, which carries the restarted panes' new state.
  */
 export function createPaneRestarts(folderData: Readonly<Pick<FolderDataObservable, 'refresh'>>) {
     const observable = new Observable<{
         /** Keyed by {@link paneRestartKey}. Folded into the pane's terminal mount key. */
         keys: Readonly<Record<string, number | undefined>>;
-        /** Bumped whenever the AI definitions may have changed, so AI panes load them again. */
-        aiConfigRevision: number;
     }>({
         defaultValue: {
             keys: {},
-            aiConfigRevision: 0,
         },
     });
 
@@ -41,15 +37,6 @@ export function createPaneRestarts(folderData: Readonly<Pick<FolderDataObservabl
                     ...observable.value.keys,
                     [key]: (observable.value.keys[key] || 0) + 1,
                 },
-                aiConfigRevision:
-                    observable.value.aiConfigRevision + (pane.kind === PaneKind.Ai ? 1 : 0),
-            });
-            await folderData.refresh();
-        },
-        async bumpAiConfig() {
-            observable.setValue({
-                ...observable.value,
-                aiConfigRevision: observable.value.aiConfigRevision + 1,
             });
             await folderData.refresh();
         },

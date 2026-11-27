@@ -2,15 +2,10 @@
     "activities": [],
     "browserEntry": "browser.js",
     "coreVersionRange": "*",
-    "description": "AI and shell tabs.",
+    "description": "Shell tabs.",
     "id": "terminal",
     "name": "Terminals",
     "panes": [
-        {
-            "icon": "LucideBotIcon",
-            "id": "ai",
-            "label": "AI"
-        },
         {
             "icon": "LucideSquareTerminalIcon",
             "id": "shell",

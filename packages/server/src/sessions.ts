@@ -1,7 +1,6 @@
 import {
     folderSessionsShape,
     PaneKind,
-    paneKindRunsAi,
     type FolderSessions,
     type SessionMeta,
 } from '@agent-storm/common';
@@ -10,18 +9,16 @@ import {
     createCuid2,
     getEnumValues,
     getObjectTypedEntries,
-    getObjectTypedKeys,
     mapEnumToObject,
+    mapObjectValues,
     omitObjectKeys,
     wrapInTry,
-    type MaybePromise,
 } from '@augment-vir/common';
 import {normalizePath, writeFileAtomically} from 'agent-storm-util';
-import {readdir, readFile, rm} from 'node:fs/promises';
-import {join} from 'node:path';
+import {readFile} from 'node:fs/promises';
 import {checkValidShape} from 'object-shape-tester';
 import {defaultSessionId} from './daemon/protocol.js';
-import {conversationStateDir, sessionStorePath} from './file-paths.js';
+import {sessionStorePath} from './file-paths.js';
 
 /**
  * On-disk shape: folder path → per-kind ordered session lists. Folder keys are always normalized
@@ -31,29 +28,19 @@ import {conversationStateDir, sessionStorePath} from './file-paths.js';
 type SessionStore = Record<string, FolderSessions>;
 
 const storeState: {
-    loaded: SessionStore | undefined;
+    sessions: SessionStore;
+    initialLoad: Promise<void> | undefined;
     pendingWrite: Promise<void>;
 } = {
-    loaded: undefined,
+    sessions: {},
+    initialLoad: undefined,
     pendingWrite: Promise.resolve(),
 };
 
-/**
- * The only conversation ids kept from disk. Anything else is replaced, because the id ends up in a
- * file path under {@link conversationStateDir}.
- */
-const conversationIdPattern = /^[a-z0-9]+$/;
-
-function createSessionMeta({
-    id,
-    isNewConversation,
-}: Readonly<Pick<SessionMeta, 'id' | 'isNewConversation'>>): SessionMeta {
+function createSessionMeta(id: string): SessionMeta {
     return {
         id,
         name: '',
-        aiId: '',
-        conversationId: createCuid2(),
-        isNewConversation,
     };
 }
 
@@ -82,16 +69,7 @@ export function parseSessionStore(contents: string): SessionStore {
                 return store;
             }
             const sessions = mapEnumToObject(PaneKind, (kind) => {
-                return value[kind]
-                    .filter((session) => session.id)
-                    .map((session) => {
-                        return conversationIdPattern.test(session.conversationId)
-                            ? session
-                            : {
-                                  ...session,
-                                  conversationId: createCuid2(),
-                              };
-                    });
+                return value[kind].filter((session) => session.id);
             });
             return {
                 ...store,
@@ -102,21 +80,17 @@ export function parseSessionStore(contents: string): SessionStore {
     );
 }
 
-async function loadStore(): Promise<SessionStore> {
-    if (storeState.loaded) {
-        return storeState.loaded;
-    }
+function loadStore() {
+    storeState.initialLoad ||= loadStoreFromDisk().catch((error: unknown) => {
+        storeState.initialLoad = undefined;
+        throw error;
+    });
+    return storeState.initialLoad;
+}
+
+async function loadStoreFromDisk() {
     const contents = await readFile(sessionStorePath, 'utf-8').catch(() => undefined);
-    const store = contents?.trim() ? parseSessionStore(contents) : {};
-    storeState.loaded = store;
-    /**
-     * Parsing replaces unsafe conversation ids. Persist those right away, or the next backend start
-     * would generate different ones and those tabs would lose their conversation.
-     */
-    if (contents && JSON.stringify(store, undefined, 4) !== contents) {
-        persistStore(store);
-    }
-    return store;
+    storeState.sessions = contents?.trim() ? parseSessionStore(contents) : {};
 }
 
 /** Writes are chained rather than concurrent, so an older snapshot can never land last. */
@@ -137,17 +111,13 @@ function persistStore(store: Readonly<SessionStore>): void {
         });
 }
 
-/**
- * Merge one folder's sessions into the store. Reads `storeState.loaded` at call time rather than
- * taking a snapshot parameter: callers necessarily `await` a load first, and another write landing
- * during that await would be silently dropped if we spread a store captured before it.
- */
+/** Merge one folder's sessions into the current store, preserving changes to other folders. */
 function writeFolder(folder: string, sessions: FolderSessions): void {
     const updated: SessionStore = {
-        ...storeState.loaded,
+        ...storeState.sessions,
         [folder]: sessions,
     };
-    storeState.loaded = updated;
+    storeState.sessions = updated;
     persistStore(updated);
 }
 
@@ -160,84 +130,22 @@ function writeFolder(folder: string, sessions: FolderSessions): void {
  */
 export async function getFolderSessions(folderPath: string): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
-    const store = await loadStore();
-    const existing = store[folder];
+    await loadStore();
+    return getOrCreateFolderSessions(folder);
+}
+
+function getOrCreateFolderSessions(folder: string) {
+    const existing = storeState.sessions[folder];
     if (existing) {
         return existing;
     }
     const defaults = mapEnumToObject(PaneKind, () => {
         return [
-            createSessionMeta({
-                id: defaultSessionId,
-                isNewConversation: false,
-            }),
+            createSessionMeta(defaultSessionId),
         ];
     });
     writeFolder(folder, defaults);
     return defaults;
-}
-
-/**
- * Delete whatever wrapper scripts recorded for these conversations under
- * {@link conversationStateDir}. Only the mapping goes: the CLI's own transcripts stay where the CLI
- * keeps them. Best-effort, since a leftover mapping file costs a few bytes.
- */
-async function forgetConversationState(conversationIds: ReadonlyArray<string>): Promise<void> {
-    const cliDirs = await readdir(conversationStateDir).catch(() => []);
-    await Promise.all(
-        cliDirs.flatMap((cliDir) => {
-            return conversationIds.map(async (conversationId) => {
-                await rm(join(conversationStateDir, cliDir, conversationId), {
-                    force: true,
-                }).catch(() => {
-                    /* best-effort cleanup */
-                });
-            });
-        }),
-    );
-}
-
-/**
- * Each AI tab whose Claude session id the session hook (`claude-hooks/agent-storm-session.sh`)
- * recorded. The hook keeps only a tab's latest session.
- */
-export async function listClaudeTabSessions() {
-    const store = await loadStore();
-    const tabs = getObjectTypedEntries(store).flatMap(
-        ([
-            folder,
-            sessions,
-        ]) => {
-            return getEnumValues(PaneKind)
-                .filter((kind) => paneKindRunsAi[kind])
-                .flatMap((kind) => sessions[kind])
-                .map((session) => {
-                    return {
-                        folder,
-                        conversationId: session.conversationId,
-                    };
-                });
-        },
-    );
-    const found = await Promise.all(
-        tabs.map(async (tab) => {
-            const claudeSessionId = (
-                await readFile(
-                    join(conversationStateDir, 'claude', tab.conversationId),
-                    'utf8',
-                ).catch(() => '')
-            ).trim();
-            return claudeSessionId
-                ? [
-                      {
-                          ...tab,
-                          claudeSessionId,
-                      },
-                  ]
-                : [];
-        }),
-    );
-    return found.flat();
 }
 
 /** Unlike {@link findFolderSession}, never creates a folder's default sessions. */
@@ -250,7 +158,8 @@ export async function hasFolderSession({
     kind: PaneKind;
     sessionId: string;
 }>) {
-    return !!(await loadStore())[normalizePath(folder)]?.[kind].some((session) => {
+    await loadStore();
+    return !!storeState.sessions[normalizePath(folder)]?.[kind].some((session) => {
         return session.id === sessionId;
     });
 }
@@ -271,16 +180,15 @@ export async function findFolderSession({
 function updateFolderSession({
     folder,
     kind,
-    sessions,
     sessionId,
     update,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
-    sessions: Readonly<FolderSessions>;
     sessionId: string;
     update: (session: Readonly<SessionMeta>) => SessionMeta;
 }>): FolderSessions {
+    const sessions = getOrCreateFolderSessions(folder);
     const updated: FolderSessions = {
         ...sessions,
         [kind]: sessions[kind].map((session) => {
@@ -291,102 +199,35 @@ function updateFolderSession({
     return updated;
 }
 
-/**
- * Give a tab a new conversation id and make its next spawn use the AI's new-session command. Used
- * when a tab switches onto an AI another tab in the folder already runs, where resuming would open
- * that other tab's conversation.
- */
-export async function startNewConversation({
-    folder: folderPath,
-    kind,
-    sessionId,
-}: Readonly<{
+type CreateFolderSessionParams = Readonly<{
     folder: string;
     kind: PaneKind;
-    sessionId: string;
-}>): Promise<FolderSessions> {
-    const folder = normalizePath(folderPath);
-    const current = await getFolderSessions(folder);
-    const previousConversationId = current[kind].find(
-        (session) => session.id === sessionId,
-    )?.conversationId;
-    const updated = updateFolderSession({
-        folder,
-        kind,
-        sessions: current,
-        sessionId,
-        update(session) {
-            return {
-                ...session,
-                conversationId: createCuid2(),
-                isNewConversation: true,
-            };
-        },
-    });
-    if (previousConversationId) {
-        await forgetConversationState([previousConversationId]);
-    }
-    return updated;
-}
-
-/**
- * Called only once a PTY is actually running. A spawn that failed (the OS out of PTYs, a bad
- * command) leaves `isNewConversation` set so the retry still starts a new conversation instead of
- * falling back to the resume command.
- */
-export async function markPaneStarted({
-    folder: folderPath,
-    kind,
-    sessionId,
-    launchedAiId,
-}: Readonly<{
-    folder: string;
-    kind: PaneKind;
-    sessionId: string;
-    launchedAiId: string;
-}>): Promise<void> {
-    const folder = normalizePath(folderPath);
-    updateFolderSession({
-        folder,
-        kind,
-        sessions: await getFolderSessions(folder),
-        sessionId,
-        update(session) {
-            return {
-                ...session,
-                isNewConversation: false,
-                launchedAiId,
-            };
-        },
-    });
-}
+    /** The pane group the tab joins. Empty for the folder's own. */
+    scope?: string | undefined;
+}>;
 
 export async function createFolderSession({
     folder: folderPath,
     kind,
     scope,
-}: Readonly<{
-    folder: string;
-    kind: PaneKind;
-    /** The pane group the tab joins. Empty for the folder's own. */
-    scope?: string | undefined;
-}>): Promise<FolderSessions> {
+}: CreateFolderSessionParams): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
-    const current = await getFolderSessions(folder);
+    await loadStore();
+    return appendFolderSession({
+        folder,
+        kind,
+        scope,
+    });
+}
+
+function appendFolderSession({folder, kind, scope}: CreateFolderSessionParams) {
+    const current = getOrCreateFolderSessions(folder);
     const updated: FolderSessions = {
         ...current,
         [kind]: [
             ...current[kind],
             {
-                ...createSessionMeta({
-                    id: createCuid2(),
-                    /**
-                     * An AI's resume command is usually written to pick the last conversation back
-                     * up (`claude --continue` and the like), so a new tab launched with it would
-                     * show the conversation another tab already holds.
-                     */
-                    isNewConversation: paneKindRunsAi[kind],
-                }),
+                ...createSessionMeta(createCuid2()),
                 ...(scope
                     ? {
                           scope,
@@ -411,10 +252,10 @@ export async function renameFolderSession({
     name: string;
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
+    await loadStore();
     return updateFolderSession({
         folder,
         kind,
-        sessions: await getFolderSessions(folder),
         sessionId,
         update(session) {
             return {
@@ -424,111 +265,6 @@ export async function renameFolderSession({
             };
         },
     });
-}
-
-/**
- * Point one tab at a specific AI, or clear the override with an empty `aiId`. Stored per session
- * rather than in config for the same reason `name` is: it describes this tab, not the folder.
- */
-export async function setFolderSessionAi({
-    folder: folderPath,
-    kind,
-    sessionId,
-    aiId,
-}: Readonly<{
-    folder: string;
-    kind: PaneKind;
-    sessionId: string;
-    aiId: string;
-}>): Promise<FolderSessions> {
-    const folder = normalizePath(folderPath);
-    return updateFolderSession({
-        folder,
-        kind,
-        sessions: await getFolderSessions(folder),
-        sessionId,
-        update(session) {
-            return {
-                ...session,
-                aiId,
-            };
-        },
-    });
-}
-
-function pruneSessionListAiIds({
-    sessions,
-    validAiIds,
-}: Readonly<{
-    sessions: ReadonlyArray<SessionMeta>;
-    validAiIds: ReadonlyArray<string>;
-}>) {
-    return sessions.map((session) => {
-        return session.aiId && !validAiIds.includes(session.aiId)
-            ? {
-                  ...session,
-                  aiId: '',
-              }
-            : session;
-    });
-}
-
-/**
- * Clears every tab AI override whose AI its folder no longer defines. A folder can define AIs of
- * its own through its settings files, so the valid ids are looked up per folder.
- */
-export async function pruneSessionAiIds({
-    findValidAiIds,
-}: Readonly<{
-    /** Undefined leaves the folder's overrides alone. */
-    findValidAiIds: (folder: string) => MaybePromise<ReadonlyArray<string> | undefined>;
-}>) {
-    const validAiIdsByFolder = new Map(
-        await Promise.all(
-            getObjectTypedKeys(await loadStore()).map(async (folder) => {
-                return [
-                    folder,
-                    await findValidAiIds(folder),
-                ] as const;
-            }),
-        ),
-    );
-    /** Read again after the lookups, so a session write that landed during them isn't dropped. */
-    const store = await loadStore();
-    const folders = getObjectTypedKeys(store);
-    const hasStaleAiId = folders.some((folder) => {
-        const validAiIds = validAiIdsByFolder.get(folder);
-        return (
-            !!validAiIds &&
-            !!store[folder]?.[PaneKind.Ai].some((session) => {
-                return session.aiId && !validAiIds.includes(session.aiId);
-            })
-        );
-    });
-    if (!hasStaleAiId) {
-        return;
-    }
-    const updated = folders.reduce<SessionStore>((next, folder) => {
-        const sessions = store[folder];
-        const validAiIds = validAiIdsByFolder.get(folder);
-        if (!sessions) {
-            return next;
-        }
-        return {
-            ...next,
-            [folder]: validAiIds
-                ? {
-                      ...sessions,
-                      [PaneKind.Ai]: pruneSessionListAiIds({
-                          sessions: sessions[PaneKind.Ai],
-                          validAiIds,
-                      }),
-                  }
-                : sessions,
-        };
-    }, {});
-    storeState.loaded = updated;
-    persistStore(updated);
 }
 
 /** Remove a session from the list, including a kind's last one. */
@@ -542,9 +278,9 @@ export async function removeFolderSession({
     sessionId: string;
 }>): Promise<{sessions: FolderSessions; removed: boolean}> {
     const folder = normalizePath(folderPath);
-    const current = await getFolderSessions(folder);
-    const removedSession = current[kind].find((session) => session.id === sessionId);
-    if (!removedSession) {
+    await loadStore();
+    const current = getOrCreateFolderSessions(folder);
+    if (!current[kind].some((session) => session.id === sessionId)) {
         return {
             sessions: current,
             removed: false,
@@ -555,7 +291,6 @@ export async function removeFolderSession({
         [kind]: current[kind].filter((session) => session.id !== sessionId),
     };
     writeFolder(folder, updated);
-    await forgetConversationState([removedSession.conversationId]);
     return {
         sessions: updated,
         removed: true,
@@ -575,21 +310,65 @@ export async function removeFolderSession({
  */
 export async function forgetFolderSessions(folderPath: string): Promise<void> {
     const folder = normalizePath(folderPath);
-    const store = await loadStore();
-    const forgotten = store[folder];
-    if (!forgotten) {
+    await loadStore();
+    if (!storeState.sessions[folder]) {
         return;
     }
-    const updated = omitObjectKeys(store, [
+    const updated = omitObjectKeys(storeState.sessions, [
         folder,
     ]);
-    storeState.loaded = updated;
+    storeState.sessions = updated;
     persistStore(updated);
-    await forgetConversationState(
-        getEnumValues(PaneKind).flatMap((kind) => {
-            return forgotten[kind].map((session) => session.conversationId);
+}
+
+/**
+ * Moves every session of the folder's own pane group into the pane group `scope`. Materializes the
+ * folder's default sessions first, so a tab of the moved layout that shows one still finds it.
+ */
+export async function scopeFolderSessions({
+    folder: folderPath,
+    scope,
+}: Readonly<{
+    folder: string;
+    scope: string;
+}>) {
+    const folder = normalizePath(folderPath);
+    await loadStore();
+    const current = getOrCreateFolderSessions(folder);
+    writeFolder(
+        folder,
+        mapEnumToObject(PaneKind, (kind) => {
+            return current[kind].map((session) => {
+                return session.scope
+                    ? session
+                    : {
+                          ...session,
+                          scope,
+                      };
+            });
         }),
     );
+}
+
+/** Changes each session's scope to the one `renameScope` returns, for a plugin whose id changed. */
+export async function renameSessionScopes(renameScope: (scope: string) => string) {
+    await loadStore();
+    const renamed = mapObjectValues(storeState.sessions, (folder, sessions) => {
+        return mapEnumToObject(PaneKind, (kind) => {
+            return sessions[kind].map((session) => {
+                return session.scope
+                    ? {
+                          ...session,
+                          scope: renameScope(session.scope),
+                      }
+                    : session;
+            });
+        });
+    });
+    if (!check.deepEquals(renamed, storeState.sessions)) {
+        storeState.sessions = renamed;
+        persistStore(renamed);
+    }
 }
 
 /**
@@ -606,19 +385,13 @@ export async function reconcileFolderSessions({
     liveSessionIds: Readonly<Record<PaneKind, ReadonlyArray<string>>>;
 }>): Promise<FolderSessions> {
     const folder = normalizePath(folderPath);
-    const stored = await getFolderSessions(folder);
+    await loadStore();
+    const stored = getOrCreateFolderSessions(folder);
     const merged = mapEnumToObject(PaneKind, (kind) => {
         const knownIds = stored[kind].map((session) => session.id);
         return [
             ...stored[kind],
-            ...liveSessionIds[kind]
-                .filter((id) => !knownIds.includes(id))
-                .map((id) => {
-                    return createSessionMeta({
-                        id,
-                        isNewConversation: false,
-                    });
-                }),
+            ...liveSessionIds[kind].filter((id) => !knownIds.includes(id)).map(createSessionMeta),
         ];
     });
     if (getEnumValues(PaneKind).some((kind) => merged[kind].length !== stored[kind].length)) {
@@ -632,17 +405,19 @@ export async function reconcileFolderSessions({
  * that kind.
  */
 export async function findOrCreateFirstSession({
-    folder,
+    folder: folderPath,
     kind,
 }: Readonly<{
     folder: string;
     kind: PaneKind;
 }>) {
-    const firstId = (await getFolderSessions(folder))[kind][0]?.id;
+    const folder = normalizePath(folderPath);
+    await loadStore();
+    const firstId = getOrCreateFolderSessions(folder)[kind][0]?.id;
     if (firstId) {
         return firstId;
     }
-    const created = await createFolderSession({
+    const created = appendFolderSession({
         folder,
         kind,
     });

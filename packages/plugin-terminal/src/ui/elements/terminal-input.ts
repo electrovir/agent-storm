@@ -1,4 +1,3 @@
-import {PaneKind} from '@agent-storm/common';
 import {isNewTabShortcut, isSettingsShortcut} from '@agent-storm/core/frontend';
 import {type Terminal} from '@xterm/xterm';
 import {
@@ -7,41 +6,30 @@ import {
     shellQuote,
     uploadDroppedFiles,
 } from './terminal-drop.js';
-import {getAiSelectionText} from './terminal-selection.js';
 
 type TerminalInputParams = Readonly<{
     /** The `.terminal-host` element xterm is opened in. */
     element: HTMLElement;
     terminal: Terminal;
-    kind: PaneKind;
     /** Writes raw bytes to the pty. */
     send: (data: string) => void;
     reportError: (message: string) => void;
 }>;
 
 /**
- * Shell (bash/zsh readline) and the AI TUI (Claude / Ink) interpret the same key event differently:
- *
- * - Claude / Ink-based TUIs understand the xterm "modified arrow" CSI form `\x1b[1;3D` / `\x1b[1;3C`
- *   — that's the "Alt+ArrowLeft / ArrowRight" the library expects.
- * - Readline (the line editor inside bash and zsh) does NOT bind that form by default — it binds the
- *   canonical Meta-letter sequences `\eb` (backward-word) and `\ef` (forward-word). When the shell
- *   receives `\x1b[1;3D` it parses the CSI prefix, finds no binding for the modified arrow, and the
- *   trailing `D` / `C` falls through as a literal character (visible as the user types).
- *
- * So pick the form per pane kind. Backspace shortcuts are the same in both because the control
- * bytes they emit (\x15 backward-kill-line, \x17 backward-kill-word, \x01 home, \x05 end) are
- * universally understood.
+ * Alt+arrows send the Meta-letter sequences `\eb` (backward-word) and `\ef` (forward-word) because
+ * readline (the line editor inside bash and zsh) does NOT bind xterm's "modified arrow" CSI form
+ * `\x1b[1;3D` by default. When the shell receives it, it parses the CSI prefix, finds no binding,
+ * and the trailing `D` / `C` falls through as a literal character (visible as the user types).
  */
-function attachKeyBindings({terminal, kind, send}: TerminalInputParams) {
-    const isAiPane = kind === PaneKind.Ai;
+function attachKeyBindings({terminal, send}: TerminalInputParams) {
     const keyBindings: Record<string, string> = {
         'meta+Backspace': '\x15',
         'alt+Backspace': '\x17',
         'meta+ArrowLeft': '\x01',
         'meta+ArrowRight': '\x05',
-        'alt+ArrowLeft': isAiPane ? '\x1b[1;3D' : '\x1bb',
-        'alt+ArrowRight': isAiPane ? '\x1b[1;3C' : '\x1bf',
+        'alt+ArrowLeft': '\x1bb',
+        'alt+ArrowRight': '\x1bf',
     };
 
     terminal.attachCustomKeyEventHandler((event) => {
@@ -67,25 +55,6 @@ function attachKeyBindings({terminal, kind, send}: TerminalInputParams) {
         }
         return true;
     });
-}
-
-function attachAiCopy({element, terminal}: TerminalInputParams) {
-    /** Capture phase so this runs before xterm's own copy listener. */
-    element.addEventListener(
-        'copy',
-        (event) => {
-            const text = getAiSelectionText(terminal);
-            if (text == undefined || !event.clipboardData) {
-                return;
-            }
-            event.clipboardData.setData('text/plain', text);
-            event.preventDefault();
-            event.stopPropagation();
-        },
-        {
-            capture: true,
-        },
-    );
 }
 
 /**
@@ -238,7 +207,7 @@ function attachFileDrop({element, send, reportError}: TerminalInputParams) {
             files,
             send,
             reportError,
-            logMessage: 'agent-storm upload failed:',
+            logMessage: 'Agent Storm upload failed:',
             errorPrefix: 'Upload failed',
         });
     });
@@ -267,7 +236,7 @@ function attachFileDrop({element, send, reportError}: TerminalInputParams) {
                 files: imageFiles,
                 send,
                 reportError,
-                logMessage: 'agent-storm paste upload failed:',
+                logMessage: 'Agent Storm paste upload failed:',
                 errorPrefix: 'Paste failed',
             });
         },
@@ -276,14 +245,11 @@ function attachFileDrop({element, send, reportError}: TerminalInputParams) {
 }
 
 /**
- * Wires every input path that doesn't go through xterm's own `onData`: per-pane-kind key bindings,
- * AI-pane copy reflow, touch scrolling, and file drop / image paste uploads.
+ * Wires every input path that doesn't go through xterm's own `onData`: key bindings, touch
+ * scrolling, and file drop / image paste uploads.
  */
 export function attachTerminalInput(params: TerminalInputParams) {
     attachKeyBindings(params);
-    if (params.kind === PaneKind.Ai) {
-        attachAiCopy(params);
-    }
     attachTouchScroll(params);
     attachFileDrop(params);
 }

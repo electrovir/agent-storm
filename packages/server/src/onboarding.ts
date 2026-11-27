@@ -7,9 +7,8 @@ import {InstanceEnvVar, instanceName, launcherLogPath} from 'agent-storm-util';
 import {delimiter, dirname} from 'node:path';
 import {parseUrl} from 'url-vir';
 import {loadAppState, updateAppState} from './app-state.js';
-import {releaseLauncherPath} from './file-paths.js';
+import {appCheckoutPath, releaseLauncherPath} from './file-paths.js';
 import {isGhAvailable} from './git.js';
-import {areClaudeHooksInstalled} from './install-claude-hooks.js';
 import {
     canInstallLoginItem,
     installLoginItem,
@@ -72,21 +71,18 @@ function getLoginItemEnv() {
 export async function readOnboardingStatus(): Promise<OnboardingStatus> {
     const [
         appState,
-        areHooksInstalled,
         isGitHubConnected,
         isLoginItemPresent,
     ] = await Promise.all([
         loadAppState(),
-        areClaudeHooksInstalled(),
         isGhAvailable(),
         isLoginItemInstalled(),
     ]);
     return {
         shouldShowOnboarding: !appState.isOnboardingDone && !appState.repos.length,
-        canInstallClaudeHooks: !instanceName,
-        areClaudeHooksInstalled: areHooksInstalled,
         isGitHubConnected,
         canStartAtLogin: canStartAtLogin(),
+        canSelfImprove: !!appCheckoutPath,
         isStartAtLoginEnabled: canStartAtLogin() && isLoginItemPresent,
     };
 }
@@ -104,7 +100,7 @@ export async function finishOnboarding() {
 
 export async function setStartAtLogin(isEnabled: boolean) {
     if (!canStartAtLogin()) {
-        throw new Error("This agent-storm can't start at login.");
+        throw new Error("This Agent Storm can't start at login.");
     }
     if (isEnabled) {
         await installLoginItem({

@@ -1,23 +1,19 @@
 import {PaneKind, type SessionMeta} from '@agent-storm/common';
 import {assert, assertWrap} from '@augment-vir/assert';
-import {omitObjectKeys} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {mkdtemp, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {
     createFolderSession,
+    findOrCreateFirstSession,
     forgetFolderSessions,
     getFolderSessions,
-    markPaneStarted,
     parseSessionStore,
-    pruneSessionAiIds,
     reconcileFolderSessions,
     removeFolderSession,
     renameFolderSession,
     resolveSessionId,
-    setFolderSessionAi,
-    startNewConversation,
 } from './sessions.js';
 
 /**
@@ -29,9 +25,6 @@ function storedSession(overrides: Readonly<Partial<SessionMeta>>): SessionMeta {
     return {
         id: 'stored',
         name: '',
-        aiId: '',
-        conversationId: 'conversation',
-        isNewConversation: false,
         ...overrides,
     };
 }
@@ -50,18 +43,16 @@ async function withTempFolder(run: (folder: string) => Promise<void>): Promise<v
 }
 
 describe(getFolderSessions.name, () => {
-    it('materializes one default session per kind for an unknown folder', async () => {
+    it('materializes a default session for an unknown folder', async () => {
         await withTempFolder(async (folder) => {
             const sessions = await getFolderSessions(folder);
 
-            assert.isLengthExactly(sessions.ai, 1);
             assert.isLengthExactly(sessions.shell, 1);
             /**
              * The first session must use the shared default id: an attach that carries no
              * `sessionId` resolves to that same value, so any other id here would strand it on a
              * PTY with no tab.
              */
-            assert.strictEquals(sessions.ai[0].id, 'default');
             assert.strictEquals(sessions.shell[0].id, 'default');
         });
     });
@@ -70,123 +61,107 @@ describe(getFolderSessions.name, () => {
         await withTempFolder(async (folder) => {
             const created = await createFolderSession({
                 folder,
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
             });
             /** A trailing `/.` must resolve to the same store key. */
             const viaOtherSpelling = await getFolderSessions(`${folder}/./`);
 
-            assert.isLengthExactly(created.ai, 2);
+            assert.isLengthExactly(created.shell, 2);
             assert.deepEquals(
-                viaOtherSpelling.ai.map((session) => session.id),
-                created.ai.map((session) => session.id),
+                viaOtherSpelling.shell.map((session) => session.id),
+                created.shell.map((session) => session.id),
             );
         });
     });
-});
 
-describe(createFolderSession.name, () => {
-    it('appends sessions and leaves the other kind untouched', async () => {
+    it('shares default sessions across concurrent reads', async () => {
         await withTempFolder(async (folder) => {
-            const afterFirst = await createFolderSession({
-                folder,
-                kind: PaneKind.Ai,
-            });
-            const afterSecond = await createFolderSession({
-                folder,
-                kind: PaneKind.Ai,
-            });
+            const [
+                first,
+                second,
+            ] = await Promise.all([
+                getFolderSessions(folder),
+                getFolderSessions(`${folder}/./`),
+            ]);
 
-            assert.isLengthExactly(afterFirst.ai, 2);
-            assert.isLengthExactly(afterSecond.ai, 3);
-            assert.isLengthExactly(afterSecond.shell, 1);
-            /** Ids must be unique or two tabs would drive the same PTY. */
-            assert.strictEquals(new Set(afterSecond.ai.map((session) => session.id)).size, 3);
+            assert.deepEquals(first, second);
         });
     });
 });
 
 describe(createFolderSession.name, () => {
-    it('starts a new conversation only for new AI tabs', async () => {
+    it('appends sessions with unique ids', async () => {
         await withTempFolder(async (folder) => {
-            await createFolderSession({
+            const afterFirst = await createFolderSession({
                 folder,
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
             });
-            const sessions = await createFolderSession({
+            const afterSecond = await createFolderSession({
                 folder,
                 kind: PaneKind.Shell,
             });
 
-            assert.deepEquals(
-                [
-                    sessions.ai,
-                    sessions.shell,
-                ].map((list) => list.map((session) => session.isNewConversation)),
-                [
-                    /** The folder's pre-existing tab keeps resuming its conversation. */
-                    [
-                        false,
-                        true,
-                    ],
-                    [
-                        false,
-                        false,
-                    ],
-                ],
-            );
-            /** Two tabs sharing a conversation id would resume the same conversation. */
-            assert.strictEquals(
-                new Set(sessions.ai.map((session) => session.conversationId)).size,
-                2,
-            );
+            assert.isLengthExactly(afterFirst.shell, 2);
+            assert.isLengthExactly(afterSecond.shell, 3);
+            /** Ids must be unique or two tabs would drive the same PTY. */
+            assert.strictEquals(new Set(afterSecond.shell.map((session) => session.id)).size, 3);
         });
     });
-});
 
-describe(markPaneStarted.name, () => {
-    it('makes the next spawn resume instead of starting over', async () => {
+    it('keeps a new tab when another tab is renamed concurrently', async () => {
         await withTempFolder(async (folder) => {
-            const created = await createFolderSession({
-                folder,
-                kind: PaneKind.Ai,
-            });
-            const newSession = assertWrap.isDefined(created.ai[1]);
+            const original = assertWrap.isDefined((await getFolderSessions(folder)).shell[0]);
+            const [created] = await Promise.all([
+                createFolderSession({
+                    folder,
+                    kind: PaneKind.Shell,
+                }),
+                renameFolderSession({
+                    folder,
+                    kind: PaneKind.Shell,
+                    sessionId: original.id,
+                    name: 'Renamed tab',
+                }),
+            ]);
 
-            await markPaneStarted({
-                folder,
-                kind: PaneKind.Ai,
-                sessionId: newSession.id,
-                launchedAiId: 'codex',
-            });
-            const sessions = await getFolderSessions(folder);
-
-            assert.deepEquals(sessions.ai[1], {
-                ...newSession,
-                isNewConversation: false,
-                launchedAiId: 'codex',
-            });
+            assert.deepEquals((await getFolderSessions(folder)).shell, [
+                {
+                    ...original,
+                    name: 'Renamed tab',
+                },
+                assertWrap.isDefined(created.shell.at(-1)),
+            ]);
         });
     });
 });
 
-describe(startNewConversation.name, () => {
-    it('gives the tab a different conversation that has not started', async () => {
+describe(findOrCreateFirstSession.name, () => {
+    it('shares a replacement tab across concurrent opens', async () => {
         await withTempFolder(async (folder) => {
             const initial = await getFolderSessions(folder);
-            const session = assertWrap.isDefined(initial.ai[0]);
-
-            const updated = await startNewConversation({
+            const target = {
                 folder,
-                kind: PaneKind.Ai,
-                sessionId: session.id,
+                kind: PaneKind.Shell,
+            };
+            await removeFolderSession({
+                ...target,
+                sessionId: assertWrap.isDefined(initial.shell[0]).id,
             });
-            const updatedSession = assertWrap.isDefined(updated.ai[0]);
+            const [
+                first,
+                second,
+            ] = await Promise.all([
+                findOrCreateFirstSession(target),
+                findOrCreateFirstSession(target),
+            ]);
 
-            assert.notStrictEquals(updatedSession.conversationId, session.conversationId);
-            assert.deepEquals(omitObjectKeys(updatedSession, ['conversationId']), {
-                ...omitObjectKeys(session, ['conversationId']),
-                isNewConversation: true,
-            });
+            assert.strictEquals(first, second);
+            assert.deepEquals(
+                (await getFolderSessions(folder)).shell.map(({id}) => id),
+                [
+                    first,
+                ],
+            );
         });
     });
 });
@@ -195,23 +170,23 @@ describe(renameFolderSession.name, () => {
     it('sets and clears a session name', async () => {
         await withTempFolder(async (folder) => {
             const initial = await getFolderSessions(folder);
-            const sessionId = initial.ai[0]?.id || '';
+            const sessionId = initial.shell[0]?.id || '';
 
             const named = await renameFolderSession({
                 folder,
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
                 sessionId,
                 name: '  backend  ',
             });
             const cleared = await renameFolderSession({
                 folder,
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
                 sessionId,
                 name: '',
             });
 
-            assert.strictEquals(named.ai[0]?.name, 'backend');
-            assert.strictEquals(cleared.ai[0]?.name, '');
+            assert.strictEquals(named.shell[0]?.name, 'backend');
+            assert.strictEquals(cleared.shell[0]?.name, '');
         });
     });
 });
@@ -223,13 +198,13 @@ describe(removeFolderSession.name, () => {
 
             const result = await removeFolderSession({
                 folder,
-                kind: PaneKind.Ai,
-                sessionId: initial.ai[0]?.id || '',
+                kind: PaneKind.Shell,
+                sessionId: initial.shell[0]?.id || '',
             });
 
             assert.isTrue(result.removed);
-            assert.isLengthExactly(result.sessions.ai, 0);
-            assert.isLengthExactly((await getFolderSessions(folder)).ai, 0);
+            assert.isLengthExactly(result.sessions.shell, 0);
+            assert.isLengthExactly((await getFolderSessions(folder)).shell, 0);
         });
     });
 
@@ -254,68 +229,13 @@ describe(removeFolderSession.name, () => {
     });
 });
 
-describe(pruneSessionAiIds.name, () => {
-    it('clears tab AI overrides that point at deleted definitions', async () => {
-        await withTempFolder(async (folder) => {
-            const created = await createFolderSession({
-                folder,
-                kind: PaneKind.Ai,
-            });
-            const firstSession = assertWrap.isDefined(created.ai[0]);
-            const secondSession = assertWrap.isDefined(created.ai[1]);
-            await setFolderSessionAi({
-                folder,
-                kind: PaneKind.Ai,
-                sessionId: firstSession.id,
-                aiId: 'kept-ai',
-            });
-            await setFolderSessionAi({
-                folder,
-                kind: PaneKind.Ai,
-                sessionId: secondSession.id,
-                aiId: 'deleted-ai',
-            });
-
-            await pruneSessionAiIds({
-                findValidAiIds() {
-                    return [
-                        'kept-ai',
-                    ];
-                },
-            });
-
-            const sessions = await getFolderSessions(folder);
-
-            assert.deepEquals(
-                sessions.ai.map((session) => {
-                    return {
-                        id: session.id,
-                        aiId: session.aiId,
-                    };
-                }),
-                [
-                    {
-                        id: firstSession.id,
-                        aiId: 'kept-ai',
-                    },
-                    {
-                        id: secondSession.id,
-                        aiId: '',
-                    },
-                ],
-            );
-        });
-    });
-});
-
 describe(reconcileFolderSessions.name, () => {
     it('adopts a live pty that has no stored tab', async () => {
         await withTempFolder(async (folder) => {
             const reconciled = await reconcileFolderSessions({
                 folder,
                 liveSessionIds: {
-                    [PaneKind.Ai]: ['orphaned-pty'],
-                    [PaneKind.Shell]: [],
+                    [PaneKind.Shell]: ['orphaned-pty'],
                 },
             });
 
@@ -323,7 +243,7 @@ describe(reconcileFolderSessions.name, () => {
              * An unlisted PTY would be invisible in the UI while still running an agent process, so
              * it gets a tab appended rather than being left unreachable.
              */
-            assert.isTrue(reconciled.ai.some((session) => session.id === 'orphaned-pty'));
+            assert.isTrue(reconciled.shell.some((session) => session.id === 'orphaned-pty'));
         });
     });
 });
@@ -332,12 +252,12 @@ describe(resolveSessionId.name, () => {
     it('falls back to the first session for unknown or missing ids', async () => {
         await withTempFolder(async (folder) => {
             const initial = await getFolderSessions(folder);
-            const firstId = initial.ai[0]?.id || '';
+            const firstId = initial.shell[0]?.id || '';
 
             assert.strictEquals(
                 await resolveSessionId({
                     folder,
-                    kind: PaneKind.Ai,
+                    kind: PaneKind.Shell,
                     sessionId: 'not-a-real-session',
                 }),
                 firstId,
@@ -345,7 +265,7 @@ describe(resolveSessionId.name, () => {
             assert.strictEquals(
                 await resolveSessionId({
                     folder,
-                    kind: PaneKind.Ai,
+                    kind: PaneKind.Shell,
                     sessionId: undefined,
                 }),
                 firstId,
@@ -357,14 +277,14 @@ describe(resolveSessionId.name, () => {
         await withTempFolder(async (folder) => {
             const created = await createFolderSession({
                 folder,
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
             });
-            const secondId = created.ai[1]?.id || '';
+            const secondId = created.shell[1]?.id || '';
 
             assert.strictEquals(
                 await resolveSessionId({
                     folder,
-                    kind: PaneKind.Ai,
+                    kind: PaneKind.Shell,
                     sessionId: secondId,
                 }),
                 secondId,
@@ -378,12 +298,12 @@ describe(forgetFolderSessions.name, () => {
         await withTempFolder(async (folder) => {
             const created = await createFolderSession({
                 folder,
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
             });
             await renameFolderSession({
                 folder,
-                kind: PaneKind.Ai,
-                sessionId: created.ai[1]?.id || '',
+                kind: PaneKind.Shell,
+                sessionId: created.shell[1]?.id || '',
                 name: 'from-a-deleted-worktree',
             });
 
@@ -395,8 +315,8 @@ describe(forgetFolderSessions.name, () => {
              * previously-used name lands on this same path. Without the prune it would inherit the
              * old incarnation's tabs and names.
              */
-            assert.isLengthExactly(afterForget.ai, 1);
-            assert.strictEquals(afterForget.ai[0].name, '');
+            assert.isLengthExactly(afterForget.shell, 1);
+            assert.strictEquals(afterForget.shell[0].name, '');
         });
     });
 });
@@ -416,7 +336,7 @@ describe(parseSessionStore.name, () => {
         const parsed = parseSessionStore(
             JSON.stringify({
                 [resolve('/tmp/keeps-valid')]: {
-                    ai: [
+                    shell: [
                         storedSession({
                             id: 'a',
                             name: 'named',
@@ -425,51 +345,26 @@ describe(parseSessionStore.name, () => {
                             id: '',
                         }),
                     ],
-                    shell: [],
                 },
                 [resolve('/tmp/drops-missing-fields')]: {
-                    ai: [
+                    shell: [
                         {
                             id: 'b',
-                            name: 'no conversation id',
                         },
                     ],
-                    shell: [],
                 },
             }),
         );
 
         assert.deepEquals(parsed, {
             [resolve('/tmp/keeps-valid')]: {
-                ai: [
+                shell: [
                     storedSession({
                         id: 'a',
                         name: 'named',
                     }),
                 ],
-                shell: [],
             },
         });
-    });
-
-    it('replaces a conversation id that is unsafe in a file path', () => {
-        const parsed = parseSessionStore(
-            JSON.stringify({
-                [resolve('/tmp/unsafe')]: {
-                    ai: [
-                        storedSession({
-                            id: 'a',
-                            conversationId: '../../escape',
-                        }),
-                    ],
-                    shell: [],
-                },
-            }),
-        );
-
-        assert.matches(
-            assertWrap.isDefined(parsed[resolve('/tmp/unsafe')]?.ai[0]).conversationId,
-            /^[a-z0-9]+$/,
-        );
     });
 });

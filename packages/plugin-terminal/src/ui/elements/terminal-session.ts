@@ -346,7 +346,6 @@ export async function connectTerminalSession({
     attachTerminalInput({
         element,
         terminal,
-        kind: inputs.kind,
         send(data) {
             socket.send(data);
         },

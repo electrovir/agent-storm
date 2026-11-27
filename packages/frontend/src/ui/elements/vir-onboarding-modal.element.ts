@@ -1,7 +1,6 @@
 import {
     addRepoEndpoint,
     checkPathEndpoint,
-    claudeHooksInstallEndpoint,
     onboardingEndpoint,
     type OnboardingStatus,
     startAtLoginEndpoint,
@@ -22,7 +21,6 @@ import {
 enum OnboardingStep {
     Folders = 'folders',
     GitHub = 'github',
-    ClaudeHooks = 'claude-hooks',
     StartAtLogin = 'start-at-login',
 }
 
@@ -58,15 +56,6 @@ const onboardingSteps: Readonly<
         },
         isDone({status}) {
             return status.isGitHubConnected;
-        },
-    },
-    [OnboardingStep.ClaudeHooks]: {
-        title: 'Install the Claude Code hooks',
-        isAvailable(status) {
-            return status.canInstallClaudeHooks;
-        },
-        isDone({status}) {
-            return status.areClaudeHooksInstalled;
         },
     },
     [OnboardingStep.StartAtLogin]: {
@@ -242,7 +231,6 @@ export const VirOnboardingModal = defineAppElement<{
                 const added = await fetchApi(addRepoEndpoint, HttpMethod.Post, {
                     requestData: {
                         path: resolvedPath,
-                        aiId: '',
                     },
                 });
                 updateState({
@@ -286,8 +274,8 @@ export const VirOnboardingModal = defineAppElement<{
             [OnboardingStep.Folders]() {
                 return html`
                     <p>
-                        Add the git repos you work in. Each one gets its own terminals and AI tabs
-                        in the sidebar, where you can add more later.
+                        Add the git repos you work in. Each one gets its own terminals in the
+                        sidebar, where you can add more later.
                     </p>
                     ${state.repoPaths.length
                         ? html`
@@ -328,7 +316,7 @@ export const VirOnboardingModal = defineAppElement<{
             },
             [OnboardingStep.GitHub]() {
                 return html`
-                    <p>agent-storm shows pull requests and reviews through the GitHub CLI.</p>
+                    <p>Agent Storm shows pull requests and reviews through the GitHub CLI.</p>
                     ${status.isGitHubConnected
                         ? nothing
                         : html`
@@ -347,32 +335,15 @@ export const VirOnboardingModal = defineAppElement<{
                     })}
                 `;
             },
-            [OnboardingStep.ClaudeHooks]() {
-                return html`
-                    <p>
-                        The hooks let each AI tab resume its own conversation and show when Claude
-                        is working. Installing them adds entries to
-                        <code>~/.claude/settings.json</code>
-                        beside your own hooks.
-                    </p>
-                    ${renderActionButton({
-                        text: 'Install',
-                        doneText: 'The hooks are installed.',
-                        async action() {
-                            return await fetchApi(claudeHooksInstallEndpoint, HttpMethod.Post);
-                        },
-                    })}
-                `;
-            },
             [OnboardingStep.StartAtLogin]() {
                 return html`
                     <p>
-                        Start agent-storm in the background when you log in, so it's already running
+                        Start Agent Storm in the background when you log in, so it's already running
                         when you open it. You can turn this off in Settings.
                     </p>
                     ${renderActionButton({
                         text: 'Turn on',
-                        doneText: 'agent-storm starts at login.',
+                        doneText: 'Agent Storm starts at login.',
                         async action() {
                             return await fetchApi(startAtLoginEndpoint, HttpMethod.Post, {
                                 requestData: {
@@ -388,7 +359,7 @@ export const VirOnboardingModal = defineAppElement<{
         return html`
             <${ViraModal.assign({
                 open: state.isOpen,
-                modalTitle: 'Set up agent-storm',
+                modalTitle: 'Set up Agent Storm',
                 blockLightDismissal: true,
             })}
                 ${listen(ViraModal.events.modalClose, () => {

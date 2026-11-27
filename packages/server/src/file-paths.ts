@@ -51,11 +51,23 @@ export const serverStateDir = releaseBuild
  */
 export const authSecretPath = resolve(serverStateDir, 'auth-secret');
 
+/** When the user last touched the app, so time away counts across server restarts. */
+export const lastUserInputPath = resolve(serverStateDir, 'last-user-input.json');
+
+/**
+ * The checkout the app runs from, which self-improvement works on a copy of. A release has none,
+ * and a named instance is a test copy of the default one, so neither improves itself.
+ */
+export const appCheckoutPath = releaseBuild || instanceName ? undefined : monorepoRoot;
+
 /**
  * Filename portion of {@link authSecretPath}, used to filter `fs.watch` events on
  * {@link serverStateDir} (the watcher delivers basenames, not full paths).
  */
 export const authSecretFileName = basename(authSecretPath);
+
+/** The server's VAPID key pair, which signs every Web Push it sends. Made on the first push. */
+export const vapidKeysPath = resolve(serverStateDir, 'vapid-keys.json');
 
 /**
  * Persisted folder-info cache so the sidebar reappears with last-known git/PR/pane state on server
@@ -78,7 +90,7 @@ export const githubCachePath = resolve(serverStateDir, 'github-cache.json');
  * regenerated the way git or PR state can.
  */
 export const sessionStorePath = resolve(userDataDir, 'folder-state', 'pane-sessions.json');
-/** The AI tabs that were in the middle of a task when last checked, to resume after a reboot. */
+/** The panes that were running when last checked, to restore after a reboot. */
 export const livePanesPath = resolve(userDataDir, 'folder-state', 'live-panes.json');
 /** Where {@link sessionStorePath} was kept before it moved, read only to migrate it. */
 export const legacySessionStorePath = resolve(checkoutStateDir, 'pane-sessions.json');
@@ -91,28 +103,6 @@ export const legacySessionStorePath = resolve(checkoutStateDir, 'pane-sessions.j
 export const folderActivityPath = resolve(userDataDir, 'folder-state', 'folder-activity.json');
 /** Where {@link folderActivityPath} was kept before it moved, read only to migrate it. */
 export const legacyFolderActivityPath = resolve(checkoutStateDir, 'folder-activity.json');
-
-/**
- * Where wrapper scripts record which CLI session each tab's conversation maps to, one file per
- * conversation id under a per-CLI subdirectory. Agent-storm never reads these files, it only
- * deletes a conversation's files once no tab holds that conversation anymore.
- */
-export const conversationStateDir = resolve(userDataDir, 'conversations');
-
-/**
- * Where `claude-hooks/agent-storm-activity.sh` records what Claude is doing in each tab. Sits under
- * {@link conversationStateDir} so a conversation's file is deleted along with its other state.
- */
-export const claudeActivityDir = resolve(conversationStateDir, 'claude-activity');
-
-/** Repo copies of the Claude Code hook scripts, the source of truth for what gets installed. */
-export const claudeHookSourceDir = resolve(import.meta.dirname, 'claude-hooks');
-
-/** Where the hook scripts are installed to. Claude Code's settings reference them by this path. */
-export const claudeHookInstallDir = resolve(homedir(), '.claude');
-
-/** Claude Code's user-level settings, where agent-storm registers its hooks. */
-export const claudeSettingsPath = resolve(claudeHookInstallDir, 'settings.json');
 
 const unixDaemonSocket = {
     path: resolve(tmpdir(), `agent-storm${instanceSuffix}-pty.sock`),
@@ -217,21 +207,6 @@ export const legacyConfigPath = resolve(userDataDir, 'config.json');
  */
 export const failedPaneInputsPath = resolve(userDataDir, 'failed-pane-inputs.jsonl');
 
-/**
- * An AI running in a tab launches a session in another folder by moving a signed `<id>.json`
- * request into here, which `agentLaunchScriptPath` does for it. Kept on disk rather than behind an
- * endpoint so only this machine can make the request.
- */
-export const agentLaunchRequestsDir = resolve(userDataDir, 'launch-requests');
-
-/**
- * Signs and submits a launch request. Its path is given to every tab as
- * `AGENT_STORM_LAUNCH_SCRIPT`.
- */
-export const agentLaunchScriptPath = toSpawnedScriptPath(
-    resolve(import.meta.dirname, 'launch-session.script.ts'),
-);
-
 /** A release's built frontend, which its server serves. */
 export const releaseFrontendDir = resolve(import.meta.dirname, '..', ReleaseDir.Frontend);
 
@@ -262,13 +237,6 @@ export const folderStatesDir = resolve(userDataDir, 'folders');
  * user's home directory is intact.
  */
 export const configBackupDir = resolve(userDataDir, 'config-backups');
-
-/**
- * Avatar images for the user's AI definitions. Lives next to {@link settingsJsonPath} rather than in
- * `tmpdir()` like terminal uploads: these are referenced by the config and have to survive a
- * reboot, while uploads are throwaway files handed to a terminal once.
- */
-export const avatarsDir = resolve(userDataDir, 'avatars');
 
 /**
  * Installed location of the Vir Icons VS Code extension, the source of truth for the Diff pane's

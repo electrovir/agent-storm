@@ -1,4 +1,4 @@
-import {PaneStatus, type AiDefinition} from '@agent-storm/common';
+import {PaneStatus} from '@agent-storm/common';
 import {css, html, nothing, type HtmlInterpolation} from 'element-vir';
 import {
     createSizedIcon,
@@ -11,7 +11,6 @@ import {
 } from 'vira';
 import {defineAppElement} from '../define-app-element.js';
 import {spinAnimationCss, spinKeyframesCss} from './spin-styles.js';
-import {VirAiAvatar} from './vir-ai-avatar.element.js';
 
 const activityIndicators: Readonly<
     Record<
@@ -37,15 +36,13 @@ const activityIndicators: Readonly<
 };
 
 /**
- * A pane tab's label: its AI's avatar (or its kind's icon), its name, and what its session is
- * doing. It renders inside `ViraTabs`' shadow DOM, so it carries its own styles.
+ * A pane tab's label: its kind's icon, its name, and what its session is doing. It renders inside
+ * `ViraTabs`' shadow DOM, so it carries its own styles.
  */
 export const VirPaneTabLabel = defineAppElement<{
     label: string;
     icon: ViraIconSvg;
     /** Shown instead of `icon`. */
-    ai?: Readonly<AiDefinition> | undefined;
-    /** Shown instead of `icon` and `ai`. */
     iconContent?: HtmlInterpolation | undefined;
     /** Shown instead of `label`. */
     labelContent?: HtmlInterpolation | undefined;
@@ -86,19 +83,11 @@ export const VirPaneTabLabel = defineAppElement<{
         const indicator = inputs.status ? activityIndicators[inputs.status] : undefined;
         return html`
             ${inputs.iconContent ??
-            (inputs.ai
-                ? html`
-                      <${VirAiAvatar.assign({
-                          name: inputs.ai.name,
-                          avatarFile: inputs.ai.avatarFile || '',
-                          sizePx: 14,
-                      })}></${VirAiAvatar}>
-                  `
-                : html`
-                      <${ViraIcon.assign({
-                          icon: inputs.icon,
-                      })}></${ViraIcon}>
-                  `)}
+            html`
+                <${ViraIcon.assign({
+                    icon: inputs.icon,
+                })}></${ViraIcon}>
+            `}
             <span>${inputs.labelContent ?? inputs.label}</span>
             ${inputs.status
                 ? html`

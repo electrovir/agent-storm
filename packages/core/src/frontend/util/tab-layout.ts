@@ -14,6 +14,7 @@ import {
     getEnumValues,
     getObjectTypedKeys,
     getObjectTypedValues,
+    groupArrayBy,
     mapObjectValues,
     omitObjectKeys,
     randomString,
@@ -408,16 +409,13 @@ export function createDefaultTabLayout({
               ]
             : [];
     });
+    const placedTabsByGroup = groupArrayBy(placedTabs, (entry) => entry.placement.group);
 
     return createTabLayout(
         getEnumValues(PaneKind).map((group) => {
             function listPlacedTabs(position: DefaultTabPosition) {
-                return placedTabs
-                    .filter((entry) => {
-                        return (
-                            entry.placement.group === group && entry.placement.position === position
-                        );
-                    })
+                return (placedTabsByGroup[group] || [])
+                    .filter((entry) => entry.placement.position === position)
                     .map((entry) => entry.tab);
             }
 
@@ -708,9 +706,9 @@ function findKindGroupId(layout: Readonly<TabLayout>, kind: string) {
 
 /**
  * Makes one session kind's tabs match the folder's sessions: tabs whose session is gone close, and
- * missing ones are shown in the group already holding that kind's tabs, else in a new group split
- * off to the right of the active group. The active group stays the same. Returns `layout` itself
- * when nothing changed.
+ * missing ones join the group already holding that kind's tabs, else a new group split off to the
+ * right of the active group. Neither the active group nor any group's shown tab changes, except
+ * that a new session shows in place of a closed one. Returns `layout` itself when nothing changed.
  */
 export function syncSessionTabs(
     layout: Readonly<TabLayout>,
@@ -760,6 +758,20 @@ export function syncSessionTabs(
                   );
         return {
             ...placed,
+            /**
+             * `addTab` shows the new tab, and splitting it off again shows whichever tab slid into
+             * its place, not the one the group showed before.
+             */
+            groups: mapObjectValues(placed.groups, (groupId, group) => {
+                const shownTabId = layout.groups[groupId]?.activeTabId;
+                return {
+                    ...group,
+                    activeTabId:
+                        shownTabId && group.tabIds.includes(shownTabId)
+                            ? shownTabId
+                            : group.activeTabId,
+                };
+            }),
             activeGroupId: current.activeGroupId,
         };
     }, pruned);

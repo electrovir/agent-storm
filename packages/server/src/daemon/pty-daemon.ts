@@ -31,7 +31,6 @@ import {
     type ProcessListResponse,
     type SimpleResponse,
     type StatusResponse,
-    type VerifyLaunchResponse,
 } from './protocol.js';
 import {
     attachPane,
@@ -41,7 +40,6 @@ import {
     listAllPaneStatuses,
     restartPane,
     sweepDeadPanes,
-    verifyLaunchSignature,
     writeToPane,
 } from './pty-pool.js';
 
@@ -58,7 +56,7 @@ if (daemonSocket.isFile && existsSync(daemonSocket.path)) {
 function handleAttach({
     socket,
     decoder,
-    handshake: {folder, kind, sessionId, colors, aiCmd, conversationId, env, scrollbackLimit},
+    handshake: {folder, kind, sessionId, colors, scrollbackLimit},
 }: Readonly<{
     socket: Socket;
     decoder: FrameDecoder;
@@ -79,9 +77,6 @@ function handleAttach({
         kind,
         sessionId,
         colors,
-        aiCmd,
-        conversationId,
-        env,
         scrollbackLimit,
         onData,
         onExit,
@@ -195,9 +190,7 @@ function handleProcessAttach({
 /** Sends the one reply a non-attach action gets, then closes the socket. */
 function reply(
     socket: Socket,
-    response: Readonly<
-        SimpleResponse | StatusResponse | VerifyLaunchResponse | ProcessListResponse | ErrorResponse
-    >,
+    response: Readonly<SimpleResponse | StatusResponse | ProcessListResponse | ErrorResponse>,
 ) {
     socket.write(encodeControlFrame(response));
     socket.end();
@@ -240,8 +233,6 @@ const handshakeHandlers: {[Action in DaemonAction]: HandshakeHandler<Action>} = 
             folder: handshake.folder,
             kind: handshake.kind,
             sessionId: handshake.sessionId,
-            aiCmd: handshake.aiCmd,
-            conversationId: handshake.conversationId,
         });
         reply(socket, okResponse);
     },
@@ -258,16 +249,6 @@ const handshakeHandlers: {[Action in DaemonAction]: HandshakeHandler<Action>} = 
             sessionId: handshake.sessionId,
         });
         reply(socket, okResponse);
-    },
-    [DaemonAction.VerifyLaunch]({socket, handshake}) {
-        reply(socket, {
-            ok: true,
-            isValid: verifyLaunchSignature({
-                launchId: handshake.launchId,
-                payload: handshake.payload,
-                signature: handshake.signature,
-            }),
-        });
     },
     [DaemonAction.Shutdown]({socket}) {
         reply(socket, okResponse);
@@ -311,7 +292,7 @@ const server = createServer((socket) => {
         /**
          * The parsed frame is untrusted socket JSON, so its declared type guarantees nothing at
          * runtime. A newer backend probing with an action this build doesn't know gets an error
-         * reply, which it reads as "unsupported" (see {@link DaemonAction.VerifyLaunch}).
+         * reply.
          */
         if (!check.isEnumValue(handshake.action, DaemonAction)) {
             log(`unknown action from client: ${String(handshake.action)}`);

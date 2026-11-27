@@ -14,7 +14,7 @@ import {
     createDefaultTabLayout,
     createTabLayout,
     findActiveTabId,
-    findShownSessionId,
+    findShownTabIdOfKind,
     findTabGroupId,
     isTabLayoutConsistent,
     joinTabLayout,
@@ -36,7 +36,7 @@ import {
 function createTab(id: string) {
     return {
         id,
-        kind: PaneKind.Ai,
+        kind: 'chat',
     };
 }
 
@@ -61,9 +61,6 @@ function createSession(id: string) {
     return {
         id,
         name: '',
-        aiId: '',
-        conversationId: '',
-        isNewConversation: false,
     };
 }
 
@@ -76,7 +73,7 @@ const testPanes = [
         id: firstPaneId,
         defaultPlacement({extensionInputs}: Readonly<Pick<PaneGroupView, 'extensionInputs'>>) {
             return {
-                group: PaneKind.Ai,
+                group: PaneKind.Shell,
                 position: extensionInputs.isStartPlaced
                     ? DefaultTabPosition.Start
                     : DefaultTabPosition.End,
@@ -99,16 +96,12 @@ const testPanes = [
     },
 ];
 
-/** A folder with two AI sessions and one shell. */
-function createFolderLayout(isStartPlaced = false) {
+function createDefaultLayout(isStartPlaced = false) {
     return createDefaultTabLayout({
         sessions: {
-            [PaneKind.Ai]: [
-                createSession('ai1'),
-                createSession('ai2'),
-            ],
             [PaneKind.Shell]: [
                 createSession('sh1'),
+                createSession('sh2'),
             ],
         },
         panes: testPanes,
@@ -116,6 +109,30 @@ function createFolderLayout(isStartPlaced = false) {
             isStartPlaced,
         },
     });
+}
+
+/** Two chat tabs and a pane's tab beside a group with one shell and another pane's tab. */
+function createFolderLayout() {
+    return createTabLayout([
+        [
+            createTab('chat1'),
+            createTab('chat2'),
+            {
+                id: firstPaneId,
+                kind: firstPaneId,
+            },
+        ],
+        [
+            {
+                id: 'shell:sh1',
+                kind: PaneKind.Shell,
+            },
+            {
+                id: secondPaneId,
+                kind: secondPaneId,
+            },
+        ],
+    ]);
 }
 
 describe(createTabLayout.name, () => {
@@ -162,29 +179,23 @@ describe(createTabLayout.name, () => {
 });
 
 describe(createDefaultTabLayout.name, () => {
-    it('puts each session kind in its own group, with placed tabs at the ends', () => {
-        assert.deepEquals(listGroupTabs(createFolderLayout()), [
-            [
-                'ai:ai1',
-                'ai:ai2',
-                firstPaneId,
-            ],
+    it('puts the sessions in a group, with placed tabs at the end', () => {
+        assert.deepEquals(listGroupTabs(createDefaultLayout()), [
             [
                 'shell:sh1',
+                'shell:sh2',
+                firstPaneId,
                 secondPaneId,
             ],
         ]);
     });
     it('puts placed tabs at the start when their placement says so', () => {
-        assert.deepEquals(listGroupTabs(createFolderLayout(true)), [
+        assert.deepEquals(listGroupTabs(createDefaultLayout(true)), [
             [
                 firstPaneId,
-                'ai:ai1',
-                'ai:ai2',
-            ],
-            [
                 secondPaneId,
                 'shell:sh1',
+                'shell:sh2',
             ],
         ]);
     });
@@ -425,10 +436,9 @@ describe(syncSessionTabs.name, () => {
         const start = createFolderLayout();
         assert.strictEquals(
             syncSessionTabs(start, {
-                kind: PaneKind.Ai,
+                kind: PaneKind.Shell,
                 sessionIds: [
-                    'ai1',
-                    'ai2',
+                    'sh1',
                 ],
             }),
             start,
@@ -452,8 +462,8 @@ describe(syncSessionTabs.name, () => {
             {
                 groupTabs: [
                     [
-                        'ai:ai1',
-                        'ai:ai2',
+                        'chat1',
+                        'chat2',
                         firstPaneId,
                     ],
                     [
@@ -462,10 +472,45 @@ describe(syncSessionTabs.name, () => {
                     ],
                 ],
                 shownTabIds: [
-                    'ai:ai1',
+                    'chat1',
                     'shell:sh2',
                 ],
-                activeTabId: 'ai:ai1',
+                activeTabId: 'chat1',
+            },
+        );
+    });
+    it('adds a session to its group without changing the tab the group shows', () => {
+        const layout = syncSessionTabs(createFolderLayout(), {
+            kind: PaneKind.Shell,
+            sessionIds: [
+                'sh1',
+                'sh2',
+            ],
+        });
+        assert.deepEquals(
+            {
+                groupTabs: listGroupTabs(layout),
+                shownTabIds: listGroupIds(layout).map(
+                    (groupId) => layout.groups[groupId]?.activeTabId,
+                ),
+            },
+            {
+                groupTabs: [
+                    [
+                        'chat1',
+                        'chat2',
+                        firstPaneId,
+                    ],
+                    [
+                        'shell:sh1',
+                        secondPaneId,
+                        'shell:sh2',
+                    ],
+                ],
+                shownTabIds: [
+                    'chat1',
+                    'shell:sh1',
+                ],
             },
         );
     });
@@ -476,6 +521,10 @@ describe(syncSessionTabs.name, () => {
                     {
                         id: 'chat',
                         kind: 'ai-chat',
+                    },
+                    {
+                        id: 'notes',
+                        kind: 'notes',
                     },
                 ],
             ]),
@@ -498,6 +547,7 @@ describe(syncSessionTabs.name, () => {
                 groupTabs: [
                     [
                         'chat',
+                        'notes',
                     ],
                     [
                         'shell:sh1',
@@ -515,13 +565,13 @@ describe(syncSessionTabs.name, () => {
 
 describe(showTabKind.name, () => {
     it('shows the session the user last looked at, and adds a missing tab of a kind', () => {
-        const start = closeTab(selectTab(createFolderLayout(), 'ai:ai2'), firstPaneId);
+        const start = closeTab(selectTab(createFolderLayout(), 'chat2'), firstPaneId);
         const shownShell = showTabKind(start, PaneKind.Shell);
         const shownDiff = showTabKind(shownShell, firstPaneId);
         const diffTabId = assertWrap.isDefined(findActiveTabId(shownDiff));
         assert.deepEquals(
             {
-                shownAi: findShownSessionId(shownShell, PaneKind.Ai),
+                shownChat: findShownTabIdOfKind(shownShell, 'chat'),
                 shellActive: findActiveTabId(shownShell),
                 diffKind: shownDiff.tabs[diffTabId]?.kind,
                 diffGroupTabs: listGroupTabs(shownDiff),
@@ -530,14 +580,14 @@ describe(showTabKind.name, () => {
                 ),
             },
             {
-                shownAi: 'ai2',
+                shownChat: 'chat2',
                 shellActive: 'shell:sh1',
                 diffKind: firstPaneId,
                 diffAfterReturning: diffTabId,
                 diffGroupTabs: [
                     [
-                        'ai:ai1',
-                        'ai:ai2',
+                        'chat1',
+                        'chat2',
                     ],
                     [
                         'shell:sh1',
@@ -571,11 +621,11 @@ describe(listDisplayedTabIds.name, () => {
             ],
             [
                 [
-                    'ai:ai1',
+                    'chat1',
                     secondPaneId,
                 ],
                 [
-                    'ai:ai1',
+                    'chat1',
                 ],
             ],
         );
