@@ -23,6 +23,7 @@ import {
     basename,
     changeBadgeColors,
     changeBadges,
+    fileRowBadge,
     fileRowContents,
     fileRowStyles,
     reviewButtonTitle,
@@ -209,7 +210,7 @@ export const VirDiffFileMenu = defineAppElement<{
                             })}
                         >
                             <div class="menu-row" ${tooltip(file.path)}>
-                                ${fileRowContents(file)}
+                                ${fileRowContents(file)} ${fileRowBadge(file)}
                             </div>
                         </${ViraMenuItem}>
                     `;

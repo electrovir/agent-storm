@@ -25,6 +25,7 @@ import {
     type SelectedFile,
 } from '../../util/diff-status.js';
 import {
+    fileRowBadge,
     fileRowContents,
     fileRowStyles,
     reviewButtonTitle,
@@ -130,6 +131,8 @@ export const VirDiffFileSection = defineAppElement<{
             align-items: center;
             width: 100%;
             box-sizing: border-box;
+            gap: 4px;
+            padding-right: 8px;
         }
 
         .sidebar-row:hover {
@@ -150,7 +153,7 @@ export const VirDiffFileSection = defineAppElement<{
 
         /* Marking files is pointless if the buttons that act on them need a hover to appear. */
         .sidebar-row[data-marked] .row-actions {
-            visibility: visible;
+            display: flex;
         }
 
         .sidebar-row-open {
@@ -159,7 +162,7 @@ export const VirDiffFileSection = defineAppElement<{
             gap: 8px;
             flex-grow: 1;
             min-width: 0;
-            padding: 3px 8px;
+            padding: 3px 0 3px 8px;
             appearance: none;
             border: none;
             background: none;
@@ -169,23 +172,17 @@ export const VirDiffFileSection = defineAppElement<{
             color: inherit;
         }
 
-        /*
-         * Hidden by visibility rather than display so the row's width doesn't shift when the
-         * pointer arrives — the file name would otherwise reflow under the cursor mid-click.
-         */
         .row-actions {
-            display: flex;
+            display: none;
             align-items: center;
             flex-grow: 0;
             flex-shrink: 0;
             gap: 2px;
-            padding-right: 4px;
-            visibility: hidden;
         }
 
         .sidebar-row:hover .row-actions,
         .row-actions:focus-within {
-            visibility: visible;
+            display: flex;
         }
 
         /*
@@ -195,7 +192,7 @@ export const VirDiffFileSection = defineAppElement<{
          */
         @media (hover: none) {
             .row-actions {
-                visibility: visible;
+                display: flex;
             }
         }
 
@@ -226,15 +223,19 @@ export const VirDiffFileSection = defineAppElement<{
             color: ${viraThemeByKeys.blue.foreground.body.foreground.value};
         }
 
-        /*
-         * Staged files have nothing to discard — unstaging is the only move — but the button keeps
-         * its space so the stage buttons line up down the whole list.
-         */
+        /* Staged files have nothing to discard: unstaging is the only move. */
         .row-action[data-hidden] {
-            visibility: hidden;
+            display: none;
         }
 
         ${fileRowStyles}
+
+        .badge-slot {
+            display: flex;
+            flex-grow: 0;
+            flex-shrink: 0;
+            cursor: pointer;
+        }
     `,
     render({inputs, dispatch, events}) {
         const files = inputs.status?.[statusFilesKeys[inputs.side]] ?? [];
@@ -328,6 +329,18 @@ export const VirDiffFileSection = defineAppElement<{
         const rowsTemplate = files.map((file) => {
             const value = toSelectValue(inputs.side, file.path);
             const rowTargets = actionTargets(value);
+            /** The badge sits after the row actions, outside the open button, so it opens too. */
+            function onOpenClick(event: MouseEvent) {
+                dispatch(
+                    new events.rowClick({
+                        detail: {
+                            value,
+                            isRange: event.shiftKey,
+                            isToggle: event.metaKey || event.ctrlKey,
+                        },
+                    }),
+                );
+            }
             return html`
                 <div
                     class="sidebar-row"
@@ -338,17 +351,7 @@ export const VirDiffFileSection = defineAppElement<{
                         type="button"
                         class="sidebar-row-open"
                         ${tooltip(file.path)}
-                        ${listen('click', (event) => {
-                            dispatch(
-                                new events.rowClick({
-                                    detail: {
-                                        value,
-                                        isRange: event.shiftKey,
-                                        isToggle: event.metaKey || event.ctrlKey,
-                                    },
-                                }),
-                            );
-                        })}
+                        ${listen('click', onOpenClick)}
                     >
                         ${fileRowContents(file)}
                     </button>
@@ -400,6 +403,9 @@ export const VirDiffFileSection = defineAppElement<{
                               </div>
                           `
                         : nothing}
+                    <span class="badge-slot" ${listen('click', onOpenClick)}>
+                        ${fileRowBadge(file)}
+                    </span>
                 </div>
             `;
         });

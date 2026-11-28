@@ -15,6 +15,14 @@ export const VirDiffWidgetTooltip = defineAppElement<{
         .anchor {
             display: inline-flex;
         }
+
+        /**
+         * CodeMirror's content sets white-space: pre, which would otherwise keep the whitespace in
+         * the tooltip's shadow template as blank lines and leading spaces.
+         */
+        vira-tooltip {
+            white-space: normal;
+        }
     `,
     render({inputs}) {
         return html`

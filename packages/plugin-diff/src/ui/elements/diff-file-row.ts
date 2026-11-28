@@ -56,9 +56,9 @@ export function reviewButtonTitle({
 }
 
 /**
- * One file's row contents, shared by the desktop file list and the mobile dropdown. The badge comes
- * last so it sits at the row's right edge, just inside the hover-revealed row actions. The full
- * path is still reachable: it's the row's `title`. Style it with {@link fileRowStyles}.
+ * One file's icon and name, shared by the desktop file list and the mobile dropdown. Follow it with
+ * {@link fileRowBadge}. The full path is still reachable: it's the row's `title`. Style both with
+ * {@link fileRowStyles}.
  */
 export function fileRowContents(file: Readonly<GitDiffFile>) {
     return html`
@@ -66,6 +66,12 @@ export function fileRowContents(file: Readonly<GitDiffFile>) {
         <span class="file-basename" ?data-deleted=${file.change === GitFileChange.Deleted}>
             ${basename(file.path)}
         </span>
+    `;
+}
+
+/** The file's change letter, for the row's right edge. */
+export function fileRowBadge(file: Readonly<GitDiffFile>) {
+    return html`
         <span
             class="badge"
             style=${css`

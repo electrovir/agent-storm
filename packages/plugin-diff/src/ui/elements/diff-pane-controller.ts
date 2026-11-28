@@ -231,8 +231,8 @@ export function createDiffPaneController({
      * Re-read status and, if a file is open, its contents. Both writes go through the same content
      * comparison the editor rebuild uses, so a poll that finds nothing new is inert.
      *
-     * Discard a result when its folder or PR base changes or a newer refresh updates the pane. A
-     * file read must also match the selected file when it returns.
+     * Discard a result after the pane rearms, its PR base changes, or a newer refresh updates the
+     * pane. A file read must also match the selected file when it returns.
      */
     async function refresh() {
         const folder = inputs.folder;
@@ -344,6 +344,7 @@ export function createDiffPaneController({
             }
             updateState({
                 armedFolder: inputs.folder,
+                firstCurrentRead: state.readsStarted + 1,
                 refreshTimer: setInterval(
                     () => {
                         if (!state.busy && !state.isPolling) {
