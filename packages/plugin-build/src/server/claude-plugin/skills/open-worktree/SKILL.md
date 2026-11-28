@@ -1,6 +1,6 @@
 ---
 name: open-worktree
-description: Same as `/start-worktree` (a fresh worktree through Agent Storm, then the work), then ships the work with `/open-pr` (review and fix, commit, open the PR), and starts `/manual-review here` on the PR when that skill is available and someone other than the current GitHub user opened it. Use when the user wants work started in its own worktree and shipped straight to a PR. Agent Storm also runs it on the first message of every thread `create_thread` starts with `isInWorktree`.
+description: Same as `/start-worktree` (a fresh worktree, then the work), then ships the work with `/open-pr` (review and fix, commit, open the PR), and starts `/manual-review here` on the PR when that skill is available and someone other than the current GitHub user opened it. Use when the user wants work started in its own worktree and shipped straight to a PR. Agent Storm also runs it on the first message of every thread `create_thread` starts with `isInWorktree`.
 argument-hint: '<description of the work> | <ticket the repo knows how to start>'
 ---
 
@@ -8,11 +8,11 @@ argument-hint: '<description of the work> | <ticket the repo knows how to start>
 
 The user invoking this skill is the explicit instruction for everything `/start-worktree` and `/open-pr` sanction, plus the per-sub-issue commits in Step 2 and what `/manual-review here` does in Step 3. It sanctions no other git write.
 
-A coordinator, a thread that hands several pieces of work to their own worktrees, never runs this skill itself, since its Step 1 would move the coordinator into the first worktree. It calls `create_thread` with `isInWorktree: true` and each piece of work as the message, plus `branchName` when the branch name is fixed, and Agent Storm runs this skill on the message in each new thread.
+In Agent Storm, a coordinator, a thread that hands several pieces of work to their own worktrees, never runs this skill itself, since its Step 1 would move the coordinator into the first worktree. It calls `create_thread` with `isInWorktree: true` and each piece of work as the message, plus `branchName` when the branch name is fixed, and Agent Storm runs this skill on the message in each new thread.
 
 ## Step 1: Do the work with `/start-worktree`
 
-Follow `../start-worktree/SKILL.md`, beside this skill's folder, with the user's input, skipping the review skill run in its "Do the work" section, since `/open-pr` runs it. When its Step 3 hands the work to a continuation prompt, that prompt must also say to skip that review run and then follow Steps 2 and 3 of Agent Storm's `open-worktree` skill.
+Follow `../start-worktree/SKILL.md`, beside this skill's folder, with the user's input, skipping the review skill run in its "Do the work" section, since `/open-pr` runs it. When its Step 3 hands the work to a continuation prompt, that prompt must also say to skip that review run and then follow Steps 2 and 3 of the `agent-storm:open-worktree` skill.
 
 If any step stops, stop here too and surface its report, leaving the work uncommitted.
 

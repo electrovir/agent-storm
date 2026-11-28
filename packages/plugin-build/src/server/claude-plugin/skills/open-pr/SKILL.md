@@ -14,7 +14,7 @@ Stop before Step 1 when the current branch is the repo's default branch (`git re
 
 ## Step 1: Review and fix
 
-Find the repo's review skill: the `reviewSkill` of this thread's folder in Agent Storm's `list_folders`, a slash command with any arguments. When it is set, invoke the skill it names with those arguments. It may apply fixes itself and report the rest. Then fix everything its report left open, including any validation failure. Drop a finding only after verifying it is wrong, and say why in one line. When no review skill is set, or Agent Storm's tools are unavailable, skip the review.
+Find the repo's review skill, a slash command with any arguments: the `reviewSkill` of this thread's folder in Agent Storm's `list_folders`, or without Agent Storm's tools, the `reviewSkill` in the JSON that `npx --yes --package=@agent-storm/config@latest agent-storm-config` prints when run in the repo. When it is set, invoke the skill it names with those arguments. It may apply fixes itself and report the rest. Then fix everything its report left open, including any validation failure. Drop a finding only after verifying it is wrong, and say why in one line. When no review skill is set, skip the review.
 
 Abort when any of these is true, leaving every edit in the working tree and committing nothing:
 

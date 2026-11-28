@@ -25,6 +25,9 @@
     "main": "src/index.ts",
     "module": "src/index.ts",
     "types": "src/index.ts",
+    "bin": {
+        "agent-storm-config": "src/agent-storm-config.script.ts"
+    },
     "scripts": {
         "compile": "virmator compile",
         "docs": "virmator docs",
@@ -33,11 +36,14 @@
         "test:update": "npm test update"
     },
     "dependencies": {
+        "config-vir": "^1.1.0",
         "object-shape-tester": "^6.15.3",
-        "schema-vir": "^0.9.0"
+        "schema-vir": "^0.9.0",
+        "tsx": "^4.23.15"
     },
     "devDependencies": {
         "@augment-vir/assert": "^32.7.1",
+        "@augment-vir/common": "^32.7.1",
         "@augment-vir/test": "^32.7.1",
         "@types/node": "^26.6.6",
         "c8": "^12.0.0",

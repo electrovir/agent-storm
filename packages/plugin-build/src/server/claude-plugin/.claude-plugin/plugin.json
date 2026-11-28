@@ -1,4 +1,8 @@
 {
-    "description": "Agent Storm's own skills, which every Agent Storm thread can run.",
+    "author": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "description": "Agent Storm's worktree and PR skills. They use Agent Storm's tools inside Agent Storm and plain git outside it.",
     "name": "agent-storm"
 }

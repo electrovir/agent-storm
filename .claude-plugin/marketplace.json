@@ -1,0 +1,15 @@
+{
+    "description": "Agent Storm's built-in skills as a Claude Code plugin.",
+    "name": "agent-storm",
+    "owner": {
+        "name": "electrovir",
+        "url": "https://github.com/electrovir"
+    },
+    "plugins": [
+        {
+            "description": "Agent Storm's worktree and PR skills: start-worktree, open-worktree, and open-pr. They use Agent Storm's tools when they run in Agent Storm and plain git otherwise.",
+            "name": "agent-storm",
+            "source": "./packages/plugin-build/src/server/claude-plugin"
+        }
+    ]
+}
