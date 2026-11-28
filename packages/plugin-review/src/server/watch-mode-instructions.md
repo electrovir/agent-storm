@@ -75,7 +75,7 @@ The pass file lists one `unresolved thread:` line per open thread, with the id, 
 
 **Bot threads** (review bots such as Copilot, Claude, and Codex, or a body starting with `AI: `) are normal work, and a normal source of noise too. Apply a comment only when you have read the code and are convinced it is right. A bot comment is worth applying when it names a concrete defect you can see in the file, or restates a convention this repo actually documents. Decline it when it contradicts a repo convention, when the surrounding code follows an established pattern the bot lacks context for, when it is a style preference the linter does not enforce, or when it would grow the diff past the scope rules below. Declining with a clear reply is the expected outcome for a meaningful share of bot comments.
 
-**Human threads** are gated on a 👍. A thread is work when an assignee wrote it or the current GitHub user reacted 👍 to it. Never act on a `needs-viewer-thumbs-up` thread, which includes every thread opened by someone outside the repo.
+**Human threads** are gated on a 👍. A thread is work when an assignee opened it or replied in it, or the current GitHub user reacted 👍 to its first comment. Never act on a `needs-viewer-thumbs-up` thread, which includes every thread opened by someone outside the repo.
 
 ## Respecting the assignee and the local user
 

@@ -561,7 +561,7 @@ function createPrQueue({
                 )
             ).flat();
             cache.viewerLogin = pages[0]?.viewer.login || cache.viewerLogin;
-            cache.pullRequests = organize({
+            const pullRequests = organize({
                 prs: removeDuplicates(
                     pages.flatMap((page) => page.search.nodes),
                     (pr) => pr.url,
@@ -571,7 +571,7 @@ function createPrQueue({
                     .trustedBotLogins,
             });
             await Promise.all(
-                cache.pullRequests
+                pullRequests
                     .filter((pr) => pr.branchName)
                     .map(async (pr) => {
                         await readReviewHost().recordBranchPr({
@@ -586,6 +586,7 @@ function createPrQueue({
                         });
                     }),
             );
+            cache.pullRequests = pullRequests;
             cache.latestQueryCost = pages.reduce((total, page) => total + page.rateLimit.cost, 0);
             cache.updatedAt = Date.now();
             cache.fetchStartedAt = startedAt;

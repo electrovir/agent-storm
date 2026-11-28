@@ -800,6 +800,34 @@ async function isRebaseOnlyPush({
 }
 
 /**
+ * A Markdown list of the commits a push added, one `<short sha> <subject>` per item. Leaves out
+ * commits a rebase only replayed and commits that came from the base branch. Empty when git fails.
+ */
+async function listPushedCommits({
+    folder,
+    baseBranch,
+    oldHeadSha,
+    newHeadSha,
+}: Readonly<{
+    folder: string;
+    baseBranch: string;
+    oldHeadSha: string;
+    newHeadSha: string;
+}>) {
+    return (
+        (await runGit(folder, [
+            'log',
+            '--format=- %h %s',
+            '--no-merges',
+            '--cherry-pick',
+            '--right-only',
+            `${oldHeadSha}...${newHeadSha}`,
+            `^origin/${baseBranch}`,
+        ])) || ''
+    );
+}
+
+/**
  * Requests review from `logins`, then re-reads the request and repeats it for anyone it no longer
  * lists. A review by the requesting account that GitHub files moments before, such as the note
  * {@link requestReviews} leaves, can clear the account's own request after GitHub accepted it, and
@@ -1525,13 +1553,24 @@ async function checkFolder({
             oldHeadSha: finishedPass.headSha,
             newHeadSha: prCheck.headSha,
         }));
+    const pushedCommits = isCodePush
+        ? await listPushedCommits({
+              folder,
+              baseBranch: prCheck.baseBranch,
+              oldHeadSha: finishedPass.headSha,
+              newHeadSha: prCheck.headSha,
+          })
+        : '';
     /** The viewer can approve a pass's push before the pass ends and this check sees it. */
     const isHeadJudgedByViewer = prCheck.viewerVerdictSha === prCheck.headSha;
     const isPushToReview = isCodePush && hasViewerReviewed && !isHeadJudgedByViewer;
     const viewerReviewOwed = isPushToReview
         ? {
               at: prCheck.checkedAt,
-              reason: `watch mode pushed ${prCheck.headSha.slice(0, 7)} for ${finishedPass.tasks.join(', ')}, which changed code you have not reviewed.`,
+              reason: [
+                  `watch mode pushed ${prCheck.headSha.slice(0, 7)}, which changed code you have not reviewed`,
+                  pushedCommits ? `:\n\n${pushedCommits}` : '.',
+              ].join(''),
           }
         : hasViewerReviewed &&
             !isHeadJudgedByViewer &&
@@ -1579,11 +1618,16 @@ async function checkFolder({
             prCheck,
             logins: answeredLogins,
             reason: [
-                isCodePush
-                    ? `watch mode pushed ${prCheck.headSha.slice(0, 7)} to address your requested changes.`
-                    : 'watch mode replied to your requested changes and needs your answer.',
-                'Your threads are left open for you to resolve.',
-            ].join(' '),
+                [
+                    isCodePush
+                        ? `watch mode pushed ${prCheck.headSha.slice(0, 7)} to address your requested changes.`
+                        : 'watch mode replied to your requested changes and needs your answer.',
+                    'Your threads are left open for you to resolve.',
+                ].join(' '),
+                pushedCommits,
+            ]
+                .filter(check.isTruthy)
+                .join('\n\n'),
         });
     }
     const threadedReReviewLogins = prCheck.reReviewLogins.filter((login) => {

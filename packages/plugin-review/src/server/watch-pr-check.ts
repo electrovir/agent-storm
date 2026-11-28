@@ -396,7 +396,8 @@ function hasViewerThumbsUp(comment: Readonly<RawThreadComment>) {
  * stranger's comment on a public repo never steers the AI. Anything else waits for the viewer's 👍.
  * A hand-off is an `AI: ` reply that @-mentions an assignee, or any `AI: ` reply in a thread an
  * assignee opened, since only the assignee resolves their own threads: the thread waits on a human
- * until a collaborator replies after it.
+ * until a collaborator replies after it. An assignee's own reply in a thread, whoever opened it,
+ * also makes it work.
  */
 export function classifyThread({
     thread,
@@ -430,19 +431,21 @@ export function classifyThread({
             ? ThreadStatus.HumanReplied
             : ThreadStatus.AwaitingHuman;
     } else if (
-        first &&
-        (hasViewerThumbsUp(first) ||
-            (isTrustedComment({
-                comment: first,
-                trustedBotLogins,
-            }) &&
-                (isTrustedBot({
-                    author: first.author,
+        comments.some((comment) => {
+            return isHumanComment(comment) && assignees.includes(toLogin(comment.author));
+        }) ||
+        (first &&
+            (hasViewerThumbsUp(first) ||
+                (isTrustedComment({
+                    comment: first,
                     trustedBotLogins,
-                }) ||
-                    isAiBody(first.body) ||
-                    first.body.includes('<!-- do-later-review-comment -->') ||
-                    assignees.includes(toLogin(first.author)))))
+                }) &&
+                    (isTrustedBot({
+                        author: first.author,
+                        trustedBotLogins,
+                    }) ||
+                        isAiBody(first.body) ||
+                        first.body.includes('<!-- do-later-review-comment -->')))))
     ) {
         return ThreadStatus.Actionable;
     } else {
@@ -843,7 +846,7 @@ const watchedPrQuery = [
     '  author { __typename login }',
     '  assignees(first: 100) { nodes { login } }',
     '  latestReviews(first: 100) { nodes { author { login } authorAssociation state submittedAt } }',
-    '  reviews(first: 100) { nodes { author { login } state submittedAt commit { oid } } }',
+    '  reviews(last: 100) { nodes { author { login } state submittedAt commit { oid } } }',
     '  reviewRequests(first: 100) { nodes { requestedReviewer { ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { name slug } } } }',
     `  commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { ${checkContextFields} } } } } }`,
     '  reviewThreads(first: 100) {',

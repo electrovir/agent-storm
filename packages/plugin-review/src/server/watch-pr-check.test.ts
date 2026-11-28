@@ -854,6 +854,41 @@ describe(classifyThread.name, () => {
         );
     });
 
+    it('takes an assignee reply as the go-ahead in a thread anyone opened', () => {
+        const actionsComment: TestComment = {
+            login: 'github-actions',
+            body: 'Is this tag right?',
+            actorType: RawActorType.Bot,
+            association: RawAuthorAssociation.None,
+        };
+        assert.deepEquals(
+            [
+                {
+                    login: 'assignee',
+                    body: 'This should be [dev].',
+                },
+                {
+                    login: 'teammate',
+                    body: 'This should be [dev].',
+                },
+                {
+                    login: 'assignee',
+                    body: 'AI: Changed the tag.',
+                },
+            ].map((reply) => {
+                return classify([
+                    actionsComment,
+                    reply,
+                ]);
+            }),
+            [
+                ThreadStatus.Actionable,
+                ThreadStatus.NeedsViewerThumbsUp,
+                ThreadStatus.NeedsViewerThumbsUp,
+            ],
+        );
+    });
+
     it("counts only the viewer's 👍", () => {
         const strangerComment: TestComment = {
             login: 'stranger',

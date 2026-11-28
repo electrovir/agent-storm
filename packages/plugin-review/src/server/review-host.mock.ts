@@ -40,6 +40,7 @@ export const testReviewHost: PluginServerHost = {
     deleteWorktree: throwUnmocked,
     spawnPane: throwUnmocked,
     sendPaneText: throwUnmocked,
+    isPaneRunningCommand: throwUnmocked,
     runInIdleFolderShell: throwUnmocked,
     async getCurrentBranch(folder) {
         return (
@@ -69,7 +70,6 @@ export const testReviewHost: PluginServerHost = {
             : null;
     },
     listenToGitInfoChanges: throwUnmocked,
-    findAppCheckoutPath: throwUnmocked,
     readLastUserInputAt: throwUnmocked,
     listenToUserInput: throwUnmocked,
 };
