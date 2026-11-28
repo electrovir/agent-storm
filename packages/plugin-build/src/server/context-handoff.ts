@@ -2,6 +2,7 @@ import {ThreadItemKind, type ThreadItem} from '../build-api.js';
 
 /** The most characters of earlier messages a handoff carries. Older messages past it are left out. */
 const maxHandoffCharacters = 64_000;
+const handoffSeparator = '\n\n';
 
 /** How each kind of item appears in a handoff. Kinds without a label are left out. */
 const handoffLabels: Readonly<Record<ThreadItemKind, string | undefined>> = {
@@ -30,10 +31,14 @@ export function buildContextHandoff({
 }>) {
     const blocks = items.flatMap((item) => {
         const label = handoffLabels[item.kind];
-        const body = item.text.trim().slice(-maxHandoffCharacters);
-        return label && body
+        if (!label) {
+            return [];
+        }
+        const prefix = `[${label}]\n`;
+        const body = item.text.trim().slice(prefix.length - maxHandoffCharacters);
+        return body
             ? [
-                  `[${label}]\n${body}`,
+                  `${prefix}${body}`,
               ]
             : [];
     });
@@ -42,7 +47,11 @@ export function buildContextHandoff({
     }
     const kept = blocks.toReversed().reduce(
         (accumulated, block) => {
-            return accumulated.isFull || accumulated.length + block.length > maxHandoffCharacters
+            const length =
+                accumulated.length +
+                block.length +
+                (accumulated.blocks.length ? handoffSeparator.length : 0);
+            return accumulated.isFull || length > maxHandoffCharacters
                 ? {
                       ...accumulated,
                       isFull: true,
@@ -52,7 +61,7 @@ export function buildContextHandoff({
                           block,
                           ...accumulated.blocks,
                       ],
-                      length: accumulated.length + block.length,
+                      length,
                       isFull: false,
                   };
         },
@@ -70,7 +79,7 @@ export function buildContextHandoff({
                   `${omittedCount} older messages are left out.`,
               ]
             : []),
-        kept.blocks.join('\n\n'),
+        kept.blocks.join(handoffSeparator),
         `User message:\n${text}`,
-    ].join('\n\n');
+    ].join(handoffSeparator);
 }

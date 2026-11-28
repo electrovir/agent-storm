@@ -83,6 +83,7 @@ export const VirAiChatMcp = defineAppElement<{
             error: '',
             /** The server whose change is in flight. Empty for none. */
             busyServerName: '',
+            serverChangesStarted: 0,
             isPolling: false,
             mountController: new AbortController(),
             /** The sign-in the user started, until its server stops needing one. */
@@ -260,10 +261,11 @@ export const VirAiChatMcp = defineAppElement<{
                     error: string;
                 }>
             >,
+            canShowReply = () => true,
         ) {
             try {
                 const reply = await call();
-                if (!isCurrentThread()) {
+                if (!isCurrentThread() || !canShowReply()) {
                     return undefined;
                 }
                 updateState({
@@ -278,13 +280,28 @@ export const VirAiChatMcp = defineAppElement<{
                 }
                 return reply.servers;
             } catch (error) {
-                if (isCurrentThread()) {
+                if (isCurrentThread() && canShowReply()) {
                     updateState({
                         error: extractErrorMessage(error),
                     });
                 }
                 return undefined;
             }
+        }
+
+        async function readServers(isNewServerLoadEnabled: boolean) {
+            const serverChangesStarted = state.serverChangesStarted;
+            const startedDuringChange = !!state.busyServerName;
+            function canShowReply() {
+                return !startedDuringChange && state.serverChangesStarted === serverChangesStarted;
+            }
+            const servers = await showReply(() => {
+                return buildClient.call('listMcpServers', {
+                    threadId,
+                    isNewServerLoadEnabled,
+                });
+            }, canShowReply);
+            return canShowReply() ? servers : state.servers;
         }
 
         /**
@@ -309,15 +326,7 @@ export const VirAiChatMcp = defineAppElement<{
             await wait({
                 seconds: 2,
             });
-            const next =
-                isCurrentThread() && inputs.isOpen
-                    ? await showReply(() => {
-                          return buildClient.call('listMcpServers', {
-                              threadId,
-                              isNewServerLoadEnabled: false,
-                          });
-                      })
-                    : undefined;
+            const next = isCurrentThread() && inputs.isOpen ? await readServers(false) : undefined;
             if (mountSignal.aborted) {
                 return;
             }
@@ -341,6 +350,7 @@ export const VirAiChatMcp = defineAppElement<{
         }>) {
             updateState({
                 busyServerName: serverName,
+                serverChangesStarted: state.serverChangesStarted + 1,
                 error: '',
             });
             const servers = await showReply(call);
@@ -361,12 +371,7 @@ export const VirAiChatMcp = defineAppElement<{
                 updateState({
                     error: '',
                 });
-                void showReply(() => {
-                    return buildClient.call('listMcpServers', {
-                        threadId,
-                        isNewServerLoadEnabled: true,
-                    });
-                }).then(pollWhilePending);
+                void readServers(true).then(pollWhilePending);
             }
         }
 

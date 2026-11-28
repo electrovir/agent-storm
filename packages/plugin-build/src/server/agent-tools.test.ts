@@ -1,6 +1,7 @@
-import {folderInfoShape} from '@agent-storm/common';
+import {type FolderInfo, folderInfoShape} from '@agent-storm/common';
 import {type PluginCallHandlers} from '@agent-storm/core/server';
 import {assert, assertWrap} from '@augment-vir/assert';
+import {selectFrom} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {
     AiProvider,
@@ -12,7 +13,7 @@ import {
     ThreadOrigin,
     ThreadStatus,
 } from '../build-api.js';
-import {type AgentToolContext, agentTools} from './agent-tools.js';
+import {type AgentToolContext, agentTools, MoveToWorktreeOutcome} from './agent-tools.js';
 
 const baseThread: Thread = {
     id: 'caller',
@@ -78,7 +79,12 @@ function createTestContext(
                 request,
             });
             return {
-                thread: baseThread,
+                thread: {
+                    ...baseThread,
+                    id: 'created',
+                    cwd: '/repos/created-worktree',
+                    worktreeBranch: request.branchName || 'created-worktree',
+                },
             };
         },
         moveToFolder(request) {
@@ -149,6 +155,19 @@ function createTestContext(
             });
             return Promise.resolve(request.path);
         },
+        findReviewSkill() {
+            return Promise.resolve('');
+        },
+        countCommitsPastDefaultBranch() {
+            return Promise.resolve(0);
+        },
+        renamePlaceholderBranch(request) {
+            requests.push({
+                call: 'renamePlaceholderBranch',
+                request,
+            });
+            return Promise.resolve(true);
+        },
         runAfterTurn(threadId, action) {
             afterTurnActions.push(action);
         },
@@ -195,6 +214,7 @@ describe('create_thread', () => {
                     runtimeMode: baseThread.runtimeMode,
                     text: 'Fix the build.',
                     isInWorktree: false,
+                    branchName: undefined,
                     isStartAwaited: true,
                     isSidebarThread: true,
                 },
@@ -228,6 +248,7 @@ describe('create_thread', () => {
                     runtimeMode: baseThread.runtimeMode,
                     text: 'Fix the build.',
                     isInWorktree: false,
+                    branchName: undefined,
                     isStartAwaited: true,
                     isSidebarThread: true,
                 },
@@ -381,6 +402,7 @@ describe('move_to_worktree', () => {
             input: {
                 isRequestedByUser: true,
                 baseFolder: '/repos/example-stacked',
+                branchName: 'eng-12-fix-login',
             },
             context: {
                 ...context,
@@ -402,6 +424,7 @@ describe('move_to_worktree', () => {
                 request: {
                     threadId: baseThread.id,
                     baseFolder: '/repos/example-stacked',
+                    branchName: 'eng-12-fix-login',
                 },
             },
         ]);
@@ -445,32 +468,209 @@ describe('move_to_worktree', () => {
         assert.isEmpty(afterTurnActions);
     });
 
-    it('refuses from a worktree it did not make', async () => {
+    it("refuses a branchName that isn't a single folder name", async () => {
         const {context, afterTurnActions} = createTestContext();
         await assert.throws(
             runTool({
                 name: 'move_to_worktree',
                 input: {
                     isRequestedByUser: true,
+                    branchName: 'someone/eng-12-fix-login',
                 },
-                context: {
-                    ...context,
-                    listFolders() {
-                        return Promise.resolve([
-                            {
-                                ...folderInfoShape.default,
-                                path: baseThread.cwd,
-                                parentRepoPath: '/repos/example-root',
-                            },
-                        ]);
-                    },
-                },
+                context,
             }),
             {
-                matchMessage: 'already in a worktree',
+                matchMessage: 'only letters, digits',
             },
         );
         assert.isEmpty(afterTurnActions);
+    });
+
+    describe('from a worktree', () => {
+        /** A worktree made outside Agent Storm, such as by a worktree skill. */
+        const skillThread: Thread = {
+            ...baseThread,
+            cwd: '/repos/example-skill-worktree',
+        };
+        const freshFolder: FolderInfo = {
+            ...folderInfoShape.default,
+            path: skillThread.cwd,
+            name: 'example-skill-worktree',
+            parentRepoPath: baseThread.repoPath,
+            branch: 'example-skill-worktree',
+            git: {
+                dirty: false,
+                notPushed: false,
+            },
+            prUrl: null,
+        };
+
+        function createWorktreeContext({
+            folder = freshFolder,
+            commitCount = 0,
+        }: Readonly<{folder?: FolderInfo; commitCount?: number}> = {}) {
+            const testContext = createTestContext([
+                skillThread,
+            ]);
+            return {
+                ...testContext,
+                context: {
+                    ...testContext.context,
+                    listFolders() {
+                        return Promise.resolve([
+                            folder,
+                        ]);
+                    },
+                    countCommitsPastDefaultBranch() {
+                        return Promise.resolve(commitCount);
+                    },
+                } satisfies AgentToolContext,
+            };
+        }
+
+        it('stays in a worktree with no work yet and renames its branch', async () => {
+            const {context, requests, afterTurnActions} = createWorktreeContext();
+            const result = await runTool({
+                name: 'move_to_worktree',
+                input: {
+                    branchName: 'eng-12-fix-login',
+                },
+                context,
+            });
+            assert.deepEquals(
+                {
+                    outcome: assertWrap.hasKey(result, 'outcome').outcome,
+                    requests,
+                    afterTurnActionCount: afterTurnActions.length,
+                },
+                {
+                    outcome: MoveToWorktreeOutcome.StaysInFreshWorktree,
+                    requests: [
+                        {
+                            call: 'renamePlaceholderBranch',
+                            request: {
+                                threadId: skillThread.id,
+                                branch: 'eng-12-fix-login',
+                            },
+                        },
+                    ],
+                    afterTurnActionCount: 0,
+                },
+            );
+        });
+
+        it('starts a new thread in a new worktree when this one has commits', async () => {
+            const {context, requests, afterTurnActions} = createWorktreeContext({
+                commitCount: 2,
+            });
+            const result = await runTool({
+                name: 'move_to_worktree',
+                input: {
+                    isRequestedByUser: true,
+                    continuationPrompt: 'Fix the login page.',
+                    branchName: 'eng-12-fix-login',
+                },
+                context,
+            });
+            assert.deepEquals(
+                {
+                    result: selectFrom(
+                        assertWrap.hasKeys(result, [
+                            'outcome',
+                            'threadId',
+                            'folder',
+                        ]),
+                        {
+                            outcome: true,
+                            threadId: true,
+                            folder: true,
+                        },
+                    ),
+                    requests,
+                    afterTurnActionCount: afterTurnActions.length,
+                },
+                {
+                    result: {
+                        outcome: MoveToWorktreeOutcome.StartedNewThread,
+                        threadId: 'created',
+                        folder: '/repos/created-worktree',
+                    },
+                    requests: [
+                        {
+                            call: 'createThread',
+                            request: {
+                                repoPath: baseThread.repoPath,
+                                provider: skillThread.provider,
+                                model: skillThread.model,
+                                effort: skillThread.effort,
+                                speedTier: null,
+                                runtimeMode: skillThread.runtimeMode,
+                                text: 'Fix the login page.',
+                                isInWorktree: true,
+                                branchName: 'eng-12-fix-login',
+                                isOpenWorktreeSkillSkipped: true,
+                                isStartAwaited: true,
+                                isSidebarThread: true,
+                            },
+                        },
+                    ],
+                    afterTurnActionCount: 0,
+                },
+            );
+        });
+
+        it('counts uncommitted changes and a PR as work', async () => {
+            const outcomes = await Promise.all(
+                [
+                    {
+                        ...freshFolder,
+                        git: {
+                            dirty: true,
+                            notPushed: false,
+                        },
+                    },
+                    {
+                        ...freshFolder,
+                        prUrl: 'https://github.com/example/example/pull/1',
+                    },
+                ].map(async (folder) => {
+                    const result = await runTool({
+                        name: 'move_to_worktree',
+                        input: {
+                            isRequestedByUser: true,
+                            continuationPrompt: 'Fix the login page.',
+                        },
+                        context: createWorktreeContext({
+                            folder,
+                        }).context,
+                    });
+                    return assertWrap.hasKey(result, 'outcome').outcome;
+                }),
+            );
+            assert.deepEquals(outcomes, [
+                MoveToWorktreeOutcome.StartedNewThread,
+                MoveToWorktreeOutcome.StartedNewThread,
+            ]);
+        });
+
+        it('requires a continuation prompt to start a new thread', async () => {
+            const {context, requests} = createWorktreeContext({
+                commitCount: 1,
+            });
+            await assert.throws(
+                runTool({
+                    name: 'move_to_worktree',
+                    input: {
+                        isRequestedByUser: true,
+                    },
+                    context,
+                }),
+                {
+                    matchMessage: 'continuationPrompt',
+                },
+            );
+            assert.isEmpty(requests);
+        });
     });
 });
 

@@ -31,6 +31,7 @@
     },
     "dependencies": {
         "@agent-storm/common": "^0.9.0",
+        "@agent-storm/config": "^0.9.0",
         "@agent-storm/core": "^0.9.0",
         "@agent-storm/plugin-review": "^0.9.0",
         "@agent-storm/plugin-usage": "^0.9.0",

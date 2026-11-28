@@ -84,6 +84,25 @@ export const buildMemory = {
             isPriority: false,
         }),
     }),
+    /**
+     * Each chat's unsent answers to its pending question, keyed by `toComposerDraftKey`. Once a
+     * different request is pending, they seed its draft.
+     */
+    questionDrafts: defineFolderSetting({
+        key: 'agent-storm:build:question-drafts',
+        valueShape: defineShape({
+            requestId: '',
+            questionIndex: 0,
+            answers: [
+                defineShape({
+                    selectedLabels: [
+                        '',
+                    ],
+                    customAnswer: '',
+                }),
+            ],
+        }),
+    }),
     /** The PR each thread last opened its Diff and Review tabs for, keyed by thread id. */
     reviewTabsPrUrl: defineFolderSetting({
         key: 'agent-storm:build:review-tabs-pr-url',

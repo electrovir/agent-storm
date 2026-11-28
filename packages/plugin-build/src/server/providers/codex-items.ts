@@ -1,3 +1,6 @@
+// cspell:word ultrafast
+
+import {UsageSpeed} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {check} from '@augment-vir/assert';
 import {
     checkValidShape,
@@ -247,6 +250,12 @@ const tokenUsageNotificationShape = defineShape({
     },
 });
 
+/** Codex's faster service tiers, by id. */
+const codexTierSpeeds: Readonly<Record<string, UsageSpeed | undefined>> = {
+    priority: UsageSpeed.Fast,
+    ultrafast: UsageSpeed.Ultrafast,
+};
+
 /**
  * What the model response a `thread/tokenUsage/updated` notification reports spent. Codex counts
  * cached input inside its input tokens and reasoning inside its output tokens.
@@ -254,9 +263,12 @@ const tokenUsageNotificationShape = defineShape({
 export function readCodexTokenUsage({
     params,
     model,
+    speedTier,
 }: Readonly<{
     params: unknown;
     model: string;
+    /** The turn's service tier id. Unset for standard speed. */
+    speedTier: string | undefined;
 }>): ProviderUsage | undefined {
     if (
         !checkValidShape(params, tokenUsageNotificationShape, {
@@ -274,6 +286,8 @@ export function readCodexTokenUsage({
             params.tokenUsage.total.totalTokens,
         ].join(':'),
         model,
+        /** Codex only offers tiers faster than standard, so an unknown one counts as fast. */
+        speed: speedTier ? codexTierSpeeds[speedTier] || UsageSpeed.Fast : UsageSpeed.Standard,
         inputTokens: Math.max(
             0,
             params.tokenUsage.last.inputTokens - params.tokenUsage.last.cachedInputTokens,

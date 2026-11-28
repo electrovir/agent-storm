@@ -442,7 +442,7 @@ export const VirAiChatModelPicker = defineAppElement<{
                 new events.modelChange({
                     detail: {
                         provider: row.provider,
-                        model: row.model.isDefault ? '' : row.model.id,
+                        model: row.model.id,
                         effort:
                             effort && row.model.supportedEfforts.includes(effort)
                                 ? effort

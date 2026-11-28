@@ -34,14 +34,29 @@ export type QuestionDraft = Readonly<{
     answers: ReadonlyArray<QuestionAnswerDraft>;
 }>;
 
-export function createQuestionDraft(request: Readonly<ApprovalRequest>): QuestionDraft {
+/**
+ * A fresh draft for `request`, keeping by position the answers of `unsentDraft`: a draft for an
+ * earlier request that ended without the user sending it, such as one a restart declined before the
+ * agent asked again. A picked option carries over only while the new question still offers it.
+ */
+export function createQuestionDraft({
+    request,
+    unsentDraft,
+}: Readonly<{
+    request: Readonly<ApprovalRequest>;
+    unsentDraft?: QuestionDraft | undefined;
+}>): QuestionDraft {
     return {
         requestId: request.id,
         questionIndex: 0,
-        answers: request.questions.map(() => {
+        answers: request.questions.map((question, index) => {
+            const unsentAnswer = unsentDraft?.answers[index];
             return {
-                selectedLabels: [],
-                customAnswer: '',
+                selectedLabels:
+                    unsentAnswer?.selectedLabels.filter((label) => {
+                        return question.options.some((option) => option.label === label);
+                    }) || [],
+                customAnswer: unsentAnswer?.customAnswer || '',
             };
         }),
     };

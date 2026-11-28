@@ -31,6 +31,8 @@ import {
     type ThreadItem,
 } from '../build-api.js';
 import {type Prisma, type PrismaClient} from './generated/client.js';
+import {parsePluginLaunch, serializePluginLaunch, type PluginLaunch} from './plugin-launch.js';
+import {type ProviderRequestId} from './providers/provider-session.js';
 
 const activeSidebarThreadFilter = {
     deactivatedAt: null,
@@ -437,6 +439,7 @@ export function createThreadStore({
                             'cwd' | 'origin' | 'prUrl' | 'parentThreadId' | 'isPriority'
                         > & {
                             hasCustomTitle: boolean;
+                            pluginLaunch: PluginLaunch;
                         }
                     >
             >,
@@ -451,6 +454,9 @@ export function createThreadStore({
                         origin: data.origin || ThreadOrigin.User,
                         prUrl: data.prUrl || null,
                         parentThreadId: data.parentThreadId || null,
+                        pluginLaunch: data.pluginLaunch
+                            ? serializePluginLaunch(data.pluginLaunch)
+                            : null,
                         hasCustomTitle: !!data.hasCustomTitle,
                         isPriority: !!data.isPriority,
                         status: ThreadStatus.Idle,
@@ -491,6 +497,51 @@ export function createThreadStore({
                 emit('threadChanged', await findThread(threadId));
             }
         },
+        /** Whether a plugin started the thread to run with nobody there to answer its requests. */
+        async isThreadUnattended(threadId: string) {
+            const thread = await prismaClient.thread.findUnique({
+                where: {
+                    id: threadId,
+                },
+                select: {
+                    pluginLaunch: true,
+                },
+            });
+            return !!thread?.pluginLaunch && parsePluginLaunch(thread.pluginLaunch).isUnattended;
+        },
+        /** Does nothing for a thread no plugin started. */
+        async setThreadUnattended({
+            threadId,
+            isUnattended,
+        }: Readonly<{
+            threadId: string;
+            isUnattended: boolean;
+        }>) {
+            const {pluginLaunch} = await prismaClient.thread.findUniqueOrThrow({
+                where: {
+                    id: threadId,
+                },
+                select: {
+                    pluginLaunch: true,
+                },
+            });
+            if (pluginLaunch) {
+                await prismaClient.thread.update({
+                    where: {
+                        id: threadId,
+                    },
+                    data: {
+                        pluginLaunch: serializePluginLaunch({
+                            ...parsePluginLaunch(pluginLaunch),
+                            isUnattended,
+                        }),
+                    },
+                    select: {
+                        id: true,
+                    },
+                });
+            }
+        },
         /** What starting the thread's provider needs, and whether it has a custom title. */
         async findSessionDetails(threadId: string) {
             const {provider, ...details} = await prismaClient.thread.findUniqueOrThrow({
@@ -507,6 +558,7 @@ export function createThreadStore({
                     runtimeMode: true,
                     providerSessionId: true,
                     hasCustomTitle: true,
+                    pluginLaunch: true,
                 },
             });
             return {
@@ -517,6 +569,9 @@ export function createThreadStore({
                 speedTier: details.speedTier || undefined,
                 runtimeMode: assertWrap.isEnumValue(details.runtimeMode, RuntimeMode),
                 provider: assertWrap.isEnumValue(provider, AiProvider),
+                pluginLaunch: details.pluginLaunch
+                    ? parsePluginLaunch(details.pluginLaunch)
+                    : undefined,
             };
         },
         async listRepoActivity() {
@@ -833,7 +888,8 @@ export function createThreadStore({
                 Pick<
                     ApprovalRequest,
                     'threadId' | 'kind' | 'title' | 'detail' | 'reason' | 'questions'
-                >
+                > &
+                    ProviderRequestId
             >,
         ) {
             const created = toApprovalRequest(
@@ -841,6 +897,7 @@ export function createThreadStore({
                     data: {
                         ...request,
                         questions: JSON.stringify(request.questions),
+                        providerRequestId: request.providerRequestId || '',
                     },
                     select: requestSelect,
                 }),
@@ -850,6 +907,28 @@ export function createThreadStore({
                 requests: await listPendingRequests(request.threadId),
             });
             return created;
+        },
+        /** Pending requests that a provider repeats once it reconnects. */
+        async listProviderRequests() {
+            return (
+                await prismaClient.approvalRequest.findMany({
+                    where: {
+                        resolvedAt: null,
+                        providerRequestId: {
+                            not: '',
+                        },
+                    },
+                    select: {
+                        ...requestSelect,
+                        providerRequestId: true,
+                    },
+                })
+            ).map(({providerRequestId, ...row}) => {
+                return {
+                    ...toApprovalRequest(row),
+                    providerRequestId,
+                };
+            });
         },
         /** Resolves to the thread's requests that are still pending. */
         async resolveRequest({
@@ -926,11 +1005,12 @@ export function createThreadStore({
             });
         },
         /**
-         * Settles what a previous run left mid-flight. Pending requests are declined, since a
-         * provider still running asks again once a session takes it over. The busy threads whose
-         * provider stopped with the server go idle with their unfinished items failed and a notice
-         * saying why. Resolves to every busy thread, each with the messages the user sent after the
-         * one that started its turn.
+         * Settles what a previous run left mid-flight. Pending requests are declined unless their
+         * provider is still running and repeats them by id once a session takes it over: those stay
+         * pending, for the new session to pick up. The busy threads whose provider stopped with the
+         * server go idle with their unfinished items failed and a notice saying why. Resolves to
+         * every busy thread, each with the messages the user sent after the one that started its
+         * turn.
          */
         async settleInterruptedWork({
             liveThreadIds,
@@ -965,6 +1045,16 @@ export function createThreadStore({
                     prismaClient.approvalRequest.updateMany({
                         where: {
                             resolvedAt: null,
+                            OR: [
+                                {
+                                    providerRequestId: '',
+                                },
+                                {
+                                    threadId: {
+                                        notIn: [...liveThreadIds],
+                                    },
+                                },
+                            ],
                         },
                         data: {
                             resolvedAt: getNowInIsoString(),
@@ -1003,6 +1093,11 @@ export function createThreadStore({
                             status: ThreadStatus.NeedsApproval,
                             id: {
                                 in: [...liveThreadIds],
+                            },
+                            requests: {
+                                none: {
+                                    resolvedAt: null,
+                                },
                             },
                         },
                         data: {

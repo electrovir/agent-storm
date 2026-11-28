@@ -187,7 +187,10 @@ export const VirAiChat = defineAppElement<{
             openedAttachment: undefined as Readonly<MessageAttachment> | undefined,
             /** The request whose answer is being sent. */
             busyRequestId: undefined as string | undefined,
-            /** Answers to the pending question so far. Ignored once a different request is first. */
+            /**
+             * Answers to the pending question so far. Once a different request is first, they seed
+             * its draft.
+             */
             questionDraft: undefined as QuestionDraft | undefined,
             isMoving: false,
             removers: [] as ReadonlyArray<() => Promise<void>>,
@@ -214,6 +217,7 @@ export const VirAiChat = defineAppElement<{
         }
         updateState({
             composerText: buildMemory.composerDrafts.readFolder(toComposerDraftKey(inputs)) || '',
+            questionDraft: buildMemory.questionDrafts.readFolder(toComposerDraftKey(inputs)),
             attachments: (
                 buildMemory.composerAttachments.readFolder(toComposerDraftKey(inputs)) || []
             ).map((saved) => {
@@ -335,6 +339,7 @@ export const VirAiChat = defineAppElement<{
         function markReadIfSeen(threadId: string) {
             if (
                 host.instanceState.thread?.hasUnreadReply &&
+                findBuildState(inputs.context)?.markedUnreadThreadId.value !== threadId &&
                 document.visibilityState === 'visible' &&
                 host.checkVisibility()
             ) {
@@ -349,8 +354,17 @@ export const VirAiChat = defineAppElement<{
                     });
             }
         }
+        function releaseMarkedUnread(threadId: string) {
+            const buildState = findBuildState(inputs.context);
+            if (buildState?.markedUnreadThreadId.value === threadId) {
+                buildState.markedUnreadThreadId.setValue(undefined);
+            }
+        }
         readThread(threadId);
-        const visibilityObserver = new IntersectionObserver(() => {
+        const visibilityObserver = new IntersectionObserver((entries) => {
+            if (!entries.at(-1)?.isIntersecting) {
+                releaseMarkedUnread(threadId);
+            }
             markReadIfSeen(threadId);
         });
         visibilityObserver.observe(host);
@@ -363,6 +377,7 @@ export const VirAiChat = defineAppElement<{
             removeSeenWatchers() {
                 visibilityObserver.disconnect();
                 document.removeEventListener('visibilitychange', handleVisibilityChange);
+                releaseMarkedUnread(threadId);
             },
         });
     },
@@ -699,7 +714,10 @@ export const VirAiChat = defineAppElement<{
         const questionDraft = questionRequest
             ? state.questionDraft?.requestId === questionRequest.id
                 ? state.questionDraft
-                : createQuestionDraft(questionRequest)
+                : createQuestionDraft({
+                      request: questionRequest,
+                      unsentDraft: state.questionDraft,
+                  })
             : undefined;
         const activeAnswer = questionDraft?.answers[questionDraft.questionIndex];
         const modelDefaultsFolder = findModelDefaultsFolder({
@@ -738,6 +756,27 @@ export const VirAiChat = defineAppElement<{
             buildMemory.composerDrafts.writeFolder({
                 folder: toComposerDraftKey(inputs),
                 value: text || undefined,
+            });
+        }
+
+        /** Saved like the message text, so a typed answer survives a reload. */
+        function setQuestionDraft(draft: QuestionDraft | undefined) {
+            updateState({
+                questionDraft: draft,
+            });
+            buildMemory.questionDrafts.writeFolder({
+                folder: toComposerDraftKey(inputs),
+                value: draft && {
+                    ...draft,
+                    answers: draft.answers.map((answer) => {
+                        return {
+                            ...answer,
+                            selectedLabels: [
+                                ...answer.selectedLabels,
+                            ],
+                        };
+                    }),
+                },
             });
         }
 
@@ -818,10 +857,15 @@ export const VirAiChat = defineAppElement<{
              */
             const threadTitle = host.instanceState.threadTitle.trim();
             const isPriority = host.instanceState.isPriority;
+            const sentModelSelection = host.instanceState.modelSelection;
             setComposerText('');
             setNewThreadSettings({
                 threadTitle: '',
                 isPriority: false,
+                modelSelection: sentModelSelection && {
+                    ...sentModelSelection,
+                    speedTier: undefined,
+                },
             });
             setAttachments(
                 host.instanceState.attachments.filter(
@@ -841,6 +885,20 @@ export const VirAiChat = defineAppElement<{
                 if (isPriority) {
                     setNewThreadSettings({
                         isPriority,
+                    });
+                }
+                const currentModelSelection = host.instanceState.modelSelection;
+                if (
+                    sentModelSelection?.speedTier &&
+                    currentModelSelection?.provider === sentModelSelection.provider &&
+                    currentModelSelection.model === sentModelSelection.model &&
+                    !currentModelSelection.speedTier
+                ) {
+                    setNewThreadSettings({
+                        modelSelection: {
+                            ...currentModelSelection,
+                            speedTier: sentModelSelection.speedTier,
+                        },
                     });
                 }
                 setAttachments([
@@ -1046,8 +1104,8 @@ export const VirAiChat = defineAppElement<{
                     requests: host.instanceState.requests.filter(
                         (existing) => existing.id !== requestId,
                     ),
-                    questionDraft: undefined,
                 });
+                setQuestionDraft(undefined);
             });
             updateState({
                 busyRequestId: undefined,
@@ -1069,11 +1127,9 @@ export const VirAiChat = defineAppElement<{
                 return;
             }
             if (draft.questionIndex < questionRequest.questions.length - 1) {
-                updateState({
-                    questionDraft: {
-                        ...draft,
-                        questionIndex: draft.questionIndex + 1,
-                    },
+                setQuestionDraft({
+                    ...draft,
+                    questionIndex: draft.questionIndex + 1,
                 });
             } else {
                 await decide(
@@ -1107,9 +1163,7 @@ export const VirAiChat = defineAppElement<{
                       ],
                 customAnswer: '',
             });
-            updateState({
-                questionDraft: picked,
-            });
+            setQuestionDraft(picked);
             if (isMultiSelect) {
                 return;
             }
@@ -1130,12 +1184,12 @@ export const VirAiChat = defineAppElement<{
         /** While a question waits, the composer holds the custom answer instead of the message. */
         function changeComposerText(text: string) {
             if (questionDraft && activeAnswer) {
-                updateState({
-                    questionDraft: withActiveAnswer(questionDraft, {
+                setQuestionDraft(
+                    withActiveAnswer(questionDraft, {
                         ...activeAnswer,
                         customAnswer: text,
                     }),
-                });
+                );
             } else {
                 setComposerText(text);
             }
@@ -1571,14 +1625,12 @@ export const VirAiChat = defineAppElement<{
                                       },
                                   )}
                                   ${listen(VirAiChatQuestion.events.previousRequested, () => {
-                                      updateState({
-                                          questionDraft: {
-                                              ...questionDraft,
-                                              questionIndex: Math.max(
-                                                  0,
-                                                  questionDraft.questionIndex - 1,
-                                              ),
-                                          },
+                                      setQuestionDraft({
+                                          ...questionDraft,
+                                          questionIndex: Math.max(
+                                              0,
+                                              questionDraft.questionIndex - 1,
+                                          ),
                                       });
                                   })}
                                   ${listen(VirAiChatQuestion.events.dismissed, async () => {

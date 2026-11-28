@@ -37,6 +37,7 @@ describe(readClaudeCommandOrigins.name, () => {
                 'plugin-install/skills/digest/SKILL.md',
                 'plugin-install/commands/post.md',
                 '.claude/plugins/installed_plugins.json',
+                'agent-storm-skills/open-pr/SKILL.md',
             ]);
             await writeFile(
                 join(configDir, 'plugins', 'installed_plugins.json'),
@@ -58,6 +59,7 @@ describe(readClaudeCommandOrigins.name, () => {
                     cwd: join(home, 'repo'),
                     configDir,
                     home,
+                    agentStormSkillsDir: join(home, 'agent-storm-skills'),
                 }),
                 {
                     repoSkills: [
@@ -81,6 +83,9 @@ describe(readClaudeCommandOrigins.name, () => {
                     ],
                     pluginCommands: [
                         'slack:post',
+                    ],
+                    agentStormSkills: [
+                        'agent-storm:open-pr',
                     ],
                 },
             );
@@ -109,9 +114,12 @@ describe(classifyClaudeCommands.name, () => {
         ],
         pluginSkills: [],
         pluginCommands: [],
+        agentStormSkills: [
+            'agent-storm:open-pr',
+        ],
     };
 
-    it('prefers personal over repo and finds hidden synced skills', () => {
+    it("prefers personal over repo and finds hidden synced skills and Agent Storm's own", () => {
         assert.deepEquals(
             classifyClaudeCommands({
                 commands: [
@@ -128,6 +136,11 @@ describe(classifyClaudeCommands.name, () => {
                     },
                     {
                         name: 'anthropic-skills:deploy',
+                        description: '',
+                        argumentHint: '',
+                    },
+                    {
+                        name: 'agent-storm:open-pr',
                         description: '',
                         argumentHint: '',
                     },
@@ -161,6 +174,11 @@ describe(classifyClaudeCommands.name, () => {
                     'anthropic-skills:deploy',
                     ComposerCommandKind.Skill,
                     ComposerCommandSource.Synced,
+                ],
+                [
+                    'agent-storm:open-pr',
+                    ComposerCommandKind.Skill,
+                    ComposerCommandSource.AgentStorm,
                 ],
             ],
         );

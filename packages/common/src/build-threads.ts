@@ -1,4 +1,4 @@
-import {getEnumValues, type PartialWithUndefined} from '@augment-vir/common';
+import {getEnumValues, type MaybePromise, type PartialWithUndefined} from '@augment-vir/common';
 import {definePluginServerExportsKey} from './plugins.js';
 
 export const buildPluginId = 'build';
@@ -45,8 +45,8 @@ export enum ThreadOrigin {
     /** An AI Chat tab outside Build's threads, such as in a Review or Build folder's tabs. */
     PaneChat = 'paneChat',
     /**
-     * Agent-storm's self-improvement, which works on a copy of its own checkout while the user is
-     * away.
+     * The threads of agent-storm's built-in self-improvement, which its self-improvement bot
+     * replaced. Nothing starts one anymore.
      */
     SelfImprove = 'selfImprove',
     /** Runs a bot's AI work for the Bots plugin. */
@@ -191,24 +191,67 @@ export type BuildServerExports = Readonly<{
                 runtimeMode: RuntimeMode;
                 isInWorktree: boolean;
                 /**
-                 * Set on the thread's provider process over the folder's own variables. Kept for
-                 * the thread's life, including across app restarts.
+                 * Set on the thread's provider process over the folder's own variables, for the
+                 * thread's life.
                  */
                 env: Readonly<Record<string, string>>;
+                /**
+                 * The plugin starting the thread, whose `registerThreadOwner` reader gives its API
+                 * key.
+                 */
+                pluginId: string;
+                /** What in that plugin the thread belongs to, such as a bot's id. */
+                ownerId: string;
             } & PartialWithUndefined<{
                 /** Generated from `text` when unset. */
                 title: string;
                 effort: ReasoningEffort;
+                /** Runs the thread in this folder while it stays grouped under `cwd`. */
+                workingDirectory: string;
                 /**
-                 * Signs the thread's provider in with this key instead of the user's own login.
-                 * Kept for the thread's life, including across app restarts.
+                 * Declines every approval and question the thread raises instead of waiting on the
+                 * user.
                  */
-                apiKey: string;
+                isUnattended: boolean;
             }>
         >,
     ): Promise<PluginThread>;
+    /**
+     * Sends `text` to a thread `startPluginThread` started, first moving it onto `model`, `effort`,
+     * and `runtimeMode` on its provider when they changed. Its folder and `env` stay as they were
+     * when it started. Undefined, without sending, for a thread that is archived or never existed.
+     */
+    continuePluginThread(
+        params: Readonly<
+            {
+                threadId: string;
+                text: string;
+                model: string;
+                runtimeMode: RuntimeMode;
+                /** Replaces the thread's earlier `isUnattended`. */
+                isUnattended: boolean;
+            } & PartialWithUndefined<{
+                effort: ReasoningEffort;
+            }>
+        >,
+    ): Promise<PluginThread | undefined>;
     /** Undefined for a thread that is archived or never existed. */
     readPluginThread(threadId: string): Promise<PluginThread | undefined>;
+    /** Stops the thread's turn, declining whatever it waits on the user for. */
+    interruptPluginThread(threadId: string): Promise<void>;
+    /**
+     * Has `readApiKey` give the key that signs in the provider of each thread `pluginId` started,
+     * instead of the user's own login, each time that provider starts. Undefined keeps the user's
+     * login. A thread moved to another provider goes without the key. A restarted Build has none,
+     * and a plugin's dependency restarting doesn't restart the plugin, so register again on a
+     * schedule. Returns the call that removes it.
+     */
+    registerThreadOwner(
+        params: Readonly<{
+            pluginId: string;
+            readApiKey(ownerId: string): MaybePromise<string | undefined>;
+        }>,
+    ): () => void;
 }>;
 
 /**

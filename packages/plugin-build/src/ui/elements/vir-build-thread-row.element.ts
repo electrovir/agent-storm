@@ -67,6 +67,8 @@ export const VirBuildThreadRow = defineAppElement<{
     /** The folder the thread runs in, which carries its PR status. */
     folderInfo: Readonly<FolderInfo> | undefined;
     isActive: boolean;
+    /** Shows the new-reply dot even while the row is active. */
+    isMarkedUnread: boolean;
     /** Shows the row dimmed, with Unarchive in its menu instead of Rename and Archive. */
     isArchived: boolean;
     /** The thread's side chats, whose spinner and new-reply dot the row shows too. */
@@ -300,12 +302,19 @@ export const VirBuildThreadRow = defineAppElement<{
             inputs.thread.hasUnreadReply ||
             inputs.sideChats.some((sideChat) => sideChat.hasUnreadReply);
         const shouldRecede = display.shouldRecede && !inputs.isActive;
+        /**
+         * A worktree made outside Agent Storm, such as by a worktree skill, has no
+         * `worktreeBranch`.
+         */
+        const worktreeBranch =
+            inputs.thread.worktreeBranch ||
+            (inputs.folderInfo?.parentRepoPath ? inputs.folderInfo.branch : undefined);
         const statusIcon = inputs.folderInfo?.prUrl
             ? getPrRingDisplay(inputs.folderInfo)
-            : inputs.thread.worktreeBranch
+            : worktreeBranch
               ? {
                     icon: branchIcon,
-                    tooltip: inputs.thread.worktreeBranch,
+                    tooltip: worktreeBranch,
                 }
               : undefined;
 
@@ -473,7 +482,7 @@ export const VirBuildThreadRow = defineAppElement<{
                                   })}></${ViraIcon}>
                               </span>
                           `
-                        : hasUnreadReply && !inputs.isActive
+                        : hasUnreadReply && (!inputs.isActive || inputs.isMarkedUnread)
                           ? html`
                                 <span class="leading">
                                     <span
@@ -611,11 +620,7 @@ export const VirBuildThreadRow = defineAppElement<{
                                   },
                               },
                               {
-                                  /**
-                                   * The open thread's row hides its unread dot, and its chat marks
-                                   * it read again whenever it comes into view.
-                                   */
-                                  disabled: inputs.isActive || inputs.thread.hasUnreadReply,
+                                  disabled: inputs.thread.hasUnreadReply,
                                   content: 'Mark unread',
                                   onClick() {
                                       dispatch(

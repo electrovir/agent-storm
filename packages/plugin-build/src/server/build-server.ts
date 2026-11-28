@@ -3,6 +3,7 @@ import {
     findNewThreadOrigin,
     type PluginThreadsTarget,
     type PluginThreadTarget,
+    sidebarThreadOrigins,
     ViewerFileStatus,
 } from '@agent-storm/common';
 // cspell:words unarchive unarchived unarchives unarchiving unpushed
@@ -13,12 +14,11 @@ import {
 } from '@agent-storm/core/server';
 import {UsageProvider, UsageSource} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {usageExportsKey} from '@agent-storm/plugin-usage/src/usage-exports.js';
-import {assertWrap} from '@augment-vir/assert';
+import {assertWrap, waitUntil} from '@augment-vir/assert';
 import {
     awaitedForEach,
     createCuid2,
     extractErrorMessage,
-    getObjectTypedKeys,
     log,
     type PartialWithUndefined,
     removeDuplicates,
@@ -28,7 +28,6 @@ import {gitTimeout, hasErrorCode, normalizePath, runCommand, tracePerfSpan} from
 import {convertDuration, createUtcFullDate, toJsDate} from 'date-vir';
 import {randomUUID} from 'node:crypto';
 import {stat} from 'node:fs/promises';
-import {join} from 'node:path';
 import {checkValidShape} from 'object-shape-tester';
 import {
     aiChatTabLabel,
@@ -56,6 +55,7 @@ import {
     readModelDefaults,
     resolveThreadModelDefault,
 } from '../util/model-default-settings.js';
+import {claudePluginName} from './agent-storm-skills.js';
 import {startAgentToolServer} from './agent-tool-server.js';
 import {agentToolInstructions, agentTools} from './agent-tools.js';
 import {openBuildDatabase} from './build-database.js';
@@ -66,19 +66,20 @@ import {buildContextHandoff} from './context-handoff.js';
 import {readFolderEnv} from './folder-env.js';
 import {openListingCache} from './listing-cache.js';
 import {applyMcpChange} from './mcp-control.js';
+import {type PluginLaunch} from './plugin-launch.js';
 import {createClaudeProvider} from './providers/claude-provider.js';
 import {codexProvider} from './providers/codex-provider.js';
 import {
     type McpControl,
     type ProviderAdapter,
     type ProviderProcessHost,
+    type ProviderRequestId,
     type ProviderSession,
     type ProviderSink,
 } from './providers/provider-session.js';
 import {buildResumeMessage} from './resume-message.js';
+import {resolveReviewSkill} from './review-skill.js';
 import {readUpload, saveUpload} from './save-upload.js';
-import {startSelfImprovement} from './self-improvement.js';
-import {createThreadLaunchStore} from './thread-launch-store.js';
 import {
     createThreadTitle,
     createThreadTitlePrompt,
@@ -114,8 +115,11 @@ function readPrefixedThreadIds({
         .map((processId) => processId.slice(prefix.length));
 }
 
-/** A repo's Claude skill that makes a worktree for a new thread and opens a PR from it. */
-const openWorktreeSkillName = 'open-worktree';
+/** Runs Agent Storm's skill that does a new worktree thread's work and opens a PR from it. */
+const openWorktreeCommands: Readonly<Record<AiProvider, string>> = {
+    [AiProvider.Claude]: `/${claudePluginName}:open-worktree`,
+    [AiProvider.Codex]: `$${claudePluginName}:open-worktree`,
+};
 
 const usageProviders: Readonly<Record<AiProvider, UsageProvider>> = {
     [AiProvider.Claude]: UsageProvider.Claude,
@@ -264,7 +268,11 @@ export default definePluginServer({
         >();
         /** Each thread's running provider, by thread id. */
         const sessions = new Map<string, Promise<ProviderSession>>();
-        const threadLaunches = createThreadLaunchStore(dataDir);
+        /** Each plugin's reader of the API keys for the threads it started, by plugin id. */
+        const apiKeyReaders = new Map<
+            string,
+            Parameters<BuildServerExports['registerThreadOwner']>[0]['readApiKey']
+        >();
         /**
          * The short-lived MCP sessions of threads without a running one, kept open while the user
          * signs in to a server, by thread id.
@@ -297,6 +305,48 @@ export default definePluginServer({
                 ): void;
             }
         >();
+
+        /**
+         * Requests a previous run left pending, by the id their provider repeats them with once its
+         * session reconnects. Each is already tracked in `pendingApprovals`, so an answer can come
+         * before the repeat does.
+         */
+        const restoredRequests = new Map<
+            string,
+            {
+                requestId: string;
+                threadId: string;
+                resolution: Promise<
+                    Readonly<{
+                        decision: ApprovalDecision;
+                        answers: ReadonlyArray<string>;
+                    }>
+                >;
+            }
+        >();
+
+        function trackPendingRequest({
+            requestId,
+            threadId,
+            questions,
+        }: Readonly<{
+            requestId: string;
+            threadId: string;
+            questions: ApprovalRequest['questions'];
+        }>) {
+            return new Promise<
+                Readonly<{
+                    decision: ApprovalDecision;
+                    answers: ReadonlyArray<string>;
+                }>
+            >((resolve) => {
+                pendingApprovals.set(requestId, {
+                    threadId,
+                    questions,
+                    resolve,
+                });
+            });
+        }
 
         /** What Agent Storm's tools left for each thread to do once its current turn ends. */
         const afterTurnActions = new Map<string, ReadonlyArray<() => Promise<void>>>();
@@ -401,6 +451,33 @@ export default definePluginServer({
             );
         }
 
+        /**
+         * A reconnected Claude CLI repeats the requests it still waits on as its session starts, so
+         * one it hasn't repeated by the end of the thread's turn will never be answered.
+         */
+        async function declineRestoredRequests(threadId: string) {
+            await Promise.all(
+                [...restoredRequests.entries()]
+                    .filter(
+                        ([
+                            ,
+                            restored,
+                        ]) => restored.threadId === threadId,
+                    )
+                    .map(
+                        async ([
+                            providerRequestId,
+                            restored,
+                        ]) => {
+                            restoredRequests.delete(providerRequestId);
+                            if (pendingApprovals.has(restored.requestId)) {
+                                await settleApproval(restored.requestId, ApprovalDecision.Decline);
+                            }
+                        },
+                    ),
+            );
+        }
+
         /** Shows `request` in the thread and waits for the user's answer. */
         async function openThreadRequest({
             threadId,
@@ -409,41 +486,46 @@ export default definePluginServer({
         }: Readonly<{
             threadId: string;
             request: Readonly<
-                Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason' | 'questions'>
+                Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason' | 'questions'> &
+                    ProviderRequestId
             >;
             signal: AbortSignal | undefined;
         }>) {
-            /** Self-improvement runs while the user is away, so a request would wait for hours. */
-            if (signal?.aborted || selfImprovement.isUnattended(threadId)) {
+            if (signal?.aborted || (await store.isThreadUnattended(threadId))) {
                 return {
                     decision: ApprovalDecision.Decline,
                     answers: [],
                 };
             }
-            const {id} = await store.addRequest({
-                ...request,
-                threadId,
-            });
-            const resolution = new Promise<
-                Readonly<{
-                    decision: ApprovalDecision;
-                    answers: ReadonlyArray<string>;
-                }>
-            >((resolve) => {
-                pendingApprovals.set(id, {
+            const providerRequestId = request.providerRequestId || '';
+            const restored = restoredRequests.get(providerRequestId);
+            restoredRequests.delete(providerRequestId);
+            const requestId =
+                restored?.requestId ||
+                (
+                    await store.addRequest({
+                        ...request,
+                        threadId,
+                    })
+                ).id;
+            const resolution =
+                restored?.resolution ||
+                trackPendingRequest({
+                    requestId,
                     threadId,
                     questions: request.questions,
-                    resolve,
                 });
-            });
             signal?.addEventListener('abort', async () => {
-                if (pendingApprovals.has(id)) {
-                    await settleApproval(id, ApprovalDecision.Decline);
+                if (pendingApprovals.has(requestId)) {
+                    await settleApproval(requestId, ApprovalDecision.Decline);
                 }
             });
-            await store.updateThread(threadId, {
-                status: ThreadStatus.NeedsApproval,
-            });
+            /** A restored request kept its thread's status, which an early answer already moved on. */
+            if (!restored) {
+                await store.updateThread(threadId, {
+                    status: ThreadStatus.NeedsApproval,
+                });
+            }
             return await resolution;
         }
 
@@ -462,7 +544,8 @@ export default definePluginServer({
 
             async function openRequest(
                 request: Readonly<
-                    Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason' | 'questions'>
+                    Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason' | 'questions'> &
+                        ProviderRequestId
                 >,
                 signal: AbortSignal | undefined,
             ) {
@@ -487,6 +570,12 @@ export default definePluginServer({
                             threadId,
                             turnId: readTurnId(threadId),
                         });
+                        if (
+                            item.kind === ThreadItemKind.AssistantMessage &&
+                            item.status === ThreadItemStatus.Completed
+                        ) {
+                            void titleUntitledThread(threadId);
+                        }
                     }
                 },
                 appendDelta(params) {
@@ -510,6 +599,7 @@ export default definePluginServer({
                     if (!busyThreadStatuses[status]) {
                         /** A provider that reconnected mid-turn can miss an item's end. */
                         await store.failUnfinishedItems(threadId);
+                        await declineRestoredRequests(threadId);
                         if (afterTurnActions.has(threadId)) {
                             threadNotifier.holdFinish(threadId);
                         }
@@ -568,7 +658,7 @@ export default definePluginServer({
                     );
                     return decision;
                 },
-                async askQuestions({title, reason, questions}, signal) {
+                async askQuestions({title, reason, questions, providerRequestId}, signal) {
                     const {decision, answers} = await openRequest(
                         {
                             kind: ApprovalKind.Question,
@@ -576,6 +666,7 @@ export default definePluginServer({
                             detail: '',
                             reason,
                             questions,
+                            providerRequestId,
                         },
                         signal,
                     );
@@ -679,6 +770,26 @@ export default definePluginServer({
             legacyProcessThreadIds.delete(threadId);
         }
 
+        /** Waits for the plugin while it starts or restarts, as during this server's own start. */
+        async function readLaunchApiKey({
+            launch,
+            provider,
+        }: Readonly<{launch: PluginLaunch | undefined; provider: AiProvider}>) {
+            if (!launch || launch.provider !== provider) {
+                return undefined;
+            }
+            const readApiKey = await waitUntil.isDefined(
+                () => apiKeyReaders.get(launch.pluginId),
+                {
+                    timeout: {
+                        seconds: 30,
+                    },
+                },
+                `Turn on the '${launch.pluginId}' plugin, which gives this thread's API key.`,
+            );
+            return await readApiKey(launch.ownerId);
+        }
+
         async function ensureSession(threadId: string) {
             const existing = sessions.get(threadId);
             if (existing) {
@@ -689,23 +800,22 @@ export default definePluginServer({
             /** AI Session panes get per-folder variables (such as direnv's) from their shell. */
             session.current = Promise.all([
                 readFolderEnv(details.cwd),
-                threadLaunches.read(threadId),
+                readLaunchApiKey({
+                    launch: details.pluginLaunch,
+                    provider: details.provider,
+                }),
             ]).then(
                 async ([
                     env,
-                    launch,
+                    apiKey,
                 ]) => {
                     return await tracePerfSpan('start provider session', () => {
                         return providers[details.provider].start({
                             env: {
                                 ...env,
-                                ...launch?.env,
+                                ...details.pluginLaunch?.env,
                             },
-                            /** The thread may have switched to a provider the key isn't for. */
-                            apiKey:
-                                launch?.provider === details.provider
-                                    ? launch.apiKey || undefined
-                                    : undefined,
+                            apiKey,
                             cwd: details.cwd,
                             model: details.model,
                             effort: details.effort,
@@ -872,9 +982,8 @@ export default definePluginServer({
         async function moveThreadToNewWorktree({
             threadId,
             folder,
-            title,
-        }: Readonly<{threadId: string; folder: string; title: string}>) {
-            const name = createWorktreeName(title);
+            name,
+        }: Readonly<{threadId: string; folder: string; name: string}>) {
             const {worktreePath} = await host.createWorktree({
                 folder,
                 name,
@@ -929,6 +1038,33 @@ export default definePluginServer({
             return generation;
         }
 
+        /**
+         * Titles a thread mid-turn, for one whose first message didn't show the work (such as a
+         * lone link). Waiting for the turn to end leaves a long turn with the raw message as its
+         * title and its worktree on a placeholder branch, which a push during the turn makes
+         * permanent.
+         */
+        async function titleUntitledThread(threadId: string) {
+            try {
+                const [
+                    details,
+                    thread,
+                ] = await Promise.all([
+                    store.findSessionDetails(threadId),
+                    store.findThread(threadId),
+                ]);
+                if (!details.hasCustomTitle && thread.origin !== ThreadOrigin.SideChat) {
+                    await generateThreadTitle({
+                        threadId,
+                    });
+                }
+            } catch (error) {
+                log.warning(
+                    `Titling thread ${threadId} mid-turn failed: ${extractErrorMessage(error)}`,
+                );
+            }
+        }
+
         async function requestThreadTitle({
             threadId,
             firstMessage,
@@ -956,7 +1092,7 @@ export default definePluginServer({
                 } else if (details.hasCustomTitle) {
                     await renamePlaceholderBranch({
                         threadId,
-                        title: thread.title,
+                        branch: createWorktreeName(thread.title),
                     });
                     return thread.title;
                 }
@@ -988,7 +1124,7 @@ export default definePluginServer({
                     });
                     await renamePlaceholderBranch({
                         threadId,
-                        title,
+                        branch: createWorktreeName(title),
                     });
                 }
                 return title;
@@ -999,22 +1135,22 @@ export default definePluginServer({
         }
 
         /**
-         * Renames a worktree branch that was created before the thread had a usable title. Leaves a
-         * pushed branch alone, since renaming it would split it from its remote branch.
+         * Renames a worktree branch that was created before the thread had a usable title, and
+         * returns whether it did. Leaves a pushed branch alone, since renaming it would split it
+         * from its remote branch.
          */
         async function renamePlaceholderBranch({
             threadId,
-            title,
-        }: Readonly<{threadId: string; title: string}>) {
+            branch,
+        }: Readonly<{threadId: string; branch: string}>) {
             try {
                 const thread = await store.findThread(threadId);
-                const branch = createWorktreeName(title);
                 if (
                     !thread.worktreeBranch ||
                     !isPlaceholderWorktreeName(thread.worktreeBranch) ||
                     isPlaceholderWorktreeName(branch)
                 ) {
-                    return;
+                    return false;
                 }
                 const hasUpstream = await runCommand(
                     'git',
@@ -1032,7 +1168,7 @@ export default definePluginServer({
                     () => false,
                 );
                 if (hasUpstream) {
-                    return;
+                    return false;
                 }
                 await runCommand(
                     'git',
@@ -1050,10 +1186,12 @@ export default definePluginServer({
                 await store.updateThread(threadId, {
                     worktreeBranch: branch,
                 });
+                return true;
             } catch (error) {
                 log.warning(
                     `Renaming thread ${threadId}'s branch failed: ${extractErrorMessage(error)}`,
                 );
+                return false;
             }
         }
 
@@ -1179,12 +1317,15 @@ export default definePluginServer({
             text,
             title,
             isInWorktree,
+            branchName,
+            isOpenWorktreeSkillSkipped,
             isStartAwaited,
             origin,
             prUrl,
             parentThreadId,
             isPriority,
             cwd,
+            pluginLaunch,
         }: Readonly<
             Parameters<PluginCallHandlers<typeof buildApi>['createThread']>[0] & {
                 origin: ThreadOrigin;
@@ -1192,6 +1333,7 @@ export default definePluginServer({
             } & PartialWithUndefined<{
                     /** Runs the thread outside `repoPath` while it stays grouped under it. */
                     cwd: string;
+                    pluginLaunch: PluginLaunch;
                 }>
         >) {
             const customTitle = title?.trim();
@@ -1201,17 +1343,6 @@ export default definePluginServer({
              * from an AI Chat tab on a worktree folder) belongs to its main checkout.
              */
             const folderInfo = (await host.listFolders()).find((info) => info.path === folder);
-            /**
-             * The skill runs inside `folder`, so from a worktree it could nest its new one there.
-             * The built-in move always makes a sibling.
-             */
-            const isOpenWorktreeSkillUsed =
-                isInWorktree &&
-                !folderInfo?.parentRepoPath &&
-                provider === AiProvider.Claude &&
-                !!(await stat(
-                    join(folder, '.claude', 'skills', openWorktreeSkillName, 'SKILL.md'),
-                ).catch(() => undefined));
             const {id} = await store.createThread({
                 id: requestedId || createCuid2(),
                 repoPath: folderInfo?.parentRepoPath
@@ -1231,36 +1362,47 @@ export default definePluginServer({
                 prUrl,
                 parentThreadId,
                 isPriority: !!isPriority,
+                pluginLaunch,
             });
-            const firstMessage = isOpenWorktreeSkillUsed
-                ? `/${openWorktreeSkillName} ${text}`
-                : text;
+            const firstMessage =
+                isInWorktree && !isOpenWorktreeSkillSkipped
+                    ? `${openWorktreeCommands[provider]} ${text}`
+                    : text;
             const {order} = await recordMessage({
                 threadId: id,
                 text: firstMessage,
             });
             async function startThread() {
-                if (isInWorktree && !isOpenWorktreeSkillUsed) {
+                if (isInWorktree) {
                     /**
                      * Waits for the generated title so the branch isn't named from raw message
                      * text. Without one, the branch gets a placeholder name that a later title
                      * replaces.
                      */
                     try {
-                        const worktreeTitle =
-                            customTitle ||
-                            (await tracePerfSpan('generate thread title', () => {
-                                return generateThreadTitle({
-                                    threadId: id,
-                                    firstMessage: text,
-                                });
-                            })) ||
-                            '';
+                        if (branchName) {
+                            void generateThreadTitle({
+                                threadId: id,
+                                firstMessage: text,
+                            });
+                        }
+                        const worktreeName =
+                            branchName ||
+                            createWorktreeName(
+                                customTitle ||
+                                    (await tracePerfSpan('generate thread title', () => {
+                                        return generateThreadTitle({
+                                            threadId: id,
+                                            firstMessage: text,
+                                        });
+                                    })) ||
+                                    '',
+                            );
                         await tracePerfSpan('move to new worktree', () => {
                             return moveThreadToNewWorktree({
                                 threadId: id,
                                 folder,
-                                title: worktreeTitle,
+                                name: worktreeName,
                             });
                         });
                     } catch (error) {
@@ -1430,21 +1572,16 @@ export default definePluginServer({
                 runtimeMode,
                 isInWorktree,
                 env,
-                apiKey,
+                pluginId,
+                ownerId,
+                workingDirectory,
+                isUnattended,
             }) {
-                const id = createCuid2();
-                if (apiKey || getObjectTypedKeys(env).length) {
-                    await threadLaunches.write({
-                        threadId: id,
-                        provider,
-                        apiKey: apiKey || '',
-                        env,
-                    });
-                }
                 return (
                     await createThread({
-                        id,
+                        id: createCuid2(),
                         repoPath: cwd,
+                        cwd: workingDirectory,
                         provider,
                         model,
                         effort,
@@ -1456,8 +1593,44 @@ export default definePluginServer({
                         isStartAwaited: false,
                         origin,
                         prUrl: undefined,
+                        pluginLaunch: {
+                            pluginId,
+                            ownerId,
+                            provider,
+                            env,
+                            isUnattended: !!isUnattended,
+                        },
                     })
                 ).thread;
+            },
+            async continuePluginThread({threadId, text, model, effort, runtimeMode, isUnattended}) {
+                if (!(await store.isThreadActive(threadId))) {
+                    return undefined;
+                }
+                const thread = await store.findThread(threadId);
+                await store.setThreadUnattended({
+                    threadId,
+                    isUnattended,
+                });
+                await switchToOriginModel({
+                    threadId,
+                    originDefault: {
+                        provider: thread.provider,
+                        model,
+                        effort,
+                    },
+                });
+                if (thread.runtimeMode !== runtimeMode) {
+                    await calls.setThreadRuntimeMode({
+                        threadId,
+                        runtimeMode,
+                    });
+                }
+                await sendMessage({
+                    threadId,
+                    text,
+                });
+                return await store.findThread(threadId);
             },
             async readPluginThread(threadId) {
                 try {
@@ -1469,6 +1642,19 @@ export default definePluginServer({
                     }
                     throw error;
                 }
+            },
+            async interruptPluginThread(threadId) {
+                await calls.interrupt({
+                    threadId,
+                });
+            },
+            registerThreadOwner({pluginId, readApiKey}) {
+                apiKeyReaders.set(pluginId, readApiKey);
+                return () => {
+                    if (apiKeyReaders.get(pluginId) === readApiKey) {
+                        apiKeyReaders.delete(pluginId);
+                    }
+                };
             },
         };
 
@@ -1707,7 +1893,7 @@ export default definePluginServer({
                 await settleApproval(requestId, decision, answers);
                 return ok;
             },
-            async moveToWorktree({threadId, baseFolder}) {
+            async moveToWorktree({threadId, baseFolder, branchName}) {
                 const thread = await store.findThread(threadId);
                 if (thread.worktreeBranch) {
                     throw new Error('This thread is already in its own worktree.');
@@ -1717,17 +1903,20 @@ export default definePluginServer({
                  * The current title may still be the first message's raw text. Without a generated
                  * title, the branch gets a placeholder name that a later title replaces.
                  */
-                const title =
-                    (await tracePerfSpan('generate thread title', () => {
-                        return generateThreadTitle({
-                            threadId,
-                        });
-                    })) || '';
+                const name =
+                    branchName ||
+                    createWorktreeName(
+                        (await tracePerfSpan('generate thread title', () => {
+                            return generateThreadTitle({
+                                threadId,
+                            });
+                        })) || '',
+                    );
                 await tracePerfSpan('move to new worktree', () => {
                     return moveThreadToNewWorktree({
                         threadId,
                         folder: baseFolder ? normalizePath(baseFolder) : thread.cwd,
-                        title,
+                        name,
                     });
                 });
                 return {
@@ -1810,11 +1999,16 @@ export default definePluginServer({
                 };
             },
             async renameThread({threadId, title}) {
+                await store.updateThread(threadId, {
+                    title,
+                    hasCustomTitle: true,
+                });
+                await renamePlaceholderBranch({
+                    threadId,
+                    branch: createWorktreeName(title),
+                });
                 return {
-                    thread: await store.updateThread(threadId, {
-                        title,
-                        hasCustomTitle: true,
-                    }),
+                    thread: await store.findThread(threadId),
                 };
             },
             async setThreadPriority({threadId, isPriority}) {
@@ -1999,6 +2193,29 @@ export default definePluginServer({
                     });
                     return file.resolvedPath;
                 },
+                async countCommitsPastDefaultBranch(folder) {
+                    const {stdout} = await runCommand(
+                        'git',
+                        [
+                            'rev-list',
+                            '--count',
+                            'origin/HEAD..HEAD',
+                        ],
+                        {
+                            cwd: folder,
+                            timeout: gitTimeout,
+                        },
+                    );
+                    return Number(stdout.trim());
+                },
+                renamePlaceholderBranch,
+                async findReviewSkill(folder) {
+                    return resolveReviewSkill({
+                        folderLayers: await host.loadFolderSettings(folder.path),
+                        settings: await host.loadSettings().catch(() => undefined),
+                        repoPath: folder.parentRepoPath || folder.path,
+                    });
+                },
                 runAfterTurn(threadId, action) {
                     afterTurnActions.set(threadId, [
                         ...(afterTurnActions.get(threadId) || []),
@@ -2014,13 +2231,23 @@ export default definePluginServer({
          * Archives every thread whose worktree folder is gone, however it was deleted (the sidebar,
          * a merged PR's cleanup, or plain `git worktree remove`), and returns their ids.
          */
-        async function archiveThreadsWithDeletedWorktrees() {
+        /**
+         * Covers every thread in a deleted worktree, and every thread outside the sidebar (such as
+         * a review or watch thread in a deleted review copy) whose folder is gone.
+         */
+        async function archiveThreadsWithDeletedFolders() {
             try {
-                const threads = await store.listThreads();
+                const groups = await store.listActiveThreadGroups();
                 const orphanedThreadIds = (
                     await Promise.all(
-                        threads.map(async (thread) => {
-                            return thread.worktreeBranch && (await isFolderMissing(thread.cwd))
+                        [
+                            ...groups.threads,
+                            ...groups.sideChats,
+                            ...groups.paneThreads,
+                        ].map(async (thread) => {
+                            return (thread.worktreeBranch ||
+                                !sidebarThreadOrigins.includes(thread.origin)) &&
+                                (await isFolderMissing(thread.cwd))
                                 ? thread.id
                                 : undefined;
                         }),
@@ -2034,68 +2261,17 @@ export default definePluginServer({
                 return orphanedThreadIds;
             } catch (error) {
                 log.warning(
-                    `Archiving threads with deleted worktrees failed: ${extractErrorMessage(error)}`,
+                    `Archiving threads with deleted folders failed: ${extractErrorMessage(error)}`,
                 );
                 return [];
             }
         }
 
-        const archivedOnStartThreadIds = await archiveThreadsWithDeletedWorktrees();
+        const archivedOnStartThreadIds = await archiveThreadsWithDeletedFolders();
 
-        const selfImprovement = await startSelfImprovement({
-            stateDir: join(dataDir, 'self-improvement'),
-            host,
-            async findThread(threadId) {
-                return (await store.isThreadActive(threadId))
-                    ? await store.findThread(threadId)
-                    : undefined;
-            },
-            async readModelDefault(folder) {
-                return resolveThreadModelDefault({
-                    defaults: readModelDefaults(await host.loadSettings()),
-                    folder,
-                    origin: ThreadOrigin.SelfImprove,
-                });
-            },
-            async startThread({threadId, repoPath, cwd, text, modelDefault}) {
-                await createThread({
-                    id: threadId,
-                    repoPath,
-                    cwd,
-                    provider: modelDefault.provider,
-                    model: modelDefault.model,
-                    effort: modelDefault.effort,
-                    speedTier: modelDefault.speedTier || undefined,
-                    /** Codex's sandbox then keeps its writes inside the scratch copy. */
-                    runtimeMode: RuntimeMode.AutoAcceptEdits,
-                    text,
-                    title: 'Self-improvement',
-                    isInWorktree: false,
-                    isStartAwaited: false,
-                    origin: ThreadOrigin.SelfImprove,
-                    prUrl: undefined,
-                });
-            },
-            async switchModel({threadId, modelDefault}) {
-                await switchToOriginModel({
-                    threadId,
-                    originDefault: modelDefault,
-                });
-            },
-            sendMessage,
-            addNotice,
-            async interrupt(threadId) {
-                await calls.interrupt({
-                    threadId,
-                });
-            },
-            async readThreadCost(params) {
-                return await (await waitForPlugin(usageExportsKey))?.readThreadCost(params);
-            },
-        });
         const deletedWorktreeSweep = setInterval(
             () => {
-                void archiveThreadsWithDeletedWorktrees();
+                void archiveThreadsWithDeletedFolders();
             },
             convertDuration(
                 {
@@ -2158,6 +2334,18 @@ export default definePluginServer({
             });
         }
 
+        (await store.listProviderRequests()).forEach((request) => {
+            restoredRequests.set(request.providerRequestId, {
+                requestId: request.id,
+                threadId: request.threadId,
+                resolution: trackPendingRequest({
+                    requestId: request.id,
+                    threadId: request.threadId,
+                    questions: request.questions,
+                }),
+            });
+        });
+
         /**
          * An idle thread's process can still be working, as when a background command ends and
          * starts a reply, so it needs a listener too.
@@ -2215,7 +2403,6 @@ export default definePluginServer({
             calls,
             exports: pluginExports,
             async stop() {
-                await selfImprovement.stop();
                 clearInterval(deletedWorktreeSweep);
                 stopFolderPrListener();
                 /**

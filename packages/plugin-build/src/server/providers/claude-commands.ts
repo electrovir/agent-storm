@@ -5,6 +5,7 @@ import {homedir} from 'node:os';
 import {dirname, join} from 'node:path';
 import {defineShape, parseJsonWithShape, recordShape} from 'object-shape-tester';
 import {ComposerCommandKind, ComposerCommandSource} from '../../build-api.js';
+import {claudePluginName} from '../agent-storm-skills.js';
 
 /** The names of the commands and skills found in each place Claude Code reads them from. */
 export type ClaudeCommandOrigins = Readonly<{
@@ -17,6 +18,8 @@ export type ClaudeCommandOrigins = Readonly<{
     pluginSkills: ReadonlyArray<string>;
     /** Qualified with the plugin's name, as `plugin:command`. */
     pluginCommands: ReadonlyArray<string>;
+    /** Agent Storm's own skills, qualified like a plugin's. */
+    agentStormSkills: ReadonlyArray<string>;
 }>;
 
 const installedPluginsShape = defineShape({
@@ -87,10 +90,12 @@ export async function readClaudeCommandOrigins({
     cwd,
     configDir,
     home,
+    agentStormSkillsDir,
 }: Readonly<{
     cwd: string;
     configDir: string;
     home: string;
+    agentStormSkillsDir: string;
 }>): Promise<ClaudeCommandOrigins> {
     const repoFolders = listRepoFolders({
         cwd,
@@ -129,6 +134,7 @@ export async function readClaudeCommandOrigins({
         accountSkills,
         pluginSkills,
         pluginCommands,
+        agentStormSkills,
     ] = await Promise.all([
         Promise.all(repoFolders.map((folder) => readSkillNames(join(folder, '.claude', 'skills')))),
         Promise.all(
@@ -157,6 +163,7 @@ export async function readClaudeCommandOrigins({
                 });
             }),
         ),
+        readSkillNames(agentStormSkillsDir),
     ]);
     return {
         repoSkills: repoSkills.flat(),
@@ -166,6 +173,7 @@ export async function readClaudeCommandOrigins({
         accountSkills: accountSkills.flat(),
         pluginSkills: pluginSkills.flat(),
         pluginCommands: pluginCommands.flat(),
+        agentStormSkills: agentStormSkills.map((name) => `${claudePluginName}:${name}`),
     };
 }
 
@@ -244,6 +252,11 @@ const claudeCommandOriginOrder: ReadonlyArray<
         originKey: 'repoCommands',
         kind: ComposerCommandKind.Command,
         source: ComposerCommandSource.Repo,
+    },
+    {
+        originKey: 'agentStormSkills',
+        kind: ComposerCommandKind.Skill,
+        source: ComposerCommandSource.AgentStorm,
     },
     {
         originKey: 'pluginSkills',

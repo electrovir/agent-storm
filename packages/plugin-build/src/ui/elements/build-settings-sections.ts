@@ -84,10 +84,7 @@ export const folderSettingsSection = defineSettingsSection<
     },
 });
 
-/**
- * The models manual reviews, watch mode, and self-improvement run on, which override the AI chat
- * defaults.
- */
+/** The models manual reviews and watch mode run on, which override the AI chat defaults. */
 export const reviewModelSettingsSection = defineSettingsSection({
     pluginId: buildPluginId,
     name: 'review-models',
@@ -98,7 +95,6 @@ export const reviewModelSettingsSection = defineSettingsSection({
         'review',
         'manual review',
         'watch mode',
-        'self-improvement',
     ],
     schemaCardTitle: undefined,
     schemaKeys: [],

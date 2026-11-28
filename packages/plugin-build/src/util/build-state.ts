@@ -56,6 +56,13 @@ export function createBuildState() {
         }),
         /** The checkout the new-thread composer starts its thread in. */
         draftRepoPath,
+        /**
+         * The open thread the user marked unread. Its chat leaves it unread until the chat goes out
+         * of view or another thread is opened.
+         */
+        markedUnreadThreadId: new Observable<string | undefined>({
+            defaultValue: undefined,
+        }),
     };
 }
 

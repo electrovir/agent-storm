@@ -110,6 +110,7 @@ const composerCommandSourceLabels: Readonly<Record<ComposerCommandSource, string
     [ComposerCommandSource.Personal]: 'Personal',
     [ComposerCommandSource.Synced]: 'Synced',
     [ComposerCommandSource.Plugin]: 'Plugin',
+    [ComposerCommandSource.AgentStorm]: 'Agent Storm',
     [ComposerCommandSource.Other]: 'Other',
 };
 
@@ -173,9 +174,10 @@ const sourceOrder: Readonly<Record<ComposerCommandSource, number>> = {
     [ComposerCommandSource.Repo]: 0,
     [ComposerCommandSource.Personal]: 1,
     [ComposerCommandSource.Plugin]: 2,
-    [ComposerCommandSource.Synced]: 3,
-    [ComposerCommandSource.Other]: 4,
-    [ComposerCommandSource.BuiltIn]: 5,
+    [ComposerCommandSource.AgentStorm]: 3,
+    [ComposerCommandSource.Synced]: 4,
+    [ComposerCommandSource.Other]: 5,
+    [ComposerCommandSource.BuiltIn]: 6,
 };
 
 /**

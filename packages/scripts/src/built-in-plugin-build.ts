@@ -13,9 +13,15 @@ import {
     type Plugin,
 } from 'esbuild';
 import {watch} from 'node:fs';
-import {copyFile, cp, mkdir, readdir, readFile, stat} from 'node:fs/promises';
+import {copyFile, cp, mkdir, readdir, readFile, rm, stat} from 'node:fs/promises';
 import {resolve, sep} from 'node:path';
 import {assertValidShape} from 'object-shape-tester';
+
+/**
+ * The folder, beside a server part's sources and its bundle, that holds a Claude Code plugin: a
+ * `.claude-plugin/plugin.json` and its `skills`.
+ */
+const claudePluginFolderName = 'claude-plugin';
 
 function findPluginPackageDir(pluginId: string) {
     return resolve(monorepoRoot, 'packages', `plugin-${pluginId}`);
@@ -177,21 +183,43 @@ async function createBuiltInPluginBuilds({
             await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
         }),
     );
+    /** A Claude Code plugin the server part loads into its AI sessions, such as for skills. */
+    const claudePluginDir = resolve(serverDir, claudePluginFolderName);
+    const hasClaudePlugin = !!(await stat(claudePluginDir).catch(() => undefined));
+    if (hasClaudePlugin) {
+        /** Removed first so a deleted skill doesn't outlive a restart. */
+        await rm(resolve(outDir, claudePluginFolderName), {
+            recursive: true,
+            force: true,
+        });
+        await cp(claudePluginDir, resolve(outDir, claudePluginFolderName), {
+            recursive: true,
+        });
+    }
     /**
      * No bundle imports these, so a rebuild never copies them again. Watch mode's AI passes read
      * their instructions from the copy, so an edit must reach it without an app restart.
      */
     if (isWatching && serverFileNames) {
-        watch(serverDir, async (event, fileName) => {
-            if (!fileName?.endsWith('.md')) {
-                return;
-            }
-            try {
-                await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
-            } catch {
-                /** A deleted or mid-save file is copied again on its next change event. */
-            }
-        });
+        watch(
+            serverDir,
+            {
+                recursive: true,
+            },
+            async (event, fileName) => {
+                try {
+                    if (fileName?.startsWith(claudePluginFolderName + sep)) {
+                        await cp(claudePluginDir, resolve(outDir, claudePluginFolderName), {
+                            recursive: true,
+                        });
+                    } else if (fileName?.endsWith('.md') && !fileName.includes(sep)) {
+                        await copyFile(resolve(serverDir, fileName), resolve(outDir, fileName));
+                    }
+                } catch {
+                    /** A deleted or mid-save file is copied again on its next change event. */
+                }
+            },
+        );
     }
     const browserEntryPath = resolve(packageDir, 'src', 'index.ts');
     const serverEntryPath = resolve(packageDir, 'src', 'server', `${pluginId}-server.ts`);
@@ -376,9 +404,9 @@ function watchBuiltInPluginBuilds(
 /**
  * Builds every built-in plugin from its `packages/plugin-<id>` package into the folder `findOutDir`
  * gives for its id, laid out as a plugin folder: its manifest, its browser bundle, and its server
- * bundle when it has a server part. With `isWatching`, rebuilds each bundle whenever its sources
- * change, until the process exits. A failed build is logged and leaves that plugin unbuilt, so the
- * app still starts.
+ * bundle with its Markdown files and Claude Code plugin when it has a server part. With
+ * `isWatching`, rebuilds each bundle whenever its sources change, until the process exits. A failed
+ * build is logged and leaves that plugin unbuilt, so the app still starts.
  */
 export async function buildBuiltInPlugins({
     findOutDir,

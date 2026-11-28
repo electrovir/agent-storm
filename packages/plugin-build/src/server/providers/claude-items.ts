@@ -1,3 +1,4 @@
+import {UsageSpeed} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {check} from '@augment-vir/assert';
 import {ApprovalKind, ThreadItemKind, ThreadItemStatus} from '../../build-api.js';
 import {agentToolServerName} from '../agent-tool-server.js';
@@ -216,6 +217,7 @@ export function readClaudeMessageUsage(
             output_tokens: number;
             cache_read_input_tokens?: number | null | undefined;
             cache_creation_input_tokens?: number | null | undefined;
+            speed?: string | null | undefined;
         }>;
     }>,
 ): ProviderUsage | undefined {
@@ -225,6 +227,7 @@ export function readClaudeMessageUsage(
     return {
         dedupeKey: `claude-message:${message.id}`,
         model: message.model,
+        speed: message.usage.speed === 'fast' ? UsageSpeed.Fast : UsageSpeed.Standard,
         inputTokens: message.usage.input_tokens,
         outputTokens: message.usage.output_tokens,
         cacheReadTokens: message.usage.cache_read_input_tokens ?? 0,

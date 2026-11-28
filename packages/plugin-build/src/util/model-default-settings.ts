@@ -67,20 +67,9 @@ export function readModelDefaults(
           };
 }
 
-/** The model an origin's threads run on until the user picks one for that origin. */
-export const originModelFallbacks: Readonly<Partial<Record<ThreadOrigin, ModelDefault>>> = {
-    [ThreadOrigin.SelfImprove]: {
-        provider: AiProvider.Codex,
-        model: 'gpt-6.2-sol',
-        effort: ReasoningEffort.Max,
-        speedTier: undefined,
-    },
-};
-
 /**
- * The model a new thread of `origin` in `folder` starts with: the origin's default, else its
- * {@link originModelFallbacks} entry, else the folder's, else the global one, else Claude's default
- * model.
+ * The model a new thread of `origin` in `folder` starts with: the origin's default, else the
+ * folder's, else the global one, else Claude's default model.
  */
 export function resolveThreadModelDefault({
     defaults,
@@ -94,7 +83,6 @@ export function resolveThreadModelDefault({
 }>) {
     return (
         defaults.origins?.[origin] ||
-        originModelFallbacks[origin] ||
         defaults.folders[folder] ||
         defaults.global || {
             provider: AiProvider.Claude,

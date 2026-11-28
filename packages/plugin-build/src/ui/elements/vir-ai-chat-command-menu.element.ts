@@ -19,6 +19,7 @@ export const sourceTagColors: Readonly<Record<ComposerCommandSource, ViraThemeCo
     [ComposerCommandSource.Personal]: ViraThemeColorName.green,
     [ComposerCommandSource.Synced]: ViraThemeColorName.teal,
     [ComposerCommandSource.Plugin]: ViraThemeColorName.purple,
+    [ComposerCommandSource.AgentStorm]: ViraThemeColorName.yellow,
     [ComposerCommandSource.Other]: ViraThemeColorName.tan,
 };
 

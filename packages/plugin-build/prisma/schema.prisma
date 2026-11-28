@@ -79,7 +79,7 @@ enum ThreadOrigin {
   sideChat
   /// An AI Chat tab outside Build's threads, such as in a Review folder's tabs.
   paneChat
-  /// Agent-storm's self-improvement, which works on a copy of its own checkout while the user is away.
+  /// A historical origin that nothing starts anymore: self-improvement now runs as a bot.
   selfImprove
   /// Runs a bot's AI work for the Bots plugin.
   bot
@@ -117,6 +117,8 @@ model Thread {
   prUrl               String?
   /// The thread whose tabs hold a `sideChat` thread.
   parentThreadId      String?
+  /// JSON of how a plugin's `startPluginThread` started the thread: the plugin and its owner (such as a bot) that give the provider's API key, and the variables set on the provider.
+  pluginLaunch        String?
 
   items    ThreadItem[]
   requests ApprovalRequest[]
@@ -148,18 +150,20 @@ model ThreadItem {
 }
 
 model ApprovalRequest {
-  id         String            @id @default(cuid(2))
-  createdAt  DateTime          @default(now())
-  updatedAt  DateTime          @default(now()) @updatedAt
-  kind       ApprovalKind
-  title      String
-  detail     String
-  reason     String
+  id                String            @id @default(cuid(2))
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @default(now()) @updatedAt
+  kind              ApprovalKind
+  title             String
+  detail            String
+  reason            String
   /// A question request's questions as JSON. An empty array for every other kind.
-  questions  String            @default("[]")
-  resolvedAt DateTime?
-  decision   ApprovalDecision?
-  threadId   String
+  questions         String            @default("[]")
+  resolvedAt        DateTime?
+  decision          ApprovalDecision?
+  /// The provider's id for the request, when it repeats a request it still waits on after reconnecting. Empty when it doesn't.
+  providerRequestId String            @default("")
+  threadId          String
 
   thread Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 

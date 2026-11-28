@@ -4,6 +4,7 @@ import {check} from '@augment-vir/assert';
 import {
     getObjectTypedEntries,
     type MaybePromise,
+    type PartialWithUndefined,
     typedObjectFromEntries,
 } from '@augment-vir/common';
 import {
@@ -52,6 +53,7 @@ export type ProviderUsage = Readonly<
         UsageRecordInput,
         | 'dedupeKey'
         | 'model'
+        | 'speed'
         | 'inputTokens'
         | 'outputTokens'
         | 'cacheReadTokens'
@@ -68,6 +70,15 @@ export type ProviderProcessHost = Readonly<{
     attach(
         params: Omit<Parameters<PluginServerHost['attachHostedProcess']>[0], 'processId'>,
     ): Promise<HostedProcessAttachment>;
+}>;
+
+export type ProviderRequestId = PartialWithUndefined<{
+    /**
+     * The provider's own id for a request it repeats, unchanged, after Agent Storm restarts and
+     * reconnects to it. A request with one stays on screen through the restart, and an answer given
+     * before the repeat arrives answers the repeat.
+     */
+    providerRequestId: string;
 }>;
 
 /** Where a provider session reports what its agent does. Bound to one thread. */
@@ -95,7 +106,9 @@ export type ProviderSink = Readonly<{
      * aborts or the session stops first.
      */
     requestApproval(
-        request: Readonly<Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason'>>,
+        request: Readonly<
+            Pick<ApprovalRequest, 'kind' | 'title' | 'detail' | 'reason'> & ProviderRequestId
+        >,
         signal?: AbortSignal | undefined,
     ): Promise<ApprovalDecision>;
     /**
@@ -103,7 +116,9 @@ export type ProviderSink = Readonly<{
      * `undefined` when the user dismisses them, `signal` aborts, or the session stops first.
      */
     askQuestions(
-        params: Readonly<Pick<ApprovalRequest, 'title' | 'reason' | 'questions'>>,
+        params: Readonly<
+            Pick<ApprovalRequest, 'title' | 'reason' | 'questions'> & ProviderRequestId
+        >,
         signal?: AbortSignal | undefined,
     ): Promise<string[] | undefined>;
     addNotice(text: string): MaybePromise<void>;

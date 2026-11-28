@@ -1,3 +1,4 @@
+import {UsageSpeed} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {ThreadItemKind, ThreadItemStatus} from '../../build-api.js';
@@ -118,11 +119,13 @@ describe(readClaudeMessageUsage.name, () => {
                     output_tokens: 20,
                     cache_read_input_tokens: 300,
                     cache_creation_input_tokens: null,
+                    speed: 'fast',
                 },
             }),
             {
                 dedupeKey: 'claude-message:msg_1',
                 model: 'claude-opus-4-1',
+                speed: UsageSpeed.Fast,
                 inputTokens: 10,
                 outputTokens: 20,
                 cacheReadTokens: 300,

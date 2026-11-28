@@ -59,8 +59,9 @@ export function createThreadTitlePrompt({
                   'One word only: no spaces, no hyphens, no camelCase, no quotes, no punctuation.',
               ]
             : [
-                  'Write a title for the coding thread below that reads like a terse branch name written with spaces: 2 to 5 words, such as "sidebar title overflow" or "fix codex resume crash".',
+                  'Write a title for the coding thread below that reads like a terse branch name written with spaces: 1 to 4 words, such as "sidebar title overflow", "fix codex resume crash", or "pino-pretty".',
                   'The user keeps many threads open at once, so the title must tell this one apart from similar threads. Name its specific subject (the bug, feature, file, ticket, channel, or error), not only the kind of task. Drop filler words like "the", "a", "issue", and "update".',
+                  'Name the one thing the work centers on, not every noun the message mentions. Config files, scripts, and commands touched along the way to deliver it are steps, not the subject. When the work is adopting or wiring in one named tool, package, or feature, its name alone is the best title: do not append the files or commands it gets wired into.',
                   'Keep it to 30 characters or fewer.',
               ]),
         "Title the thread's main deliverable: the change or answer the user mainly wants, which is usually what the bulk of the work and any PR or commit is about. The first message usually states it, but it may only link to it, and the assistant's messages then show what it turned out to be. Do not title whatever the latest messages happen to be working on.",

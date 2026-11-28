@@ -53,8 +53,7 @@ const attentionBodies: Readonly<
 
 /**
  * Whether a thread of each origin notifies when it finishes. Review and Watch threads are other
- * plugins' background work, and self-improvement finishes a turn after turn while the user is
- * away.
+ * plugins' background work.
  */
 const notifiesOnFinish: Readonly<Record<ThreadOrigin, boolean>> = {
     [ThreadOrigin.User]: true,

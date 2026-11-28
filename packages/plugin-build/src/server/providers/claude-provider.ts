@@ -10,6 +10,7 @@ import {
     type PermissionResult,
     type Query,
     type SDKMessage,
+    type SdkPluginConfig,
     type SDKUserMessage,
     type SessionStore,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -29,6 +30,7 @@ import {
     type ProviderModel,
 } from '../../build-api.js';
 import {parseReasoningEfforts} from '../../util/reasoning-effort.js';
+import {agentStormSkillsDir, claudePluginDir} from '../agent-storm-skills.js';
 import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
 import {
     classifyClaudeCommands,
@@ -500,6 +502,14 @@ async function readConfiguredMcpServers({
     }
 }
 
+/** Gives a session Agent Storm's own skills. */
+const agentStormPlugins = [
+    {
+        type: 'local',
+        path: claudePluginDir,
+    },
+] satisfies SdkPluginConfig[];
+
 /** What a session approved for the rest of the session: a whole tool, or one exact command. */
 function createApprovalKey(toolName: string, input: Readonly<Record<string, unknown>>) {
     return toolName === 'Bash' && check.isString(input.command)
@@ -560,6 +570,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                 options: {
                     cwd,
                     env: createClaudeEnv(undefined),
+                    plugins: agentStormPlugins,
                 },
             });
             try {
@@ -572,6 +583,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         cwd,
                         configDir: findClaudeConfigDir(),
                         home: homedir(),
+                        agentStormSkillsDir,
                     }),
                 ]);
                 return classifyClaudeCommands({
@@ -754,6 +766,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                                         };
                                     },
                                 ),
+                                providerRequestId: toolUseID,
                             },
                             signal,
                         ),
@@ -824,6 +837,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                                     (check.isString(input.description) && input.description) ||
                                     title ||
                                     '',
+                                providerRequestId: toolUseID,
                             },
                             signal,
                         ),
@@ -935,6 +949,7 @@ export function createClaudeProvider(sessionStore: SessionStore): ProviderAdapte
                         });
                     },
                     mcpServers: agentToolMcpServers,
+                    plugins: agentStormPlugins,
                     hooks: {
                         PreToolUse: [
                             {

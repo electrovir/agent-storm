@@ -177,10 +177,46 @@ export const buildActivity = defineActivity({
         const folderInfo = context.folderData.value.folderInfo;
         /**
          * The server won't save a tab layout for a folder that no longer exists, so a thread whose
-         * worktree was deleted would recreate its tabs on every render.
+         * worktree was deleted would recreate its tabs on every render. A saved repo stays listed
+         * after its checkout is renamed or deleted, with a `createdAtMs` of 0 because the server
+         * couldn't stat it.
          */
-        const isCwdGone = !!thread?.cwd && !!folderInfo.size && !folderInfo.has(thread.cwd);
+        function isFolderGone(path: string) {
+            return !!folderInfo.size && !folderInfo.get(path)?.createdAtMs;
+        }
+        const isCwdGone = !!thread?.cwd && isFolderGone(thread.cwd);
         const folder = thread ? (!isCwdGone && thread.cwd) || thread.repoPath : draftRepoPath || '';
+        if (thread && isFolderGone(folder)) {
+            return html`
+                <div
+                    style=${css`
+                        display: flex;
+                        flex-direction: column;
+                        height: 100%;
+                    `}
+                >
+                    <span
+                        style=${css`
+                            padding: 4px 8px;
+                            color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
+                        `}
+                    >
+                        ${folder} no longer exists, so this thread has no tabs.
+                    </span>
+                    ${keyed(
+                        thread.id,
+                        html`
+                            <${VirAiChat.assign({
+                                context,
+                                threadId: thread.id,
+                                repoPath: folder,
+                                isShown: true,
+                            })}></${VirAiChat}>
+                        `,
+                    )}
+                </div>
+            `;
+        }
         const scope = threadId ? toThreadScope(threadId) : newThreadScope;
         const layoutKey = toPaneGroupKey({
             folder,

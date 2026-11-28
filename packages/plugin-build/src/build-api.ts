@@ -250,6 +250,8 @@ export enum ComposerCommandSource {
     Synced = 'synced',
     /** From an installed plugin. */
     Plugin = 'plugin',
+    /** Ships with Agent Storm, which adds it to every thread. */
+    AgentStorm = 'agentStorm',
     /** Anything else, such as an MCP server's prompt. */
     Other = 'other',
 }
@@ -478,12 +480,20 @@ export const buildApi = definePluginApi({
                  */
                 title: nullableShape(''),
                 /**
-                 * Moves the thread into a new worktree, as `moveToWorktree` does, before sending
-                 * `text`. For a Claude thread in a main checkout with an `open-worktree` skill,
-                 * sends `text` to that skill from the checkout instead, and the skill makes the
-                 * worktree.
+                 * Moves the thread into a new worktree, as `moveToWorktree` does, then sends `text`
+                 * to Agent Storm's `open-worktree` skill, which does the work and opens a PR.
                  */
                 isInWorktree: false,
+                /**
+                 * With `isInWorktree`, names the new worktree's folder and branch instead of a name
+                 * made from the thread's title.
+                 */
+                branchName: nullableShape(''),
+                /**
+                 * With `isInWorktree`, sends `text` as it is instead of to the `open-worktree`
+                 * skill.
+                 */
+                isOpenWorktreeSkillSkipped: nullableShape(false),
                 /**
                  * Waits for the worktree and the provider's start before replying, so the returned
                  * thread shows whether starting failed. Otherwise replies as soon as the thread and
@@ -593,6 +603,8 @@ export const buildApi = definePluginApi({
                  * the new branch stacks on that worktree's branch.
                  */
                 baseFolder: nullableShape(''),
+                /** Names the new worktree's folder and branch instead of a name made from the title. */
+                branchName: nullableShape(''),
             }),
             responseShape: threadResponseShape,
         },

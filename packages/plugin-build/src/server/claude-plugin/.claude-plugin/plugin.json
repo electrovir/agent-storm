@@ -1,0 +1,4 @@
+{
+    "description": "Agent Storm's own skills, which every Agent Storm thread can run.",
+    "name": "agent-storm"
+}

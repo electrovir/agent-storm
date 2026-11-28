@@ -1,6 +1,7 @@
 // cspell:words unarchive unarchived unarchives unarchiving
 import {
     hideRepoEndpoint,
+    removeRepoEndpoint,
     settingsEndpoint,
     touchRepoEndpoint,
     type Settings,
@@ -181,8 +182,9 @@ export const VirBuildSidebar = defineAppElement<{
         .chevron {
             display: inline-flex;
             flex-shrink: 0;
-            margin: -6px;
-            padding: 6px;
+            /* Any larger and it reaches past the header's padding, overflowing the sidebar. */
+            margin: -5px;
+            padding: 5px;
             transition: transform 120ms;
             color: ${viraThemeByKeys.grey.foreground['non-body'].foreground.value};
 
@@ -375,6 +377,7 @@ export const VirBuildSidebar = defineAppElement<{
         async function selectThread(thread: Readonly<Thread>) {
             void touchFolder(thread.repoPath);
             inputs.buildState.draftRepoPath.setValue(undefined);
+            inputs.buildState.markedUnreadThreadId.setValue(undefined);
             buildMemory.selectedThread.write(thread.id);
             inputs.route.navigate([
                 thread.id,
@@ -675,6 +678,74 @@ export const VirBuildSidebar = defineAppElement<{
                                                     });
                                                 },
                                             },
+                                            {
+                                                content: 'Remove folder',
+                                                async onClick() {
+                                                    /**
+                                                     * A search may have filtered out some of the
+                                                     * folder's threads.
+                                                     */
+                                                    const activeThreads = (
+                                                        allGroups.find((entry) => {
+                                                            return (
+                                                                entry.repo.path === group.repo.path
+                                                            );
+                                                        })?.threads ?? group.threads
+                                                    ).filter((thread) => {
+                                                        return !archivedThreadIds.has(thread.id);
+                                                    });
+                                                    if (
+                                                        !globalThis.confirm(
+                                                            [
+                                                                `Remove ${group.repo.name} from Agent Storm?`,
+                                                                ...(activeThreads.length
+                                                                    ? [
+                                                                          activeThreads.length === 1
+                                                                              ? 'Its thread will be stopped and archived.'
+                                                                              : `Its ${activeThreads.length} threads will be stopped and archived.`,
+                                                                      ]
+                                                                    : []),
+                                                                'Nothing is deleted from disk.',
+                                                            ].join('\n\n'),
+                                                        )
+                                                    ) {
+                                                        return;
+                                                    }
+                                                    await runAction(async () => {
+                                                        await Promise.all(
+                                                            activeThreads.map(async (thread) => {
+                                                                await buildClient.call(
+                                                                    'archiveThread',
+                                                                    {
+                                                                        threadId: thread.id,
+                                                                    },
+                                                                );
+                                                                markThreadArchived(
+                                                                    inputs.buildState,
+                                                                    thread.id,
+                                                                );
+                                                            }),
+                                                        );
+                                                        await fetchApi(
+                                                            removeRepoEndpoint,
+                                                            HttpMethod.Post,
+                                                            {
+                                                                requestData: {
+                                                                    folder: group.repo.path,
+                                                                },
+                                                            },
+                                                        );
+                                                        await inputs.context.folderData.refresh();
+                                                        if (
+                                                            activeThreads.some((thread) => {
+                                                                return thread.id === activeThreadId;
+                                                            })
+                                                        ) {
+                                                            inputs.route.navigate([]);
+                                                        }
+                                                    });
+                                                },
+                                            },
                                         ])}
                                     </${ViraMenuTrigger}>
                                     <ul>
@@ -688,6 +759,9 @@ export const VirBuildSidebar = defineAppElement<{
                                                                 thread.cwd,
                                                             ),
                                                         isActive: thread.id === activeThreadId,
+                                                        isMarkedUnread:
+                                                            inputs.buildState.markedUnreadThreadId
+                                                                .value === thread.id,
                                                         isArchived: archivedThreadIds.has(
                                                             thread.id,
                                                         ),
@@ -749,6 +823,11 @@ export const VirBuildSidebar = defineAppElement<{
                                                         ${listen(
                                                             VirBuildThreadRow.events.markedUnread,
                                                             async () => {
+                                                                if (thread.id === activeThreadId) {
+                                                                    inputs.buildState.markedUnreadThreadId.setValue(
+                                                                        thread.id,
+                                                                    );
+                                                                }
                                                                 await runAction(async () => {
                                                                     const changed =
                                                                         await buildClient.call(

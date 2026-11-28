@@ -19,6 +19,7 @@ import {
     ThreadStatus,
 } from '../../build-api.js';
 import {parseReasoningEffort, parseReasoningEfforts} from '../../util/reasoning-effort.js';
+import {agentStormSkillsDir, claudePluginName} from '../agent-storm-skills.js';
 import {agentToolServerName, agentToolTimeout} from '../agent-tool-server.js';
 import {syncedSkillsFolder} from './claude-commands.js';
 import {codexDecisions, describeCodexItem, readCodexTokenUsage} from './codex-items.js';
@@ -184,6 +185,15 @@ const extraKeys = {
     allowExtraKeys: true,
 };
 
+/** Codex's visible model list, with the model it marks as its default. */
+async function readCodexModels(rpc: Readonly<CodexRpc>) {
+    const response = await rpc.request('model/list', {
+        limit: 100,
+    });
+    assertValidShape(response, modelListResponseShape, extraKeys);
+    return response.data.filter((model) => !model.hidden);
+}
+
 export async function initializeCodexRpc(rpc: Readonly<CodexRpc>) {
     await rpc.request('initialize', {
         clientInfo: {
@@ -194,6 +204,12 @@ export async function initializeCodexRpc(rpc: Readonly<CodexRpc>) {
         capabilities: null,
     });
     rpc.notify('initialized');
+    /** Gives the process Agent Storm's own skills. */
+    await rpc.request('skills/extraRoots/set', {
+        extraRoots: [
+            agentStormSkillsDir,
+        ],
+    });
 }
 
 const workspaceWriteSandbox = {
@@ -259,11 +275,7 @@ export const codexProvider: ProviderAdapter = {
         });
         try {
             await initializeCodexRpc(rpc);
-            const response = await rpc.request('model/list', {
-                limit: 100,
-            });
-            assertValidShape(response, modelListResponseShape, extraKeys);
-            const visibleModels = response.data.filter((model) => !model.hidden);
+            const visibleModels = await readCodexModels(rpc);
             const legacyModelIds = findLegacyCodexModelIds(
                 visibleModels.map((model) => model.model),
             );
@@ -324,13 +336,19 @@ export const codexProvider: ProviderAdapter = {
                             description: skill.shortDescription || skill.description,
                             argumentHint: '',
                             kind: ComposerCommandKind.Skill,
-                            source: skill.pluginId
-                                ? ComposerCommandSource.Plugin
-                                : skill.path.includes(
-                                        `${sep}skills${sep}${syncedSkillsFolder}${sep}`,
-                                    )
-                                  ? ComposerCommandSource.Synced
-                                  : codexSkillSources[skill.scope] || ComposerCommandSource.Other,
+                            /**
+                             * Codex qualifies Agent Storm's skills with the name in the
+                             * `plugin.json` beside their folder, and lists them with the user's.
+                             */
+                            source: skill.name.startsWith(`${claudePluginName}:`)
+                                ? ComposerCommandSource.AgentStorm
+                                : skill.pluginId
+                                  ? ComposerCommandSource.Plugin
+                                  : skill.path.includes(
+                                          `${sep}skills${sep}${syncedSkillsFolder}${sep}`,
+                                      )
+                                    ? ComposerCommandSource.Synced
+                                    : codexSkillSources[skill.scope] || ComposerCommandSource.Other,
                         };
                     })
             );
@@ -418,6 +436,8 @@ export const codexProvider: ProviderAdapter = {
              * picked. Empty for a process taken over from before a restart, which said it then.
              */
             startedModel: string;
+            /** The model the latest turn ran, once a turn has started. */
+            turnModel: string;
         } = {
             runtimeMode,
             modelSettings: {
@@ -429,6 +449,7 @@ export const codexProvider: ProviderAdapter = {
             isStopped: false,
             items: new Map(),
             startedModel: '',
+            turnModel: '',
         };
         const notificationHandlers: Readonly<
             Record<string, (params: unknown) => Promise<void> | void>
@@ -467,7 +488,8 @@ export const codexProvider: ProviderAdapter = {
             async 'thread/tokenUsage/updated'(params) {
                 const usage = readCodexTokenUsage({
                     params,
-                    model: state.modelSettings.model || state.startedModel || 'codex',
+                    model: state.turnModel || state.startedModel || 'codex',
+                    speedTier: state.modelSettings.speedTier,
                 });
                 if (usage) {
                     await sink.recordUsage(usage);
@@ -612,6 +634,11 @@ export const codexProvider: ProviderAdapter = {
                 cwd,
                 model: model || null,
                 config: {
+                    /**
+                     * Codex's default cuts the repo's `AGENTS.md` files off at 32 KiB, silently
+                     * dropping the rest of a large repo's instructions.
+                     */
+                    project_doc_max_bytes: 1024 * 1024,
                     [`mcp_servers.${agentToolServerName}`]: {
                         url: agentTools.url,
                         http_headers: {
@@ -642,21 +669,50 @@ export const codexProvider: ProviderAdapter = {
             throw error;
         }
 
+        /**
+         * The thread's model and effort, with an unpicked one filled in from Codex's model list,
+         * the same source the model picker labels it from. Left unset, Codex runs `config.toml`'s
+         * `model` and `model_reasoning_effort` instead, which need not match what the picker
+         * shows.
+         */
+        async function resolveTurnModel() {
+            if (state.modelSettings.model && state.modelSettings.effort) {
+                return {
+                    model: state.modelSettings.model,
+                    effort: state.modelSettings.effort,
+                };
+            }
+            const models = await readCodexModels(rpc);
+            const model = models.find((listed) => {
+                return state.modelSettings.model
+                    ? listed.model === state.modelSettings.model
+                    : listed.isDefault;
+            });
+            return {
+                model: state.modelSettings.model || model?.model || '',
+                effort:
+                    state.modelSettings.effort ||
+                    parseReasoningEffort(model?.defaultReasoningEffort),
+            };
+        }
+
         function createSession(codexThreadId: string): ProviderSession {
             return {
                 async send({text}) {
+                    const turnModel = await resolveTurnModel();
                     const turnResponse = await rpc.request('turn/start', {
                         threadId: codexThreadId,
+                        cwd,
                         ...codexRuntimeModes[state.runtimeMode],
                         serviceTier: state.modelSettings.speedTier || 'default',
-                        ...(state.modelSettings.model
+                        ...(turnModel.model
                             ? {
-                                  model: state.modelSettings.model,
+                                  model: turnModel.model,
                               }
                             : {}),
-                        ...(state.modelSettings.effort
+                        ...(turnModel.effort
                             ? {
-                                  effort: state.modelSettings.effort,
+                                  effort: turnModel.effort,
                               }
                             : {}),
                         input: [
@@ -669,6 +725,7 @@ export const codexProvider: ProviderAdapter = {
                     });
                     assertValidShape(turnResponse, turnResponseShape, extraKeys);
                     state.turnId = turnResponse.turn.id;
+                    state.turnModel = turnModel.model;
                 },
                 setRuntimeMode(newRuntimeMode) {
                     state.runtimeMode = newRuntimeMode;

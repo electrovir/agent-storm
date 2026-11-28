@@ -1,3 +1,6 @@
+// cspell:word ultrafast
+
+import {UsageSpeed} from '@agent-storm/plugin-usage/src/usage-api.js';
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {ThreadItemKind, ThreadItemStatus} from '../../build-api.js';
@@ -178,10 +181,12 @@ describe(readCodexTokenUsage.name, () => {
                     },
                 },
                 model: 'gpt-5-codex',
+                speedTier: 'ultrafast',
             }),
             {
                 dedupeKey: 'codex-usage:thread-1:turn-1:1200',
                 model: 'gpt-5-codex',
+                speed: UsageSpeed.Ultrafast,
                 inputTokens: 50,
                 outputTokens: 30,
                 cacheReadTokens: 100,
@@ -198,6 +203,7 @@ describe(readCodexTokenUsage.name, () => {
                     threadId: 'thread-1',
                 },
                 model: 'gpt-5-codex',
+                speedTier: undefined,
             }),
         );
     });

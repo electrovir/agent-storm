@@ -1,4 +1,5 @@
 import {assert} from '@augment-vir/assert';
+import {createArray} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {ThreadItemKind} from '../build-api.js';
 import {buildContextHandoff} from './context-handoff.js';
@@ -57,5 +58,47 @@ describe(buildContextHandoff.name, () => {
         assert.isTrue(handoff.includes('1 older messages are left out.'));
         assert.isFalse(handoff.includes('old '));
         assert.isTrue(handoff.includes('new '));
+    });
+
+    it('counts the separators between messages toward the history limit', () => {
+        const messageCount: number = 3200;
+        const handoff = buildContextHandoff({
+            items: createArray(messageCount, (index) => {
+                return {
+                    kind: ThreadItemKind.UserMessage,
+                    text: `Earlier message ${index}.`,
+                };
+            }),
+            text: 'Current request.',
+        });
+        const history = handoff.slice(
+            handoff.indexOf('[User]\n'),
+            handoff.lastIndexOf('\n\nUser message:\n'),
+        );
+
+        assert.isAtMost(history.length, 64_000);
+        assert.isTrue(history.endsWith('Earlier message 3199.'));
+    });
+
+    it('keeps the end of the latest message when it fills the history limit', () => {
+        const handoff = buildContextHandoff({
+            items: [
+                {
+                    kind: ThreadItemKind.UserMessage,
+                    text: 'Earlier request.',
+                },
+                {
+                    kind: ThreadItemKind.AssistantMessage,
+                    text: `Previous details. ${'x'.repeat(64_000)} Keep the recent requirement.`,
+                },
+            ],
+            text: 'Current request.',
+        });
+
+        assert.isTrue(handoff.includes('[Assistant]\n'));
+        assert.isTrue(
+            handoff.endsWith('Keep the recent requirement.\n\nUser message:\nCurrent request.'),
+        );
+        assert.isFalse(handoff.includes('Earlier request.'));
     });
 });

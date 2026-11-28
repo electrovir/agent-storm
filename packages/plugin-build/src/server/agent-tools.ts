@@ -53,11 +53,32 @@ export type AgentToolContext = Readonly<{
         }>,
     ): Promise<string>;
     /**
+     * The slash command, with any arguments, that Agent Storm's worktree skills review a folder's
+     * work with. Empty when there's none.
+     */
+    findReviewSkill(folder: Readonly<FolderInfo>): Promise<string>;
+    /** Counts the commits checked out at `folder` that its repo's `origin/HEAD` doesn't have. */
+    countCommitsPastDefaultBranch(folder: string): Promise<number>;
+    /**
+     * Renames the thread's worktree branch to `branch` while that branch still has a placeholder
+     * name and hasn't been pushed, and returns whether it did.
+     */
+    renamePlaceholderBranch(params: Readonly<{threadId: string; branch: string}>): Promise<boolean>;
+    /**
      * Runs `action` once the thread's current turn ends. A tool that stops the thread's own session
      * waits for this, since stopping it mid-turn would end the very call running the tool.
      */
     runAfterTurn(threadId: string, action: () => Promise<void>): void;
 }>;
+
+/** Throws when `branchName` isn't usable as both a worktree's folder name and its branch name. */
+function assertValidBranchName(branchName: string | undefined) {
+    if (branchName && !/^[a-zA-Z0-9][\w.-]*$/.test(branchName)) {
+        throw new Error(
+            `branchName "${branchName}" names both the worktree's folder and its branch, so it may hold only letters, digits, '.', '_', and '-', starting with a letter or digit.`,
+        );
+    }
+}
 
 /**
  * Covers worktrees made outside Agent Storm too, such as by a worktree skill, which
@@ -74,6 +95,16 @@ function isInWorktree({
         !!thread.worktreeBranch ||
         folders.some((folder) => folder.path === thread.cwd && !!folder.parentRepoPath)
     );
+}
+
+/** Which case `move_to_worktree` took, by the calling thread's folder. */
+export enum MoveToWorktreeOutcome {
+    /** From a checkout or worktree root: the thread moves into a new worktree after its turn. */
+    MovesAfterTurn = 'movesAfterTurn',
+    /** From a worktree with no work in it yet: the thread stays and does the work there. */
+    StaysInFreshWorktree = 'staysInFreshWorktree',
+    /** From a worktree that has work: a new thread does the work in a new worktree. */
+    StartedNewThread = 'startedNewThread',
 }
 
 /** One MCP tool, as the tool server lists and runs it. */
@@ -251,8 +282,9 @@ const speedTierSchema = {
 /** What both providers show their agent about Agent Storm's tools as a whole. */
 export const agentToolInstructions = [
     'Agent Storm is the app running this chat. These tools act on its chat threads, this one included, and on the folders in its sidebar.',
-    "Before changing files, find this thread's folder with list_folders. In a plain checkout (isWorktreeRoot false), change files right there, and use move_to_worktree only when the user asks for a worktree. In a worktree root (isWorktreeRoot true), move this thread into its own worktree with move_to_worktree first, unless it is in one already. A thread in a worktree never leaves it: work for another worktree, including one you just made, goes to a new thread from create_thread, with isInWorktree for a new worktree or repoPath set to an existing worktree's folder. Make worktrees only with move_to_worktree or create_thread, never with `git worktree add`, and change files only inside this thread's folder: the user finds a thread's changes through its folder.",
-    "Tools that restart or stop this thread's session (move_to_worktree, move_to_folder, archive_thread on this thread, and configure_thread changing this thread's model) take effect when your turn ends, so call them last and then end your turn.",
+    "Before changing files, find this thread's folder with list_folders. In a plain checkout (isWorktreeRoot false), change files right there, and use move_to_worktree only when the user asks for a worktree. In a worktree root (isWorktreeRoot true), call move_to_worktree first. To start work in a new worktree from any folder, call move_to_worktree once and follow what it returns: it moves this thread out of a checkout, keeps this thread in a worktree that has no work yet, and otherwise starts a new thread in a new worktree. A thread in a worktree never leaves it: work for an existing worktree goes to a new thread from create_thread with repoPath set to that worktree's folder, and separate work that should end in its own PR goes to create_thread with isInWorktree. Make worktrees only with move_to_worktree or create_thread, never with `git worktree add`, and change files only inside this thread's folder: the user finds a thread's changes through its folder.",
+    "When this thread's first message refers to work described elsewhere instead of stating it, such as in a linked Slack thread, ticket, or document, call rename_thread with a 1 to 4 word title for the whole task as soon as you have read that description.",
+    "Tools that restart or stop this thread's session (move_to_worktree when it moves this thread, move_to_folder, archive_thread on this thread, and configure_thread changing this thread's model) take effect when your turn ends, so call them last and then end your turn.",
     'The chat shows images inline: to show the user an image file, call show_image, or put a Markdown image with its absolute path in your reply, such as ![Chart](/tmp/chart.png).',
     'To show the user a rendered HTML page, Markdown file, or image in a tab beside the chat, call show_file.',
     'When you need the user to approve or decide something and you have a tool for asking questions, such as AskUserQuestion, ask through it rather than ending your reply with a question: the sidebar shows a thread as waiting on the user only while such a request is open. If the user replies with a question or objection instead of a choice, answer it in chat and end your turn without asking again.',
@@ -411,7 +443,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
     defineAgentTool({
         name: 'list_folders',
         description:
-            "Lists one repo's folders in Agent Storm's sidebar: its checkout and its worktrees, with each one's branch, git state, and PR.",
+            "Lists one repo's folders in Agent Storm's sidebar: its checkout and its worktrees, with each one's branch, git state, PR, and reviewSkill: the slash command, with any arguments, that Agent Storm's worktree skills review work in that folder with, empty for none.",
         isReadOnly: true,
         inputSchema: {
             type: 'object',
@@ -430,32 +462,39 @@ export const agentTools: ReadonlyArray<AgentTool> = [
             const rootPath =
                 folders.find((folder) => folder.path === repoPath)?.parentRepoPath || repoPath;
             return {
-                folders: folders
-                    .filter(
-                        (folder) => folder.path === rootPath || folder.parentRepoPath === rootPath,
-                    )
-                    .map((folder) => {
-                        return selectFrom(folder, {
-                            path: true,
-                            name: true,
-                            parentRepoPath: true,
-                            isWorktreeRoot: true,
-                            branch: true,
-                            git: true,
-                            prUrl: true,
-                            prBaseBranch: true,
-                            prStatus: true,
-                        });
-                    }),
+                folders: await Promise.all(
+                    folders
+                        .filter((folder) => {
+                            return folder.path === rootPath || folder.parentRepoPath === rootPath;
+                        })
+                        .map(async (folder) => {
+                            return {
+                                ...selectFrom(folder, {
+                                    path: true,
+                                    name: true,
+                                    parentRepoPath: true,
+                                    isWorktreeRoot: true,
+                                    branch: true,
+                                    git: true,
+                                    prUrl: true,
+                                    prBaseBranch: true,
+                                    prStatus: true,
+                                }),
+                                reviewSkill: await context.findReviewSkill(folder),
+                            };
+                        }),
+                ),
             };
         },
     }),
     defineAgentTool({
         name: 'move_to_worktree',
         description: [
-            "Moves this thread into a new git worktree of its checkout, on a new branch, and runs the repo's post-worktree command there.",
-            'The move happens when your turn ends, and the thread works in the worktree from then on, so call this last and then end your turn.',
-            'Asks the user to approve the move first, unless they already asked for a worktree, and fails if they decline or if this thread is already in a worktree.',
+            "Starts this thread's work in a new git worktree, on a new branch, and runs the repo's post-worktree command there. Returns `outcome`, saying which of three cases happened, and a `message` to follow.",
+            `${MoveToWorktreeOutcome.MovesAfterTurn}: from a checkout or worktree root, this thread moves into the new worktree when your turn ends, then gets continuationPrompt, so call this last and then end your turn.`,
+            `${MoveToWorktreeOutcome.StaysInFreshWorktree}: from a worktree with no work yet (no commits past origin/HEAD, no uncommitted changes, and no PR) and no baseFolder, nothing moves, so keep working right here in this same turn.`,
+            `${MoveToWorktreeOutcome.StartedNewThread}: from a worktree that has work, a new thread starts in a new worktree with continuationPrompt as its first message, which this case requires. Returns its threadId and folder. End your turn.`,
+            'Asks the user to approve making a worktree, unless they already asked for one, and fails if they decline.',
         ].join(' '),
         isReadOnly: false,
         asksForApproval: true,
@@ -466,12 +505,17 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 continuationPrompt: {
                     type: 'string',
                     description:
-                        'Sent to this thread once it is in the worktree, to carry on the work there. Omit to wait for the user.',
+                        'The work to do in the new worktree. Sent to this thread once it moves, or to the new thread as its first message. Omit to wait for the user after a move.',
+                },
+                branchName: {
+                    type: 'string',
+                    description:
+                        "The new worktree's branch and folder name, made of letters, digits, '.', '_', and '-'. In a worktree with no work yet, renames this thread's branch to it while that branch still has a placeholder name and hasn't been pushed. Defaults to a name from this thread's title.",
                 },
                 isRequestedByUser: {
                     type: 'boolean',
                     description:
-                        "True when the user's own message asked for a worktree, such as by invoking a worktree skill or saying they want one. Skips asking the user to approve the move.",
+                        "True when the user's own message asked for a worktree, such as by invoking a worktree skill or saying they want one. Skips asking the user to approve the worktree.",
                 },
                 baseFolder: {
                     type: 'string',
@@ -484,15 +528,6 @@ export const agentTools: ReadonlyArray<AgentTool> = [
             const thread = await context.findThread(callerId);
             const folders = await context.listFolders();
             if (
-                isInWorktree({
-                    thread,
-                    folders,
-                })
-            ) {
-                throw new Error(
-                    'This thread is already in a worktree, so it stays there. Start a new thread for the new work with create_thread and isInWorktree instead.',
-                );
-            } else if (
                 input.baseFolder &&
                 !folders.some((folder) => {
                     return (
@@ -505,39 +540,130 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                     `${input.baseFolder} isn't a worktree of ${thread.repoPath} in Agent Storm's sidebar.`,
                 );
             }
-            const decision = input.isRequestedByUser
-                ? ApprovalDecision.Approve
-                : await context.requestApproval({
-                      threadId: callerId,
-                      title: 'Move this thread to a new worktree',
-                      detail: input.baseFolder
-                          ? `${thread.cwd}, branched from ${input.baseFolder}`
-                          : thread.cwd,
-                      reason: 'Makes a new git worktree of this folder, on a new branch, and moves this thread into it.',
-                      signal,
-                  });
-            if (decision === ApprovalDecision.Decline) {
-                throw new Error('The user declined moving this thread to a new worktree.');
-            }
-            context.runAfterTurn(callerId, async () => {
-                const {thread} = await context.calls.moveToWorktree({
-                    threadId: callerId,
-                    baseFolder: input.baseFolder,
-                });
-                if (input.continuationPrompt) {
-                    await context.calls.sendMessage({
-                        threadId: callerId,
-                        text: [
-                            `This thread moved to a new worktree at ${thread.cwd}. Work there, using paths under that folder.`,
-                            input.continuationPrompt,
-                        ].join('\n\n'),
-                    });
-                }
+            assertValidBranchName(input.branchName);
+            const threadFolder = folders.find((folder) => folder.path === thread.cwd);
+            const isThreadInWorktree = isInWorktree({
+                thread,
+                folders,
             });
-            return {
-                message:
-                    'This thread moves to a new worktree when your turn ends. End your turn now.',
-            };
+            if (
+                isThreadInWorktree &&
+                !input.baseFolder &&
+                threadFolder &&
+                !threadFolder.git.dirty &&
+                !threadFolder.prUrl &&
+                (await context.countCommitsPastDefaultBranch(thread.cwd).catch(() => undefined)) ===
+                    0
+            ) {
+                const isBranchRenamed = input.branchName
+                    ? await context.renamePlaceholderBranch({
+                          threadId: callerId,
+                          branch: input.branchName,
+                      })
+                    : false;
+                const branch =
+                    (await context.findThread(callerId)).worktreeBranch || threadFolder.branch;
+                return {
+                    outcome: MoveToWorktreeOutcome.StaysInFreshWorktree,
+                    folder: thread.cwd,
+                    branch,
+                    isBranchRenamed,
+                    message: [
+                        `This thread is already in a worktree with no work yet, at ${thread.cwd}, so it stays there. Do the work right here in this same turn: don't end your turn, and don't start another thread for it.`,
+                        input.branchName && branch !== input.branchName
+                            ? `Its branch keeps the name ${branch}, since only a placeholder name that hasn't been pushed gets renamed.`
+                            : '',
+                    ]
+                        .filter(Boolean)
+                        .join(' '),
+                };
+            } else if (isThreadInWorktree && !input.continuationPrompt) {
+                throw new Error(
+                    "This thread's worktree already has work, so the new work goes to a new thread in a new worktree. Call move_to_worktree again with continuationPrompt set to that work, as the new thread's first message.",
+                );
+            } else if (
+                input.branchName &&
+                folders.some((folder) => {
+                    return (
+                        folder.name === input.branchName &&
+                        (folder.path === thread.repoPath ||
+                            folder.parentRepoPath === thread.repoPath)
+                    );
+                })
+            ) {
+                throw new Error(
+                    `${thread.repoPath} already has a folder named ${input.branchName}. Pass a different branchName.`,
+                );
+            } else {
+                const decision = input.isRequestedByUser
+                    ? ApprovalDecision.Approve
+                    : await context.requestApproval({
+                          threadId: callerId,
+                          title: isThreadInWorktree
+                              ? 'Start a new thread in a new worktree'
+                              : 'Move this thread to a new worktree',
+                          detail: [
+                              isThreadInWorktree ? input.baseFolder || thread.repoPath : thread.cwd,
+                              !isThreadInWorktree && input.baseFolder
+                                  ? `, branched from ${input.baseFolder}`
+                                  : '',
+                              input.branchName ? `, on branch ${input.branchName}` : '',
+                          ].join(''),
+                          reason: isThreadInWorktree
+                              ? "This thread's worktree already has work, so this makes a new git worktree, on a new branch, and starts a new thread in it for the new work."
+                              : 'Makes a new git worktree of this folder, on a new branch, and moves this thread into it.',
+                          signal,
+                      });
+                if (decision === ApprovalDecision.Decline) {
+                    throw new Error('The user declined making a new worktree.');
+                } else if (isThreadInWorktree) {
+                    const {thread: newThread} = await context.calls.createThread({
+                        repoPath: input.baseFolder || thread.repoPath,
+                        provider: thread.provider,
+                        model: thread.model,
+                        effort: thread.effort,
+                        /** Fast mode costs more, so it stays with the thread it was turned on in. */
+                        speedTier: null,
+                        runtimeMode: thread.runtimeMode,
+                        text: input.continuationPrompt || '',
+                        isInWorktree: true,
+                        branchName: input.branchName,
+                        isOpenWorktreeSkillSkipped: true,
+                        isStartAwaited: true,
+                        isSidebarThread: true,
+                    });
+                    return {
+                        outcome: MoveToWorktreeOutcome.StartedNewThread,
+                        threadId: newThread.id,
+                        folder: newThread.cwd,
+                        message: newThread.worktreeBranch
+                            ? `This thread's worktree already has work, so thread ${newThread.id} started in a new worktree at ${newThread.cwd} with continuationPrompt as its first message, and does the work there. End your turn now.`
+                            : `This thread's worktree already has work, so thread ${newThread.id} started with continuationPrompt as its first message, but making its worktree failed, so it works in ${newThread.cwd}. Tell the user, then end your turn.`,
+                    };
+                } else {
+                    context.runAfterTurn(callerId, async () => {
+                        const {thread} = await context.calls.moveToWorktree({
+                            threadId: callerId,
+                            baseFolder: input.baseFolder,
+                            branchName: input.branchName,
+                        });
+                        if (input.continuationPrompt) {
+                            await context.calls.sendMessage({
+                                threadId: callerId,
+                                text: [
+                                    `This thread moved to a new worktree at ${thread.cwd}. Work there, using paths under that folder.`,
+                                    input.continuationPrompt,
+                                ].join('\n\n'),
+                            });
+                        }
+                    });
+                    return {
+                        outcome: MoveToWorktreeOutcome.MovesAfterTurn,
+                        message:
+                            'This thread moves to a new worktree when your turn ends. End your turn now.',
+                    };
+                }
+            }
         },
     }),
     defineAgentTool({
@@ -621,7 +747,12 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 isInWorktree: {
                     type: 'boolean',
                     description:
-                        'Moves the new thread into a new worktree beside its folder before sending its first message. For a Claude thread in a main checkout with an open-worktree skill, runs that skill on the message instead, which makes the worktree and opens a PR.',
+                        "Makes a new worktree beside the thread's folder, then runs Agent Storm's open-worktree skill on the message, which does the work, reviews it, and opens a PR.",
+                },
+                branchName: {
+                    type: 'string',
+                    description:
+                        "With isInWorktree, the new worktree's branch and folder name, made of letters, digits, '.', '_', and '-'. Defaults to a name from the thread's title.",
                 },
                 provider: providerSchema,
                 model: modelSchema,
@@ -642,6 +773,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                     `${input.repoPath} isn't a folder in Agent Storm's sidebar, so a thread there would add a new group to it. Pass a folder from list_folders as repoPath.`,
                 );
             }
+            assertValidBranchName(input.branchName);
             const caller = await context.findThread(callerId);
             const runtimeMode = input.runtimeMode || caller.runtimeMode;
             assertWithinCallerMode({
@@ -659,6 +791,7 @@ export const agentTools: ReadonlyArray<AgentTool> = [
                 runtimeMode,
                 text: input.text,
                 isInWorktree: !!input.isInWorktree,
+                branchName: input.branchName,
                 isStartAwaited: true,
                 isSidebarThread: true,
             });
@@ -727,7 +860,8 @@ export const agentTools: ReadonlyArray<AgentTool> = [
     }),
     defineAgentTool({
         name: 'rename_thread',
-        description: "Changes a thread's title in Agent Storm's sidebar.",
+        description:
+            "Changes a thread's title in Agent Storm's sidebar. Also renames the thread's worktree branch to match while that branch still has a placeholder name and hasn't been pushed.",
         isReadOnly: false,
         inputSchema: {
             type: 'object',

@@ -13,21 +13,20 @@ import {AiProvider} from '../../build-api.js';
 import {buildClient} from '../../util/build-client.js';
 import {findThreadRepos} from '../../util/build-state.js';
 import {
-    originModelFallbacks,
     readModelDefaults,
     writeModelDefaults,
     type ModelDefault,
     type ModelDefaults,
 } from '../../util/model-default-settings.js';
+import {findPathName} from '../../util/thread-timeline.js';
 import {VirAiChatModelPicker, type ProviderModelList} from './vir-ai-chat-model-picker.element.js';
 
 /** The background threads whose model the Settings modal can set. */
 export const pluginThreadModelLabels: Readonly<
-    Record<ThreadOrigin.Review | ThreadOrigin.Watch | ThreadOrigin.SelfImprove, string>
+    Record<ThreadOrigin.Review | ThreadOrigin.Watch, string>
 > = {
     [ThreadOrigin.Review]: 'Manual review model',
     [ThreadOrigin.Watch]: 'Watch mode model',
-    [ThreadOrigin.SelfImprove]: 'Self-improvement model',
 };
 
 /**
@@ -96,6 +95,7 @@ export const VirAiChatModelDefaults = defineAppElement<{
     render({inputs, state, dispatch, events}) {
         const defaults = readModelDefaults(inputs.settings);
         const folder = inputs.folderPicker?.folder;
+        const folderRepos = findThreadRepos(inputs.context);
         const origin = inputs.origin;
         const value = origin
             ? defaults.origins?.[origin]
@@ -104,11 +104,8 @@ export const VirAiChatModelDefaults = defineAppElement<{
                   ? defaults.folders[folder]
                   : undefined
               : defaults.global || undefined;
-        const originFallback = origin ? originModelFallbacks[origin] : undefined;
         const unsetDescription = origin
-            ? originFallback
-                ? 'Unset, these threads run on the model shown.'
-                : "Unset, these threads start on their folder's AI chat default."
+            ? "Unset, these threads start on their folder's AI chat default."
             : inputs.folderPicker
               ? 'Unset, new chats here use the global default until your next pick in one sets this.'
               : 'Unset, your next pick in any AI chat sets this.';
@@ -162,7 +159,22 @@ export const VirAiChatModelDefaults = defineAppElement<{
                       description: 'The folder whose AI chat default to change.',
                   })}>
                       <${ViraDropdown.assign({
-                          options: findThreadRepos(inputs.context)
+                          options: [
+                              ...folderRepos,
+                              /**
+                               * The folder list only has saved repos and their worktrees, so a
+                               * sidebar folder that only threads point at, such as one deleted from
+                               * disk, needs its own option to show as selected.
+                               */
+                              ...(folder && !folderRepos.some((repo) => repo.path === folder)
+                                  ? [
+                                        {
+                                            path: folder,
+                                            name: findPathName(folder),
+                                        },
+                                    ]
+                                  : []),
+                          ]
                               .map((repo) => {
                                   return {
                                       value: repo.path,
@@ -194,7 +206,7 @@ export const VirAiChatModelDefaults = defineAppElement<{
             : nothing;
 
         /** An unset default shows what it falls back to. */
-        const shown = value || originFallback || defaults.global;
+        const shown = value || defaults.global;
         const modelRows =
             inputs.folderPicker && !folder
                 ? nothing
