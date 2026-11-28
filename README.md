@@ -37,4 +37,4 @@ If you lose the secret, delete `~/.agent-storm/server-state/auth-secret` (or `.n
 
 ## Config
 
-User settings live at `~/.agent-storm/settings.json` (YAML and TOML also work, and are converted to JSON on the first save). The settings modal (gear icon, top of the sidebar) edits it in place. A repo can add its own read-only defaults in `.agent-storm/settings.json` (or `.yaml` or `.toml`) in any folder from the repo up to your home folder.
+User settings live at `~/.agent-storm/settings.json` (YAML and TOML also work, and are converted to JSON on the first save). The settings modal (gear icon, top of the sidebar) edits it in place. A repo can add its own read-only defaults in `.agent-storm/agent-storm.config.ts` (or `.js`, `.json`, `.yaml`, `.toml`) in any folder from the repo up to your home folder. The same file at the repo root defines the repo's bots (see [`@agent-storm/bot`](packages/bot)). Type a TS config with `defineAgentStormConfig` from [`@agent-storm/config`](packages/config).

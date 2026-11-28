@@ -1,9 +1,9 @@
+import {FolderSettingsApproval, type approvedFolderSettingsShape} from '@agent-storm/common';
 import {
-    FolderSettingsApproval,
-    folderSettingsShape,
-    type approvedFolderSettingsShape,
-    type FolderSettings,
-} from '@agent-storm/common';
+    agentStormConfigBaseName,
+    agentStormConfigShape,
+    type AgentStormConfig,
+} from '@agent-storm/config';
 import {assertWrap, check} from '@augment-vir/assert';
 import {extractErrorMessage, omitObjectKeys} from '@augment-vir/common';
 import {normalizePath} from 'agent-storm-util';
@@ -33,7 +33,7 @@ type FolderSettingsFile = {
     contentHash: string;
     approval: FolderSettingsApproval;
     /** Undefined when the file is skipped or invalid, which `problem` explains. */
-    folderSettings: FolderSettings | undefined;
+    folderSettings: AgentStormConfig | undefined;
     /** Also set when the file is read but some of its fields are held back. */
     problem: string;
 };
@@ -111,7 +111,7 @@ async function readFolderSettingsFile({
             : assertWrap.isDefined(rawFileContentParsers[assertWrap.isDefined(fileType)])({
                   rawContents: text,
               });
-        assertValidShape(parsed, folderSettingsShape, {}, 'Invalid folder settings.');
+        assertValidShape(parsed, agentStormConfigShape, {}, 'Invalid Agent Storm config.');
         /** These fields run commands, so they're held back until the user approves the file. */
         const commandFields = [
             parsed.postWorktreeCmd ? 'postWorktreeCmd' : '',
@@ -158,9 +158,9 @@ export async function loadFolderSettingsApprovals() {
 }
 
 /**
- * Every `.agent-storm/settings.*` file from `folder` up to the home folder, nearest first. The home
- * folder's own is skipped: that's the user's settings file (or the main instance's, for a debug
- * instance), not a folder's.
+ * Every `.agent-storm/agent-storm.config.*` file from `folder` up to the home folder, nearest
+ * first. The home folder's own is skipped: `~/.agent-storm` is Agent Storm's data folder, not a
+ * folder's.
  */
 export async function readFolderSettingsFiles({
     folder,
@@ -174,7 +174,7 @@ export async function readFolderSettingsFiles({
         const paths = await findConfigFilesUpward({
             startDirectory: folder,
             stopDirectory: home,
-            baseName: '.agent-storm/settings',
+            baseName: agentStormConfigBaseName,
         });
         return await Promise.all(
             paths
@@ -215,12 +215,12 @@ const folderSettingsCache = new Map<
     string,
     {
         readAtMs: number;
-        folderLayers: Promise<FolderSettings[]>;
+        folderLayers: Promise<AgentStormConfig[]>;
     }
 >();
 
 /** The settings of each of `folder`'s valid settings files, nearest first. */
-export async function loadFolderSettings(folder: string): Promise<FolderSettings[]> {
+export async function loadFolderSettings(folder: string): Promise<AgentStormConfig[]> {
     const key = normalizePath(folder);
     const cached = folderSettingsCache.get(key);
     if (

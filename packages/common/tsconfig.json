@@ -13,5 +13,10 @@
         "eslint.config.ts",
         "src/all-files-for-code-coverage.test.ts"
     ],
-    "extends": "../../configs/tsconfig.base.json"
+    "extends": "../../configs/tsconfig.base.json",
+    "references": [
+        {
+            "path": "../config"
+        }
+    ]
 }

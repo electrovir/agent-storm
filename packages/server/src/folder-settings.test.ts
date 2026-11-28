@@ -77,7 +77,7 @@ describe(readFolderSettingsFiles.name, () => {
     it('reads data fields without a problem', async () => {
         assert.deepEquals(
             await readSettingsFile({
-                fileName: 'settings.json',
+                fileName: 'agent-storm.config.json',
                 contents: JSON.stringify(dataFields),
             }),
             [
@@ -89,10 +89,31 @@ describe(readFolderSettingsFiles.name, () => {
             ],
         );
     });
+    it('reads bots beside folder settings', async () => {
+        const config = {
+            ...dataFields,
+            bots: {
+                hello: '../hello.bot.ts',
+            },
+        };
+        assert.deepEquals(
+            await readSettingsFile({
+                fileName: 'agent-storm.config.json',
+                contents: JSON.stringify(config),
+            }),
+            [
+                {
+                    folderSettings: config,
+                    approval: FolderSettingsApproval.NotNeeded,
+                    hasProblem: false,
+                },
+            ],
+        );
+    });
     it('holds back fields that run commands', async () => {
         assert.deepEquals(
             await readSettingsFile({
-                fileName: 'settings.json',
+                fileName: 'agent-storm.config.json',
                 contents: JSON.stringify({
                     ...dataFields,
                     ...commandFields,
@@ -110,7 +131,7 @@ describe(readFolderSettingsFiles.name, () => {
     it('applies fields that run commands once approved', async () => {
         assert.deepEquals(
             await readSettingsFile({
-                fileName: 'settings.json',
+                fileName: 'agent-storm.config.json',
                 contents: JSON.stringify({
                     ...dataFields,
                     ...commandFields,
@@ -132,7 +153,7 @@ describe(readFolderSettingsFiles.name, () => {
     it('skips TS settings files', async () => {
         assert.deepEquals(
             await readSettingsFile({
-                fileName: 'settings.ts',
+                fileName: 'agent-storm.config.ts',
                 contents: 'export default {};',
             }),
             [
@@ -147,7 +168,7 @@ describe(readFolderSettingsFiles.name, () => {
     it('runs an approved TS settings file', async () => {
         assert.deepEquals(
             await readSettingsFile({
-                fileName: 'settings.ts',
+                fileName: 'agent-storm.config.ts',
                 contents: `export default ${JSON.stringify(dataFields)};`,
                 isApproved: true,
             }),
@@ -163,7 +184,7 @@ describe(readFolderSettingsFiles.name, () => {
     it('skips an invalid file', async () => {
         assert.deepEquals(
             await readSettingsFile({
-                fileName: 'settings.json',
+                fileName: 'agent-storm.config.json',
                 contents: JSON.stringify({
                     forges: 5,
                 }),

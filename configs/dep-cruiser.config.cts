@@ -42,7 +42,8 @@ const depCruiserConfig: IConfiguration = {
         ...(baseConfig.forbidden || []),
         {
             name: 'core-only-to-common',
-            comment: 'Core is what the host and every plugin build on, so it can import neither.',
+            comment:
+                'Core is what the host and every plugin build on, so it can import neither, only common and the config library.',
             severity: 'error',
             from: {
                 path: '^packages/core/',
@@ -50,14 +51,14 @@ const depCruiserConfig: IConfiguration = {
             to: {
                 path: '^packages/',
                 pathNot: [
-                    '^packages/(common|core)/',
+                    '^packages/(common|config|core)/',
                 ],
             },
         },
         {
             name: 'plugin-only-to-plugins',
             comment:
-                'A plugin builds on core, common, the agent-storm-util and bot libraries, and other plugins, never on the host that registers it.',
+                'A plugin builds on core, common, the agent-storm-util, bot, and config libraries, and other plugins, never on the host that registers it.',
             severity: 'error',
             from: {
                 path: '^packages/plugin-[^/]+/',
@@ -65,7 +66,7 @@ const depCruiserConfig: IConfiguration = {
             to: {
                 path: '^packages/',
                 pathNot: [
-                    '^packages/(agent-storm-util|bot|common|core|plugin-[^/]+)/',
+                    '^packages/(agent-storm-util|bot|common|config|core|plugin-[^/]+)/',
                 ],
             },
         },
