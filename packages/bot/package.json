@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/bot",
-    "version": "0.9.0",
+    "version": "0.10.0",
     "description": "Define bots that run on a schedule, do routine work in scripts, and call AI only when needed, inside Agent Storm or on their own.",
     "keywords": [
         "agent-storm",
@@ -39,7 +39,7 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/config": "^0.9.0",
+        "@agent-storm/config": "^0.10.0",
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",
         "@augment-vir/node": "^32.7.1",

@@ -55,12 +55,6 @@ export const authSecretPath = resolve(serverStateDir, 'auth-secret');
 export const lastUserInputPath = resolve(serverStateDir, 'last-user-input.json');
 
 /**
- * The checkout the app runs from, which self-improvement works on a copy of. A release has none,
- * and a named instance is a test copy of the default one, so neither improves itself.
- */
-export const appCheckoutPath = releaseBuild || instanceName ? undefined : monorepoRoot;
-
-/**
  * Filename portion of {@link authSecretPath}, used to filter `fs.watch` events on
  * {@link serverStateDir} (the watcher delivers basenames, not full paths).
  */

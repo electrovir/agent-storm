@@ -706,19 +706,26 @@ function findKindGroupId(layout: Readonly<TabLayout>, kind: string) {
 
 /**
  * Makes one session kind's tabs match the folder's sessions: tabs whose session is gone close, and
- * missing ones join the group already holding that kind's tabs, else a new group split off to the
- * right of the active group. Neither the active group nor any group's shown tab changes, except
- * that a new session shows in place of a closed one. Returns `layout` itself when nothing changed.
+ * missing ones join the group already holding that kind's tabs, else the rightmost group when the
+ * layout is already split, else a new group split off to the right, or with
+ * `isNewKindInActiveGroup` the active group itself. A session never adds a third column. Neither
+ * the active group nor any group's shown tab changes, except that a new session shows in place of a
+ * closed one. Returns `layout` itself when nothing changed.
  */
 export function syncSessionTabs(
     layout: Readonly<TabLayout>,
     {
         kind,
         sessionIds,
-    }: Readonly<{
-        kind: PaneKind;
-        sessionIds: ReadonlyArray<string>;
-    }>,
+        isNewKindInActiveGroup,
+    }: Readonly<
+        {
+            kind: PaneKind;
+            sessionIds: ReadonlyArray<string>;
+        } & PartialWithUndefined<{
+            isNewKindInActiveGroup: boolean;
+        }>
+    >,
 ): Readonly<TabLayout> {
     const incomingIds = sessionIds.map((sessionId) => {
         return toSessionTabId({
@@ -740,22 +747,32 @@ export function syncSessionTabs(
             kind,
         };
         const groupId = findKindGroupId(current, kind) ?? kindGroupId;
+        const groupIds = listGroupIds(current);
         const placed =
             groupId && current.groups[groupId]
                 ? addTab(current, {
                       tab,
                       groupId,
                   })
-                : splitTab(
-                      addTab(current, {
+                : isNewKindInActiveGroup
+                  ? addTab(current, {
+                        tab,
+                    })
+                  : groupIds.length > 1
+                    ? addTab(current, {
                           tab,
-                      }),
-                      {
-                          tabId,
-                          groupId: current.activeGroupId,
-                          edge: SplitEdge.Right,
-                      },
-                  );
+                          groupId: groupIds.at(-1),
+                      })
+                    : splitTab(
+                          addTab(current, {
+                              tab,
+                          }),
+                          {
+                              tabId,
+                              groupId: current.activeGroupId,
+                              edge: SplitEdge.Right,
+                          },
+                      );
         return {
             ...placed,
             /**

@@ -125,10 +125,12 @@ const coreSettingsSections: Readonly<
             'repo',
             'worktree',
             'init command',
+            'review skill',
             'override',
         ],
         schemaKeys: [
             'postWorktreeCmd',
+            'reviewSkill',
         ],
     },
     [SettingsSection.Notifications]: {

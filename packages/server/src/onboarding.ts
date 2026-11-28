@@ -7,7 +7,7 @@ import {InstanceEnvVar, instanceName, launcherLogPath} from 'agent-storm-util';
 import {delimiter, dirname} from 'node:path';
 import {parseUrl} from 'url-vir';
 import {loadAppState, updateAppState} from './app-state.js';
-import {appCheckoutPath, releaseLauncherPath} from './file-paths.js';
+import {releaseLauncherPath} from './file-paths.js';
 import {isGhAvailable} from './git.js';
 import {
     canInstallLoginItem,
@@ -82,7 +82,6 @@ export async function readOnboardingStatus(): Promise<OnboardingStatus> {
         shouldShowOnboarding: !appState.isOnboardingDone && !appState.repos.length,
         isGitHubConnected,
         canStartAtLogin: canStartAtLogin(),
-        canSelfImprove: !!appCheckoutPath,
         isStartAtLoginEnabled: canStartAtLogin() && isLoginItemPresent,
     };
 }

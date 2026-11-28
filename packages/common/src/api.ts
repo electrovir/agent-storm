@@ -228,6 +228,38 @@ export const settingsJsonSchema = {
                 ],
             },
         },
+        reviewSkill: {
+            type: 'string',
+            default: '',
+            title: 'Default review skill',
+            description:
+                "Slash command, with any arguments, that Agent Storm's worktree skills review their work with before opening a PR, such as `/review-branch local`. Empty skips the review. A folder settings file or a per-folder skill overrides it.",
+        },
+        /** Per-folder review skills, set from the Settings modal's Folders section. */
+        folderReviewSkills: {
+            type: 'array',
+            default: [],
+            title: 'Folder review skills',
+            items: {
+                type: 'object',
+                additionalProperties: false,
+                title: 'Folder review skill',
+                properties: {
+                    folder: {
+                        type: 'string',
+                        title: 'Folder',
+                    },
+                    reviewSkill: {
+                        type: 'string',
+                        title: 'Review skill',
+                    },
+                },
+                required: [
+                    'folder',
+                    'reviewSkill',
+                ],
+            },
+        },
         /** The Review tab's settings. */
         review: {
             type: 'object',
@@ -497,14 +529,6 @@ export const settingsJsonSchema = {
             description:
                 "When on, a manual review only starts when you click Start Manual Review. Agent Storm stops starting reviews for PRs waiting on you, restarting them when your review is requested again or the PR gets new commits, and reviewing a Build folder's branch once it gets a PR.",
         },
-        /** Intentionally absent from `required` so configs written by older builds still load. */
-        disableSelfImprovement: {
-            type: 'boolean',
-            default: false,
-            title: 'Disable self-improvement',
-            description:
-                "When on, agent-storm stops improving itself while you're away. Otherwise, with debug logging on, once you've been away for hours an AI thread works on a copy of this checkout to make agent-storm faster, cheaper in tokens and GitHub rate limits, less buggy, and cleaner, then stops when you're back and proposes its changes for you to approve.",
-        },
         /**
          * Path to a TLS certificate. When set, the vite dev server serves the frontend over https
          * with it, pairing it with the key file of the same name — see `readTlsOptions` in
@@ -593,6 +617,8 @@ export const settingsJsonSchema = {
     required: [
         'postWorktreeCmd',
         'folderPostWorktreeCmds',
+        'reviewSkill',
+        'folderReviewSkills',
         'review',
         'typography',
         'forges',
@@ -606,6 +632,7 @@ export const settingsShape = mapSchemaToShape(settingsJsonSchema);
 /** Setting keys that a settings section's own element renders instead of a generic schema row. */
 export const customSettingKeys = [
     'folderPostWorktreeCmds',
+    'folderReviewSkills',
     'review',
     'typography',
     'forges',
@@ -623,47 +650,6 @@ export type SchemaSettingKey = Exclude<
     keyof typeof settingsJsonSchema.properties,
     CustomSettingKey
 >;
-
-/**
- * What a folder's own `.agent-storm/settings.*` file may set. Every key is optional: a folder file
- * only overrides what it names.
- */
-export const folderSettingsJsonSchema = {
-    type: 'object',
-    additionalProperties: false,
-    title: 'Agent Storm folder settings',
-    properties: {
-        postWorktreeCmd: settingsJsonSchema.properties.postWorktreeCmd,
-        review: {
-            type: 'object',
-            additionalProperties: false,
-            title: 'Review',
-            properties: {
-                initCmd: settingsJsonSchema.properties.review.properties.initCmd,
-            },
-        },
-        forges: {
-            type: 'object',
-            additionalProperties: false,
-            title: 'Git forges',
-            properties: {
-                /* eslint-disable-next-line @typescript-eslint/no-unnecessary-template-expression -- plain string type to match the keys, see `forgeSettingsJsonSchemas`. */
-                [`${ForgeType.Github}`]: {
-                    type: 'object',
-                    additionalProperties: false,
-                    title: 'GitHub',
-                    properties: {
-                        /** Added to the user's own list. */
-                        trustedBotLogins:
-                            forgeSettingsJsonSchemas[ForgeType.Github].properties.trustedBotLogins,
-                    },
-                },
-            },
-        },
-    },
-} as const satisfies JSONSchema;
-
-export const folderSettingsShape = mapSchemaToShape(folderSettingsJsonSchema);
 
 /** One repo in the sidebar's repo list. */
 export const savedRepoShape = defineShape({
@@ -1854,8 +1840,6 @@ const onboardingStatusShape = defineShape({
     /** Only a release started by `npx agent-storm`, on macOS or Linux, can start at login. */
     canStartAtLogin: false,
     isStartAtLoginEnabled: false,
-    /** Runs from a git checkout, not a release or a named instance, so it can improve itself. */
-    canSelfImprove: false,
 });
 
 export const onboardingEndpoint = defineEndpoint({
@@ -2231,6 +2215,24 @@ export const hideRepoEndpoint = defineEndpoint({
 });
 
 /**
+ * Drops a saved repo, and the worktrees listed under it, from the folder list. Nothing on disk
+ * changes, and a folder that isn't a saved repo is a no-op.
+ */
+export const removeRepoEndpoint = defineEndpoint({
+    path: '/repos/remove',
+    requests: {
+        [HttpMethod.Post]: {
+            requestData: repoTouchRequestShape,
+            responses: {
+                [HttpStatus.Ok]: {
+                    responseData: okResponseShape,
+                },
+            },
+        },
+    },
+});
+
+/**
  * A comment the reviewer wrote on a diff line, stored in the manual-review skill's state file so
  * its verdict commands post it alongside the comments typed into the code.
  */
@@ -2344,6 +2346,7 @@ export const agentStormService = defineApi({
         touchRepoEndpoint,
         addRepoEndpoint,
         hideRepoEndpoint,
+        removeRepoEndpoint,
         checkPathEndpoint,
         createPathEndpoint,
         pushKeyEndpoint,
@@ -2368,7 +2371,6 @@ export type Settings = SchemaShapeToType<
     typeof settingsJsonSchema,
     Omit<FromSchemaDefaultOptions, 'keepDefaultedPropertiesOptional'>
 >;
-export type FolderSettings = typeof folderSettingsShape.runtimeType;
 export type SavedRepo = typeof savedRepoShape.runtimeType;
 export type FolderInfo = typeof folderInfoShape.runtimeType;
 export type PaneSessionStatus = typeof paneSessionStatusShape.runtimeType;

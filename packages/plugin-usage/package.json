@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/plugin-usage",
-    "version": "0.9.0",
+    "version": "0.10.0",
     "private": true,
     "description": "",
     "keywords": [],
@@ -30,15 +30,15 @@
         "test:update": "npm test update"
     },
     "dependencies": {
-        "@agent-storm/common": "^0.9.0",
-        "@agent-storm/core": "^0.9.0",
+        "@agent-storm/common": "^0.10.0",
+        "@agent-storm/core": "^0.10.0",
         "@anthropic-ai/claude-agent-sdk": "^0.3.322",
         "@augment-vir/assert": "^32.7.1",
         "@augment-vir/common": "^32.7.1",
         "@augment-vir/web": "^32.7.1",
         "@electrovir/color": "^2.0.0",
         "@prisma/client": "7.10.1",
-        "agent-storm-util": "^0.9.0",
+        "agent-storm-util": "^0.10.0",
         "better-sqlite3": "^13.0.3",
         "chart.js": "^4.6.1",
         "date-vir": "^9.4.1",

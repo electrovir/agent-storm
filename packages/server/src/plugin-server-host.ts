@@ -10,7 +10,6 @@ import {
     killHostedProcess,
     listHostedProcessIds,
 } from './daemon/daemon-client.js';
-import {appCheckoutPath} from './file-paths.js';
 import {forgetFolderActivity} from './folder-activity.js';
 import {
     getCachedFolders,
@@ -33,7 +32,13 @@ import {
     removeWorktree,
 } from './git.js';
 import {sendNotification} from './notifications.js';
-import {runInIdleFolderShell, runPostWorktreeCmd, sendPaneText, spawnPane} from './pane-launch.js';
+import {
+    isPaneRunningCommand,
+    runInIdleFolderShell,
+    runPostWorktreeCmd,
+    sendPaneText,
+    spawnPane,
+} from './pane-launch.js';
 import {isFolderBusyInPlugins} from './plugin-folder-hooks.js';
 import {getLivePaneSessionIds, getPaneSessionStatusLookup} from './pty.js';
 import {
@@ -83,14 +88,12 @@ export const pluginServerHost: PluginServerHost = {
     renameFolderSession,
     spawnPane,
     sendPaneText,
+    isPaneRunningCommand,
     runInIdleFolderShell,
     getCurrentBranch,
     getRepoSlug,
     listenToGitInfoChanges,
     notify: sendNotification,
-    findAppCheckoutPath() {
-        return appCheckoutPath;
-    },
     readLastUserInputAt,
     listenToUserInput,
     async createWorktree({folder, name, scope}) {

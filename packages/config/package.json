@@ -1,6 +1,6 @@
 {
     "name": "@agent-storm/config",
-    "version": "0.9.0",
+    "version": "0.10.0",
     "description": "The type, schema, and file path of a repo's Agent Storm config: its folder settings and its bots.",
     "keywords": [
         "agent-storm",

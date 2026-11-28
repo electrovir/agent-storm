@@ -812,34 +812,6 @@ export const VirSettingsModal = defineAppElement<{
                           } satisfies SettingsEntry,
                       ]
                     : []),
-                ...(state.onboardingStatus?.canSelfImprove && settings.enableDebugLogs
-                    ? [
-                          {
-                              section: SettingsSection.Maintenance,
-                              cardTitle: undefined,
-                              searchText: [
-                                  settingsJsonSchema.properties.disableSelfImprovement.title,
-                                  settingsJsonSchema.properties.disableSelfImprovement.description,
-                              ],
-                              template: html`
-                                  <${VirSettingsSchemaRow.assign({
-                                      schema: settingsJsonSchema.properties.disableSelfImprovement,
-                                      value: settings.disableSelfImprovement,
-                                      defaultValue: defaultSettings.disableSelfImprovement,
-                                  })}
-                                      ${listen(VirSettingsSchemaRow.events.valueChange, (event) => {
-                                          changeSettings((current) => {
-                                              return {
-                                                  ...current,
-                                                  disableSelfImprovement: event.detail === true,
-                                              };
-                                          });
-                                      })}
-                                  ></${VirSettingsSchemaRow}>
-                              `,
-                          } satisfies SettingsEntry,
-                      ]
-                    : []),
                 {
                     section: SettingsSection.Maintenance,
                     cardTitle: undefined,

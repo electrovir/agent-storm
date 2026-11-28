@@ -238,8 +238,8 @@ export const VirSettingsFolders = defineAppElement<{
                 : html`
                       <div class="card-hint">
                           No settings files. A repo can set its defaults in
-                          .agent-storm/settings.json (or .yaml or .toml) in any folder from this one
-                          up to your home folder.
+                          .agent-storm/agent-storm.config.ts (or .js, .json, .yaml, or .toml) in any
+                          folder from this one up to your home folder.
                       </div>
                   `;
         }
@@ -277,6 +277,32 @@ export const VirSettingsFolders = defineAppElement<{
                 });
             }
 
+            const reviewSkill =
+                settings.folderReviewSkills.find((entry) => entry.folder === repoPath)
+                    ?.reviewSkill || '';
+
+            /** An empty skill falls back to the default. */
+            function setReviewSkill(newReviewSkill: string) {
+                changeSettings((current) => {
+                    return {
+                        ...current,
+                        folderReviewSkills: [
+                            ...current.folderReviewSkills.filter(
+                                (entry) => entry.folder !== repoPath,
+                            ),
+                            ...(newReviewSkill
+                                ? [
+                                      {
+                                          folder: repoPath,
+                                          reviewSkill: newReviewSkill,
+                                      },
+                                  ]
+                                : []),
+                        ],
+                    };
+                });
+            }
+
             return html`
                 <span class="card-title">${toFolderLabel(selected, inputs.folderInfo)}</span>
                 <div class="card">
@@ -301,6 +327,30 @@ export const VirSettingsFolders = defineAppElement<{
                         })}
                             ${listen(ViraInput.events.valueChange, (event) => {
                                 setInitCommand(event.detail);
+                            })}
+                        ></${ViraInput}>
+                    </${VirSettingsRow}>
+                    <${VirSettingsRow.assign({
+                        rowTitle: 'Review skill',
+                        description: repoName
+                            ? `The slash command Agent Storm's worktree skills review ${repoName}'s work with before opening a PR. A settings file that sets reviewSkill overrides it.`
+                            : "The slash command Agent Storm's worktree skills review this repo's work with before opening a PR. A settings file that sets reviewSkill overrides it.",
+                        isModified: !!reviewSkill,
+                    })}
+                        ${listen(VirSettingsRow.events.reset, () => {
+                            setReviewSkill('');
+                        })}
+                    >
+                        <${ViraInput.assign({
+                            value: reviewSkill,
+                            placeholder: settings.reviewSkill
+                                ? `Default: ${settings.reviewSkill}`
+                                : 'None',
+                            showClearButton: true,
+                            disableBrowserHelps: true,
+                        })}
+                            ${listen(ViraInput.events.valueChange, (event) => {
+                                setReviewSkill(event.detail);
                             })}
                         ></${ViraInput}>
                     </${VirSettingsRow}>

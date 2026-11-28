@@ -14,7 +14,11 @@ import {type FullSpaRoute} from 'spa-router-vir';
 import {
     createSizedIcon,
     LucideTriangleAlertIcon,
+    PopoverAnchor,
+    PopoverTrigger,
+    renderMenuItemEntries,
     ViraIcon,
+    ViraMenuTrigger,
     ViraTabs,
     ViraTabsBarDirection,
     viraThemeByKeys,
@@ -32,8 +36,9 @@ const brandMarkIcon = createSizedIcon(AgentStormMarkIcon, 16);
 /**
  * The app's outermost navigation: a vertical strip pinned to the left of the sidebar, or with
  * `isHorizontal` a row, which is what fits above the sidebar inside the mobile modal. Only the
- * vertical strip shows the brand mark, above its tabs. Tabs drag to reorder, and every tab's
- * context menu shows or hides each tab. Both are shared by every window.
+ * vertical strip shows the brand mark, above its tabs. Tabs drag to reorder, and the strip's
+ * context menu, on a tab or the space beside them, shows or hides each tab. Both are shared by
+ * every window.
  */
 export const VirMainTabs = defineAppElement<{
     context: AppContext;
@@ -72,6 +77,16 @@ export const VirMainTabs = defineAppElement<{
             flex-grow: 1;
             min-width: 0;
             min-height: 0;
+
+            & > ${ViraMenuTrigger} {
+                flex-grow: 1;
+                min-width: 0;
+                min-height: 0;
+            }
+
+            & ${ViraTabs} {
+                height: 100%;
+            }
         }
 
         .brand-mark {
@@ -255,57 +270,67 @@ export const VirMainTabs = defineAppElement<{
                     event.preventDefault();
                 })}
             >
-                <${ViraTabs.assign({
-                    tabs: shownTabs.map((tab): ViraTab => {
-                        const count = tab.findCount?.({
-                            context,
-                            state: context.activityStates[tab.id],
-                        });
-                        const isPending = context.plugins.value.pendingActivityIds.includes(tab.id);
-                        const label = count == undefined ? tab.label : `${tab.label} (${count})`;
-                        return {
-                            label: isPending
-                                ? html`
-                                      <span
-                                          style=${css`
-                                              opacity: 0.6;
-                                          `}
-                                      >
-                                          ${label}
-                                      </span>
-                                  `
-                                : label,
-                            icon: isPending
-                                ? createSizedIcon(LucideTriangleAlertIcon, 14)
-                                : undefined,
-                            contextMenuEntries: visibilityMenuEntries,
-                            paths: {
-                                path: tab.id,
-                                fullPaths: [
-                                    tab.id,
-                                ],
-                                PathsType: [
-                                    tab.id,
-                                ],
-                            },
-                        };
-                    }),
-                    router: mainTabRouter,
-                    currentRoute: {
-                        paths: [
-                            inputs.activityId,
-                        ],
-                        search: undefined,
-                        hash: undefined,
-                    },
-                    barDirection: isVertical
-                        ? ViraTabsBarDirection.Right
-                        : ViraTabsBarDirection.Bottom,
-                    color: ViraThemeColorName.blue,
-                    shouldFillWidth: !isVertical,
-                    shouldRotateLabels: isVertical,
-                    contextMenuPopoverOffset: sidebarContextMenuOffset,
-                })}></${ViraTabs}>
+                <${ViraMenuTrigger.assign({
+                    trigger: PopoverTrigger.ContextMenu,
+                    popoverAnchor: PopoverAnchor.Mouse,
+                    popoverOffset: sidebarContextMenuOffset,
+                })}>
+                    <${ViraTabs.assign({
+                        tabs: shownTabs.map((tab): ViraTab => {
+                            const count = tab.findCount?.({
+                                context,
+                                state: context.activityStates[tab.id],
+                            });
+                            const isPending = context.plugins.value.pendingActivityIds.includes(
+                                tab.id,
+                            );
+                            const label =
+                                count == undefined ? tab.label : `${tab.label} (${count})`;
+                            return {
+                                label: isPending
+                                    ? html`
+                                          <span
+                                              style=${css`
+                                                  opacity: 0.6;
+                                              `}
+                                          >
+                                              ${label}
+                                          </span>
+                                      `
+                                    : label,
+                                icon: isPending
+                                    ? createSizedIcon(LucideTriangleAlertIcon, 14)
+                                    : undefined,
+                                paths: {
+                                    path: tab.id,
+                                    fullPaths: [
+                                        tab.id,
+                                    ],
+                                    PathsType: [
+                                        tab.id,
+                                    ],
+                                },
+                            };
+                        }),
+                        router: mainTabRouter,
+                        currentRoute: {
+                            paths: [
+                                inputs.activityId,
+                            ],
+                            search: undefined,
+                            hash: undefined,
+                        },
+                        barDirection: isVertical
+                            ? ViraTabsBarDirection.Right
+                            : ViraTabsBarDirection.Bottom,
+                        color: ViraThemeColorName.blue,
+                        shouldFillWidth: !isVertical,
+                        shouldRotateLabels: isVertical,
+                    })}
+                        slot=${ViraMenuTrigger.slotNames['vira-menu-trigger-trigger']}
+                    ></${ViraTabs}>
+                    ${renderMenuItemEntries(visibilityMenuEntries)}
+                </${ViraMenuTrigger}>
             </div>
             ${dropLine
                 ? html`

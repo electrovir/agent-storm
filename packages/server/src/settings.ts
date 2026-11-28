@@ -138,6 +138,14 @@ function normalizeSettings(settings: Readonly<Settings>): Settings {
                     folder: normalizePath(entry.folder),
                 };
             }),
+        folderReviewSkills: settings.folderReviewSkills
+            .filter((entry) => entry.reviewSkill.trim())
+            .map((entry) => {
+                return {
+                    ...entry,
+                    folder: normalizePath(entry.folder),
+                };
+            }),
     };
 }
 
@@ -160,7 +168,10 @@ export function parseSettings({
 }>): Settings {
     const merged = withSettingsDefaults({
         defaults: defaultSettings,
-        saved: migrateTerminalClickableLinks(rawSettings) || rawSettings,
+        /** Files written while self-improvement was built in may still have its setting. */
+        saved: omitObjectKeys(migrateTerminalClickableLinks(rawSettings) || rawSettings, [
+            'disableSelfImprovement',
+        ]),
     });
     assertValidShape(merged, settingsShape, {}, `Settings from ${source} are invalid.`);
     return normalizeSettings(merged);

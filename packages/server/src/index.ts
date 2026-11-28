@@ -32,6 +32,7 @@ import {
     pushTestEndpoint,
     pushUnsubscribeEndpoint,
     rememberedSelectionSaveEndpoint,
+    removeRepoEndpoint,
     restartDaemonEndpoint,
     restartPaneEndpoint,
     sessionCloseEndpoint,
@@ -979,6 +980,29 @@ const hideRepoImplementation = implementor.implementEndpoint(hideRepoEndpoint, {
     },
 });
 
+const removeRepoImplementation = implementor.implementEndpoint(removeRepoEndpoint, {
+    async [HttpMethod.Post]({requestData}) {
+        const folder = normalizePath(requestData.folder);
+        await updateAppState((state) => {
+            if (!state.repos.some((repo) => repo.path === folder)) {
+                return undefined;
+            }
+            return {
+                ...state,
+                repos: state.repos.filter((repo) => repo.path !== folder),
+            };
+        });
+        await refreshFolderInfoNow();
+        return {
+            [HttpStatus.Ok]: {
+                responseData: {
+                    ok: true,
+                },
+            },
+        };
+    },
+});
+
 const checkPathImplementation = implementor.implementEndpoint(checkPathEndpoint, {
     async [HttpMethod.Post]({requestData}) {
         const resolvedPath = normalizePath(requestData.path);
@@ -1150,6 +1174,7 @@ const implementation = implementApi<undefined>()(agentStormService, {
         userInputImplementation,
         touchRepoImplementation,
         hideRepoImplementation,
+        removeRepoImplementation,
         checkPathImplementation,
         createPathImplementation,
         pushKeyImplementation,

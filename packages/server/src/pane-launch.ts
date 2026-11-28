@@ -139,6 +139,24 @@ export async function runPostWorktreeCmd({
     }
 }
 
+/** Whether the tab's foreground process is something other than its shell. */
+export async function isPaneRunningCommand({
+    folder,
+    sessionId,
+}: Readonly<{
+    folder: string;
+    sessionId: string;
+}>) {
+    const normalizedFolder = normalizePath(folder);
+    return (await fetchPaneStatuses()).some((entry) => {
+        return (
+            entry.folder === normalizedFolder &&
+            (entry.sessionId || defaultSessionId) === sessionId &&
+            !!entry.isRunningCommand
+        );
+    });
+}
+
 /**
  * Types `command` into the folder's first shell tab, making one when it has none. False, without
  * typing anything, while that tab is running something.
@@ -158,14 +176,12 @@ export async function runInIdleFolderShell({
         folder,
         kind: PaneKind.Shell,
     });
-    const isShellBusy = (await fetchPaneStatuses()).some((entry) => {
-        return (
-            entry.folder === folder &&
-            (entry.sessionId || defaultSessionId) === shellSessionId &&
-            entry.isRunningCommand
-        );
-    });
-    if (isShellBusy) {
+    if (
+        await isPaneRunningCommand({
+            folder,
+            sessionId: shellSessionId,
+        })
+    ) {
         return false;
     }
     await runInShellPane({

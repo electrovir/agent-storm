@@ -561,6 +561,89 @@ describe(syncSessionTabs.name, () => {
             },
         );
     });
+    it('puts a session with no group of its kind in the rightmost group of a split layout', () => {
+        const layout = syncSessionTabs(
+            createTabLayout([
+                [
+                    {
+                        id: 'chat',
+                        kind: 'ai-chat',
+                    },
+                ],
+                [
+                    {
+                        id: 'notes',
+                        kind: 'notes',
+                    },
+                ],
+            ]),
+            {
+                kind: PaneKind.Shell,
+                sessionIds: [
+                    'sh1',
+                ],
+            },
+        );
+        assert.deepEquals(
+            {
+                groupTabs: listGroupTabs(layout),
+                shownTabIds: listGroupIds(layout).map(
+                    (groupId) => layout.groups[groupId]?.activeTabId,
+                ),
+                activeTabId: findActiveTabId(layout),
+            },
+            {
+                groupTabs: [
+                    [
+                        'chat',
+                    ],
+                    [
+                        'notes',
+                        'shell:sh1',
+                    ],
+                ],
+                shownTabIds: [
+                    'chat',
+                    'notes',
+                ],
+                activeTabId: 'chat',
+            },
+        );
+    });
+    it('puts a session with no group of its kind in the active group when asked', () => {
+        const layout = syncSessionTabs(
+            createTabLayout([
+                [
+                    {
+                        id: 'chat',
+                        kind: 'ai-chat',
+                    },
+                ],
+            ]),
+            {
+                kind: PaneKind.Shell,
+                sessionIds: [
+                    'sh1',
+                ],
+                isNewKindInActiveGroup: true,
+            },
+        );
+        assert.deepEquals(
+            {
+                groupTabs: listGroupTabs(layout),
+                activeTabId: findActiveTabId(layout),
+            },
+            {
+                groupTabs: [
+                    [
+                        'chat',
+                        'shell:sh1',
+                    ],
+                ],
+                activeTabId: 'chat',
+            },
+        );
+    });
 });
 
 describe(showTabKind.name, () => {

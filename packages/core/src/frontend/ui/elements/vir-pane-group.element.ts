@@ -142,6 +142,11 @@ export const VirPaneGroup = defineAppElement<{
     defaultTabs?:
         | ReadonlyArray<ReadonlyArray<Readonly<Pick<PaneTab, 'kind' | 'state'>>>>
         | undefined;
+    /**
+     * Puts the first tab of a terminal kind in the active group, instead of a new group split off
+     * to its right.
+     */
+    isNewSessionKindInActiveGroup?: boolean | undefined;
 }>()({
     tagName: 'vir-pane-group',
     state() {
@@ -302,6 +307,7 @@ export const VirPaneGroup = defineAppElement<{
                 return syncSessionTabs(current, {
                     kind,
                     sessionIds: (sessions?.[kind] || []).map((session) => session.id),
+                    isNewKindInActiveGroup: inputs.isNewSessionKindInActiveGroup,
                 });
             }, layout);
         }

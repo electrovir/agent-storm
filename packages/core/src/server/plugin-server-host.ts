@@ -1,7 +1,6 @@
 import {
     type FolderInfo,
     type FolderSessions,
-    type FolderSettings,
     type GitHubPollingDisableReason,
     type NotifyParams,
     type PaneKind,
@@ -12,6 +11,7 @@ import {
     type SharedTabLayout,
     type TabSelection,
 } from '@agent-storm/common';
+import {type AgentStormConfig} from '@agent-storm/config';
 import {type MaybePromise} from '@augment-vir/common';
 
 /** A GitHub repo, as a checkout's `origin` remote names it. */
@@ -77,7 +77,7 @@ export type PaneGroupState = {
 export type PluginServerHost = Readonly<{
     loadSettings(): Promise<Settings>;
     /** The folder's settings files, nearest first. Only the ones the user approved. */
-    loadFolderSettings(folder: string): Promise<FolderSettings[]>;
+    loadFolderSettings(folder: string): Promise<AgentStormConfig[]>;
     /** The sidebar's folders. */
     listFolders(): Promise<ReadonlyArray<Readonly<FolderInfo>>>;
     /**
@@ -221,6 +221,11 @@ export type PluginServerHost = Readonly<{
         >,
     ): Promise<void>;
     /**
+     * Whether the tab's foreground process is something other than its shell, such as a command
+     * typed into it. Always false on Windows, where the foreground process can't be read.
+     */
+    isPaneRunningCommand(params: PaneSessionTarget): Promise<boolean>;
+    /**
      * Types `command` into the folder's first shell tab, making one when it has none. False,
      * without typing anything, while that tab is running something.
      */
@@ -266,11 +271,6 @@ export type PluginServerHost = Readonly<{
             }>,
         ) => void,
     ): () => void;
-    /**
-     * The git checkout the app runs from, which self-improvement works on a copy of. Unset for a
-     * release, which has no checkout, and for a named instance.
-     */
-    findAppCheckoutPath(): string | undefined;
     /**
      * Epoch milliseconds of the user's last input in any open copy of the app, which reports it
      * throttled. Undefined until their first.
