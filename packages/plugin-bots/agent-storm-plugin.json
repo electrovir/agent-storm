@@ -13,10 +13,19 @@
         "build",
         "terminal"
     ],
-    "description": "Runs the bots each repo lists in its agent-storm.config file, on a schedule, with their shells, AI chats, questions, and run history.",
+    "description": "Runs the bots each repo lists in its .agent-storm/agent-storm.config file, on a schedule, with their shells, AI chats, questions, and run history.",
     "id": "bots",
     "isBeta": true,
     "name": "Bots",
-    "panes": [],
+    "optionalDependencies": [
+        "usage"
+    ],
+    "panes": [
+        {
+            "icon": "LucideBotIcon",
+            "id": "bot",
+            "label": "Bot"
+        }
+    ],
     "serverEntry": "server.js"
 }

@@ -1,17 +1,23 @@
 import {aiChatPaneId, toPaneGroupKey} from '@agent-storm/common';
-import {addTab, type UiLayoutObservable} from '@agent-storm/core/frontend';
-import {mapObjectValues} from '@augment-vir/common';
-import {toBotScope} from '../bots-api.js';
+import {
+    addTab,
+    closeTab,
+    findShownTabIdOfKind,
+    findTabGroupId,
+    type UiLayoutObservable,
+} from '@agent-storm/core/frontend';
+import {mapObjectValues, type PartialWithUndefined} from '@augment-vir/common';
+import {botPaneId, toBotScope} from '../bots-api.js';
 
-/** The tab id an AI run's thread gets in its bot's pane group. */
-export function toBotThreadTabId(threadId: string) {
+/** The tab id a bot's thread gets in its bot's pane group. */
+function toBotThreadTabId(threadId: string) {
     return `${aiChatPaneId}:${threadId}`;
 }
 
 /**
- * Adds an AI Chat tab for a bot's thread to the bot's pane group, in the background unless
- * `isShown`. False, without adding it, while the pane group has no layout yet, which it gets the
- * first time it shows.
+ * Adds an AI Chat tab for a bot's thread beside the Bot tab in its pane group, in the background
+ * unless `isShown`, and closes the tab of `replacedThreadId`. False, without adding it, while the
+ * pane group has no layout yet, which it gets the first time it shows.
  */
 export function addBotThreadTab({
     uiLayout,
@@ -19,13 +25,19 @@ export function addBotThreadTab({
     botId,
     threadId,
     isShown,
-}: Readonly<{
-    uiLayout: Pick<UiLayoutObservable, 'getTabLayout' | 'updateTabLayout'>;
-    repoPath: string;
-    botId: string;
-    threadId: string;
-    isShown: boolean;
-}>) {
+    replacedThreadId,
+}: Readonly<
+    {
+        uiLayout: Pick<UiLayoutObservable, 'getTabLayout' | 'updateTabLayout'>;
+        repoPath: string;
+        botId: string;
+        threadId: string;
+        isShown: boolean;
+    } & PartialWithUndefined<{
+        /** The bot's earlier thread, whose tab this one takes the place of. */
+        replacedThreadId: string;
+    }>
+>) {
     const layoutKey = toPaneGroupKey({
         folder: repoPath,
         scope: toBotScope(botId),
@@ -36,7 +48,11 @@ export function addBotThreadTab({
     const tabId = toBotThreadTabId(threadId);
     uiLayout.updateTabLayout({
         folder: layoutKey,
-        update(current) {
+        update(layout) {
+            const current =
+                layout && replacedThreadId
+                    ? closeTab(layout, toBotThreadTabId(replacedThreadId))
+                    : layout;
             if (!current || (!isShown && current.tabs[tabId])) {
                 return current;
             }
@@ -49,6 +65,7 @@ export function addBotThreadTab({
                         threadId,
                     },
                 },
+                groupId: findTabGroupId(current, findShownTabIdOfKind(current, botPaneId) || ''),
             });
             return isShown
                 ? added

@@ -9,12 +9,13 @@ import {runtimeModeLabels} from './bots-display.js';
 
 /** Each field of a bot's settings form. */
 export enum BotSettingsField {
-    IsEnabled = 'isEnabled',
     IntervalMinutes = 'intervalMinutes',
     Provider = 'provider',
     Model = 'model',
     Effort = 'effort',
     RuntimeMode = 'runtimeMode',
+    MaxSpendPerDayUsd = 'maxSpendPerDayUsd',
+    MaxAiRunMinutes = 'maxAiRunMinutes',
     ApiKey = 'apiKey',
 }
 
@@ -26,12 +27,22 @@ function toMinutes(duration: BotInfo['defaultInterval']) {
     }).minutes;
 }
 
-/** An empty API key field, since a saved key is never sent back to the browser. */
-export function createApiKeyField(hasApiKey: boolean): ViraFormField {
+/** Holds only a key the user typed, since a saved key is never sent back to the browser. */
+export function createApiKeyField({
+    hasApiKey,
+    typed,
+}: Readonly<{
+    hasApiKey: boolean;
+    typed: string;
+}>): ViraFormField {
     return {
-        type: ViraFormFieldType.PlainPassword,
+        /**
+         * Not a password field: Safari and password managers take any form holding one for a login
+         * form, and offer saved logins on the number fields beside it.
+         */
+        type: ViraFormFieldType.Text,
         label: 'API key',
-        value: '',
+        value: typed,
         placeholder: hasApiKey
             ? 'Saved. Type a new one to replace it.'
             : "Unset, so the provider's own login applies.",
@@ -49,11 +60,6 @@ export function createBotSettingsFields(bot: Readonly<BotInfo>): BotSettingsFiel
             : "The model's default",
     };
     return {
-        [BotSettingsField.IsEnabled]: {
-            type: ViraFormFieldType.Checkbox,
-            label: 'Run on its schedule',
-            value: bot.settings.isEnabled,
-        },
         [BotSettingsField.IntervalMinutes]: {
             type: ViraFormFieldType.Number,
             label: 'Every how many minutes',
@@ -115,7 +121,31 @@ export function createBotSettingsFields(bot: Readonly<BotInfo>): BotSettingsFiel
                 };
             }),
         },
-        [BotSettingsField.ApiKey]: createApiKeyField(bot.hasApiKey),
+        [BotSettingsField.MaxSpendPerDayUsd]: {
+            type: ViraFormFieldType.Number,
+            label: 'Most AI spend in any 24 hours, in USD',
+            value: bot.settings.limits?.maxSpendPerDayUsd ?? undefined,
+            placeholder:
+                bot.defaultLimits?.maxSpendPerDayUsd == undefined
+                    ? 'No limit'
+                    : `${bot.defaultLimits.maxSpendPerDayUsd} (the bot's default)`,
+            min: 0,
+        },
+        [BotSettingsField.MaxAiRunMinutes]: {
+            type: ViraFormFieldType.Number,
+            label: 'Most minutes one AI run may take',
+            value: bot.settings.limits?.maxAiRunDuration
+                ? toMinutes(bot.settings.limits.maxAiRunDuration)
+                : undefined,
+            placeholder: bot.defaultLimits?.maxAiRunDuration
+                ? `${toMinutes(bot.defaultLimits.maxAiRunDuration)} (the bot's default)`
+                : 'No limit',
+            min: 1,
+        },
+        [BotSettingsField.ApiKey]: createApiKeyField({
+            hasApiKey: bot.hasApiKey,
+            typed: '',
+        }),
     };
 }
 
@@ -124,8 +154,8 @@ function readText(field: Readonly<ViraFormField>) {
 }
 
 /**
- * The settings the form holds, and the API key typed into it, if any. Throws when the model
- * override is missing a model.
+ * The settings the form holds, and the API key typed into it, if any. Whether the bot is enabled
+ * stays as saved. Throws when the model override is missing a model.
  */
 export function readBotSettingsFields({
     fields,
@@ -138,6 +168,8 @@ export function readBotSettingsFields({
     const provider = fields[BotSettingsField.Provider].value;
     const effort = fields[BotSettingsField.Effort].value;
     const runtimeMode = fields[BotSettingsField.RuntimeMode].value;
+    const maxSpendPerDayUsd = fields[BotSettingsField.MaxSpendPerDayUsd].value;
+    const maxAiRunMinutes = fields[BotSettingsField.MaxAiRunMinutes].value;
     const chosen = {
         provider: check.isEnumValue(provider, BotAiProvider) ? provider : undefined,
         model: readText(fields[BotSettingsField.Model]),
@@ -160,7 +192,7 @@ export function readBotSettingsFields({
         throw new Error('Set a model to go with that provider.');
     }
     const settings: BotSettings = {
-        isEnabled: fields[BotSettingsField.IsEnabled].value === true,
+        isEnabled: bot.settings.isEnabled,
         interval:
             check.isNumber(minutes) && minutes > 0
                 ? {
@@ -169,6 +201,20 @@ export function readBotSettingsFields({
                 : undefined,
         ai,
         runtimeMode: check.isEnumValue(runtimeMode, RuntimeMode) ? runtimeMode : RuntimeMode.Auto,
+        limits:
+            check.isNumber(maxSpendPerDayUsd) || check.isNumber(maxAiRunMinutes)
+                ? {
+                      maxSpendPerDayUsd: check.isNumber(maxSpendPerDayUsd)
+                          ? maxSpendPerDayUsd
+                          : undefined,
+                      maxAiRunDuration:
+                          check.isNumber(maxAiRunMinutes) && maxAiRunMinutes > 0
+                              ? {
+                                    minutes: maxAiRunMinutes,
+                                }
+                              : undefined,
+                  }
+                : undefined,
     };
     return {
         settings,

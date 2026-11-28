@@ -1,7 +1,7 @@
 import {RuntimeMode} from '@agent-storm/plugin-build/src/build-api.js';
 import {html} from 'element-vir';
 import {ViraColorVariant, ViraEmphasis, ViraSize, ViraTag} from 'vira';
-import {BotConfigApproval, BotRunStatus, BotRunTrigger, BotState} from '../../bots-api.js';
+import {BotConfigApproval, BotRunStatus, BotState} from '../../bots-api.js';
 
 type TagDisplay = Readonly<{
     text: string;
@@ -69,9 +69,9 @@ export const approvalTags: Readonly<Record<BotConfigApproval, TagDisplay>> = {
     },
 };
 
-export const runTriggerLabels: Readonly<Record<BotRunTrigger, string>> = {
-    [BotRunTrigger.Schedule]: 'Scheduled',
-    [BotRunTrigger.Manual]: 'Run now',
+export const listErrorTag: TagDisplay = {
+    text: "Can't list bots",
+    color: ViraColorVariant.Danger,
 };
 
 export const runtimeModeLabels: Readonly<Record<RuntimeMode, string>> = {

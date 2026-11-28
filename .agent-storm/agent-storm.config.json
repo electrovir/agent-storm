@@ -1,0 +1,5 @@
+{
+    "bots": {
+        "self-improvement": "../packages/scripts/src/self-improvement/self-improvement-bot.ts"
+    }
+}

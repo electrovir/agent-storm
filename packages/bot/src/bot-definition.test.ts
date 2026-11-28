@@ -1,7 +1,7 @@
-import {assert} from '@augment-vir/assert';
+import {assert, check} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {BotAiProvider} from './bot-ai.js';
-import {defineBot} from './bot-definition.js';
+import {assertBotDefinition, defineBot} from './bot-definition.js';
 
 const baseBot = {
     description: 'Says hi.',
@@ -18,12 +18,31 @@ const baseBot = {
 };
 
 describe(defineBot.name, () => {
-    it('returns a valid bot unchanged', () => {
+    it('returns the bot unchanged', () => {
         assert.strictEquals(defineBot(baseBot), baseBot);
+    });
+    it("leaves an invalid bot for the CLI to reject, so the config's other bots still load", () => {
+        const invalidBot = {
+            ...baseBot,
+            interval: {
+                minutes: 0,
+            },
+        };
+        assert.strictEquals(defineBot(invalidBot), invalidBot);
+    });
+});
+
+describe(assertBotDefinition.name, () => {
+    it('accepts a valid bot', () => {
+        assert.isFalse(
+            check.throws(() => {
+                assertBotDefinition(baseBot);
+            }),
+        );
     });
     it('rejects a zero interval', () => {
         assert.throws(() => {
-            return defineBot({
+            assertBotDefinition({
                 ...baseBot,
                 interval: {
                     minutes: 0,
@@ -33,11 +52,9 @@ describe(defineBot.name, () => {
     });
     it('rejects an execute object with neither a prompt nor a skill', () => {
         assert.throws(() => {
-            return defineBot({
+            assertBotDefinition({
                 ...baseBot,
-                execute: {} as {
-                    prompt: string;
-                },
+                execute: {},
             });
         });
     });

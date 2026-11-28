@@ -1,18 +1,20 @@
-import {defineAppElement, VirPaneGroup, type AppContext} from '@agent-storm/core/frontend';
-import {check} from '@augment-vir/assert';
+import {defineAppElement, type AppContext} from '@agent-storm/core/frontend';
+import {assertWrap, check} from '@augment-vir/assert';
 import {extractErrorMessage, omitObjectKeys} from '@augment-vir/common';
-import {createFullDateInUserTimezone} from 'date-vir';
+import {createFullDateInUserTimezone, toSimpleString} from 'date-vir';
 import {css, html, listen, nothing} from 'element-vir';
 import {
     ViraButton,
+    ViraCheckbox,
+    ViraCollapsibleCard,
     ViraEmphasis,
     ViraForm,
     ViraInput,
-    ViraRelativeTime,
     ViraSize,
     viraThemeByKeys,
 } from 'vira';
 import {
+    BotRunStatus,
     BotState,
     type BotInfo,
     type BotQuestion,
@@ -21,6 +23,7 @@ import {
 } from '../../bots-api.js';
 import {addBotThreadTab} from '../../util/bot-tabs.js';
 import {botsClient} from '../../util/bots-client.js';
+import {createBusyAction} from '../../util/busy-action.js';
 import {
     BotSettingsField,
     createApiKeyField,
@@ -28,25 +31,34 @@ import {
     readBotSettingsFields,
     type BotSettingsFields,
 } from './bot-settings-fields.js';
-import {botStateTags, renderTag, runStatusTags, runTriggerLabels} from './bots-display.js';
+import {botStateTags, renderTag, runStatusTags} from './bots-display.js';
 import {botViewStyles} from './bots-styles.js';
+import {VirBotsTimeUntil} from './vir-bots-time-until.element.js';
 
-/** One bot in the Bots tab: its settings, questions, run history, and its shell and AI tabs. */
+/** A run with nothing to show beyond its status. Consecutive ones collapse into one row. */
+function isQuietRun(run: Readonly<BotRun>) {
+    return (
+        run.status === BotRunStatus.NothingToDo &&
+        !run.error &&
+        !run.reports.length &&
+        !run.startedThreadIds.length
+    );
+}
+
+/** One bot's Bot tab: its controls, settings, questions, and run history. */
 export const VirBotsBotView = defineAppElement<{
     context: AppContext;
     repo: Readonly<BotRepo>;
     bot: Readonly<BotInfo>;
     /** The bot's unanswered questions. */
     questions: ReadonlyArray<Readonly<BotQuestion>>;
-    isShown: boolean;
 }>()({
     tagName: 'vir-bots-bot-view',
     state() {
         return {
-            fields: undefined as BotSettingsFields | undefined,
+            /** The form as the user changed it, until it's saved. */
+            editedFields: undefined as BotSettingsFields | undefined,
             runs: [] as ReadonlyArray<Readonly<BotRun>>,
-            /** The bot's pane group, once its shell tab exists. */
-            shell: undefined as Readonly<{folder: string; scope: string}> | undefined,
             /** What the user typed as each question's answer, by question id. */
             answers: {} as Readonly<Record<string, string>>,
             error: undefined as string | undefined,
@@ -56,31 +68,18 @@ export const VirBotsBotView = defineAppElement<{
     },
     styles: css`
         :host {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
+            display: block;
         }
 
         ${botViewStyles}
 
         .view {
-            flex-shrink: 0;
-            max-height: 50%;
-            overflow-y: auto;
-            box-sizing: border-box;
+            max-width: 640px;
         }
 
-        .panes {
-            flex-grow: 1;
-            position: relative;
-            min-height: 0;
-            border-top: 1px solid
-                ${viraThemeByKeys.grey['behind-fg']['small-body'].background.value};
-        }
-
-        ${VirPaneGroup} {
-            position: absolute;
-            inset: 0;
+        .title {
+            display: flex;
+            flex-direction: column;
         }
 
         .question,
@@ -127,7 +126,6 @@ export const VirBotsBotView = defineAppElement<{
         }
 
         updateState({
-            fields: createBotSettingsFields(inputs.bot),
             removeRunsListener: botsClient.listen('runsChanged', ({botId}) => {
                 if (botId === host.instanceInputs.bot.botId) {
                     loadRuns();
@@ -135,14 +133,10 @@ export const VirBotsBotView = defineAppElement<{
             }),
         });
         loadRuns();
+        /** The shell tab joins the bot's tabs once its session exists. */
         botsClient
             .call('ensureBotShell', {
                 botId: inputs.bot.botId,
-            })
-            .then((shell) => {
-                updateState({
-                    shell,
-                });
             })
             .catch((error: unknown) => {
                 updateState({
@@ -154,25 +148,23 @@ export const VirBotsBotView = defineAppElement<{
         state.removeRunsListener?.();
     },
     render({inputs, state, updateState, host}) {
-        async function act(action: () => Promise<unknown>) {
-            if (host.instanceState.isBusy) {
-                return;
-            }
-            updateState({
-                isBusy: true,
-                error: undefined,
-            });
-            try {
-                await action();
-            } catch (error) {
-                updateState({
-                    error: extractErrorMessage(error),
-                });
-            } finally {
-                updateState({
-                    isBusy: false,
-                });
-            }
+        const act = createBusyAction({
+            host,
+            updateState,
+        });
+
+        /** The saved settings, unless the user changed them, with the API key's current state. */
+        function readFields() {
+            const fields =
+                host.instanceState.editedFields || createBotSettingsFields(host.instanceInputs.bot);
+            const typedKey = fields[BotSettingsField.ApiKey].value;
+            return {
+                ...fields,
+                [BotSettingsField.ApiKey]: createApiKeyField({
+                    hasApiKey: host.instanceInputs.bot.hasApiKey,
+                    typed: check.isString(typedKey) ? typedKey : '',
+                }),
+            };
         }
 
         async function answer(questionId: string, answerText: string | undefined) {
@@ -189,32 +181,47 @@ export const VirBotsBotView = defineAppElement<{
             });
         }
 
-        function openThread(threadId: string) {
-            addBotThreadTab({
-                uiLayout: inputs.context.uiLayout,
-                repoPath: inputs.repo.repoPath,
-                botId: inputs.bot.botId,
-                threadId,
-                isShown: true,
-            });
-        }
-
         return html`
             <div class="view">
-                <div class="header">
-                    <h2>${inputs.bot.name}</h2>
-                    ${renderTag(botStateTags[inputs.bot.state])}
+                <div class="title">
+                    <div class="header">
+                        <h2>${inputs.bot.name}</h2>
+                        <${ViraCheckbox.assign({
+                            label: 'Enabled',
+                            value: inputs.bot.settings.isEnabled,
+                            useHorizontalLabel: true,
+                            fillWhenChecked: true,
+                            fillWhenUnchecked: true,
+                            isDisabled: state.isBusy,
+                        })}
+                            ${listen(ViraCheckbox.events.valueChange, async (event) => {
+                                await act(async () => {
+                                    await botsClient.call('updateBotSettings', {
+                                        botId: host.instanceInputs.bot.botId,
+                                        settings: {
+                                            ...host.instanceInputs.bot.settings,
+                                            isEnabled: event.detail,
+                                        },
+                                        apiKey: undefined,
+                                    });
+                                });
+                            })}
+                        ></${ViraCheckbox}>
+                        ${inputs.bot.state === BotState.Off
+                            ? nothing
+                            : renderTag(botStateTags[inputs.bot.state])}
+                        ${inputs.bot.nextRunAt
+                            ? html`
+                                  <span class="faint">
+                                      Next run in
+                                      <${VirBotsTimeUntil.assign({
+                                          time: inputs.bot.nextRunAt,
+                                      })}></${VirBotsTimeUntil}>
+                                  </span>
+                              `
+                            : nothing}
+                    </div>
                     <span class="faint">${inputs.repo.name}</span>
-                    ${inputs.bot.nextRunAt
-                        ? html`
-                              <span class="faint">
-                                  Next run
-                                  <${ViraRelativeTime.assign({
-                                      time: createFullDateInUserTimezone(inputs.bot.nextRunAt),
-                                  })}></${ViraRelativeTime}>
-                              </span>
-                          `
-                        : nothing}
                 </div>
                 ${inputs.bot.description
                     ? html`
@@ -237,6 +244,7 @@ export const VirBotsBotView = defineAppElement<{
                     })}
                         ${listen('click', async () => {
                             if (
+                                host.instanceState.isBusy ||
                                 host.instanceInputs.bot.loadError ||
                                 host.instanceInputs.bot.state === BotState.Running
                             ) {
@@ -249,18 +257,28 @@ export const VirBotsBotView = defineAppElement<{
                             });
                         })}
                     ></${ViraButton}>
-                    <${ViraButton.assign({
-                        text: 'Reload bot list',
-                        buttonSize: ViraSize.Small,
-                        buttonEmphasis: ViraEmphasis.Subtle,
-                        isDisabled: state.isBusy,
-                    })}
-                        ${listen('click', async () => {
-                            await act(async () => {
-                                await botsClient.call('refresh', {});
-                            });
-                        })}
-                    ></${ViraButton}>
+                    ${inputs.bot.aiThreadId
+                        ? html`
+                              <${ViraButton.assign({
+                                  text: 'AI chat',
+                                  buttonSize: ViraSize.Small,
+                                  buttonEmphasis: ViraEmphasis.Subtle,
+                              })}
+                                  ${listen('click', () => {
+                                      const threadId = host.instanceInputs.bot.aiThreadId;
+                                      if (threadId) {
+                                          addBotThreadTab({
+                                              uiLayout: host.instanceInputs.context.uiLayout,
+                                              repoPath: host.instanceInputs.repo.repoPath,
+                                              botId: host.instanceInputs.bot.botId,
+                                              threadId,
+                                              isShown: true,
+                                          });
+                                      }
+                                  })}
+                              ></${ViraButton}>
+                          `
+                        : nothing}
                 </div>
                 ${state.error
                     ? html`
@@ -334,163 +352,150 @@ export const VirBotsBotView = defineAppElement<{
                         </div>
                     `;
                 })}
-                <h3>Settings</h3>
-                ${state.fields
-                    ? html`
-                          <${ViraForm.assign({
-                              fields: state.fields,
-                          })}
-                              ${listen(ViraForm.events.valueChange, (event) => {
-                                  const fields = host.instanceState.fields;
-                                  if (
-                                      !fields ||
-                                      !check.isEnumValue(event.detail.key, BotSettingsField)
-                                  ) {
-                                      return;
-                                  }
-                                  updateState({
-                                      fields: {
-                                          ...fields,
-                                          [event.detail.key]: event.detail,
-                                      },
-                                  });
-                              })}
-                          ></${ViraForm}>
-                      `
-                    : nothing}
-                <div class="actions">
-                    <${ViraButton.assign({
-                        text: 'Save settings',
-                        buttonSize: ViraSize.Small,
-                        isDisabled: state.isBusy,
+                <${ViraCollapsibleCard.assign({})}>
+                    <h3 slot=${ViraCollapsibleCard.slotNames['vira-collapsible-card-header']}>
+                        Settings
+                    </h3>
+                    <${ViraForm.assign({
+                        fields: readFields(),
                     })}
-                        ${listen('click', async () => {
-                            const fields = host.instanceState.fields;
-                            if (!fields) {
+                        ${listen(ViraForm.events.valueChange, (event) => {
+                            if (!check.isEnumValue(event.detail.key, BotSettingsField)) {
                                 return;
                             }
-                            await act(async () => {
-                                const {settings, apiKey} = readBotSettingsFields({
-                                    fields,
-                                    bot: host.instanceInputs.bot,
-                                });
-                                await botsClient.call('updateBotSettings', {
-                                    botId: inputs.bot.botId,
-                                    settings,
-                                });
-                                if (!apiKey) {
-                                    return;
-                                }
-                                await botsClient.call('setApiKey', {
-                                    botId: inputs.bot.botId,
-                                    apiKey,
-                                });
-                                updateState({
-                                    fields: {
-                                        ...fields,
-                                        [BotSettingsField.ApiKey]: createApiKeyField(true),
-                                    },
-                                });
+                            updateState({
+                                editedFields: {
+                                    ...readFields(),
+                                    [event.detail.key]: event.detail,
+                                },
                             });
                         })}
-                    ></${ViraButton}>
-                    ${inputs.bot.hasApiKey
-                        ? html`
-                              <${ViraButton.assign({
-                                  text: 'Clear API key',
-                                  buttonSize: ViraSize.Small,
-                                  buttonEmphasis: ViraEmphasis.Subtle,
-                                  isDisabled: state.isBusy,
-                              })}
-                                  ${listen('click', async () => {
-                                      await act(async () => {
-                                          await botsClient.call('setApiKey', {
-                                              botId: inputs.bot.botId,
-                                              apiKey: undefined,
-                                          });
-                                      });
+                    ></${ViraForm}>
+                    <div class="actions">
+                        <${ViraButton.assign({
+                            text: 'Save settings',
+                            buttonSize: ViraSize.Small,
+                            isDisabled: state.isBusy,
+                        })}
+                            ${listen('click', async () => {
+                                await act(async () => {
+                                    const {settings, apiKey} = readBotSettingsFields({
+                                        fields: readFields(),
+                                        bot: host.instanceInputs.bot,
+                                    });
+                                    await botsClient.call('updateBotSettings', {
+                                        botId: host.instanceInputs.bot.botId,
+                                        settings,
+                                        apiKey,
+                                    });
+                                    updateState({
+                                        editedFields: undefined,
+                                    });
+                                });
+                            })}
+                        ></${ViraButton}>
+                        ${inputs.bot.hasApiKey
+                            ? html`
+                                  <${ViraButton.assign({
+                                      text: 'Clear API key',
+                                      buttonSize: ViraSize.Small,
+                                      buttonEmphasis: ViraEmphasis.Subtle,
+                                      isDisabled: state.isBusy,
                                   })}
-                              ></${ViraButton}>
-                          `
-                        : nothing}
-                </div>
+                                      ${listen('click', async () => {
+                                          await act(async () => {
+                                              await botsClient.call('setApiKey', {
+                                                  botId: inputs.bot.botId,
+                                                  apiKey: undefined,
+                                              });
+                                          });
+                                      })}
+                                  ></${ViraButton}>
+                              `
+                            : nothing}
+                    </div>
+                </${ViraCollapsibleCard}>
                 <h3>Runs</h3>
                 <div class="runs">
                     ${state.runs.length
-                        ? state.runs.map((run) => {
-                              return html`
-                                  <div class="run">
-                                      <div class="header">
-                                          ${renderTag(runStatusTags[run.status])}
-                                          <span class="faint">
-                                              ${runTriggerLabels[run.trigger]}
-                                              <${ViraRelativeTime.assign({
-                                                  time: createFullDateInUserTimezone(run.startedAt),
-                                              })}></${ViraRelativeTime}>
-                                          </span>
-                                          ${run.aiThreadIds.map((threadId, index) => {
-                                              return html`
-                                                  <${ViraButton.assign({
-                                                      text:
-                                                          run.aiThreadIds.length > 1
-                                                              ? `AI chat ${index + 1}`
-                                                              : 'AI chat',
-                                                      buttonSize: ViraSize.Small,
-                                                      buttonEmphasis: ViraEmphasis.Subtle,
-                                                  })}
-                                                      ${listen('click', () => {
-                                                          openThread(threadId);
-                                                      })}
-                                                  ></${ViraButton}>
-                                              `;
-                                          })}
+                        ? state.runs
+                              .reduce(
+                                  (groups: ReadonlyArray<ReadonlyArray<Readonly<BotRun>>>, run) => {
+                                      const lastGroup = groups.at(-1);
+                                      return lastGroup?.[0] &&
+                                          isQuietRun(lastGroup[0]) &&
+                                          isQuietRun(run)
+                                          ? [
+                                                ...groups.slice(0, -1),
+                                                [
+                                                    ...lastGroup,
+                                                    run,
+                                                ],
+                                            ]
+                                          : [
+                                                ...groups,
+                                                [
+                                                    run,
+                                                ],
+                                            ];
+                                  },
+                                  [],
+                              )
+                              .map((group) => {
+                                  const run = assertWrap.isDefined(group[0]);
+                                  return html`
+                                      <div class="run">
+                                          <div class="header">
+                                              ${renderTag(runStatusTags[run.status])}
+                                              ${group.length > 1
+                                                  ? html`
+                                                        <span>×${group.length}</span>
+                                                    `
+                                                  : nothing}
+                                              <span class="faint">
+                                                  ${toSimpleString(
+                                                      createFullDateInUserTimezone(run.startedAt),
+                                                      {
+                                                          includeSeconds: false,
+                                                          includeTimezone: false,
+                                                      },
+                                                  )}
+                                              </span>
+                                          </div>
+                                          ${run.error
+                                              ? html`
+                                                    <div class="error">${run.error}</div>
+                                                `
+                                              : nothing}
+                                          ${run.reports.length
+                                              ? html`
+                                                    <ul>
+                                                        ${run.reports.map((line) => {
+                                                            return html`
+                                                                <li>${line}</li>
+                                                            `;
+                                                        })}
+                                                    </ul>
+                                                `
+                                              : nothing}
+                                          ${run.startedThreadIds.length
+                                              ? html`
+                                                    <div class="faint">
+                                                        Started ${run.startedThreadIds.length}
+                                                        sidebar
+                                                        thread${run.startedThreadIds.length > 1
+                                                            ? 's'
+                                                            : ''}.
+                                                    </div>
+                                                `
+                                              : nothing}
                                       </div>
-                                      ${run.error
-                                          ? html`
-                                                <div class="error">${run.error}</div>
-                                            `
-                                          : nothing}
-                                      ${run.reports.length
-                                          ? html`
-                                                <ul>
-                                                    ${run.reports.map((line) => {
-                                                        return html`
-                                                            <li>${line}</li>
-                                                        `;
-                                                    })}
-                                                </ul>
-                                            `
-                                          : nothing}
-                                      ${run.startedThreadIds.length
-                                          ? html`
-                                                <div class="faint">
-                                                    Started ${run.startedThreadIds.length} sidebar
-                                                    thread${run.startedThreadIds.length > 1
-                                                        ? 's'
-                                                        : ''}.
-                                                </div>
-                                            `
-                                          : nothing}
-                                  </div>
-                              `;
-                          })
+                                  `;
+                              })
                         : html`
                               <div class="faint">No runs yet.</div>
                           `}
                 </div>
-            </div>
-            <div class="panes">
-                ${state.shell
-                    ? html`
-                          <${VirPaneGroup.assign({
-                              context: inputs.context,
-                              folder: state.shell.folder,
-                              scope: state.shell.scope,
-                              active: inputs.isShown,
-                              defaultTabs: [],
-                          })}></${VirPaneGroup}>
-                      `
-                    : nothing}
             </div>
         `;
     },

@@ -9,6 +9,8 @@ import {type AnyDuration, anyDurationShape, convertDuration} from 'date-vir';
 import {assertValidShape, defineShape} from 'object-shape-tester';
 import {type AgentStormClient} from './agent-storm-client.js';
 import {type BotAi, botAiShape} from './bot-ai.js';
+import {type BotLimits, botLimitsShape} from './bot-limits.js';
+import {type EndedBotAiRunStatus} from './protocol.js';
 import {type StandalonePolicy, standalonePolicyShape} from './standalone-policy.js';
 
 /**
@@ -27,8 +29,10 @@ export type BotExecute = RequireExactlyOne<{
         /**
          * Claude permission rules (`Read`, `Bash(git log *)`, `Edit(.not-committed/**)`) for the
          * tools this run may use. Every other tool is denied without a prompt, since nobody is at
-         * the terminal to answer one. Codex has no per-tool allowlist, so a Codex run that sets
-         * this throws. Inside Agent Storm, the Bots tab's runtime mode governs tools instead.
+         * the terminal to answer one: a standalone Claude run without this can't edit files or run
+         * commands unless your own Claude settings allow them. Codex has no per-tool allowlist, so
+         * a Codex run that sets this throws. Inside Agent Storm, the Bots tab's runtime mode
+         * governs tools instead.
          */
         allowedTools: ReadonlyArray<string>;
         /** Claude permission rules denied even when an `allowedTools` rule matches. */
@@ -48,8 +52,23 @@ export type BotExecute = RequireExactlyOne<{
                 }>
             >
         >;
-        /** Extra environment variables for this run's model, on top of the bot's `env`. */
+        /**
+         * Extra environment variables for this run's model, on top of the bot's `env`. Agent Storm
+         * saves them with the run's thread in plain text, so they must not hold secrets.
+         */
         env: Readonly<Record<string, string>>;
+        /**
+         * The folder the model works in instead of the repo root, such as a scratch copy outside
+         * the repo. Codex's sandbox keeps the run's writes inside it. Inside Agent Storm, every AI
+         * run goes to the bot's one thread, which starts over as a new thread when this, `env`, or
+         * the provider changes.
+         */
+        cwd: string;
+        /**
+         * Inside Agent Storm, declines every approval and question the model raises instead of
+         * waiting on the user, for work done while nobody is watching.
+         */
+        isUnattended: boolean;
     }>;
 
 /**
@@ -64,9 +83,12 @@ export type BotRun = Readonly<{
      * it to tell a fresh run from a follow-up that should read the AI's result.
      */
     pass: number;
+    /** How the AI run before this pass ended. Unset on pass 0. */
+    aiStatus: EndedBotAiRunStatus | undefined;
     /**
      * Adds a line to this run's entry in the Bots tab's run history, and logs it. A run that never
-     * reports and never runs AI is recorded as having nothing to do.
+     * reports, runs AI, or calls `agentStorm` (other than to read) is recorded as having nothing to
+     * do.
      */
     report(line: string): Promise<void>;
 }>;
@@ -103,10 +125,14 @@ export type BotDefinition<Args extends ArgDefinitions = ArgDefinitions> = {
 } & PartialWithUndefined<{
     /** Everything the bot accepts after its name on the `agent-storm-bot` command line. */
     args: Args;
-    /** Extra environment variables for the model, on top of this process's own. */
+    /**
+     * Extra environment variables for the model, on top of this process's own. Agent Storm saves
+     * them with each thread the bot starts in plain text, so they must not hold secrets.
+     */
     env: Readonly<Record<string, string>>;
     /** Overrides the config's {@link StandalonePolicy} for this bot. */
     standalone: StandalonePolicy;
+    limits: BotLimits;
 }>;
 
 /**
@@ -137,6 +163,9 @@ export function assertBotDefinition(bot: unknown): asserts bot is AnyBotDefiniti
     if (check.hasKey(bot, 'standalone') && bot.standalone != undefined) {
         assertValidShape(bot.standalone, standalonePolicyShape);
     }
+    if (check.hasKey(bot, 'limits') && bot.limits != undefined) {
+        assertValidShape(bot.limits, botLimitsShape);
+    }
     assert.isTrue(
         check.hasKey(bot, 'execute') &&
             (check.isFunction(bot.execute) ||
@@ -154,13 +183,13 @@ export function assertBotDefinition(bot: unknown): asserts bot is AnyBotDefiniti
 }
 
 /**
- * Defines a bot, typing its setup function's `args` from its `args` definitions.
+ * Defines a bot, typing its setup function's `args` from its `args` definitions. The CLI checks it
+ * when it loads the bot, so one invalid bot doesn't keep the config's other bots from loading.
  *
  * @category Main
  */
 export function defineBot<const Args extends ArgDefinitions = Record<string, never>>(
     bot: BotDefinition<Args>,
 ) {
-    assertBotDefinition(bot);
     return bot;
 }

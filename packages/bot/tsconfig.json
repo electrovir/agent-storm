@@ -13,5 +13,10 @@
         "./dist/",
         "./node_modules/"
     ],
-    "extends": "../../configs/tsconfig.base.json"
+    "extends": "../../configs/tsconfig.base.json",
+    "references": [
+        {
+            "path": "../config"
+        }
+    ]
 }

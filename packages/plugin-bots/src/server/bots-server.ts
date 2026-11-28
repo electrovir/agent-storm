@@ -6,6 +6,7 @@ import {
     BotRunResult,
     type BotList,
     type BotRunFile,
+    type EndedBotAiRunStatus,
 } from '@agent-storm/bot/src/protocol.js';
 import {
     AiProvider,
@@ -18,11 +19,19 @@ import {
     type BuildServerExports,
 } from '@agent-storm/common';
 import {definePluginServer, type PluginCallHandlers} from '@agent-storm/core/server';
+import {usageExportsKey} from '@agent-storm/plugin-usage/src/usage-exports.js';
 import {assertWrap, check} from '@augment-vir/assert';
-import {extractErrorMessage, log, omitObjectKeys, shellQuote} from '@augment-vir/common';
+import {
+    extractErrorMessage,
+    getObjectTypedEntries,
+    log,
+    omitObjectKeys,
+    shellQuote,
+} from '@augment-vir/common';
 import {writeFileAtomically} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
-import {randomBytes, randomUUID} from 'node:crypto';
+import {createHash, randomBytes, randomUUID} from 'node:crypto';
+import {rm} from 'node:fs/promises';
 import {basename, join} from 'node:path';
 import {
     BotConfigApproval,
@@ -39,13 +48,25 @@ import {
 import {BotsNotificationName, botsNotificationTypes} from '../notification-types.js';
 import {startBotCallServer, type BotCallHandlers} from './bot-call-server.js';
 import {createBotId, createRepoId, listRepoBots, readRepoConfig} from './bot-discovery.js';
-import {createBotsStorage, type StoredApiKeys, type StoredBots} from './bots-storage.js';
+import {
+    findAiRunStop,
+    findSpendBreach,
+    isAiRunTimedOut,
+    readBotLimits,
+} from './bot-limits-check.js';
+import {
+    createBotsStorage,
+    type StoredAiThreads,
+    type StoredApiKeys,
+    type StoredBots,
+} from './bots-storage.js';
 
 const defaultBotSettings: Readonly<BotSettings> = {
     isEnabled: false,
     interval: undefined,
     ai: undefined,
     runtimeMode: RuntimeMode.Auto,
+    limits: undefined,
 };
 
 /** How many lines one run's history entry keeps, so a chatty bot can't grow its file forever. */
@@ -86,6 +107,13 @@ const aiRunStatuses: Readonly<Record<ThreadStatus, BotAiRunStatus>> = {
     [ThreadStatus.Failed]: BotAiRunStatus.Failed,
 };
 
+const isThreadTurnGoing: Readonly<Record<ThreadStatus, boolean>> = {
+    [ThreadStatus.Idle]: false,
+    [ThreadStatus.Running]: true,
+    [ThreadStatus.NeedsApproval]: true,
+    [ThreadStatus.Failed]: false,
+};
+
 type KnownBot = Readonly<{
     botId: string;
     entry: Readonly<BotList['bots'][number]>;
@@ -95,7 +123,7 @@ type KnownRepo = Readonly<{
     repoId: string;
     repoPath: string;
     configPath: string;
-    /** Of the config file's contents. Empty when it couldn't be read. */
+    /** Of the config file and the bot files it names. Empty when it couldn't be read. */
     hash: string;
     listError: string | undefined;
     bots: ReadonlyArray<KnownBot>;
@@ -105,8 +133,19 @@ type ActiveRun = {
     runId: string;
     botId: string;
     token: string;
-    /** Epoch milliseconds of the run's last call. */
+    /** As it was when the run started, so a config edited mid-run can't strand the run. */
+    repoPath: string;
+    /**
+     * As the run reported it, else as it was when the run started, so a config edited mid-run can't
+     * strand the run.
+     */
+    entry: KnownBot['entry'];
+    /** The Shell tab the run's command was typed into, once it was. */
+    shellSessionId: string | undefined;
+    /** Epoch milliseconds of the run's last call, or of typing its command before its first. */
     heardAt: number;
+    /** Whether the run has called Agent Storm yet. */
+    isHeard: boolean;
 };
 
 type PendingQuestion = Readonly<
@@ -129,10 +168,12 @@ export default definePluginServer({
             storedBots,
             storedApiKeys,
             storedRuns,
+            storedAiThreads,
         ] = await Promise.all([
             storage.readBots(),
             storage.readApiKeys(),
             storage.readAllRuns(),
+            storage.readAiThreads(),
         ]);
 
         const state: {
@@ -140,9 +181,25 @@ export default definePluginServer({
             apiKeys: StoredApiKeys;
             /** Newest first, by bot id. */
             runs: Map<string, BotRun[]>;
+            aiThreads: StoredAiThreads['threads'];
+            /** The AI runs Agent Storm stopped at a limit, by thread id, with why. */
+            stoppedAiThreads: Map<string, EndedBotAiRunStatus>;
             repos: ReadonlyArray<KnownRepo>;
-            /** Successful `listRepoBots` results by repo path and config hash. */
-            lists: Map<string, Readonly<{list: BotList}>>;
+            /** Each repo's latest `listRepoBots` result, by repo path. */
+            lists: Map<
+                string,
+                Readonly<{
+                    hash: string;
+                    /** Epoch milliseconds. */
+                    listedAt: number;
+                    list: BotList | undefined;
+                    error: string | undefined;
+                }>
+            >;
+            /** Pending run history writes, by bot id. */
+            runWriteTimers: Map<string, ReturnType<typeof setTimeout>>;
+            /** Epoch milliseconds of the last schedule pass. */
+            lastScheduleAt: number;
             activeRuns: ActiveRun[];
             questions: PendingQuestion[];
             answers: GivenAnswer[];
@@ -154,18 +211,25 @@ export default definePluginServer({
                 Promise<Readonly<{folder: string; scope: string; sessionId: string}>>
             >;
             isStopped: boolean;
+            /** Removes the API key reader from the Build that last got it. */
+            unregisterThreadOwner: (() => void) | undefined;
         } = {
             stored: storedBots,
             apiKeys: storedApiKeys,
             runs: storedRuns,
+            aiThreads: storedAiThreads.threads,
+            stoppedAiThreads: new Map(),
             repos: [],
             lists: new Map(),
+            runWriteTimers: new Map(),
+            lastScheduleAt: Date.now(),
             activeRuns: [],
             questions: [],
             answers: [],
             discovery: Promise.resolve(),
             shellLookups: new Map(),
             isStopped: false,
+            unregisterThreadOwner: undefined,
         };
 
         /** A run still marked running belongs to an app that stopped before it ended. */
@@ -228,7 +292,7 @@ export default definePluginServer({
         function requireRepo(repoPath: string) {
             return assertWrap.isDefined(
                 state.repos.find((known) => known.repoPath === repoPath),
-                'That repo has no agent-storm.config file.',
+                'That repo has no bots in a .agent-storm/agent-storm.config file.',
             );
         }
 
@@ -237,6 +301,46 @@ export default definePluginServer({
                 state.stored.bots.find((stored) => stored.botId === botId)?.settings ||
                 defaultBotSettings
             );
+        }
+
+        function readLimits(run: Readonly<ActiveRun>) {
+            return readBotLimits({
+                overrides: readSettings(run.botId).limits,
+                defaults: run.entry.limits,
+            });
+        }
+
+        /** Why the bot's spend limit keeps it from running more AI, if it does. */
+        async function findSpendLimitBreach(run: Readonly<ActiveRun>) {
+            const maxSpendPerDayUsd = readLimits(run).maxSpendPerDayUsd;
+            if (maxSpendPerDayUsd == undefined) {
+                return undefined;
+            }
+            const usage = await waitForPlugin(usageExportsKey);
+            const cost = await usage?.readThreadsCost({
+                threadIds: [
+                    ...state.aiThreads
+                        .filter((thread) => thread.botId === run.botId)
+                        .map((thread) => thread.threadId),
+                    ...(state.runs.get(run.botId) || []).flatMap(
+                        (stored) => stored.startedThreadIds,
+                    ),
+                ],
+                since:
+                    Date.now() -
+                    convertDuration(
+                        {
+                            hours: 24,
+                        },
+                        {
+                            milliseconds: true,
+                        },
+                    ).milliseconds,
+            });
+            return findSpendBreach({
+                maxSpendPerDayUsd,
+                cost,
+            });
         }
 
         function readApiKey(botId: string) {
@@ -265,13 +369,32 @@ export default definePluginServer({
             ) {
                 return undefined;
             }
-            const lastRun = state.runs.get(bot.botId)?.[0];
-            return lastRun
-                ? lastRun.startedAt +
-                      convertDuration(settings.interval || bot.entry.interval, {
-                          milliseconds: true,
-                      }).milliseconds
-                : Date.now();
+            const runs = state.runs.get(bot.botId) || [];
+            const lastRun = runs[0];
+            if (!lastRun) {
+                return Date.now();
+            }
+            const interval = convertDuration(settings.interval || bot.entry.interval, {
+                milliseconds: true,
+            }).milliseconds;
+            const succeededIndex = runs.findIndex((run) => !isFailedRunStatus[run.status]);
+            const failureCount = succeededIndex === -1 ? runs.length : succeededIndex;
+            /**
+             * Each failure in a row doubles the wait, so a broken bot doesn't notify every
+             * interval.
+             */
+            const backoff = Math.min(
+                interval * 2 ** Math.max(failureCount - 1, 0),
+                convertDuration(
+                    {
+                        hours: 6,
+                    },
+                    {
+                        milliseconds: true,
+                    },
+                ).milliseconds,
+            );
+            return lastRun.startedAt + Math.max(interval, backoff);
         }
 
         function findBotState(botId: string) {
@@ -296,6 +419,7 @@ export default definePluginServer({
                 description: bot.entry.description,
                 defaultInterval: bot.entry.interval,
                 defaultAi: bot.entry.ai || undefined,
+                defaultLimits: bot.entry.limits || undefined,
                 loadError: bot.entry.error || undefined,
                 settings: readSettings(bot.botId),
                 hasApiKey: !!readApiKey(bot.botId),
@@ -305,6 +429,8 @@ export default definePluginServer({
                     bot,
                 }),
                 lastRun: state.runs.get(bot.botId)?.[0],
+                aiThreadId: state.aiThreads.findLast((stored) => stored.botId === bot.botId)
+                    ?.threadId,
             };
         }
 
@@ -330,43 +456,61 @@ export default definePluginServer({
                         bots: [],
                     };
                 }
-                const cacheKey = `${repoPath}\0${config.hash}`;
-                const cached = isForced ? undefined : state.lists.get(cacheKey);
+                const cached = state.lists.get(repoPath);
+                /**
+                 * A failed list is retried less often than discovery runs, since each try spawns
+                 * Node.
+                 */
                 const listed =
-                    cached ||
-                    (await listRepoBots(repoPath).then(
-                        (list) => {
-                            return {
-                                list,
-                            };
-                        },
-                        (error: unknown) => {
-                            return {
-                                error: [
-                                    "Couldn't list the repo's bots. Is @agent-storm/bot installed at the repo root?",
-                                    extractErrorMessage(error),
-                                ].join(' '),
-                            };
-                        },
-                    ));
-                if ('list' in listed) {
-                    state.lists.set(cacheKey, listed);
-                }
+                    cached &&
+                    !isForced &&
+                    cached.hash === config.hash &&
+                    (cached.list ||
+                        Date.now() - cached.listedAt <
+                            convertDuration(
+                                {
+                                    minutes: 10,
+                                },
+                                {
+                                    milliseconds: true,
+                                },
+                            ).milliseconds)
+                        ? cached
+                        : await listRepoBots(repoPath).then(
+                              (list) => {
+                                  return {
+                                      hash: config.hash,
+                                      listedAt: Date.now(),
+                                      list,
+                                      error: undefined,
+                                  };
+                              },
+                              (error: unknown) => {
+                                  return {
+                                      hash: config.hash,
+                                      listedAt: Date.now(),
+                                      list: undefined,
+                                      error: [
+                                          "Couldn't list the repo's bots. Is @agent-storm/bot installed at the repo root?",
+                                          extractErrorMessage(error),
+                                      ].join(' '),
+                                  };
+                              },
+                          );
+                state.lists.set(repoPath, listed);
                 return {
                     ...repo,
-                    listError: 'error' in listed ? listed.error : undefined,
+                    listError: listed.error,
                     bots:
-                        'list' in listed
-                            ? listed.list.bots.map((entry) => {
-                                  return {
-                                      botId: createBotId({
-                                          repoPath,
-                                          name: entry.name,
-                                      }),
-                                      entry,
-                                  };
-                              })
-                            : [],
+                        listed.list?.bots.map((entry) => {
+                            return {
+                                botId: createBotId({
+                                    repoPath,
+                                    name: entry.name,
+                                }),
+                                entry,
+                            };
+                        }) || [],
                 };
             } catch (error) {
                 return {
@@ -388,6 +532,71 @@ export default definePluginServer({
             );
             state.repos = repos.filter(check.isDefined);
             emitStateChanged();
+            await pruneLeftovers();
+        }
+
+        /**
+         * Forgets bots their config no longer lists. Only repos whose bots were just listed count,
+         * since a repo missing from the sidebar, unapproved, or failing to list says nothing about
+         * which bots it still has.
+         */
+        async function pruneLeftovers() {
+            const listedRepos = state.repos.filter((repo) => {
+                return readApproval(repo) === BotConfigApproval.Approved && !repo.listError;
+            });
+            const listedBots = listedRepos.flatMap((repo) => {
+                return repo.bots.map((bot) => {
+                    return {
+                        botId: bot.botId,
+                        repoPath: repo.repoPath,
+                    };
+                });
+            });
+            const knownBots = state.stored.knownBots || [];
+            const goneBotIds = knownBots
+                .filter((known) => {
+                    return (
+                        listedRepos.some((repo) => repo.repoPath === known.repoPath) &&
+                        !listedBots.some((listed) => listed.botId === known.botId) &&
+                        !findActiveRun(known.botId)
+                    );
+                })
+                .map((known) => known.botId);
+            const newBots = listedBots.filter((listed) => {
+                return !knownBots.some((known) => known.botId === listed.botId);
+            });
+            if (!goneBotIds.length && !newBots.length) {
+                return;
+            }
+            await saveStoredBots({
+                ...state.stored,
+                bots: state.stored.bots.filter((stored) => !goneBotIds.includes(stored.botId)),
+                knownBots: [
+                    ...knownBots.filter((known) => !goneBotIds.includes(known.botId)),
+                    ...newBots,
+                ],
+            });
+            if (!goneBotIds.length) {
+                return;
+            }
+            state.apiKeys = {
+                keys: state.apiKeys.keys.filter((key) => !goneBotIds.includes(key.botId)),
+            };
+            state.aiThreads = state.aiThreads.filter(
+                (thread) => !goneBotIds.includes(thread.botId),
+            );
+            goneBotIds.forEach((botId) => {
+                clearTimeout(state.runWriteTimers.get(botId));
+                state.runWriteTimers.delete(botId);
+                state.runs.delete(botId);
+            });
+            await Promise.all([
+                storage.writeApiKeys(state.apiKeys),
+                storage.writeAiThreads({
+                    threads: state.aiThreads,
+                }),
+                ...goneBotIds.map(async (botId) => await storage.deleteRuns(botId)),
+            ]);
         }
 
         /** Runs after any discovery in progress, so an older one can't land last. */
@@ -403,9 +612,9 @@ export default definePluginServer({
             await discovery;
         }
 
-        async function saveRuns(botId: string, update: (runs: BotRun[]) => BotRun[]) {
-            const runs = update(state.runs.get(botId) || []);
-            state.runs.set(botId, runs);
+        async function writeRuns(botId: string) {
+            clearTimeout(state.runWriteTimers.get(botId));
+            state.runWriteTimers.delete(botId);
             if (!state.isStopped) {
                 emit('runsChanged', {
                     botId,
@@ -413,17 +622,73 @@ export default definePluginServer({
             }
             await storage.writeRuns({
                 botId,
-                runs,
+                runs: state.runs.get(botId) || [],
             });
         }
 
-        async function updateRun(
+        async function saveRuns(botId: string, update: (runs: BotRun[]) => BotRun[]) {
+            state.runs.set(botId, update(state.runs.get(botId) || []));
+            await writeRuns(botId);
+        }
+
+        function changeRun(
             {botId, runId}: Readonly<{botId: string; runId: string}>,
             update: (run: BotRun) => BotRun,
         ) {
-            await saveRuns(botId, (runs) => {
-                return runs.map((run) => (run.id === runId ? update(run) : run));
+            state.runs.set(
+                botId,
+                (state.runs.get(botId) || []).map((run) => (run.id === runId ? update(run) : run)),
+            );
+        }
+
+        async function updateRun(
+            run: Readonly<{botId: string; runId: string}>,
+            update: (run: BotRun) => BotRun,
+        ) {
+            changeRun(run, update);
+            await writeRuns(run.botId);
+        }
+
+        /** Saved shortly after, so a bot reporting many lines at once costs one write. */
+        function appendReport(run: Readonly<{botId: string; runId: string}>, line: string) {
+            changeRun(run, (stored) => {
+                return {
+                    ...stored,
+                    reports: [
+                        ...stored.reports,
+                        line,
+                    ].slice(-maxReportsPerRun),
+                };
             });
+            if (state.runWriteTimers.has(run.botId)) {
+                return;
+            }
+            state.runWriteTimers.set(
+                run.botId,
+                setTimeout(
+                    async () => {
+                        try {
+                            await writeRuns(run.botId);
+                        } catch (error) {
+                            log.error(
+                                `Couldn't save a bot's run history: ${extractErrorMessage(error)}`,
+                            );
+                        }
+                    },
+                    convertDuration(
+                        {
+                            seconds: 1,
+                        },
+                        {
+                            milliseconds: true,
+                        },
+                    ).milliseconds,
+                ),
+            );
+        }
+
+        function toRunFilePath(runId: string) {
+            return join(tempDir, `${runId}.json`);
         }
 
         async function saveStoredBots(stored: StoredBots) {
@@ -480,6 +745,12 @@ export default definePluginServer({
             state.activeRuns = state.activeRuns.filter((run) => run.runId !== runId);
             state.questions = state.questions.filter((question) => question.runId !== runId);
             state.answers = state.answers.filter((answer) => answer.runId !== runId);
+            state.runs
+                .get(activeRun.botId)
+                ?.find((run) => run.id === runId)
+                ?.aiThreadIds.forEach((threadId) => {
+                    state.stoppedAiThreads.delete(threadId);
+                });
             await updateRun(activeRun, (run) => {
                 return {
                     ...run,
@@ -489,17 +760,20 @@ export default definePluginServer({
                 };
             });
             emitStateChanged();
-            const found = findBot(activeRun.botId);
-            if (isFailedRunStatus[status] && found) {
+            /** The CLI deletes it once read, so it is only left when the command never started. */
+            await rm(toRunFilePath(runId), {
+                force: true,
+            });
+            if (isFailedRunStatus[status]) {
                 await host.notify({
                     type: botsNotificationTypes[BotsNotificationName.RunFailed],
-                    title: `The ${found.bot.entry.name} bot failed`,
+                    title: `The ${activeRun.entry.name} bot failed`,
                     body: error || 'The run failed.',
                     paths: [
                         botsPluginId,
                         activeRun.botId,
                     ],
-                    folder: found.repo.repoPath,
+                    folder: activeRun.repoPath,
                 });
             }
         }
@@ -508,21 +782,25 @@ export default definePluginServer({
             botId,
             trigger,
         }: Readonly<{botId: string; trigger: BotRunTrigger}>) {
-            const {bot} = requireBot(botId);
+            const {repo, bot} = requireBot(botId);
             if (findActiveRun(botId)) {
                 throw new Error('The bot is already running.');
             }
             const runId = randomUUID();
-            const token = randomBytes(32).toString('hex');
             const now = Date.now();
+            const activeRun: ActiveRun = {
+                runId,
+                botId,
+                token: randomBytes(32).toString('hex'),
+                repoPath: repo.repoPath,
+                entry: bot.entry,
+                shellSessionId: undefined,
+                heardAt: now,
+                isHeard: false,
+            };
             state.activeRuns = [
                 ...state.activeRuns,
-                {
-                    runId,
-                    botId,
-                    token,
-                    heardAt: now,
-                },
+                activeRun,
             ];
             await saveRuns(botId, (runs) => {
                 return [
@@ -543,18 +821,48 @@ export default definePluginServer({
             });
             emitStateChanged();
             try {
-                const runFilePath = join(tempDir, `${runId}.json`);
+                /**
+                 * Approval covers the config and the bot files it names by path, not what those
+                 * import, and any of them may have changed since.
+                 */
+                const config = await readRepoConfig(repo.repoPath);
+                if (
+                    !config ||
+                    readApproval({
+                        repoPath: repo.repoPath,
+                        hash: config.hash,
+                    }) !== BotConfigApproval.Approved
+                ) {
+                    await queueDiscovery(false);
+                    throw new Error(
+                        'The .agent-storm/agent-storm.config file or a bot file it names changed since you approved it. Approve it again in the Bots tab.',
+                    );
+                }
+                const shell = await ensureBotShell(botId);
+                if (
+                    await host.isPaneRunningCommand({
+                        folder: shell.folder,
+                        kind: PaneKind.Shell,
+                        sessionId: shell.sessionId,
+                    })
+                ) {
+                    throw new Error(
+                        "The bot's Shell tab is still running something. Stop it there, then run the bot again.",
+                    );
+                }
+                const runFilePath = toRunFilePath(runId);
                 await writeFileAtomically({
                     path: runFilePath,
                     contents: JSON.stringify({
                         url: callServer.url,
-                        token,
+                        token: activeRun.token,
                         runId,
                         ai: readSettings(botId).ai,
                     } satisfies BotRunFile),
                     mode: 0o600,
                 });
-                const shell = await ensureBotShell(botId);
+                activeRun.shellSessionId = shell.sessionId;
+                activeRun.heardAt = Date.now();
                 await host.sendPaneText({
                     folder: shell.folder,
                     kind: PaneKind.Shell,
@@ -593,7 +901,13 @@ export default definePluginServer({
         }: Readonly<
             Pick<
                 Parameters<BuildServerExports['startPluginThread']>[0],
-                'origin' | 'text' | 'isInWorktree' | 'env' | 'title'
+                | 'origin'
+                | 'text'
+                | 'isInWorktree'
+                | 'env'
+                | 'title'
+                | 'workingDirectory'
+                | 'isUnattended'
             > & {
                 run: Readonly<ActiveRun>;
                 ai: Readonly<BotAi>;
@@ -603,39 +917,163 @@ export default definePluginServer({
                 await requireBuild()
             ).startPluginThread({
                 ...params,
-                cwd: requireBot(run.botId).repo.repoPath,
+                cwd: run.repoPath,
                 provider: buildProviders[ai.provider],
                 model: ai.model,
                 effort: ai.effort ? buildEfforts[ai.effort] : undefined,
                 runtimeMode: readSettings(run.botId).runtimeMode,
-                apiKey: readApiKey(run.botId),
+                pluginId: botsPluginId,
+                ownerId: run.botId,
             });
         }
 
-        async function runSchedule() {
-            const now = Date.now();
-            const silentRuns = state.activeRuns.filter((run) => {
-                return (
-                    now - run.heardAt >
+        async function registerThreadOwner() {
+            state.unregisterThreadOwner = (
+                await waitForPlugin(buildExportsKey)
+            )?.registerThreadOwner({
+                pluginId: botsPluginId,
+                readApiKey,
+            });
+        }
+
+        /** Stops each run's AI turn that went past its bot's time or spend limit. */
+        async function enforceAiLimits() {
+            const build = await waitForPlugin(buildExportsKey);
+            if (!build) {
+                return;
+            }
+            await Promise.all(
+                state.activeRuns.map(async (run) => {
+                    const threadId = state.runs
+                        .get(run.botId)
+                        ?.find((stored) => stored.id === run.runId)
+                        ?.aiThreadIds.at(-1);
+                    if (!threadId || state.stoppedAiThreads.has(threadId)) {
+                        return;
+                    }
+                    const thread = await build.readPluginThread(threadId);
+                    if (!thread || !isThreadTurnGoing[thread.status]) {
+                        return;
+                    }
+                    const isTimedOut = isAiRunTimedOut({
+                        maxAiRunDuration: readLimits(run).maxAiRunDuration,
+                        startedAt: state.aiThreads.findLast(
+                            (stored) => stored.threadId === threadId,
+                        )?.startedAt,
+                        now: Date.now(),
+                    });
+                    const stop = findAiRunStop({
+                        isTimedOut,
+                        spendBreach: isTimedOut ? undefined : await findSpendLimitBreach(run),
+                    });
+                    if (!stop) {
+                        return;
+                    }
+                    state.stoppedAiThreads.set(threadId, stop.status);
+                    appendReport(run, stop.reason);
+                    await build.interruptPluginThread(threadId);
+                }),
+            );
+        }
+
+        /** Why the run is over though it never said so, if it is. */
+        async function findRunEnding(run: Readonly<ActiveRun>, now: number) {
+            const quietFor = now - run.heardAt;
+            /**
+             * A running CLI calls in more often than every 30 seconds, so a quieter one may have
+             * exited. Windows can't tell whether the shell runs a command, so there only the quiet
+             * limits below apply.
+             */
+            const hasShellExited =
+                process.platform !== 'win32' &&
+                !!run.shellSessionId &&
+                quietFor >
                     convertDuration(
                         {
-                            minutes: 2,
+                            seconds: 30,
                         },
                         {
                             milliseconds: true,
                         },
-                    ).milliseconds
-                );
-            });
+                    ).milliseconds &&
+                !(await host
+                    .isPaneRunningCommand({
+                        folder: run.repoPath,
+                        kind: PaneKind.Shell,
+                        sessionId: run.shellSessionId,
+                    })
+                    .catch(() => true));
+            if (hasShellExited) {
+                return run.isHeard
+                    ? {
+                          status: BotRunStatus.Interrupted,
+                          error: "The bot's command ended before it finished its run. Its Shell tab shows why.",
+                      }
+                    : {
+                          status: BotRunStatus.Failed,
+                          error: "The bot's command exited before it reached Agent Storm. Its Shell tab shows why.",
+                      };
+            }
+            /** Before its first call the command may still be installing or compiling. */
+            const maxQuiet = convertDuration(
+                run.isHeard
+                    ? {
+                          minutes: 2,
+                      }
+                    : {
+                          minutes: 10,
+                      },
+                {
+                    milliseconds: true,
+                },
+            ).milliseconds;
+            if (quietFor <= maxQuiet) {
+                return undefined;
+            }
+            return {
+                status: BotRunStatus.Interrupted,
+                error: run.isHeard
+                    ? 'Agent Storm stopped hearing from the run.'
+                    : "The bot's command didn't reach Agent Storm in time.",
+            };
+        }
+
+        async function runSchedule() {
+            /** A restarted Build has forgotten the reader. */
+            await registerThreadOwner();
+            const now = Date.now();
+            /**
+             * A long gap since the last pass means the computer slept or the app stalled, which
+             * paused the runs' calls too.
+             */
+            if (
+                now - state.lastScheduleAt >
+                convertDuration(
+                    {
+                        minutes: 1,
+                    },
+                    {
+                        milliseconds: true,
+                    },
+                ).milliseconds
+            ) {
+                state.activeRuns.forEach((run) => {
+                    run.heardAt = now;
+                });
+            }
+            state.lastScheduleAt = now;
             await Promise.all(
-                silentRuns.map(async (run) => {
-                    await finishRun({
-                        runId: run.runId,
-                        status: BotRunStatus.Interrupted,
-                        error: 'Agent Storm stopped hearing from the run.',
-                    });
+                state.activeRuns.map(async (run) => {
+                    const ending = await findRunEnding(run, now);
+                    if (ending) {
+                        await finishRun({
+                            runId: run.runId,
+                            ...ending,
+                        });
+                    }
                 }),
             );
+            await enforceAiLimits();
             const dueBots = state.repos.flatMap((repo) => {
                 return repo.bots.filter((bot) => {
                     const nextRunAt = findNextRunAt({
@@ -659,16 +1097,44 @@ export default definePluginServer({
             heartbeat() {
                 return {};
             },
-            async report({run, request}) {
-                await updateRun(run, (stored) => {
-                    return {
-                        ...stored,
-                        reports: [
-                            ...stored.reports,
-                            request.line,
-                        ].slice(-maxReportsPerRun),
-                    };
+            report({run, request}) {
+                appendReport(run, request.line);
+                return {};
+            },
+            reportDefinition({run, request}) {
+                const entry = {
+                    ...request,
+                    name: run.entry.name,
+                    error: undefined,
+                };
+                run.entry = entry;
+                const cached = state.lists.get(run.repoPath);
+                if (cached?.list) {
+                    state.lists.set(run.repoPath, {
+                        ...cached,
+                        list: {
+                            bots: cached.list.bots.map((listed) => {
+                                return listed.name === entry.name ? entry : listed;
+                            }),
+                        },
+                    });
+                }
+                state.repos = state.repos.map((repo) => {
+                    return repo.repoPath === run.repoPath
+                        ? {
+                              ...repo,
+                              bots: repo.bots.map((bot) => {
+                                  return bot.botId === run.botId
+                                      ? {
+                                            ...bot,
+                                            entry,
+                                        }
+                                      : bot;
+                              }),
+                          }
+                        : repo;
                 });
+                emitStateChanged();
                 return {};
             },
             async finishRun({run, request}) {
@@ -680,22 +1146,98 @@ export default definePluginServer({
                 return {};
             },
             async startAi({run, request}) {
-                const thread = await startRunThread({
-                    run,
-                    ai: request.ai,
-                    origin: ThreadOrigin.Bot,
-                    text: request.text,
-                    isInWorktree: false,
-                    env: request.env,
-                    title: `${requireBot(run.botId).bot.entry.name} bot run`,
+                const spendBreach = await findSpendLimitBreach(run);
+                if (spendBreach) {
+                    appendReport(run, `${spendBreach} The AI run didn't start.`);
+                    return {
+                        threadId: undefined,
+                    };
+                }
+                const build = await requireBuild();
+                const launchKey = createHash('sha256')
+                    .update(
+                        JSON.stringify({
+                            provider: request.ai.provider,
+                            cwd: request.cwd || '',
+                            env: getObjectTypedEntries(request.env).toSorted(
+                                ([firstKey], [secondKey]) => firstKey.localeCompare(secondKey),
+                            ),
+                        }),
+                    )
+                    .digest('hex');
+                const latest = state.aiThreads.findLast((stored) => stored.botId === run.botId);
+                const botThread =
+                    latest?.launchKey === launchKey
+                        ? await build.readPluginThread(latest.threadId)
+                        : undefined;
+                if (botThread && isThreadTurnGoing[botThread.status]) {
+                    throw new Error(
+                        "The bot's AI Chat tab is still busy with an earlier message, so the AI run didn't start.",
+                    );
+                }
+                const thread =
+                    (botThread &&
+                        (await build.continuePluginThread({
+                            threadId: botThread.id,
+                            text: request.text,
+                            model: request.ai.model,
+                            effort: request.ai.effort ? buildEfforts[request.ai.effort] : undefined,
+                            runtimeMode: readSettings(run.botId).runtimeMode,
+                            isUnattended: !!request.isUnattended,
+                        }))) ||
+                    (await startRunThread({
+                        run,
+                        ai: request.ai,
+                        origin: ThreadOrigin.Bot,
+                        text: request.text,
+                        isInWorktree: false,
+                        env: request.env,
+                        title: `${run.entry.name} bot`,
+                        workingDirectory: request.cwd || undefined,
+                        isUnattended: !!request.isUnattended,
+                    }));
+                state.stoppedAiThreads.delete(thread.id);
+                const now = Date.now();
+                /**
+                 * Older messages are out of every limit's window. Each bot's latest one stays,
+                 * since it names the bot's thread.
+                 */
+                state.aiThreads = [
+                    ...state.aiThreads.filter((stored, index) => {
+                        return (
+                            now - stored.startedAt <
+                                convertDuration(
+                                    {
+                                        days: 2,
+                                    },
+                                    {
+                                        milliseconds: true,
+                                    },
+                                ).milliseconds ||
+                            !state.aiThreads
+                                .slice(index + 1)
+                                .some((later) => later.botId === stored.botId)
+                        );
+                    }),
+                    {
+                        botId: run.botId,
+                        threadId: thread.id,
+                        startedAt: now,
+                        launchKey,
+                    },
+                ];
+                await storage.writeAiThreads({
+                    threads: state.aiThreads,
                 });
                 await updateRun(run, (stored) => {
                     return {
                         ...stored,
-                        aiThreadIds: [
-                            ...stored.aiThreadIds,
-                            thread.id,
-                        ],
+                        aiThreadIds: stored.aiThreadIds.includes(thread.id)
+                            ? stored.aiThreadIds
+                            : [
+                                  ...stored.aiThreadIds,
+                                  thread.id,
+                              ],
                     };
                 });
                 emitStateChanged();
@@ -712,12 +1254,20 @@ export default definePluginServer({
                     throw new Error('That AI run belongs to another bot run.');
                 }
                 const thread = await (await requireBuild()).readPluginThread(request.threadId);
+                const stoppedStatus = state.stoppedAiThreads.get(request.threadId);
+                if (!thread) {
+                    return {
+                        status: BotAiRunStatus.Failed,
+                    };
+                }
                 return {
-                    status: thread ? aiRunStatuses[thread.status] : BotAiRunStatus.Failed,
+                    status:
+                        stoppedStatus && !isThreadTurnGoing[thread.status]
+                            ? stoppedStatus
+                            : aiRunStatuses[thread.status],
                 };
             },
             async askQuestion({run, request}) {
-                const {repo, bot} = requireBot(run.botId);
                 const questionId = randomUUID();
                 state.questions = [
                     ...state.questions,
@@ -732,13 +1282,13 @@ export default definePluginServer({
                 emitStateChanged();
                 await host.notify({
                     type: botsNotificationTypes[BotsNotificationName.Question],
-                    title: `The ${bot.entry.name} bot asks`,
+                    title: `The ${run.entry.name} bot asks`,
                     body: request.question,
                     paths: [
                         botsPluginId,
                         run.botId,
                     ],
-                    folder: repo.repoPath,
+                    folder: run.repoPath,
                 });
                 return {
                     questionId,
@@ -766,14 +1316,23 @@ export default definePluginServer({
                 };
             },
             async startThread({run, request}) {
+                const spendBreach = await findSpendLimitBreach(run);
+                if (spendBreach) {
+                    appendReport(run, `${spendBreach} The thread didn't start.`);
+                    return {
+                        threadId: undefined,
+                    };
+                }
                 const thread = await startRunThread({
                     run,
                     ai: request.ai,
                     origin: ThreadOrigin.User,
                     text: request.text,
                     isInWorktree: request.isInWorktree,
-                    env: {},
+                    env: request.env || {},
                     title: request.title || undefined,
+                    workingDirectory: request.cwd || undefined,
+                    isUnattended: !!request.isUnattended,
                 });
                 await updateRun(run, (stored) => {
                     return {
@@ -788,16 +1347,19 @@ export default definePluginServer({
                     threadId: thread.id,
                 };
             },
+            async readLastUserInput() {
+                return {
+                    lastUserInputAt: await host.readLastUserInputAt(),
+                };
+            },
             async createWorktree({run, request}) {
-                const {repo} = requireBot(run.botId);
                 return await host.createWorktree({
-                    folder: repo.repoPath,
+                    folder: run.repoPath,
                     name: request.name,
                     scope: toBotScope(run.botId),
                 });
             },
             async notify({run, request}) {
-                const {repo} = requireBot(run.botId);
                 await host.notify({
                     type: botsNotificationTypes[BotsNotificationName.Message],
                     title: request.title,
@@ -806,7 +1368,7 @@ export default definePluginServer({
                         botsPluginId,
                         run.botId,
                     ],
-                    folder: repo.repoPath,
+                    folder: run.repoPath,
                 });
                 return {};
             },
@@ -817,11 +1379,37 @@ export default definePluginServer({
                 const run = state.activeRuns.find((active) => active.token === token);
                 if (run) {
                     run.heardAt = Date.now();
+                    run.isHeard = true;
                 }
                 return run;
             },
             handlers: runHandlers,
         });
+
+        /** Clears the key when `apiKey` is undefined. */
+        async function saveApiKey({
+            botId,
+            apiKey,
+        }: Readonly<{
+            botId: string;
+            apiKey: string | undefined;
+        }>) {
+            state.apiKeys = {
+                keys: [
+                    ...state.apiKeys.keys.filter((key) => key.botId !== botId),
+                    ...(apiKey
+                        ? [
+                              {
+                                  botId,
+                                  apiKey,
+                              },
+                          ]
+                        : []),
+                ],
+            };
+            emitStateChanged();
+            await storage.writeApiKeys(state.apiKeys);
+        }
 
         const calls: PluginCallHandlers<typeof botsApi> = {
             readState() {
@@ -852,7 +1440,7 @@ export default definePluginServer({
             async readConfigFile({repoPath}) {
                 const config = assertWrap.isDefined(
                     await readRepoConfig(requireRepo(repoPath).repoPath),
-                    'The repo no longer has an agent-storm.config file.',
+                    'The repo no longer has bots in a .agent-storm/agent-storm.config file.',
                 );
                 return {
                     contents: config.contents,
@@ -863,7 +1451,7 @@ export default definePluginServer({
                 const config = await readRepoConfig(requireRepo(repoPath).repoPath);
                 if (config?.hash !== hash) {
                     throw new Error(
-                        'The config file changed since you read it. Read it again first.',
+                        'The config file or a bot file it names changed since you read it. Read it again first.',
                     );
                 }
                 await saveStoredBots({
@@ -885,7 +1473,7 @@ export default definePluginServer({
                 await queueDiscovery(true);
                 return {};
             },
-            async updateBotSettings({botId, settings}) {
+            async updateBotSettings({botId, settings, apiKey}) {
                 requireBot(botId);
                 await saveStoredBots({
                     ...state.stored,
@@ -897,31 +1485,28 @@ export default definePluginServer({
                         },
                     ],
                 });
+                if (apiKey) {
+                    await saveApiKey({
+                        botId,
+                        apiKey,
+                    });
+                }
                 return {};
             },
             async setApiKey({botId, apiKey}) {
                 requireBot(botId);
-                state.apiKeys = {
-                    keys: [
-                        ...state.apiKeys.keys.filter((key) => key.botId !== botId),
-                        ...(apiKey
-                            ? [
-                                  {
-                                      botId,
-                                      apiKey,
-                                  },
-                              ]
-                            : []),
-                    ],
-                };
-                emitStateChanged();
-                await storage.writeApiKeys(state.apiKeys);
+                await saveApiKey({
+                    botId,
+                    apiKey: apiKey || undefined,
+                });
                 return {};
             },
             async runNow({botId}) {
                 const {repo, bot} = requireBot(botId);
                 if (readApproval(repo) !== BotConfigApproval.Approved) {
-                    throw new Error("Approve the repo's agent-storm.config file first.");
+                    throw new Error(
+                        "Approve the repo's .agent-storm/agent-storm.config file first.",
+                    );
                 } else if (bot.entry.error) {
                     throw new Error(`The bot didn't load: ${bot.entry.error}`);
                 }
@@ -962,6 +1547,7 @@ export default definePluginServer({
             },
         };
 
+        await registerThreadOwner();
         await queueDiscovery(false);
         const timers = [
             setInterval(
@@ -999,7 +1585,11 @@ export default definePluginServer({
         return {
             calls,
             async stop() {
+                await Promise.all(
+                    [...state.runWriteTimers.keys()].map(async (botId) => await writeRuns(botId)),
+                );
                 state.isStopped = true;
+                state.unregisterThreadOwner?.();
                 timers.forEach((timer) => {
                     clearInterval(timer);
                 });

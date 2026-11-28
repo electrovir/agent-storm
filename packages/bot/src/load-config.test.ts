@@ -1,8 +1,8 @@
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
-import {mkdtemp, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {listBots, loadAgentStormConfig, loadBot} from './load-config.js';
 
 const botModule = `export default {
@@ -25,6 +25,9 @@ async function withRepo(
                     name,
                     contents,
                 ]) => {
+                    await mkdir(dirname(join(directory, name)), {
+                        recursive: true,
+                    });
                     await writeFile(join(directory, name), contents);
                 },
             ),
@@ -42,10 +45,10 @@ describe(loadAgentStormConfig.name, () => {
     it('loads a JSON config whose bots are module paths', async () => {
         await withRepo(
             {
-                'agent-storm.config.json': JSON.stringify({
+                '.agent-storm/agent-storm.config.json': JSON.stringify({
                     bots: {
-                        hello: './hello.bot.ts',
-                        missing: './missing.bot.ts',
+                        hello: '../hello.bot.ts',
+                        missing: '../missing.bot.ts',
                     },
                 }),
                 'hello.bot.ts': botModule,
@@ -81,7 +84,7 @@ describe(loadAgentStormConfig.name, () => {
     it('loads a TS config with an inline bot', async () => {
         await withRepo(
             {
-                'agent-storm.config.ts': `export default {bots: {inline: ${botModule.replace('export default ', '').replace(/;\n$/, '')}}};\n`,
+                '.agent-storm/agent-storm.config.ts': `export default {bots: {inline: ${botModule.replace('export default ', '').replace(/;\n$/, '')}}};\n`,
             },
             async (directory) => {
                 const bot = await loadBot({
@@ -92,10 +95,24 @@ describe(loadAgentStormConfig.name, () => {
             },
         );
     });
+    it('lists no bots from a config of only folder settings', async () => {
+        await withRepo(
+            {
+                '.agent-storm/agent-storm.config.json': JSON.stringify({
+                    postWorktreeCmd: 'npm ci',
+                }),
+            },
+            async (directory) => {
+                assert.deepEquals(await listBots(await loadAgentStormConfig(directory)), {
+                    bots: [],
+                });
+            },
+        );
+    });
     it('rejects a bot name with spaces', async () => {
         await withRepo(
             {
-                'agent-storm.config.json': JSON.stringify({
+                '.agent-storm/agent-storm.config.json': JSON.stringify({
                     bots: {
                         'bad name': './x.ts',
                     },

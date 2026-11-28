@@ -1,6 +1,7 @@
 import {anyDurationShape} from 'date-vir';
 import {defineShape, enumShape, nullableShape, recordShape} from 'object-shape-tester';
 import {botAiShape} from './bot-ai.js';
+import {botLimitsShape} from './bot-limits.js';
 
 /**
  * How a bot run ended.
@@ -8,17 +9,17 @@ import {botAiShape} from './bot-ai.js';
  * @category Internal
  */
 export enum BotRunResult {
-    /** The run reported something or ran AI. */
+    /** The run reported something, ran AI, or asked something of Agent Storm. */
     Succeeded = 'succeeded',
-    /** The run neither reported anything nor ran AI. */
+    /** The run did none of what {@link BotRunResult.Succeeded} counts. */
     NothingToDo = 'nothingToDo',
     Failed = 'failed',
 }
 
 /**
- * Where an AI run that Agent Storm hosts stands.
+ * Where an AI run stands.
  *
- * @category Internal
+ * @category Main
  */
 export enum BotAiRunStatus {
     Running = 'running',
@@ -26,7 +27,21 @@ export enum BotAiRunStatus {
     Waiting = 'waiting',
     Finished = 'finished',
     Failed = 'failed',
+    /** Agent Storm stopped it at the bot's `maxAiRunDuration` limit. */
+    TimedOut = 'timedOut',
+    /** Agent Storm stopped it, or never started it, at the bot's `maxSpendPerDayUsd` limit. */
+    OverSpendLimit = 'overSpendLimit',
 }
+
+/**
+ * How an AI run ended.
+ *
+ * @category Main
+ */
+export type EndedBotAiRunStatus = Exclude<
+    BotAiRunStatus,
+    BotAiRunStatus.Running | BotAiRunStatus.Waiting
+>;
 
 /**
  * The CLI flag through which Agent Storm hands a run its {@link BotRunFile}.
@@ -73,6 +88,21 @@ const environmentShape = recordShape({
 });
 
 /**
+ * One bot in {@link botListShape}.
+ *
+ * @category Internal
+ */
+export const botListEntryShape = defineShape({
+    name: '',
+    description: '',
+    interval: anyDurationShape,
+    ai: nullableShape(botAiShape),
+    limits: nullableShape(botLimitsShape),
+    /** Why the bot's definition failed to load. The other fields are then blank. */
+    error: nullableShape(''),
+});
+
+/**
  * Each call the CLI makes to Agent Storm's Bots plugin during a run: a POST to `<url>/<call name>`
  * with a JSON body, authorized by the run's token.
  *
@@ -91,6 +121,14 @@ export const botCalls = {
         }),
         responseShape: defineShape({}),
     },
+    /**
+     * The bot's definition as the run loaded it, which replaces the bot's listing, so an edit to a
+     * file the bot imports shows in the Bots tab after the bot's next run.
+     */
+    reportDefinition: {
+        requestShape: botListEntryShape,
+        responseShape: defineShape({}),
+    },
     finishRun: {
         requestShape: defineShape({
             result: enumShape(BotRunResult),
@@ -98,15 +136,22 @@ export const botCalls = {
         }),
         responseShape: defineShape({}),
     },
-    /** Starts the run's AI work as a thread in the bot's AI Chat tab. */
+    /**
+     * Sends the run's AI work to the bot's thread, which its AI Chat tab shows. A `cwd`, `env`, or
+     * provider other than the thread started with starts a new thread in its place.
+     */
     startAi: {
         requestShape: defineShape({
             text: '',
             ai: botAiShape,
             env: environmentShape,
+            /** The repo root when unset. */
+            cwd: nullableShape(''),
+            isUnattended: nullableShape(false),
         }),
         responseShape: defineShape({
-            threadId: '',
+            /** Unset when the bot's spend limit kept the AI run from starting. */
+            threadId: nullableShape(''),
         }),
     },
     readAi: {
@@ -146,9 +191,15 @@ export const botCalls = {
             ai: botAiShape,
             title: nullableShape(''),
             isInWorktree: false,
+            /** The repo root when unset. */
+            cwd: nullableShape(''),
+            isUnattended: nullableShape(false),
+            /** Extra environment variables for the thread's model, saved with the thread. */
+            env: nullableShape(environmentShape),
         }),
         responseShape: defineShape({
-            threadId: '',
+            /** Unset when the bot's spend limit kept the thread from starting. */
+            threadId: nullableShape(''),
         }),
     },
     createWorktree: {
@@ -165,6 +216,13 @@ export const botCalls = {
             body: '',
         }),
         responseShape: defineShape({}),
+    },
+    readLastUserInput: {
+        requestShape: defineShape({}),
+        responseShape: defineShape({
+            /** Epoch milliseconds. Unset until the user's first input. */
+            lastUserInputAt: nullableShape(0),
+        }),
     },
 } as const;
 
@@ -199,14 +257,7 @@ export type BotCallResponse<Name extends BotCallName> =
  */
 export const botListShape = defineShape({
     bots: [
-        {
-            name: '',
-            description: '',
-            interval: anyDurationShape,
-            ai: nullableShape(botAiShape),
-            /** Why the bot's definition failed to load. The other fields are then blank. */
-            error: nullableShape(''),
-        },
+        botListEntryShape,
     ],
 });
 

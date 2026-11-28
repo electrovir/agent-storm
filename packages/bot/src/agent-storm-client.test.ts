@@ -6,10 +6,6 @@ import {StandaloneQuestion, StandaloneThread} from './standalone-policy.js';
 
 function createHost(question: StandaloneQuestion) {
     return createStandaloneHost({
-        defaultAi: {
-            provider: BotAiProvider.Claude,
-            model: 'claude-haiku-5',
-        },
         cwd: process.cwd(),
         policy: {
             question,
@@ -52,6 +48,11 @@ describe(createStandaloneHost.name, () => {
         await assert.throws(
             host.startThread({
                 prompt: 'Do it.',
+                ai: {
+                    provider: BotAiProvider.Claude,
+                    model: 'claude-haiku-5',
+                },
+                env: {},
             }),
         );
     });

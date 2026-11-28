@@ -7,15 +7,16 @@ Bots that run on a schedule, do their routine work in plain scripts, and only ca
 Install it at the root of the repo the bots live in. Agent Storm runs `npx --no -- agent-storm-bot` from there, so a copy nested in a workspace package won't be found.
 
 ```sh
-npm i -D @agent-storm/bot
+npm i -D @agent-storm/bot @agent-storm/config
 ```
 
 ## Usage
 
-Add an `agent-storm.config.ts` (or `.js`, `.json`, `.yaml`, `.toml`) at the repo root. Each key under `bots` is a bot's name (letters, digits, and dashes).
+Add bots to the repo's `.agent-storm/agent-storm.config.ts` (or `.js`, `.json`, `.yaml`, `.toml`), the same file Agent Storm reads the repo's folder settings from (see [`@agent-storm/config`](https://www.npmjs.com/package/@agent-storm/config)). Each key under `bots` is a bot's name (letters, digits, and dashes).
 
 ```TypeScript
-import {BotAiEffort, BotAiProvider, defineAgentStormConfig, defineBot} from '@agent-storm/bot';
+import {BotAiEffort, BotAiProvider, defineBot} from '@agent-storm/bot';
+import {defineAgentStormConfig} from '@agent-storm/config';
 
 export default defineAgentStormConfig({
     bots: {
@@ -41,17 +42,22 @@ export default defineAgentStormConfig({
                 };
             },
         }),
-        /** A JSON, YAML, or TOML config lists bots this way: a module whose default export is the bot. */
-        release: './packages/bots/src/release.bot.ts',
+        /**
+         * A JSON, YAML, or TOML config lists bots this way: a module, relative to the config file,
+         * whose default export is the bot.
+         */
+        release: '../packages/bots/src/release.bot.ts',
     },
 });
 ```
 
-`execute` is either a fixed `{prompt}` or `{skill}` that runs every time, or a setup function that does the scripted part and returns one only when the AI is needed. After an AI run, the setup function runs again (a couple of times at most) so it can act on what the AI left behind, such as a result file the prompt told it to write. A run that neither reports anything nor runs AI shows up in the Bots tab's history as "Nothing to do".
+`execute` is either a fixed `{prompt}` or `{skill}` that runs every time, or a setup function that does the scripted part and returns one only when the AI is needed. After an AI run, the setup function runs again (a couple of times at most) so it can act on what the AI left behind, such as a result file the prompt told it to write. A run that doesn't report anything, run AI, or ask something of Agent Storm (a question, thread, worktree, or notification) shows up in the Bots tab's history as "Nothing to do".
+
+Each follow-up pass gets `run.aiStatus`: how the AI run before it ended. Besides finishing or failing, Agent Storm may have stopped it at one of the bot's `limits`: `maxAiRunDuration` caps each AI run, and `maxSpendPerDayUsd` caps what the bot's AI runs and the threads it starts cost over any 24 hours (which needs the Usage plugin). The Bots tab can override either. An AI run's `cwd` points it at a folder other than the repo root, and `isUnattended` declines every approval and question it raises instead of waiting on the user.
 
 ### Talking to Agent Storm
 
-The `agentStorm` client handed to `execute` can ask the user a question, start a sidebar thread for the user to pick up, make a worktree, or send a notification. `agentStorm.isInAgentStorm` says which world the bot is in.
+The `agentStorm` client handed to `execute` can ask the user a question, start a sidebar thread for the user to pick up, make a worktree, send a notification, or read when the user last used Agent Storm. `agentStorm.isInAgentStorm` says which world the bot is in.
 
 Outside Agent Storm there's nobody to answer, so the config's `standalone` policy (or a bot's own, which wins) decides what those calls do instead of letting them crash:
 
@@ -64,7 +70,7 @@ Outside Agent Storm there's nobody to answer, so the config's `standalone` polic
 
 ### Running in Agent Storm
 
-Open the Bots tab. Nothing in a repo runs until you approve its config file, and an edited file needs approving again. Each bot then gets an on/off switch, an interval, a model and API key override, a "Run now" button, its own shell tab where its runs print, an AI Chat tab per AI run, and a run history.
+Open the Bots tab. Nothing in a repo runs until you approve its config file, and editing that file or a bot file it names by path needs approving again. Each bot then gets an on/off switch, an interval, a model and API key override, a "Run now" button, its own shell tab where its runs print, its own AI Chat tab that every AI run is sent to, and a run history.
 
 ### Running on its own
 

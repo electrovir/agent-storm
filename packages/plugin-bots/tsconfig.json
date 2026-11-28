@@ -25,10 +25,16 @@
             "path": "../common"
         },
         {
+            "path": "../config"
+        },
+        {
             "path": "../core"
         },
         {
             "path": "../plugin-build"
+        },
+        {
+            "path": "../plugin-usage"
         }
     ]
 }

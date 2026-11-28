@@ -1,4 +1,5 @@
 import {botAiShape} from '@agent-storm/bot/src/bot-ai.js';
+import {botLimitsShape} from '@agent-storm/bot/src/bot-limits.js';
 import {botsPluginId, definePluginApi} from '@agent-storm/common';
 import {RuntimeMode} from '@agent-storm/plugin-build/src/build-api.js';
 import {anyDurationShape} from 'date-vir';
@@ -11,6 +12,25 @@ export function toBotScope(botId: string) {
     return `${botsPluginId}:${botId}`;
 }
 
+/** The pane group scope of a repo's `agent-storm.config` review, before the repo has bots to show. */
+export function toBotsConfigScope(repoId: string) {
+    return `${botsPluginId}-config:${repoId}`;
+}
+
+/** Whether a pane group's scope is one of the Bots activity's. */
+export function isBotsScope(scope: string | undefined) {
+    return (
+        !!scope &&
+        [
+            toBotScope(''),
+            toBotsConfigScope(''),
+        ].some((prefix) => scope.startsWith(prefix))
+    );
+}
+
+/** The kind of a bots pane group's Bot tab: a bot's controls and history, or a config to approve. */
+export const botPaneId = 'bot';
+
 /** What started a bot run. */
 export enum BotRunTrigger {
     Schedule = 'schedule',
@@ -21,7 +41,7 @@ export enum BotRunTrigger {
 export enum BotRunStatus {
     Running = 'running',
     Succeeded = 'succeeded',
-    /** The run neither reported anything nor ran AI. */
+    /** The run didn't report anything, run AI, or ask anything of Agent Storm. */
     NothingToDo = 'nothingToDo',
     Failed = 'failed',
     /** Agent Storm stopped hearing from the run, such as when its shell closed or the app restarted. */
@@ -55,6 +75,8 @@ export const botSettingsShape = defineShape({
     ai: nullableShape(botAiShape),
     /** How much the bot's AI runs may do without asking. */
     runtimeMode: enumShape(RuntimeMode),
+    /** Each limit set here overrides the bot's own. */
+    limits: nullableShape(botLimitsShape),
 });
 
 export type BotSettings = typeof botSettingsShape.runtimeType;
@@ -72,7 +94,7 @@ export const botRunShape = defineShape({
     reports: [
         '',
     ],
-    /** The Build threads the run's AI work ran in. */
+    /** The Build threads the run's AI work ran in: its bot's thread at the time. */
     aiThreadIds: [
         '',
     ],
@@ -93,6 +115,8 @@ export const botInfoShape = defineShape({
     defaultInterval: anyDurationShape,
     /** The bot's own model, which `settings.ai` overrides. */
     defaultAi: nullableShape(botAiShape),
+    /** The bot's own limits, which `settings.limits` overrides. */
+    defaultLimits: nullableShape(botLimitsShape),
     /** Why the bot's definition failed to load. The bot can't run until it's fixed. */
     loadError: nullableShape(''),
     settings: botSettingsShape,
@@ -101,11 +125,13 @@ export const botInfoShape = defineShape({
     /** Epoch milliseconds. Unset while the bot is off or can't run. */
     nextRunAt: nullableShape(0),
     lastRun: nullableShape(botRunShape),
+    /** The Build thread the bot's AI works in, which its AI Chat tab shows. */
+    aiThreadId: nullableShape(''),
 });
 
 export type BotInfo = typeof botInfoShape.runtimeType;
 
-/** A sidebar repo with an `agent-storm.config` file at its root. */
+/** A sidebar repo whose `.agent-storm/agent-storm.config` file may list bots. */
 export const botRepoShape = defineShape({
     repoId: '',
     repoPath: '',
@@ -182,6 +208,8 @@ export const botsApi = definePluginApi({
             requestShape: defineShape({
                 botId: '',
                 settings: botSettingsShape,
+                /** Replaces the bot's API key when set. `setApiKey` clears it. */
+                apiKey: nullableShape(''),
             }),
             responseShape: defineShape({}),
         },

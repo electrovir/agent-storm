@@ -3,7 +3,7 @@ import {describe, it} from '@augment-vir/test';
 import {type BotHost} from './agent-storm-client.js';
 import {BotAiProvider} from './bot-ai.js';
 import {type AnyBotDefinition} from './bot-definition.js';
-import {BotRunResult} from './protocol.js';
+import {BotAiRunStatus, BotRunResult} from './protocol.js';
 import {runBotOnce} from './run-bot.js';
 
 function createStubHost() {
@@ -13,7 +13,8 @@ function createStubHost() {
         askQuestion() {
             return Promise.resolve(undefined);
         },
-        startThread() {
+        startThread({prompt, ai, env}) {
+            calls.push(`thread ${ai.model} ${JSON.stringify(env)}: ${prompt}`);
             return Promise.resolve({
                 threadId: undefined,
             });
@@ -26,13 +27,16 @@ function createStubHost() {
         notify() {
             return Promise.resolve();
         },
+        readLastUserInputAt() {
+            return Promise.resolve(undefined);
+        },
         report(line) {
             calls.push(`report: ${line}`);
             return Promise.resolve();
         },
         runAi({execute, ai}) {
             calls.push(`ai ${ai.model}: ${execute.prompt}`);
-            return Promise.resolve(true);
+            return Promise.resolve(BotAiRunStatus.Finished);
         },
         finishRun({result}) {
             calls.push(`finish: ${result}`);
@@ -68,7 +72,7 @@ describe(runBotOnce.name, () => {
             bot: {
                 ...baseBot,
                 async execute({run}) {
-                    await run.report(`pass ${run.pass}`);
+                    await run.report(`pass ${run.pass} after ${run.aiStatus}`);
                     return {
                         prompt: `prompt ${run.pass}`,
                     };
@@ -88,11 +92,11 @@ describe(runBotOnce.name, () => {
             {
                 result: BotRunResult.Succeeded,
                 calls: [
-                    'report: pass 0',
+                    'report: pass 0 after undefined',
                     'ai override-model: prompt 0',
-                    'report: pass 1',
+                    `report: pass 1 after ${BotAiRunStatus.Finished}`,
                     'ai override-model: prompt 1',
-                    'report: pass 2',
+                    `report: pass 2 after ${BotAiRunStatus.Finished}`,
                     'ai override-model: prompt 2',
                     `finish: ${BotRunResult.Succeeded}`,
                 ],
@@ -117,6 +121,46 @@ describe(runBotOnce.name, () => {
         ]);
         assert.strictEquals(result, BotRunResult.NothingToDo);
     });
+    it('starts threads on the resolved model and env, counting them as something done', async () => {
+        const {host, calls} = createStubHost();
+        const result = await runBotOnce({
+            botName: 'starter',
+            bot: {
+                ...baseBot,
+                env: {
+                    shared: 'bot',
+                    botOnly: 'bot',
+                },
+                async execute({agentStorm}) {
+                    await agentStorm.startThread({
+                        prompt: 'Pick this up.',
+                        env: {
+                            shared: 'thread',
+                        },
+                    });
+                    return undefined;
+                },
+            },
+            args: {},
+            host,
+            aiOverride: {
+                model: 'override-model',
+            },
+        });
+        assert.deepEquals(
+            {
+                result,
+                calls,
+            },
+            {
+                result: BotRunResult.Succeeded,
+                calls: [
+                    'thread override-model {"shared":"thread","botOnly":"bot"}: Pick this up.',
+                    `finish: ${BotRunResult.Succeeded}`,
+                ],
+            },
+        );
+    });
     it('finishes as failed when an AI run fails', async () => {
         const {host, calls} = createStubHost();
         const result = await runBotOnce({
@@ -127,7 +171,7 @@ describe(runBotOnce.name, () => {
                 ...host,
                 runAi({execute}) {
                     calls.push(`failed ai: ${execute.prompt}`);
-                    return Promise.resolve(false);
+                    return Promise.resolve(BotAiRunStatus.Failed);
                 },
             },
         });

@@ -1,18 +1,21 @@
+import {
+    agentStormConfigBaseName,
+    agentStormConfigShape,
+    type AgentStormConfig,
+} from '@agent-storm/config';
 import {assert, check} from '@augment-vir/assert';
-import {extractErrorMessage, getObjectTypedKeys} from '@augment-vir/common';
+import {
+    extractErrorMessage,
+    removeUndefinedValues,
+    type Overwrite,
+    type PartialWithUndefined,
+} from '@augment-vir/common';
 import {findConfigFile, parseConfigContents} from 'config-vir';
 import {dirname, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {
-    assertValidShape,
-    defineShape,
-    nullableShape,
-    recordShape,
-    unknownShape,
-} from 'object-shape-tester';
-import {type AgentStormConfig, agentStormConfigBaseName} from './agent-storm-config.js';
-import {assertBotDefinition} from './bot-definition.js';
-import {standalonePolicyShape} from './standalone-policy.js';
+import {assertValidShape, nullableShape} from 'object-shape-tester';
+import {assertBotDefinition, type AnyBotDefinition} from './bot-definition.js';
+import {standalonePolicyShape, type StandalonePolicy} from './standalone-policy.js';
 
 const botNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/;
 
@@ -24,15 +27,6 @@ function unwrapDefaultExport(value: unknown) {
     return check.isObject(value) && check.hasKey(value, 'default') ? value.default : value;
 }
 
-/** Bots stay `unknown` here: a TS config's bots hold functions, which only {@link loadBot} checks. */
-const agentStormConfigShape = defineShape({
-    bots: recordShape({
-        keys: '',
-        values: unknownShape(),
-    }),
-    standalone: nullableShape(standalonePolicyShape),
-});
-
 /**
  * A repo's config, read and checked.
  *
@@ -40,12 +34,17 @@ const agentStormConfigShape = defineShape({
  */
 export type LoadedAgentStormConfig = Readonly<{
     configPath: string;
-    config: AgentStormConfig;
+    config: Overwrite<
+        AgentStormConfig,
+        PartialWithUndefined<{
+            standalone: StandalonePolicy;
+        }>
+    >;
 }>;
 
 /**
- * Reads the `agent-storm.config.*` file in `directory`. TS configs need `tsx`, which this package
- * depends on.
+ * Reads the `.agent-storm/agent-storm.config.*` file in the repo at `directory`. TS configs need
+ * `tsx`, which this package depends on.
  *
  * @category Internal
  */
@@ -68,7 +67,14 @@ export async function loadAgentStormConfig(directory: string) {
         {},
         `'${configPath}' isn't a valid Agent Storm config.`,
     );
-    getObjectTypedKeys(config.bots).forEach((name) => {
+    /** `@agent-storm/config` only types the policy's values as strings. */
+    assertValidShape(
+        config.standalone,
+        nullableShape(standalonePolicyShape),
+        {},
+        `'${configPath}' has an invalid standalone policy.`,
+    );
+    Object.keys(config.bots || {}).forEach((name) => {
         assert.matches(
             name,
             botNamePattern,
@@ -77,9 +83,7 @@ export async function loadAgentStormConfig(directory: string) {
     });
     return {
         configPath,
-        config: config satisfies Partial<
-            Record<keyof AgentStormConfig, unknown>
-        > as AgentStormConfig,
+        config: config satisfies AgentStormConfig as LoadedAgentStormConfig['config'],
     };
 }
 
@@ -103,10 +107,10 @@ export async function loadBot({
         name: string;
     }
 >) {
-    const entry = config.bots[name];
+    const entry = config.bots?.[name];
     if (!entry) {
         throw new Error(
-            `'${configPath}' has no bot named '${name}'. Its bots: ${getObjectTypedKeys(config.bots).join(', ') || 'none'}.`,
+            `'${configPath}' has no bot named '${name}'. Its bots: ${Object.keys(config.bots || {}).join(', ') || 'none'}.`,
         );
     }
     const bot = check.isString(entry)
@@ -128,6 +132,22 @@ export async function loadBot({
 }
 
 /**
+ * A loaded bot's entry in {@link listBots}.
+ *
+ * @category Internal
+ */
+export function toBotListEntry({name, bot}: Readonly<{name: string; bot: AnyBotDefinition}>) {
+    return {
+        name,
+        description: bot.description,
+        interval: removeUndefinedValues(bot.interval),
+        ai: bot.ai,
+        limits: bot.limits,
+        error: undefined,
+    };
+}
+
+/**
  * Every bot in the config, each with the error that kept it from loading, if any.
  *
  * @category Internal
@@ -135,25 +155,22 @@ export async function loadBot({
 export async function listBots(loaded: LoadedAgentStormConfig) {
     return {
         bots: await Promise.all(
-            getObjectTypedKeys(loaded.config.bots).map(async (name) => {
+            Object.keys(loaded.config.bots || {}).map(async (name) => {
                 try {
-                    const bot = await loadBot({
-                        ...loaded,
+                    return toBotListEntry({
                         name,
+                        bot: await loadBot({
+                            ...loaded,
+                            name,
+                        }),
                     });
-                    return {
-                        name,
-                        description: bot.description,
-                        interval: bot.interval,
-                        ai: bot.ai,
-                        error: undefined,
-                    };
                 } catch (error) {
                     return {
                         name,
                         description: '',
                         interval: {},
                         ai: undefined,
+                        limits: undefined,
                         error: extractErrorMessage(error),
                     };
                 }

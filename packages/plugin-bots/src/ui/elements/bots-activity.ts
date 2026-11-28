@@ -2,11 +2,11 @@ import {defineActivity} from '@agent-storm/core/frontend';
 import {html} from 'element-vir';
 import {botsPluginId} from '../../bots-api.js';
 import {botsMemory} from '../../util/bots-memory.js';
-import {createBotsState, startBotsState} from '../../util/bots-state.js';
+import {createBotsState, findSelectedBotsTarget, startBotsState} from '../../util/bots-state.js';
 import {VirBotsSidebar} from './vir-bots-sidebar.element.js';
 import {VirBotsStage} from './vir-bots-stage.element.js';
 
-/** The bots each repo lists in its `agent-storm.config` file. */
+/** The bots each repo lists in its `.agent-storm/agent-storm.config` file. */
 export const botsActivity = defineActivity({
     id: botsPluginId,
     label: 'Bots',
@@ -30,7 +30,7 @@ export const botsActivity = defineActivity({
             <${VirBotsStage.assign({
                 context,
                 snapshot: state.snapshot.value,
-                subPaths: route.subPaths,
+                route,
                 isShown,
             })}></${VirBotsStage}>
         `;
@@ -38,6 +38,22 @@ export const botsActivity = defineActivity({
     /** The questions waiting on the user. */
     findCount({state}) {
         return state.snapshot.value.state?.questions.length || undefined;
+    },
+    findRestoredSubPaths({context, state}) {
+        const repos = state.snapshot.value.state?.repos || [];
+        const rememberedId = context.uiLayout
+            .readRemembered(botsMemory.selectedTarget)
+            .find((selectedId) => {
+                return findSelectedBotsTarget({
+                    repos,
+                    selectedId,
+                });
+            });
+        return rememberedId
+            ? [
+                  rememberedId,
+              ]
+            : undefined;
     },
     startWithApp({state, services}) {
         return startBotsState({

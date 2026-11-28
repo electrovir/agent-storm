@@ -1,15 +1,15 @@
-import {extractErrorMessage, log} from '@augment-vir/common';
+import {extractErrorMessage, extractExtension, log} from '@augment-vir/common';
 import {hasErrorCode, writeFileAtomically} from 'agent-storm-util';
-import {readdir, readFile} from 'node:fs/promises';
+import {readdir, readFile, rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {checkValidShape, defineShape, type Shape} from 'object-shape-tester';
+import {checkValidShape, defineShape, nullableShape, type Shape} from 'object-shape-tester';
 import {botRunShape, botSettingsShape, type BotRun} from '../bots-api.js';
 
 /** How many runs each bot's history keeps. */
 const maxStoredRuns = 200;
 
 const storedBotsShape = defineShape({
-    /** The config files the user approved, by the hash of the contents they read. */
+    /** The config files the user approved, by the hash of the config and the bot files it names. */
     approvals: [
         {
             repoPath: '',
@@ -22,6 +22,13 @@ const storedBotsShape = defineShape({
             settings: botSettingsShape,
         },
     ],
+    /** Every bot its repo's config has listed, so a bot the config drops can be cleaned up. */
+    knownBots: nullableShape([
+        {
+            botId: '',
+            repoPath: '',
+        },
+    ]),
 });
 
 export type StoredBots = typeof storedBotsShape.runtimeType;
@@ -38,6 +45,25 @@ const storedApiKeysShape = defineShape({
 
 export type StoredApiKeys = typeof storedApiKeysShape.runtimeType;
 
+/**
+ * Every message bots sent their AI threads, for their limits and for each bot's latest thread. Kept
+ * apart from run history, which keeps too few runs to cover a day of a bot that runs often.
+ */
+const storedAiThreadsShape = defineShape({
+    threads: [
+        {
+            botId: '',
+            threadId: '',
+            /** Epoch milliseconds. */
+            startedAt: 0,
+            /** What the thread started with that it can't change later, as a hash. */
+            launchKey: nullableShape(''),
+        },
+    ],
+});
+
+export type StoredAiThreads = typeof storedAiThreadsShape.runtimeType;
+
 const storedRunsShape = defineShape({
     /** Newest first. */
     runs: [
@@ -51,6 +77,7 @@ export function createBotsStorage(dataDir: string) {
         bots: join(dataDir, 'bots.json'),
         apiKeys: join(dataDir, 'api-keys.json'),
         runs: join(dataDir, 'runs'),
+        aiThreads: join(dataDir, 'ai-threads.json'),
     };
     /** Each file's latest write, so writes to one file land in the order they were made. */
     const writes = new Map<string, Promise<void>>();
@@ -78,6 +105,12 @@ export function createBotsStorage(dataDir: string) {
         return undefined;
     }
 
+    async function queueFileChange(path: string, change: () => Promise<void>) {
+        const write = (writes.get(path) || Promise.resolve()).catch(() => undefined).then(change);
+        writes.set(path, write);
+        await write;
+    }
+
     async function writeStored({
         path,
         value,
@@ -87,17 +120,13 @@ export function createBotsStorage(dataDir: string) {
         value: unknown;
         mode?: number | undefined;
     }>) {
-        const write = (writes.get(path) || Promise.resolve())
-            .catch(() => undefined)
-            .then(async () => {
-                await writeFileAtomically({
-                    path,
-                    contents: JSON.stringify(value, undefined, 4),
-                    mode,
-                });
+        await queueFileChange(path, async () => {
+            await writeFileAtomically({
+                path,
+                contents: JSON.stringify(value, undefined, 4),
+                mode,
             });
-        writes.set(path, write);
-        await write;
+        });
     }
 
     function toRunsPath(botId: string) {
@@ -139,6 +168,22 @@ export function createBotsStorage(dataDir: string) {
                 mode: 0o600,
             });
         },
+        async readAiThreads() {
+            return (
+                (await readStored({
+                    path: paths.aiThreads,
+                    shape: storedAiThreadsShape,
+                })) || {
+                    threads: [],
+                }
+            );
+        },
+        async writeAiThreads(value: Readonly<StoredAiThreads>) {
+            await writeStored({
+                path: paths.aiThreads,
+                value,
+            });
+        },
         /** Every bot's run history that was ever saved, by bot id. */
         async readAllRuns() {
             const fileNames = await readdir(paths.runs).catch((error: unknown) => {
@@ -148,8 +193,9 @@ export function createBotsStorage(dataDir: string) {
                 throw error;
             });
             const botIds = fileNames
-                .filter((fileName) => fileName.endsWith('.json'))
-                .map((fileName) => fileName.slice(0, -'.json'.length));
+                .map((fileName) => extractExtension(fileName))
+                .filter((parts) => parts.extension === '.json')
+                .map((parts) => parts.basename);
             return new Map(
                 await Promise.all(
                     botIds.map(async (botId) => {
@@ -180,7 +226,12 @@ export function createBotsStorage(dataDir: string) {
                 },
             });
         },
+        async deleteRuns(botId: string) {
+            await queueFileChange(toRunsPath(botId), async () => {
+                await rm(toRunsPath(botId), {
+                    force: true,
+                });
+            });
+        },
     };
 }
-
-export type BotsStorage = ReturnType<typeof createBotsStorage>;
