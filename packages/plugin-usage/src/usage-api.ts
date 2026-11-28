@@ -1,3 +1,5 @@
+// cspell:word ultrafast
+
 import {definePluginApi} from '@agent-storm/common';
 import {defineShape, enumShape, nullableShape} from 'object-shape-tester';
 
@@ -22,6 +24,20 @@ export enum UsageProvider {
 export const usageProviderLabels: Readonly<Record<UsageProvider, string>> = {
     [UsageProvider.Claude]: 'Claude',
     [UsageProvider.Codex]: 'Codex',
+};
+
+/** The service tier a model response ran on, slowest first. */
+export enum UsageSpeed {
+    Standard = 'standard',
+    Fast = 'fast',
+    Ultrafast = 'ultrafast',
+}
+
+/** Appended to a provider's label. Empty for standard speed, which the provider's label alone means. */
+export const usageSpeedSuffixes: Readonly<Record<UsageSpeed, string>> = {
+    [UsageSpeed.Standard]: '',
+    [UsageSpeed.Fast]: 'fast',
+    [UsageSpeed.Ultrafast]: 'ultrafast',
 };
 
 export const planLimitWindowShape = defineShape({
@@ -75,6 +91,7 @@ export const dailyUsageShape = defineShape({
     /** The server's local day, as YYYY-MM-DD. */
     day: '',
     provider: enumShape(UsageProvider),
+    speed: enumShape(UsageSpeed),
     totals: usageTotalsShape,
 });
 
@@ -90,6 +107,8 @@ export const usageGroupShape = defineShape({
     prUrl: nullableShape(''),
     label: nullableShape(''),
     totals: usageTotalsShape,
+    /** The part of `totals` spent at a faster speed. Unset when none was. */
+    fastTotals: nullableShape(usageTotalsShape),
 });
 
 export type UsageGroup = typeof usageGroupShape.runtimeType;

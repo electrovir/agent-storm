@@ -2,7 +2,12 @@ import {defineAppElement} from '@agent-storm/core/frontend';
 import {createFullDateInUserTimezone, toLocaleString} from 'date-vir';
 import {css, html, nothing, unsafeCSS} from 'element-vir';
 import {ViraRelativeTime, viraThemeByKeys} from 'vira';
-import {type PlanLimitPoint, type PlanLimits, usageProviderLabels} from '../../usage-api.js';
+import {
+    type PlanLimitPoint,
+    type PlanLimits,
+    usageProviderLabels,
+    UsageSpeed,
+} from '../../usage-api.js';
 import {providerColors} from '../../util/usage-chart.js';
 import {VirUsageLineChart} from './vir-usage-line-chart.element.js';
 
@@ -96,7 +101,10 @@ export const VirUsagePlanLimits = defineAppElement<{
     render({inputs}) {
         const now = Date.now();
         return inputs.planLimits.map((limits) => {
-            const color = providerColors[limits.provider][inputs.isDark ? 'dark' : 'light'];
+            const color =
+                providerColors[limits.provider][UsageSpeed.Standard][
+                    inputs.isDark ? 'dark' : 'light'
+                ];
             return html`
                 <section class="provider">
                     <div class="provider-header">

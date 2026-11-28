@@ -1,3 +1,5 @@
+// cspell:word ultrafast
+
 import {createArray, getEnumValues} from '@augment-vir/common';
 import {
     calculateRelativeDate,
@@ -5,7 +7,7 @@ import {
     toSimpleDatePartString,
     type FullDate,
 } from 'date-vir';
-import {UsageProvider, type DailyUsage, type UsageTotals} from '../usage-api.js';
+import {UsageProvider, UsageSpeed, type DailyUsage, type UsageTotals} from '../usage-api.js';
 
 /** What a daily chart measures. */
 export enum UsageMeasure {
@@ -30,25 +32,51 @@ export const usageMeasureReaders: Readonly<
 };
 
 /**
- * Categorical series colors, in a fixed order: Claude always takes the first and Codex the second,
- * so a provider keeps its color whichever providers a chart shows.
+ * Series colors. Each provider keeps one hue whichever providers a chart shows: Claude the first
+ * categorical slot and Codex the second. Faster speeds take steps of that hue further from the
+ * chart's surface: darker in light mode, lighter in dark mode.
  */
 export const providerColors: Readonly<
     Record<
         UsageProvider,
-        Readonly<{
-            light: string;
-            dark: string;
-        }>
+        Readonly<
+            Record<
+                UsageSpeed,
+                Readonly<{
+                    light: string;
+                    dark: string;
+                }>
+            >
+        >
     >
 > = {
     [UsageProvider.Claude]: {
-        light: '#2a78d6',
-        dark: '#3987e5',
+        [UsageSpeed.Standard]: {
+            light: '#2a78d6',
+            dark: '#3987e5',
+        },
+        [UsageSpeed.Fast]: {
+            light: '#134c8f',
+            dark: '#83b5f8',
+        },
+        [UsageSpeed.Ultrafast]: {
+            light: '#0d366b',
+            dark: '#cde2fb',
+        },
     },
     [UsageProvider.Codex]: {
-        light: '#eb6834',
-        dark: '#d95926',
+        [UsageSpeed.Standard]: {
+            light: '#eb6834',
+            dark: '#d95926',
+        },
+        [UsageSpeed.Fast]: {
+            light: '#a93f0f',
+            dark: '#f79b79',
+        },
+        [UsageSpeed.Ultrafast]: {
+            light: '#692100',
+            dark: '#ffd8c8',
+        },
     },
 };
 
@@ -69,8 +97,24 @@ export function listRecentDays(
     });
 }
 
-/** Each provider's value on each of `days`, zero on days it wasn't used. */
-export function toProviderDailyValues({
+/** The speeds each provider offers, slowest first. */
+export const providerSpeeds: Readonly<Record<UsageProvider, ReadonlyArray<UsageSpeed>>> = {
+    [UsageProvider.Claude]: [
+        UsageSpeed.Standard,
+        UsageSpeed.Fast,
+    ],
+    [UsageProvider.Codex]: [
+        UsageSpeed.Standard,
+        UsageSpeed.Fast,
+        UsageSpeed.Ultrafast,
+    ],
+};
+
+/**
+ * Each provider and speed's value on each of `days`, zero on days it wasn't used. Every speed the
+ * provider offers is listed, used or not, so each keeps its legend entry.
+ */
+export function toSpeedDailyValues({
     daily,
     days,
     measure,
@@ -79,16 +123,23 @@ export function toProviderDailyValues({
     days: ReadonlyArray<string>;
     measure: UsageMeasure;
 }>) {
-    return getEnumValues(UsageProvider).map((provider) => {
-        return {
-            provider,
-            values: days.map((day) => {
-                const usage = daily.find(
-                    (entry) => entry.day === day && entry.provider === provider,
-                );
-                return usage ? usageMeasureReaders[measure](usage.totals) : 0;
-            }),
-        };
+    return getEnumValues(UsageProvider).flatMap((provider) => {
+        return providerSpeeds[provider].map((speed) => {
+            return {
+                provider,
+                speed,
+                values: days.map((day) => {
+                    const usage = daily.find((entry) => {
+                        return (
+                            entry.day === day &&
+                            entry.provider === provider &&
+                            entry.speed === speed
+                        );
+                    });
+                    return usage ? usageMeasureReaders[measure](usage.totals) : 0;
+                }),
+            };
+        });
     });
 }
 

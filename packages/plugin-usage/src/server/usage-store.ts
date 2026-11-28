@@ -8,11 +8,18 @@ import {
     type UsageGroup,
     UsageProvider,
     UsageSource,
+    UsageSpeed,
     type UsageTotals,
 } from '../usage-api.js';
 import {type UsageRecordInput} from '../usage-exports.js';
 import {type PrismaClient} from './generated/client.js';
-import {estimateCost, findModelPrice, type ModelPrices} from './model-prices.js';
+import {
+    estimateCost,
+    findModelPrice,
+    findSpeedPriceMultiplier,
+    type ModelPrices,
+    speedPriceChangesAt,
+} from './model-prices.js';
 
 /** How long plan-limit readings are kept. */
 const planLimitHistoryAge = {
@@ -103,6 +110,7 @@ export function createUsageStore(prismaClient: PrismaClient) {
                         record.costUsd == undefined && price
                             ? estimateCost({
                                   ...record,
+                                  occurredAt,
                                   price,
                               })
                             : undefined;
@@ -112,6 +120,7 @@ export function createUsageStore(prismaClient: PrismaClient) {
                         source: record.source,
                         provider: record.provider,
                         model: record.model,
+                        speed: record.speed,
                         inputTokens: record.inputTokens,
                         outputTokens: record.outputTokens,
                         cacheReadTokens: record.cacheReadTokens,
@@ -141,10 +150,17 @@ export function createUsageStore(prismaClient: PrismaClient) {
                 }),
             );
         },
-        async readThreadCost({threadId, since}: Readonly<{threadId: string; since: number}>) {
+        async readThreadsCost({
+            threadIds,
+            since,
+        }: Readonly<{threadIds: ReadonlyArray<string>; since: number}>) {
             const totals = await prismaClient.usageRecord.aggregate({
                 where: {
-                    threadId,
+                    threadId: {
+                        in: [
+                            ...threadIds,
+                        ],
+                    },
                     occurredAt: {
                         gte: since,
                     },
@@ -167,25 +183,42 @@ export function createUsageStore(prismaClient: PrismaClient) {
             const models = await prismaClient.usageRecord.groupBy({
                 by: [
                     'model',
+                    'speed',
                 ],
                 where: {
                     costUsd: null,
                 },
             });
-            await awaitedForEach(models, async ({model}) => {
+            await awaitedForEach(models, async ({model, speed}) => {
                 const price = findModelPrice(prices, model);
                 if (!price) {
                     return;
                 }
+                const usageSpeed = assertWrap.isEnumValue(speed, UsageSpeed);
                 await prismaClient.$executeRaw`
                     UPDATE "UsageRecord"
                     SET
-                        "costUsd" = "inputTokens" * ${price.input}
+                        "costUsd" = (
+                            CASE WHEN "occurredAt" < ${speedPriceChangesAt}
+                            THEN ${findSpeedPriceMultiplier({
+                                model,
+                                speed: usageSpeed,
+                                occurredAt: speedPriceChangesAt - 1,
+                            })}
+                            ELSE ${findSpeedPriceMultiplier({
+                                model,
+                                speed: usageSpeed,
+                                occurredAt: speedPriceChangesAt,
+                            })}
+                            END
+                        ) * (
+                            "inputTokens" * ${price.input}
                             + "outputTokens" * ${price.output}
                             + "cacheReadTokens" * ${price.cacheRead}
-                            + "cacheWriteTokens" * ${price.cacheWrite},
+                            + "cacheWriteTokens" * ${price.cacheWrite}
+                        ),
                         "isCostEstimated" = true
-                    WHERE "costUsd" IS NULL AND "model" = ${model}
+                    WHERE "costUsd" IS NULL AND "model" = ${model} AND "speed" = ${speed}
                 `;
             });
         },
@@ -266,6 +299,7 @@ export function createUsageStore(prismaClient: PrismaClient) {
                     by: [
                         'day',
                         'provider',
+                        'speed',
                         'isCostEstimated',
                     ],
                     where,
@@ -279,6 +313,7 @@ export function createUsageStore(prismaClient: PrismaClient) {
                         'folder',
                         'threadId',
                         'prUrl',
+                        'speed',
                         'isCostEstimated',
                     ],
                     where,
@@ -288,31 +323,45 @@ export function createUsageStore(prismaClient: PrismaClient) {
                     ...summedFields,
                 }),
             ]);
+            function toGroupKey(row: (typeof groupRows)[number]) {
+                return {
+                    source: row.source,
+                    provider: row.provider,
+                    repoPath: row.repoPath,
+                    folder: row.folder,
+                    threadId: row.threadId,
+                    prUrl: row.prUrl,
+                };
+            }
+            const fastGroupTotals = new Map(
+                mergeSummedRows(
+                    groupRows.filter((row) => row.speed !== UsageSpeed.Standard),
+                    toGroupKey,
+                ).map(({key, totals}) => {
+                    return [
+                        JSON.stringify(key),
+                        totals,
+                    ];
+                }),
+            );
             return {
                 daily: mergeSummedRows(dailyRows, (row) => {
                     return {
                         day: row.day,
                         provider: row.provider,
+                        speed: row.speed,
                     };
                 })
                     .map(({key, totals}): DailyUsage => {
                         return {
                             day: key.day,
                             provider: assertWrap.isEnumValue(key.provider, UsageProvider),
+                            speed: assertWrap.isEnumValue(key.speed, UsageSpeed),
                             totals,
                         };
                     })
                     .sort((first, second) => first.day.localeCompare(second.day)),
-                groups: mergeSummedRows(groupRows, (row) => {
-                    return {
-                        source: row.source,
-                        provider: row.provider,
-                        repoPath: row.repoPath,
-                        folder: row.folder,
-                        threadId: row.threadId,
-                        prUrl: row.prUrl,
-                    };
-                })
+                groups: mergeSummedRows(groupRows, toGroupKey)
                     .map(({key, firstRow, totals}): UsageGroup => {
                         return {
                             ...omitObjectKeys(key, [
@@ -323,6 +372,7 @@ export function createUsageStore(prismaClient: PrismaClient) {
                             provider: assertWrap.isEnumValue(key.provider, UsageProvider),
                             label: firstRow._max.label,
                             totals,
+                            fastTotals: fastGroupTotals.get(JSON.stringify(key)),
                         };
                     })
                     .sort((first, second) => second.totals.costUsd - first.totals.costUsd),

@@ -1,5 +1,8 @@
+// cspell:word ultrafast
+
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
+import {UsageSpeed} from '../usage-api.js';
 import {estimateCost, findModelPrice, parseModelPrices} from './model-prices.js';
 
 const prices = parseModelPrices({
@@ -49,21 +52,57 @@ describe(findModelPrice.name, () => {
 });
 
 describe(estimateCost.name, () => {
-    it('prices each kind of token at its own rate', () => {
-        assert.strictEquals(
-            estimateCost({
-                price: {
-                    input: 1,
-                    output: 10,
-                    cacheRead: 100,
-                    cacheWrite: 1000,
+    it('prices each kind of token at its own rate, scaled by speed', () => {
+        const beforeLaunchPriceEnds = Date.parse('2026-11-27T12:00:00Z');
+        assert.deepEquals(
+            [
+                {
+                    model: 'gpt-6-astra',
+                    speed: UsageSpeed.Standard,
+                    occurredAt: beforeLaunchPriceEnds,
                 },
-                inputTokens: 1,
-                outputTokens: 2,
-                cacheReadTokens: 3,
-                cacheWriteTokens: 4,
+                {
+                    model: 'gpt-6-astra',
+                    speed: UsageSpeed.Fast,
+                    occurredAt: beforeLaunchPriceEnds,
+                },
+                {
+                    model: 'gpt-6-astra',
+                    speed: UsageSpeed.Ultrafast,
+                    occurredAt: beforeLaunchPriceEnds,
+                },
+                {
+                    model: 'gpt-6.2-sol',
+                    speed: UsageSpeed.Ultrafast,
+                    occurredAt: beforeLaunchPriceEnds,
+                },
+                {
+                    model: 'gpt-6.2-sol',
+                    speed: UsageSpeed.Ultrafast,
+                    occurredAt: Date.parse('2027-03-01T08:00:00Z'),
+                },
+            ].map((usage) => {
+                return estimateCost({
+                    ...usage,
+                    price: {
+                        input: 1,
+                        output: 10,
+                        cacheRead: 100,
+                        cacheWrite: 1000,
+                    },
+                    inputTokens: 1,
+                    outputTokens: 2,
+                    cacheReadTokens: 3,
+                    cacheWriteTokens: 4,
+                });
             }),
-            4321,
+            [
+                4321,
+                8642,
+                25_926,
+                12_963,
+                25_926,
+            ],
         );
     });
 });

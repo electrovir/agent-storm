@@ -1,6 +1,6 @@
 import {definePluginServerExportsKey} from '@agent-storm/common';
 import {type PartialWithUndefined} from '@augment-vir/common';
-import {type UsageProvider, type UsageSource, usagePluginId} from './usage-api.js';
+import {type UsageProvider, type UsageSource, type UsageSpeed, usagePluginId} from './usage-api.js';
 
 /** Tokens one model spent on one AI run. */
 export type UsageRecordInput = Readonly<
@@ -10,6 +10,7 @@ export type UsageRecordInput = Readonly<
         source: UsageSource;
         provider: UsageProvider;
         model: string;
+        speed: UsageSpeed;
         /** Input tokens that weren't read from or written to the prompt cache. */
         inputTokens: number;
         /** Includes `reasoningTokens`. */
@@ -40,11 +41,11 @@ export type UsageServerExports = Readonly<{
      */
     notifyRateLimitsChanged(provider: UsageProvider): void;
     /**
-     * What the thread's AI runs since `since` (epoch milliseconds) cost. With `hasUnpricedTokens`,
-     * some ran on a model with no known price, so the real cost is higher.
+     * What the threads' AI runs since `since` (epoch milliseconds) cost together. With
+     * `hasUnpricedTokens`, some ran on a model with no known price, so the real cost is higher.
      */
-    readThreadCost(
-        params: Readonly<{threadId: string; since: number}>,
+    readThreadsCost(
+        params: Readonly<{threadIds: ReadonlyArray<string>; since: number}>,
     ): Promise<{costUsd: number; hasUnpricedTokens: boolean}>;
 }>;
 

@@ -1,4 +1,4 @@
-// cspell:word dedupe
+// cspell:word dedupe ultrafast
 
 generator client {
   provider = "prisma-client"
@@ -19,6 +19,13 @@ enum UsageProvider {
   codex
 }
 
+/// The service tier a response ran on.
+enum UsageSpeed {
+  standard
+  fast
+  ultrafast
+}
+
 /// Tokens one model spent on one AI run, attributed to the plugin and place that ran it.
 model UsageRecord {
   id               String        @id @default(cuid(2))
@@ -33,6 +40,7 @@ model UsageRecord {
   source           UsageSource
   provider         UsageProvider
   model            String
+  speed            UsageSpeed    @default(standard)
   inputTokens      Int
   outputTokens     Int
   cacheReadTokens  Int

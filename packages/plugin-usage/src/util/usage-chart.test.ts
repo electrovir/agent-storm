@@ -1,8 +1,10 @@
+// cspell:word ultrafast
+
 import {assert} from '@augment-vir/assert';
 import {describe, it} from '@augment-vir/test';
 import {createFullDateInUserTimezone} from 'date-vir';
-import {UsageProvider} from '../usage-api.js';
-import {listRecentDays, shortenPrUrl, toProviderDailyValues, UsageMeasure} from './usage-chart.js';
+import {UsageProvider, UsageSpeed} from '../usage-api.js';
+import {listRecentDays, shortenPrUrl, toSpeedDailyValues, UsageMeasure} from './usage-chart.js';
 
 const totals = {
     inputTokens: 10,
@@ -39,14 +41,15 @@ describe(listRecentDays.name, () => {
     });
 });
 
-describe(toProviderDailyValues.name, () => {
-    it('fills days without usage with zero', () => {
+describe(toSpeedDailyValues.name, () => {
+    it('lists every speed each provider offers and fills days without usage with zero', () => {
         assert.deepEquals(
-            toProviderDailyValues({
+            toSpeedDailyValues({
                 daily: [
                     {
                         day: '2026-11-19',
                         provider: UsageProvider.Codex,
+                        speed: UsageSpeed.Ultrafast,
                         totals,
                     },
                 ],
@@ -59,6 +62,15 @@ describe(toProviderDailyValues.name, () => {
             [
                 {
                     provider: UsageProvider.Claude,
+                    speed: UsageSpeed.Standard,
+                    values: [
+                        0,
+                        0,
+                    ],
+                },
+                {
+                    provider: UsageProvider.Claude,
+                    speed: UsageSpeed.Fast,
                     values: [
                         0,
                         0,
@@ -66,6 +78,23 @@ describe(toProviderDailyValues.name, () => {
                 },
                 {
                     provider: UsageProvider.Codex,
+                    speed: UsageSpeed.Standard,
+                    values: [
+                        0,
+                        0,
+                    ],
+                },
+                {
+                    provider: UsageProvider.Codex,
+                    speed: UsageSpeed.Fast,
+                    values: [
+                        0,
+                        0,
+                    ],
+                },
+                {
+                    provider: UsageProvider.Codex,
+                    speed: UsageSpeed.Ultrafast,
                     values: [
                         0,
                         100,

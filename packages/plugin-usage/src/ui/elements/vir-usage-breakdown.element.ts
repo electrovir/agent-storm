@@ -120,6 +120,7 @@ export const VirUsageBreakdown = defineAppElement<{
                         <th>Provider</th>
                         <th class="number">Tokens</th>
                         <th class="number">Cost</th>
+                        <th class="number">Fast cost</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -139,6 +140,9 @@ export const VirUsageBreakdown = defineAppElement<{
                                         )}
                                     </td>
                                     <td class="number">${renderCost(group.totals)}</td>
+                                    <td class="number">
+                                        ${group.fastTotals ? renderCost(group.fastTotals) : '–'}
+                                    </td>
                                 </tr>
                             `;
                         },

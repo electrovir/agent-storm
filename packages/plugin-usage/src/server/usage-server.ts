@@ -224,8 +224,8 @@ export default definePluginServer({
                     ]);
                 },
                 notifyRateLimitsChanged,
-                async readThreadCost(params) {
-                    return await store.readThreadCost(params);
+                async readThreadsCost(params) {
+                    return await store.readThreadsCost(params);
                 },
             } satisfies UsageServerExports,
             async stop() {

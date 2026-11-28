@@ -1,5 +1,7 @@
+// cspell:word ultrafast
+
 import {defineAppElement, isDarkMode, listenToDarkMode} from '@agent-storm/core/frontend';
-import {assertWrap} from '@augment-vir/assert';
+import {assertWrap, check} from '@augment-vir/assert';
 import {extractErrorMessage, getEnumValues} from '@augment-vir/common';
 import {convertDuration} from 'date-vir';
 import {css, html, listen, nothing} from 'element-vir';
@@ -11,6 +13,8 @@ import {
     type UsageGroup,
     UsageProvider,
     usageProviderLabels,
+    UsageSpeed,
+    usageSpeedSuffixes,
 } from '../../usage-api.js';
 import {
     formatDay,
@@ -18,7 +22,7 @@ import {
     formatUsd,
     listRecentDays,
     providerColors,
-    toProviderDailyValues,
+    toSpeedDailyValues,
     UsageMeasure,
     usageMeasureReaders,
 } from '../../util/usage-chart.js';
@@ -61,6 +65,17 @@ function sumTotals(daily: ReadonlyArray<Readonly<DailyUsage>>) {
             hasUnpricedTokens: false,
         },
     );
+}
+
+/** Every model's fast and ultrafast cost together. */
+function renderFastCost(fastDaily: ReadonlyArray<Readonly<DailyUsage>>) {
+    return fastDaily.length
+        ? html`
+              <td>${renderCost(sumTotals(fastDaily))}</td>
+          `
+        : html`
+              <td>–</td>
+          `;
 }
 
 function createUsageViewState() {
@@ -306,14 +321,19 @@ export const VirUsageView = defineAppElement()({
         const totals = sumTotals(daily);
 
         function createSeries(measure: UsageMeasure) {
-            return toProviderDailyValues({
+            return toSpeedDailyValues({
                 daily,
                 days,
                 measure,
-            }).map(({provider, values}) => {
+            }).map(({provider, speed, values}) => {
                 return {
-                    label: usageProviderLabels[provider],
-                    color: providerColors[provider][state.isDark ? 'dark' : 'light'],
+                    label: [
+                        usageProviderLabels[provider],
+                        usageSpeedSuffixes[speed],
+                    ]
+                        .filter(check.isTruthy)
+                        .join(' '),
+                    color: providerColors[provider][speed][state.isDark ? 'dark' : 'light'],
                     values,
                 };
             });
@@ -442,6 +462,7 @@ export const VirUsageView = defineAppElement()({
                                             `,
                                         ];
                                     })}
+                                    <th>Fast cost</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -450,36 +471,46 @@ export const VirUsageView = defineAppElement()({
                                         <tr>
                                             <td>${formatDay(day)}</td>
                                             ${getEnumValues(UsageProvider).flatMap((provider) => {
-                                                const entry = daily.find((usage) => {
+                                                const entries = daily.filter((usage) => {
                                                     return (
                                                         usage.day === day &&
                                                         usage.provider === provider
                                                     );
                                                 });
-                                                return entry
-                                                    ? [
-                                                          html`
-                                                              <td>${renderCost(entry.totals)}</td>
-                                                          `,
-                                                          html`
-                                                              <td>
-                                                                  ${formatTokenCount(
-                                                                      usageMeasureReaders[
-                                                                          UsageMeasure.Tokens
-                                                                      ](entry.totals),
-                                                                  )}
-                                                              </td>
-                                                          `,
-                                                      ]
-                                                    : [
-                                                          html`
-                                                              <td>–</td>
-                                                          `,
-                                                          html`
-                                                              <td>–</td>
-                                                          `,
-                                                      ];
+                                                if (!entries.length) {
+                                                    return [
+                                                        html`
+                                                            <td>–</td>
+                                                        `,
+                                                        html`
+                                                            <td>–</td>
+                                                        `,
+                                                    ];
+                                                }
+                                                const providerTotals = sumTotals(entries);
+                                                return [
+                                                    html`
+                                                        <td>${renderCost(providerTotals)}</td>
+                                                    `,
+                                                    html`
+                                                        <td>
+                                                            ${formatTokenCount(
+                                                                usageMeasureReaders[
+                                                                    UsageMeasure.Tokens
+                                                                ](providerTotals),
+                                                            )}
+                                                        </td>
+                                                    `,
+                                                ];
                                             })}
+                                            ${renderFastCost(
+                                                daily.filter((usage) => {
+                                                    return (
+                                                        usage.day === day &&
+                                                        usage.speed !== UsageSpeed.Standard
+                                                    );
+                                                }),
+                                            )}
                                         </tr>
                                     `;
                                 })}

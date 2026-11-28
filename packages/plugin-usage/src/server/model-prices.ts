@@ -1,9 +1,12 @@
+// cspell:word ultrafast
+
 import {check} from '@augment-vir/assert';
 import {getObjectTypedEntries, mapObjectValues, typedObjectFromEntries} from '@augment-vir/common';
 import {writeFileAtomically} from 'agent-storm-util';
 import {convertDuration} from 'date-vir';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import {UsageSpeed} from '../usage-api.js';
 
 /** USD per token. */
 export type ModelPrice = Readonly<{
@@ -74,24 +77,74 @@ export function findModelPrice(prices: ModelPrices, model: string): ModelPrice |
         .find(check.isDefined);
 }
 
+/**
+ * Each speed's price as a multiple of the standard price, the only one the price list has. Both
+ * Anthropic and OpenAI apply it to every kind of token, cache reads and writes included.
+ */
+const speedPriceMultipliers: Readonly<Record<UsageSpeed, number>> = {
+    [UsageSpeed.Standard]: 1,
+    [UsageSpeed.Fast]: 2,
+    [UsageSpeed.Ultrafast]: 6,
+};
+
+/** OpenAI's launch price for Ultrafast on its GPT-6.2 models, per its API pricing page. */
+const ultrafastLaunchPrice = {
+    modelPrefix: 'gpt-6.2-',
+    multiplier: 3,
+    /** Epoch milliseconds: the start of March 1, 2027, Pacific time. */
+    endsAt: Date.parse('2027-03-01T00:00:00-08:00'),
+} as const;
+
+/** What `speed` cost on `model` at `occurredAt` (epoch milliseconds), as a multiple of standard. */
+export function findSpeedPriceMultiplier({
+    model,
+    speed,
+    occurredAt,
+}: Readonly<{
+    model: string;
+    speed: UsageSpeed;
+    occurredAt: number;
+}>) {
+    return speed === UsageSpeed.Ultrafast &&
+        model.startsWith(ultrafastLaunchPrice.modelPrefix) &&
+        occurredAt < ultrafastLaunchPrice.endsAt
+        ? ultrafastLaunchPrice.multiplier
+        : speedPriceMultipliers[speed];
+}
+
+/** When the Ultrafast launch price ends, so records on either side of it price differently. */
+export const speedPriceChangesAt = ultrafastLaunchPrice.endsAt;
+
 export function estimateCost({
     price,
+    model,
+    speed,
+    occurredAt,
     inputTokens,
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
 }: Readonly<{
     price: ModelPrice;
+    model: string;
+    speed: UsageSpeed;
+    /** Epoch milliseconds. */
+    occurredAt: number;
     inputTokens: number;
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
 }>) {
     return (
-        inputTokens * price.input +
-        outputTokens * price.output +
-        cacheReadTokens * price.cacheRead +
-        cacheWriteTokens * price.cacheWrite
+        findSpeedPriceMultiplier({
+            model,
+            speed,
+            occurredAt,
+        }) *
+        (inputTokens * price.input +
+            outputTokens * price.output +
+            cacheReadTokens * price.cacheRead +
+            cacheWriteTokens * price.cacheWrite)
     );
 }
 

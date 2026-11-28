@@ -14,6 +14,8 @@ export async function openUsageDatabase(
     dataDir: string,
     /** Tests point this at the package's own migrations, since they run unbundled. */
     migrationsDir = resolve(import.meta.dirname, 'migrations'),
+    /** Tests point this at a worker they bundle, for the same reason. */
+    workerPath = resolve(import.meta.dirname, sqliteWorkerFileName),
 ) {
     const databasePath = resolve(dataDir, 'usage.db');
     await applySqliteMigrations({
@@ -23,7 +25,7 @@ export async function openUsageDatabase(
     return new PrismaClient({
         adapter: createSqliteWorkerAdapter({
             databasePath,
-            workerPath: resolve(import.meta.dirname, sqliteWorkerFileName),
+            workerPath,
         }),
     });
 }
